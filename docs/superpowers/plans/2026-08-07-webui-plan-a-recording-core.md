@@ -2487,6 +2487,16 @@ def test_a_stream_is_not_stalled_before_it_has_had_time(tmp_path):
     service.stop()
 
 
+def test_a_service_with_no_streams_is_not_healthy(tmp_path):
+    # `all([])` is True, so an empty stream list would otherwise report healthy while
+    # recording nothing at all.
+    settings = build_settings(tmp_path)
+    settings.camera.streams = []
+    service = RecordingService(settings, spawn=spawn_fake)
+    assert service.status()["healthy"] is False
+    service.stop()
+
+
 def test_status_reports_a_stalled_stream_as_unhealthy(tmp_path):
     service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
     service.run_once(now=100.0)
@@ -2601,8 +2611,13 @@ Change `status` to accept `now` and include the flag:
             for r in self.recorders
         ]
         ...
+            # `all([])` is True, so a service with no streams at all would otherwise
+            # report itself healthy while recording nothing. The CLI refuses to start
+            # in that state, but status() is about to become a web API and must be
+            # trustworthy on its own.
             "healthy": (
-                all(s["running"] and not s["stalled"] for s in streams)
+                bool(streams)
+                and all(s["running"] and not s["stalled"] for s in streams)
                 and not self._stuck_deletions
             ),
 ```
