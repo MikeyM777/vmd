@@ -70,9 +70,14 @@ def test_parse_segment_start_returns_none_for_junk():
     assert parse_segment_start("recording.mp4") is None
 
 
-def test_parse_segment_start_is_local_time_epoch():
+def test_parse_segment_start_is_utc_epoch(tmp_path):
+    # Segment filenames are written by ffmpeg under TZ=UTC, so they must be read back
+    # as UTC. Reading them as local time would shift every timestamp by the UTC offset
+    # and would make the autumn daylight-saving hour ambiguous.
     import datetime
 
     parsed = parse_segment_start("2026-08-07_14-35-00.mp4")
-    expected = datetime.datetime(2026, 8, 7, 14, 35, 0).timestamp()
+    expected = datetime.datetime(
+        2026, 8, 7, 14, 35, 0, tzinfo=datetime.timezone.utc
+    ).timestamp()
     assert parsed == expected

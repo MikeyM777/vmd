@@ -9,12 +9,18 @@ SEGMENT_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 
 def parse_segment_start(filename: str) -> float | None:
-    """Epoch seconds encoded in a segment filename, or None if it does not match."""
+    """Epoch seconds encoded in a segment filename, or None if it does not match.
+
+    Filenames are UTC: the recorder runs ffmpeg with TZ=UTC so that names stay monotonic
+    across daylight-saving transitions. Reading them as local time would shift every
+    timestamp by the UTC offset.
+    """
     stem = Path(filename).stem
     try:
-        return datetime.datetime.strptime(stem, SEGMENT_FORMAT).timestamp()
+        parsed = datetime.datetime.strptime(stem, SEGMENT_FORMAT)
     except ValueError:
         return None
+    return parsed.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
 def find_closed_segments(
