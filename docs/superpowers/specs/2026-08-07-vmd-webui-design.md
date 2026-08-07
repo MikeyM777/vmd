@@ -251,6 +251,13 @@ A Playback tab, in the same window.
 coverage where footage exists, **gaps where it does not**, and **marks where events
 occurred**. Clicking anywhere seeks; clicking a mark seeks to 5 seconds before it.
 
+**Where events come from.** Detection is out of scope here (§14), so this spec defines
+only the *consumer* side: the timeline reads an `events` table (time, source, label,
+optional thumbnail) and draws whatever it finds. Rows may later be written by the
+camera's own analytics, by the detection pipeline, or by an operator marking a moment
+by hand. If nothing writes to that table, the timeline simply shows no marks and
+everything else works unchanged. Nothing in playback depends on a detector existing.
+
 Time runs left to right, as in every media player.
 
 **Controls:** play/pause, frame step, speed ¼×–8×, and ±10 s / ±1 min jumps. Fast speeds

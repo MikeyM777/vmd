@@ -12,3 +12,10 @@ footage/
 yolo11n.pt
 label.bat
 bench.bat
+
+gui_err.log
+gui_out.log
+*.bin
+flir_saved.html
+wb.html
+.claude/tdd-guard/
