@@ -27,3 +27,6 @@ packages = ["vmd"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "integration: spawns real external processes; slow. Skip with -m 'not integration'",
+]

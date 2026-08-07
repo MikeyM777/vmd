@@ -9,7 +9,10 @@ import pytest
 from vmd.storage.discovery import find_closed_segments, parse_segment_start
 from vmd.storage.recorder import SegmentRecorder
 
-pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed"),
+]
 
 
 @pytest.fixture
@@ -28,6 +31,36 @@ def source_clip(tmp_path):
     return path
 
 
+def record_until_finished(recorder, timeout=60.0):
+    """Run the recorder to completion, then fail loudly with ffmpeg's own words.
+
+    Without this, a broken ffmpeg command surfaces as an empty directory and an
+    assertion about list length, sending the reader hunting through a temporary
+    directory for the log. The recorder already captures exit code and stderr;
+    this puts them in the failure message.
+    """
+    recorder.start()
+    deadline = time.time() + timeout
+    while recorder.running and time.time() < deadline:
+        time.sleep(0.5)
+    timed_out = recorder.running
+    recorder.stop()
+
+    written = sorted(recorder.output_dir.glob("*.mp4"))
+    if timed_out or not written:
+        log = ""
+        if recorder.log_path.exists():
+            log = recorder.log_path.read_text(errors="replace")[-2000:]
+        pytest.fail(
+            f"recorder produced {len(written)} segment(s)"
+            f"{' and timed out' if timed_out else ''}.\n"
+            f"exit code: {recorder.exit_code}\n"
+            f"command: {' '.join(recorder.build_command())}\n"
+            f"ffmpeg stderr:\n{log or '(log file empty or missing)'}"
+        )
+    return written
+
+
 def test_produces_multiple_playable_segments(tmp_path, source_clip):
     recorder = SegmentRecorder(
         stream="test",
@@ -35,13 +68,8 @@ def test_produces_multiple_playable_segments(tmp_path, source_clip):
         output_dir=tmp_path / "out",
         segment_seconds=4,
     )
-    recorder.start()
-    deadline = time.time() + 60
-    while recorder.running and time.time() < deadline:
-        time.sleep(0.5)
-    recorder.stop()
+    written = record_until_finished(recorder)
 
-    written = sorted((tmp_path / "out").glob("*.mp4"))
     assert len(written) >= 2, f"expected several segments, got {[p.name for p in written]}"
     for path in written:
         assert path.stat().st_size > 0
@@ -55,13 +83,8 @@ def test_segments_are_readable_by_ffprobe(tmp_path, source_clip):
         output_dir=tmp_path / "out",
         segment_seconds=4,
     )
-    recorder.start()
-    deadline = time.time() + 60
-    while recorder.running and time.time() < deadline:
-        time.sleep(0.5)
-    recorder.stop()
+    first = record_until_finished(recorder)[0]
 
-    first = sorted((tmp_path / "out").glob("*.mp4"))[0]
     result = subprocess.run(
         [
             "ffprobe", "-hide_banner", "-loglevel", "error",
@@ -81,11 +104,7 @@ def test_discovery_finds_the_completed_segments(tmp_path, source_clip):
         output_dir=tmp_path / "out",
         segment_seconds=4,
     )
-    recorder.start()
-    deadline = time.time() + 60
-    while recorder.running and time.time() < deadline:
-        time.sleep(0.5)
-    recorder.stop()
+    record_until_finished(recorder)
 
-    closed = find_closed_segments(tmp_path / "out", now=time.time() + 10)
+    closed = find_closed_segments(recorder.output_dir, now=time.time() + 10)
     assert len(closed) >= 1
