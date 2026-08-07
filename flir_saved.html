@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<!-- saved from url=(0058)https://adas-dataset-v2.flirconservator.com/#downloadguide -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    
+    <meta name="robots" content="noindex">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- For SEO: tell crawlers to index the Flir.com page for this content -->
+    <link rel="canonical" href="https://www.flir.com/oem/adas/adas-dataset-form/">
+    <link rel="icon" href="https://adas-dataset-v2.flirconservator.com/static/img/favicon.ico">
+    <link rel="shortcut icon" href="https://adas-dataset-v2.flirconservator.com/static/img/favicon.ico">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/bootstrap.css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/constants.css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/defaults.css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/globals.css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/fonts.css">
+    <link rel="stylesheet" href="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/app_styles.css">
+
+    <title>Download Free ADAS Dataset v2 - Teledyne FLIR</title>
+    <style>
+      html, body, body>div#root, body>div#root>div {
+        height: 100%;
+        margin: 0;
+      }
+    </style>
+    <script>
+      var ua = window.navigator.userAgent;
+      // We're using indexOf instead of includes because IE doesn't support includes.
+      // indexOf Trident gives us IE 11+, indexOf MSIE gives us IE <= 10
+      if (ua.indexOf('MSIE ') > 0 || ua.indexOf('Trident/') > 0) {
+        // prettier needs to ignore the following line because trailing commas isn't supported in IE.
+        // prettier-ignore
+        alert('*We noticed you are using Internet Explorer. Unfortunately, IE is not supported, please use Chrome, Firefox, Edge, or Safari.');
+      }
+  </script>
+  </head>
+  <body>
+    <div class="app-bar"><a href="https://www.flirconservator.com/"><img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/FlirConservatorLogo.svg" height="25px" alt="Teledyne FLIR: Conservator logo"></a></div>
+    
+    <div class="container">
+      <div class="row">
+        <div class="col-md-9" style="background: white;">
+          <div id="readme-top" class="md-content"><h1 id="teledyneflirfreeadasthermaldatasetv2">Teledyne FLIR Free ADAS Thermal Dataset v2</h1>
+<p>By downloading this data you agree to the following terms of service: <a href="https://www.flir.com/oem/adas/adas-dataset-agree/">https://www.flir.com/oem/adas/adas-dataset-agree/</a></p>
+<p>The Teledyne FLIR free starter thermal dataset provides fully annotated thermal and visible spectrum frames for development of
+object detection neural networks. This data was constructed to encourage research on visible + thermal spectrum sensor
+fusion algorithms ("RGBT") in order to advance the safety of autonomous vehicles. A total of <strong>26,442</strong> fully-annotated
+frames are included with 15 different object classes.</p></div>
+
+          <div id="main-carousel" class="carousel slide" data-bs-ride="carousel" data-bs-pause="hover">
+            <div class="carousel-inner">
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/child-headlights-side-by-side-web-v2.jpg" class="d-block w-100" alt="...">
+                <div class="carousel-caption d-none d-md-block">
+                  Headlight glare at night, a common driving occurrence, can conceal dangerous situations
+                </div>
+              </div>
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/child-headlights-side-by-side-annotations-web.jpg" class="d-block w-100" alt="...">
+              </div>
+
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/steam-vent-side-by-side-web.jpg" class="d-block w-100" alt="...">
+                <div class="carousel-caption d-none d-md-block">
+                  Dynamic range is maintained in thermal in busy urban environments with hot and cold objects
+                </div>
+              </div>
+              <div class="carousel-item active">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/steam-vent-side-by-side-annotations-web.jpg" class="d-block w-100" alt="...">
+              </div>
+
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/sunset-side-by-side-web.jpg" class="d-block w-100" alt="...">
+                <div class="carousel-caption d-none d-md-block">
+                  The combindation of smoke and sun glare can create dangerous driving conditions
+                </div>
+              </div>
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/sunset-side-by-side-annotations-web.jpg" class="d-block w-100" alt="...">
+              </div>
+
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/fog-parking-lot-side-by-side-web.jpg" class="d-block w-100" alt="...">
+                <div class="carousel-caption d-none d-md-block">
+                  Visibility during heavy fog is greatly hindered in the visible spectrum
+                </div>
+              </div>
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/fog-parking-lot-side-by-side-annotations-web.jpg" class="d-block w-100" alt="...">
+              </div>
+
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/rain-night-construction-side-by-side-web.jpg" class="d-block w-100" alt="...">
+                <div class="carousel-caption d-none d-md-block">
+                  The accumulation of rain droplets can cause light streaks that make it difficult to identify objects
+                </div>
+              </div>
+              <div class="carousel-item">
+                <img src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/rain-night-construction-annotation-side-by-side-web.jpg" class="d-block w-100" alt="...">
+              </div>
+            </div>
+            <button class="carousel-control-prev" type="button" data-bs-target="#main-carousel" data-bs-slide="prev">
+              <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+              <span class="visually-hidden">Previous</span>
+            </button>
+            <button class="carousel-control-next" type="button" data-bs-target="#main-carousel" data-bs-slide="next">
+              <span class="carousel-control-next-icon" aria-hidden="true"></span>
+              <span class="visually-hidden">Next</span>
+            </button>
+          </div>
+
+          <div id="readme-bottom" class="md-content"><h2 id="dataorganization">Data Organization</h2>
+<p>Data is organized by three splits: training images (<code>"train"</code>), validation images (<code>"val"</code>), and validation
+video (<code>"val_video"</code>). Frames from each of the three categories were sampled from completely independent video sequences
+to encourage model generalization.
+The data organization and splits are a suggestion to facilitate reproducible research, however the end-user is free to
+use a different scheme to fit their specific needs. A total of 9,711 thermal and 9,233 RGB training/validation <strong>images</strong>
+are included with a 90%/10% train/val split. The validation <strong>videos</strong> make up 7,498 total frames.
+The 3,749 thermal/RGB video <em>pairs</em> each consist of a series of continuous frames captured at
+30 frames per second (FPS). Each video frame in one spectrum is mapped to its time-synced frame pair in the other spectrum,
+specified in the file <code>rgb_to_thermal_vid_map.json</code>. The footage in this dataset was collected at a variety of locations, and
+includes various lighting/weather conditions. See <code>"extra_info"</code> in the images section of the annotations (coco.json).</p>
+<h2 id="datacapture">Data Capture</h2>
+<p>The dataset was acquired via a thermal and visible camera pair mounted on a vehicle. Thermal images were acquired with
+a Teledyne FLIR Tau 2 13 mm f/1.0 with a 45-degree horizontal field of view (HFOV) and 37-degree vertical field of view (VFOV).
+The thermal camera was operating in <a href="https://www.flir.com/support-center/oem/what-is-the-difference-between-full-and-advanced-radiometry---thermography/">T-linear mode</a> mode.
+Visible images were captured with a Teledyne FLIR BlackFly S BFS-U3-51S5C (IMX250) camera with a 52.8 degree HFOV Edmund Optics lens (part number 68215).
+Time-synced capture was executed by Teledyne FLIR's Guardian software. Validation videos were collected at a frame
+rate of 30 frames per second and include target IDs which allow a developer to compute tracking metrics such
+as MOTA/MOTP. The train/val image segment frames were sampled across a wide range of diverse footage to ensure high
+levels of diversity for training and validation. In some cases the frame samples were chosen manually and in other
+cases a frame skip was used. Each video typically uses a different frame skip. The curation team excluded redundant
+footage, such as nearly identical frames when the vehicle is waiting at a red light.</p>
+<h2 id="annotations">Annotations</h2>
+<p>All annotations for a given split (folder) are provided in a file called <code>index.json</code>. This file format was created for
+Teledyne FLIR's proprietary dataset management tool called Conservator. It resembles Microsoft's COCO annotation file
+format, but allows for richer annotations with frame-level and annotation-level attributes. In addition to the Conservator
+JSON files, we included COCO-formatted files named <code>coco.json</code> which contain a filtered version of the annotations. The
+filtered version has remapped or removed some superfluous or redundant classes like "face" and "license plate". The
+included Conservator JSON files provides the raw / unfiltered data from the annotators while the COCO JSON file is a refined
+version ready for experimentation.</p>
+<p>The COCO-formatted files (<code>coco.json</code>) are recommended for training models.
+The reported metrics are based on models that were trained on the COCO-formatted files.</p>
+<h3 id="labels">Labels</h3>
+<p>A modified MSCOCO label map was used with conventions that were largely inspired by the Berkeley Deep Drive dataset.
+The following classes are included:</p>
+<ul>
+<li>Category Id 1: <code>person</code></li>
+<li>Category Id 2: <code>bike</code> (renamed from "bicycle")</li>
+<li>Category Id 3: <code>car</code> (this includes pick-up trucks and vans)</li>
+<li>Category Id 4: <code>motor</code> (renamed from "motorcycle" for brevity)</li>
+<li>Category Id 6: <code>bus</code></li>
+<li>Category Id 7: <code>train</code></li>
+<li>Category Id 8: <code>truck</code> (semi/freight truck, excluding pickup truck)</li>
+<li>Category Id 10: <code>light</code> (renamed from "traffic light" for brevity)</li>
+<li>Category Id 11: <code>hydrant</code> (renamed "fire hydrant" for brevity)</li>
+<li>Category Id 12: <code>sign</code> (renamed from "street sign" for brevity)</li>
+<li>Category Id 17: <code>dog</code></li>
+<li>Category Id 37: <code>skateboard</code></li>
+<li>Category Id 73: <code>stroller</code> (four-wheeled carriage for a child, also called pram)</li>
+<li>Category Id 77: <code>scooter</code></li>
+<li>Category Id 79: <code>other vehicle</code> (less common vehicles like construction equipment and trailers)</li>
+</ul>
+<h3 id="annotationcounts">Annotation Counts</h3>
+<p><strong>Thermal Image Annotations</strong></p>
+<table class="table table-striped">
+<thead>
+<tr>
+<th>Label</th>
+<th>Train</th>
+<th>Val</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>person</td>
+<td>50,478</td>
+<td>4,470</td>
+</tr>
+<tr>
+<td>bike</td>
+<td>7,237</td>
+<td>170</td>
+</tr>
+<tr>
+<td>car</td>
+<td>73,623</td>
+<td>7,133</td>
+</tr>
+<tr>
+<td>motor</td>
+<td>1,116</td>
+<td>55</td>
+</tr>
+<tr>
+<td>bus</td>
+<td>2,245</td>
+<td>179</td>
+</tr>
+<tr>
+<td>train</td>
+<td>5</td>
+<td>0</td>
+</tr>
+<tr>
+<td>truck</td>
+<td>829</td>
+<td>46</td>
+</tr>
+<tr>
+<td>light</td>
+<td>16,198</td>
+<td>2,005</td>
+</tr>
+<tr>
+<td>hydrant</td>
+<td>1,095</td>
+<td>94</td>
+</tr>
+<tr>
+<td>sign</td>
+<td>20,770</td>
+<td>2,472</td>
+</tr>
+<tr>
+<td>dog</td>
+<td>4</td>
+<td>0</td>
+</tr>
+<tr>
+<td>deer</td>
+<td>8</td>
+<td>0</td>
+</tr>
+<tr>
+<td>skateboard</td>
+<td>29</td>
+<td>3</td>
+</tr>
+<tr>
+<td>stroller</td>
+<td>15</td>
+<td>6</td>
+</tr>
+<tr>
+<td>scooter</td>
+<td>15</td>
+<td>0</td>
+</tr>
+<tr>
+<td>other vehicle</td>
+<td>1,373</td>
+<td>63</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>175,040</strong></td>
+<td><strong>16,696</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Visible Image Annotations</strong></p>
+<table class="table table-striped">
+<thead>
+<tr>
+<th>Label</th>
+<th>Train</th>
+<th>Val</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>person</td>
+<td>35,007</td>
+<td>3,223</td>
+</tr>
+<tr>
+<td>bike</td>
+<td>7,560</td>
+<td>193</td>
+</tr>
+<tr>
+<td>car</td>
+<td>71,281</td>
+<td>7,285</td>
+</tr>
+<tr>
+<td>motor</td>
+<td>1,837</td>
+<td>77</td>
+</tr>
+<tr>
+<td>bus</td>
+<td>1,879</td>
+<td>183</td>
+</tr>
+<tr>
+<td>train</td>
+<td>9</td>
+<td>0</td>
+</tr>
+<tr>
+<td>truck</td>
+<td>1,251</td>
+<td>47</td>
+</tr>
+<tr>
+<td>light</td>
+<td>18,640</td>
+<td>2,143</td>
+</tr>
+<tr>
+<td>hydrant</td>
+<td>990</td>
+<td>126</td>
+</tr>
+<tr>
+<td>sign</td>
+<td>29,531</td>
+<td>3,581</td>
+</tr>
+<tr>
+<td>skateboard</td>
+<td>412</td>
+<td>4</td>
+</tr>
+<tr>
+<td>stroller</td>
+<td>38</td>
+<td>7</td>
+</tr>
+<tr>
+<td>scooter</td>
+<td>41</td>
+<td>0</td>
+</tr>
+<tr>
+<td>other vehicle</td>
+<td>698</td>
+<td>40</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>169,174</strong></td>
+<td><strong>16,909</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="annotationguidelines">Annotation Guidelines</h3>
+<p>Human annotators were instructed to make bounding boxes as tight as possible. Tight bounding boxes that omitted small parts
+of the object, such as extremities, were favored over broader bounding boxes. Personal accessories were not included
+in the bounding boxes on people. When occlusion occurred, only non-occluded parts of the object were annotated.
+Heads and shoulders were favored for inclusion in the bounding box over other parts of the body. When occlusion allowed
+only parts of limbs or other minor parts of an object to be visible, they were not annotated. Wheels were the most
+important part of the <code>"bike"</code> category. Bicycle parts typically occluded by riders, such as handlebars, were
+not included in the bounding box. People riding the bicycle were annotated separately from the bicycle (with the
+corresponding <code>"is_rider"</code> flag).</p>
+<p>For many objects the occlusion and truncation information is also noted. In addition, a flag is included to
+denote if an object is a reflection (e.g. a pedestrian reflecting off of a car window or puddle).
+For the <code>"person"</code> category, an additional flag is included if they are a rider (on a bicycle, motorcycle, or other vehicle).</p>
+<h3 id="downloadcontents">Download Contents</h3>
+<p>Once data is extracted, the following directories are exposed:</p>
+<ul>
+<li><code>images_rgb_train</code></li>
+<li><code>images_rgb_val</code></li>
+<li><code>images_thermal_train</code></li>
+<li><code>images_thermal_val</code></li>
+<li><code>video_rgb_test</code></li>
+<li><code>video_thermal_test</code></li>
+</ul>
+<p>Additionally, there is a metadata file that maps rgb to thermal frames for the video sets called <code>rgb_to_thermal_vid_map.json</code></p>
+<p>In each of the top-level directories are the following:</p>
+<ul>
+<li><p><code>data</code>: directory containing jpeg image files. 8-bit post-processed images in the case of thermal directories
+and RGB images in the case of rgb directories</p></li>
+<li><p><code>analyticsData</code>: (only in thermal directories) directory containing 16-bit raw thermal images</p></li>
+<li><p><code>index.json</code>: annotations in Teledyne FLIR Conservator format.</p></li>
+<li><p><code>coco.json</code>: annotations in MSCOCO format. This is a filtered form of index.json</p></li>
+<li><p><code>coco_annotation_counts.txt</code> and <code>coco_annotation_counts.tsv</code>: table of summary of annotations for each directory in
+two different file formats</p></li>
+</ul>
+<p>For visible spectrum images some minimal blurring has been applied to license plates and faces to make them illegible.</p>
+<p>Please contact the Teledyne FLIR Automotive team at ADAS-Support@flir.com for assistance.</p>
+<h2 id="baselinemodel">Baseline Model</h2>
+<p>Baseline accuracy for object detection was established using the YOLOX-m neural network designed for 640 X 640 images.
+Both the RGB and thermal detectors were pre-trained on MSCOCO data (<a href="https://arxiv.org/abs/2107.08430">https://arxiv.org/abs/2107.08430</a> and
+<a href="https://github.com/Megvii-BaseDetection/YOLOX">https://github.com/Megvii-BaseDetection/YOLOX</a>). The base neural networks were trained on the training set data provided
+in this dataset and tested on the video test data also provided in this dataset. <a href="http://cocodataset.org/#detection-eval">http://cocodataset.org/#detection-eval</a>
+was used for accuracy assessment criteria.
+The following AP @ IoU=0.5 scores were obtained:</p>
+<ul>
+<li>RGB:</li>
+<li>person: 51.42</li>
+<li>car: 55.79</li>
+<li>Thermal:</li>
+<li>person: 75.33</li>
+<li>car: 77.23</li>
+</ul>
+<hr>
+<h2 id="releasenotes">Release Notes</h2>
+<h3 id="adasdatasetv200january192022">ADAS Dataset v2.0.0 (January 19, 2022)</h3>
+<ul>
+<li><p>Expanded labels to 15 categories vs 5 original categories.</p></li>
+<li><p>Expanded annotated frames to 26,442 total (9,233 visible-spectrum images, 9,711 thermal-spectrum and 7,498 matched thermal/visible video frames), an <strong>+83% increase</strong> compared to the v1 release.</p></li>
+<li><p><strong>All</strong> included images are annotated with 15 categories.</p></li>
+<li><p>Image data added from England and France.</p></li>
+<li><p>Validation video data added from various locations in the US: Northern California, Idaho, and Michigan.</p></li>
+</ul>
+<p>This dataset was composed of multiple smaller datasets hosted on Conservator. Dataset IDs and their commit hashes:</p>
+<pre><code>Dataset ID         Commit Hash
+-----------------------------------------------------------
+nwehqYrxd4Nd3tGv6: 841232451ba2ddfb5436ce310e32253e8c044a80
+YuWMYT2WLitDfyaEo: 9892b0586232563ae6b8d09370003f8a6274d34c
+kM77KS9iGCXY3hupQ: 0bb257982e7a092f6ba928b6a33d7ed9575401ff
+2TWc2H3cxPc662hbZ: 5b2b4a90d23157880198686a97c2653042780f2a
+XD3eTyiXvAE79zJBX: 43b88bd337ff165c05966ff9a00eeb50c18a2fc7
+bfmsZ6gKqdR7gq4nq: 8bf30d2ad2edd050a46c5064fdf99c49de0713d0
+ntmccBPG3SbDbgGNf: e219f8df0465484927e986b6ac173b738fe2bdce
+DSbDDZAeSBuwFy5gd: 25a5c3de8d27fed76fe1a1c036e604c8230d9f31
+iaQuoXEE9nBnyXH7Y: 931ea91cd46d1eee9f386843adfc40d16b8b3af8
+2u7gWwBp6CnkqAtZQ: 0c1a22f75d5a0532c4d7e42b11368ef40001bfef
+</code></pre>
+<h3 id="adasdatasetv100jun192018">ADAS Dataset v1.0.0 (Jun 19, 2018)</h3>
+<p>The initial version of the dataset released included</p>
+<ul>
+<li><p>5 label categories.</p></li>
+<li><p>14,452 total annotated frames (10,228 images and 4,224 video frames).</p></li>
+<li><p>Data from the release was captured in the Santa Barbara, California, USA area.</p></li>
+<li><p>The original download can be found here: <a href="https://flir.box.com/s/suwst0b3k9rko35homhr3rnyytf3102d">https://flir.box.com/s/suwst0b3k9rko35homhr3rnyytf3102d</a>.</p></li>
+</ul>
+<hr></div>
+
+          <div id="download-guide" class="md-content"><h2 id="downloadguide">Download Guide</h2>
+<p><strong>Option 1 (Full download):</strong>
+This is the simplest approach, but it is more prone to failure on unreliable networks due to the large file size.
+Download and unzip the large zip files from the <a href="https://adas-dataset-v2.flirconservator.com/#fulldownloadsection">Download</a> section, unzip, and use normally.</p>
+<p><strong>Option 2 (Multi-part download):</strong>
+Download/combine the multi-part zip files form the <a href="https://adas-dataset-v2.flirconservator.com/#multipartdownloadsection">Multi-Part Download</a> section.
+This is more reliable and better suited for slower internet connections.</p>
+<ol>
+<li>Download each part by clicking on each link. Alternatively, if you are using a Unix-base system (Mac or Linux), you may download all the files at once using the following command:</li>
+</ol>
+<pre><code class="bash language-bash">for i in {00..11}; do curl --output FLIR_ADAS_v2.zip.${i} https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.${i}; done
+</code></pre>
+<ol start="2">
+<li>Combine the files (Max or Linux)</li>
+</ol>
+<ul>
+<li>Open a terminal window and navigate to the download directory</li>
+</ul>
+<pre><code class="bash language-bash">   cd ~/Downloads
+</code></pre>
+<ul>
+<li>Combine (concatenate) the files</li>
+</ul>
+<pre><code class="bash language-bash">   cat FLIR_ADAS_v2.zip.* &gt; FLIR_ADAS_v2.zip
+</code></pre>
+<ul>
+<li>Extract the zip archive. Use your preferred method. You can use the following terminal command:</li>
+</ul>
+<pre><code class="bash language-bash">   unzip -q FLIR_ADAS_v2.zip
+</code></pre>
+<ol start="3">
+<li>Combine the files (Windows)</li>
+</ol>
+<ul>
+<li>Download and install <a href="https://www.7-zip.org/download.html">7zip</a></li>
+<li>Select all of the multipart zip files and in the 7zip menu press <code>**Extract to "*\\"</code></li>
+</ul>
+<h3 id="troubleshooting">Troubleshooting</h3>
+<p>You can verify the integrity of a zip file with this command</p>
+<pre><code class="bash language-bash"># Verify the file
+zip -T FLIR_ADAS_v2.zip
+# Expected output:
+#   test of FLIR_ADAS_v2.zip OK
+</code></pre>
+<p>In addition, md5 checksums have been provided to ensure data integrity.
+Use the following commands on Linux.</p>
+<pre><code class="bash language-bash">cd PATH_TO_FLIR_ADAS_v2_parts
+md5sum -c md5sums_parts.txt
+# Expected output:
+# FLIR_ADAS_v2.zip.00: OK
+# FLIR_ADAS_v2.zip.01: OK
+# FLIR_ADAS_v2.zip.02: OK
+# FLIR_ADAS_v2.zip.03: OK
+# FLIR_ADAS_v2.zip.04: OK
+# FLIR_ADAS_v2.zip.05: OK
+# FLIR_ADAS_v2.zip.06: OK
+# FLIR_ADAS_v2.zip.07: OK
+# FLIR_ADAS_v2.zip.08: OK
+# FLIR_ADAS_v2.zip.09: OK
+# FLIR_ADAS_v2.zip.10: OK
+# FLIR_ADAS_v2.zip.11: OK
+</code></pre>
+<p>On macOS you can use the built-in md5 utility</p>
+<pre><code class="bash language-bash"># macOS – use the built-in md5 utility
+cd PATH_TO_FLIR_ADAS_v2_parts
+md5 -r *.zip.* &gt; md5sums_actual.txt
+
+# Now verify these against the expected
+diff m5sums_actual.txt m5sums.txt
+# This should not display anything if the files are identical.
+# Depending on the version of md5 you may need to add an extra
+# space between the md5 checksum and the filename for the formats
+# to match.
+</code></pre>
+<p>You can also install md5sum on macOS using Homebrew</p>
+<pre><code class="bash language-bash">brew install md5sha1sum
+# Use md5sum just like in Linux
+</code></pre>
+<p>Microsoft's official checksum tool can be downloaded <a href="https://support.microsoft.com/en-us/topic/d92a713f-d793-7bd8-b0a4-4db811e29559">here</a> for Windows users.</p>
+<h3 id="additionalinformation">Additional Information</h3>
+<p>This is how the split command was invoked when creating the multi-part zip files</p>
+<pre><code class="bash language-bash">split -b 1G -d FLIR_ADAS_v2.zip FLIR_ADAS_v2.zip. --verbose
+</code></pre>
+<h3 id="externallinks">External Links</h3>
+<ul>
+<li><a href="http://mwiki.gichd.org:8090/IM/Combine_several_zip_files">Windows multi-part zip extraction guide</a></li>
+<li><a href="https://askubuntu.com/questions/228315/how-to-split-zip-files-and-join-them-in-windows">Joining multi-part files in Windows from the terminal</a></li>
+<li><a href="https://www.a2hosting.com/kb/developer-corner/linux/working-with-file-checksums">Md5 checksum verification</a></li>
+</ul></div>
+        </div>
+        
+        <div class="col-md-3">
+          <div id="download-col">
+            <h3 id="fulldownloadsection" style="margin-top: 60px;">Download</h3>
+            <p></p>
+            <div style="margin-left: 12px; min-width: 260px; font-size: 14px;">
+              <ul class="list-group">
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/#downloadguide" style="font-family: Nunito Sans Bold;">Start Here: Download Guide</a></li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/full/FLIR_ADAS_v2.zip">FLIR_ADAS_v2.zip</a> (11.8 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/README.txt">README.txt</a></li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/rgb_to_thermal_vid_map.json">rgb_to_thermal_vid_map.json</a></li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/full/md5sums_full.txt">md5sums_full.txt</a></li>
+              </ul>
+            </div>
+            <p></p>
+            <h3 id="multipartdownloadsection" style="min-width: 260px;">Multi-Part Alternative</h3>
+            <p></p>
+              <ul class="list-group" style="margin-left: 12px; min-width: 260px; font-size: 14px;">
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.00">FLIR_ADAS_v2.zip.00</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.01">FLIR_ADAS_v2.zip.01</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.02">FLIR_ADAS_v2.zip.02</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.03">FLIR_ADAS_v2.zip.03</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.04">FLIR_ADAS_v2.zip.04</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.05">FLIR_ADAS_v2.zip.05</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.06">FLIR_ADAS_v2.zip.06</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.07">FLIR_ADAS_v2.zip.07</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.08">FLIR_ADAS_v2.zip.08</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.09">FLIR_ADAS_v2.zip.09</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.10">FLIR_ADAS_v2.zip.10</a> (1.0 GB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.11">FLIR_ADAS_v2.zip.11</a> (54 MB)</li>
+                <li class="list-group-item list-group-item-action"><a href="https://adas-dataset-v2.flirconservator.com/dataset/parts/md5sums_parts.txt">md5sums_parts.txt</a></li>
+              </ul>
+            <p></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="readme-top-source" class="md-source"># Teledyne FLIR Free ADAS Thermal Dataset v2
+
+By downloading this data you agree to the following terms of service: [https://www.flir.com/oem/adas/adas-dataset-agree/](https://www.flir.com/oem/adas/adas-dataset-agree/)
+
+The Teledyne FLIR free starter thermal dataset provides fully annotated thermal and visible spectrum frames for development of
+object detection neural networks. This data was constructed to encourage research on visible + thermal spectrum sensor
+fusion algorithms ("RGBT") in order to advance the safety of autonomous vehicles. A total of **26,442** fully-annotated
+frames are included with 15 different object classes.
+</div>
+    <div id="readme-bottom-source" class="md-source">## Data Organization
+
+Data is organized by three splits: training images (`"train"`), validation images (`"val"`), and validation
+video (`"val_video"`). Frames from each of the three categories were sampled from completely independent video sequences
+to encourage model generalization.
+The data organization and splits are a suggestion to facilitate reproducible research, however the end-user is free to
+use a different scheme to fit their specific needs. A total of 9,711 thermal and 9,233 RGB training/validation **images**
+are included with a 90%/10% train/val split. The validation **videos** make up 7,498 total frames.
+The 3,749 thermal/RGB video _pairs_ each consist of a series of continuous frames captured at
+30 frames per second (FPS). Each video frame in one spectrum is mapped to its time-synced frame pair in the other spectrum,
+specified in the file `rgb_to_thermal_vid_map.json`. The footage in this dataset was collected at a variety of locations, and
+includes various lighting/weather conditions. See `"extra_info"` in the images section of the annotations (coco.json).
+
+## Data Capture
+
+The dataset was acquired via a thermal and visible camera pair mounted on a vehicle. Thermal images were acquired with
+a Teledyne FLIR Tau 2 13 mm f/1.0 with a 45-degree horizontal field of view (HFOV) and 37-degree vertical field of view (VFOV).
+The thermal camera was operating in [T-linear mode](https://www.flir.com/support-center/oem/what-is-the-difference-between-full-and-advanced-radiometry---thermography/) mode.
+Visible images were captured with a Teledyne FLIR BlackFly S BFS-U3-51S5C (IMX250) camera with a 52.8 degree HFOV Edmund Optics lens (part number 68215).
+Time-synced capture was executed by Teledyne FLIR's Guardian software. Validation videos were collected at a frame
+rate of 30 frames per second and include target IDs which allow a developer to compute tracking metrics such
+as MOTA/MOTP. The train/val image segment frames were sampled across a wide range of diverse footage to ensure high
+levels of diversity for training and validation. In some cases the frame samples were chosen manually and in other
+cases a frame skip was used. Each video typically uses a different frame skip. The curation team excluded redundant
+footage, such as nearly identical frames when the vehicle is waiting at a red light.
+
+## Annotations
+
+All annotations for a given split (folder) are provided in a file called `index.json`. This file format was created for
+Teledyne FLIR's proprietary dataset management tool called Conservator. It resembles Microsoft's COCO annotation file
+format, but allows for richer annotations with frame-level and annotation-level attributes. In addition to the Conservator
+JSON files, we included COCO-formatted files named `coco.json` which contain a filtered version of the annotations. The
+filtered version has remapped or removed some superfluous or redundant classes like "face" and "license plate". The
+included Conservator JSON files provides the raw / unfiltered data from the annotators while the COCO JSON file is a refined
+version ready for experimentation.
+
+The COCO-formatted files (`coco.json`) are recommended for training models.
+The reported metrics are based on models that were trained on the COCO-formatted files.
+
+### Labels
+
+A modified MSCOCO label map was used with conventions that were largely inspired by the Berkeley Deep Drive dataset.
+The following classes are included:
+
+- Category Id 1: `person`
+- Category Id 2: `bike` (renamed from "bicycle")
+- Category Id 3: `car` (this includes pick-up trucks and vans)
+- Category Id 4: `motor` (renamed from "motorcycle" for brevity)
+- Category Id 6: `bus`
+- Category Id 7: `train`
+- Category Id 8: `truck` (semi/freight truck, excluding pickup truck)
+- Category Id 10: `light` (renamed from "traffic light" for brevity)
+- Category Id 11: `hydrant` (renamed "fire hydrant" for brevity)
+- Category Id 12: `sign` (renamed from "street sign" for brevity)
+- Category Id 17: `dog`
+- Category Id 37: `skateboard`
+- Category Id 73: `stroller` (four-wheeled carriage for a child, also called pram)
+- Category Id 77: `scooter`
+- Category Id 79: `other vehicle` (less common vehicles like construction equipment and trailers)
+
+### Annotation Counts
+
+**Thermal Image Annotations**
+
+<!-- prettier-ignore -->
+| Label         | Train       | Val        |
+|---------------|-------------|------------|
+| person        | 50,478      | 4,470      |
+| bike          | 7,237       | 170        |
+| car           | 73,623      | 7,133      |
+| motor         | 1,116       | 55         |
+| bus           | 2,245       | 179        |
+| train         | 5           | 0          |
+| truck         | 829         | 46         |
+| light         | 16,198      | 2,005      |
+| hydrant       | 1,095       | 94         |
+| sign          | 20,770      | 2,472      |
+| dog           | 4           | 0          |
+| deer          | 8           | 0          |
+| skateboard    | 29          | 3          |
+| stroller      | 15          | 6          |
+| scooter       | 15          | 0          |
+| other vehicle | 1,373       | 63         |
+| **Total**     | **175,040** | **16,696** |
+
+**Visible Image Annotations**
+
+<!-- prettier-ignore -->
+| Label         | Train       | Val        |
+|---------------|-------------|------------|
+| person        | 35,007      | 3,223      |
+| bike          | 7,560       | 193        |
+| car           | 71,281      | 7,285      |
+| motor         | 1,837       | 77         |
+| bus           | 1,879       | 183        |
+| train         | 9           | 0          |
+| truck         | 1,251       | 47         |
+| light         | 18,640      | 2,143      |
+| hydrant       | 990         | 126        |
+| sign          | 29,531      | 3,581      |
+| skateboard    | 412         | 4          |
+| stroller      | 38          | 7          |
+| scooter       | 41          | 0          |
+| other vehicle | 698         | 40         |
+| **Total**     | **169,174** | **16,909** |
+
+### Annotation Guidelines
+
+Human annotators were instructed to make bounding boxes as tight as possible. Tight bounding boxes that omitted small parts
+of the object, such as extremities, were favored over broader bounding boxes. Personal accessories were not included
+in the bounding boxes on people. When occlusion occurred, only non-occluded parts of the object were annotated.
+Heads and shoulders were favored for inclusion in the bounding box over other parts of the body. When occlusion allowed
+only parts of limbs or other minor parts of an object to be visible, they were not annotated. Wheels were the most
+important part of the `"bike"` category. Bicycle parts typically occluded by riders, such as handlebars, were
+not included in the bounding box. People riding the bicycle were annotated separately from the bicycle (with the
+corresponding `"is_rider"` flag).
+
+For many objects the occlusion and truncation information is also noted. In addition, a flag is included to
+denote if an object is a reflection (e.g. a pedestrian reflecting off of a car window or puddle).
+For the `"person"` category, an additional flag is included if they are a rider (on a bicycle, motorcycle, or other vehicle).
+
+### Download Contents
+
+Once data is extracted, the following directories are exposed:
+
+- `images_rgb_train`
+- `images_rgb_val`
+- `images_thermal_train`
+- `images_thermal_val`
+- `video_rgb_test`
+- `video_thermal_test`
+
+Additionally, there is a metadata file that maps rgb to thermal frames for the video sets called `rgb_to_thermal_vid_map.json`
+
+In each of the top-level directories are the following:
+
+- `data`: directory containing jpeg image files. 8-bit post-processed images in the case of thermal directories
+  and RGB images in the case of rgb directories
+
+- `analyticsData`: (only in thermal directories) directory containing 16-bit raw thermal images
+
+- `index.json`: annotations in Teledyne FLIR Conservator format.
+
+- `coco.json`: annotations in MSCOCO format. This is a filtered form of index.json
+
+- `coco_annotation_counts.txt` and `coco_annotation_counts.tsv`: table of summary of annotations for each directory in
+  two different file formats
+
+For visible spectrum images some minimal blurring has been applied to license plates and faces to make them illegible.
+
+Please contact the Teledyne FLIR Automotive team at ADAS-Support@flir.com for assistance.
+
+## Baseline Model
+
+Baseline accuracy for object detection was established using the YOLOX-m neural network designed for 640 X 640 images.
+Both the RGB and thermal detectors were pre-trained on MSCOCO data ([https://arxiv.org/abs/2107.08430](https://arxiv.org/abs/2107.08430) and
+[https://github.com/Megvii-BaseDetection/YOLOX](https://github.com/Megvii-BaseDetection/YOLOX)). The base neural networks were trained on the training set data provided
+in this dataset and tested on the video test data also provided in this dataset. [http://cocodataset.org/#detection-eval](http://cocodataset.org/#detection-eval)
+was used for accuracy assessment criteria.
+The following AP @ IoU=0.5 scores were obtained:
+
+- RGB:
+  - person: 51.42
+  - car: 55.79
+- Thermal:
+  - person: 75.33
+  - car: 77.23
+
+---
+
+## Release Notes
+
+### ADAS Dataset v2.0.0 (January 19, 2022)
+
+- Expanded labels to 15 categories vs 5 original categories.
+
+- Expanded annotated frames to 26,442 total (9,233 visible-spectrum images, 9,711 thermal-spectrum and 7,498 matched thermal/visible video frames), an **+83% increase** compared to the v1 release.
+
+- **All** included images are annotated with 15 categories.
+
+- Image data added from England and France.
+
+- Validation video data added from various locations in the US: Northern California, Idaho, and Michigan.
+
+This dataset was composed of multiple smaller datasets hosted on Conservator. Dataset IDs and their commit hashes:
+
+```
+Dataset ID         Commit Hash
+-----------------------------------------------------------
+nwehqYrxd4Nd3tGv6: 841232451ba2ddfb5436ce310e32253e8c044a80
+YuWMYT2WLitDfyaEo: 9892b0586232563ae6b8d09370003f8a6274d34c
+kM77KS9iGCXY3hupQ: 0bb257982e7a092f6ba928b6a33d7ed9575401ff
+2TWc2H3cxPc662hbZ: 5b2b4a90d23157880198686a97c2653042780f2a
+XD3eTyiXvAE79zJBX: 43b88bd337ff165c05966ff9a00eeb50c18a2fc7
+bfmsZ6gKqdR7gq4nq: 8bf30d2ad2edd050a46c5064fdf99c49de0713d0
+ntmccBPG3SbDbgGNf: e219f8df0465484927e986b6ac173b738fe2bdce
+DSbDDZAeSBuwFy5gd: 25a5c3de8d27fed76fe1a1c036e604c8230d9f31
+iaQuoXEE9nBnyXH7Y: 931ea91cd46d1eee9f386843adfc40d16b8b3af8
+2u7gWwBp6CnkqAtZQ: 0c1a22f75d5a0532c4d7e42b11368ef40001bfef
+```
+
+### ADAS Dataset v1.0.0 (Jun 19, 2018)
+
+The initial version of the dataset released included
+
+- 5 label categories.
+
+- 14,452 total annotated frames (10,228 images and 4,224 video frames).
+
+- Data from the release was captured in the Santa Barbara, California, USA area.
+
+- The original download can be found here: [https://flir.box.com/s/suwst0b3k9rko35homhr3rnyytf3102d](https://flir.box.com/s/suwst0b3k9rko35homhr3rnyytf3102d).
+
+---
+</div>
+    <div id="download-guide-source" class="md-source">## Download Guide
+
+**Option 1 (Full download):**
+This is the simplest approach, but it is more prone to failure on unreliable networks due to the large file size.
+Download and unzip the large zip files from the [Download](#fulldownloadsection) section, unzip, and use normally.
+
+**Option 2 (Multi-part download):**
+Download/combine the multi-part zip files form the [Multi-Part Download](#multipartdownloadsection) section.
+This is more reliable and better suited for slower internet connections.
+
+1. Download each part by clicking on each link. Alternatively, if you are using a Unix-base system (Mac or Linux), you may download all the files at once using the following command:
+
+```bash
+for i in {00..11}; do curl --output FLIR_ADAS_v2.zip.${i} https://adas-dataset-v2.flirconservator.com/dataset/parts/FLIR_ADAS_v2.zip.${i}; done
+```
+
+2. Combine the files (Max or Linux)
+   - Open a terminal window and navigate to the download directory
+   ```bash
+   cd ~/Downloads
+   ```
+   - Combine (concatenate) the files
+   ```bash
+   cat FLIR_ADAS_v2.zip.* &gt; FLIR_ADAS_v2.zip
+   ```
+   - Extract the zip archive. Use your preferred method. You can use the following terminal command:
+   ```bash
+   unzip -q FLIR_ADAS_v2.zip
+   ```
+3. Combine the files (Windows)
+   - Download and install [7zip](https://www.7-zip.org/download.html)
+   - Select all of the multipart zip files and in the 7zip menu press `**Extract to "*\\"`
+
+### Troubleshooting
+
+You can verify the integrity of a zip file with this command
+
+```bash
+# Verify the file
+zip -T FLIR_ADAS_v2.zip
+# Expected output:
+#   test of FLIR_ADAS_v2.zip OK
+```
+
+In addition, md5 checksums have been provided to ensure data integrity.
+Use the following commands on Linux.
+
+```bash
+cd PATH_TO_FLIR_ADAS_v2_parts
+md5sum -c md5sums_parts.txt
+# Expected output:
+# FLIR_ADAS_v2.zip.00: OK
+# FLIR_ADAS_v2.zip.01: OK
+# FLIR_ADAS_v2.zip.02: OK
+# FLIR_ADAS_v2.zip.03: OK
+# FLIR_ADAS_v2.zip.04: OK
+# FLIR_ADAS_v2.zip.05: OK
+# FLIR_ADAS_v2.zip.06: OK
+# FLIR_ADAS_v2.zip.07: OK
+# FLIR_ADAS_v2.zip.08: OK
+# FLIR_ADAS_v2.zip.09: OK
+# FLIR_ADAS_v2.zip.10: OK
+# FLIR_ADAS_v2.zip.11: OK
+```
+
+On macOS you can use the built-in md5 utility
+
+```bash
+# macOS – use the built-in md5 utility
+cd PATH_TO_FLIR_ADAS_v2_parts
+md5 -r *.zip.* &gt; md5sums_actual.txt
+
+# Now verify these against the expected
+diff m5sums_actual.txt m5sums.txt
+# This should not display anything if the files are identical.
+# Depending on the version of md5 you may need to add an extra
+# space between the md5 checksum and the filename for the formats
+# to match.
+```
+
+You can also install md5sum on macOS using Homebrew
+
+```bash
+brew install md5sha1sum
+# Use md5sum just like in Linux
+```
+
+Microsoft's official checksum tool can be downloaded [here](https://support.microsoft.com/en-us/topic/d92a713f-d793-7bd8-b0a4-4db811e29559) for Windows users.
+
+### Additional Information
+
+This is how the split command was invoked when creating the multi-part zip files
+
+```bash
+split -b 1G -d FLIR_ADAS_v2.zip FLIR_ADAS_v2.zip. --verbose
+```
+
+### External Links
+
+- [Windows multi-part zip extraction guide](http://mwiki.gichd.org:8090/IM/Combine_several_zip_files)
+- [Joining multi-part files in Windows from the terminal](https://askubuntu.com/questions/228315/how-to-split-zip-files-and-join-them-in-windows)
+- [Md5 checksum verification](https://www.a2hosting.com/kb/developer-corner/linux/working-with-file-checksums)
+</div>
+  
+    <script src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/showdown.min.js.descarga"></script>
+    <script src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/jquery-3.6.0.min.js.descarga"></script>
+    <script src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/bootstrap.bundle.js.descarga"></script>
+    <script src="./Download Free ADAS Dataset v2 - Teledyne FLIR_files/index.js.descarga"></script>
+  
+</body></html>

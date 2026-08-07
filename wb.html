@@ -1,0 +1,1919 @@
+<!DOCTYPE html>
+<html lang="en-US" class="no-js">
+<head>
+    <script>
+        function sendGACommand(func, retries) {
+            if (!!window['ga']) {
+                func();
+            } else {
+                if (retries > 0) {
+                    setTimeout(function () { sendGACommand(func, retries - 1) }, 500);
+                }
+            };
+        }
+    </script>
+    <meta charset="utf-8" />
+    <title>ADAS Dataset - Legal | Teledyne FLIR</title>
+
+    <link rel="icon" href="/favicon.ico?v=BGAzqrlnJz">
+    <link rel="shortcut icon" href="/favicon.ico?v=BGAzqrlnJz">
+    <link rel="icon" type="image/png" sizes="16x16" href="/Assets/favicons/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/Assets/favicons/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/Assets/favicons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/Assets/favicons/android-chrome-192x192.png">
+    
+    <link rel="manifest" href="/Assets/favicons/manifest.json">
+    <link rel="mask-icon" href="/Assets/favicons/safari-pinned-tab.svg" color="#444444">
+    <meta name="theme-color" content="#ffffff">
+    <meta name="msapplication-TileColor" content="#fff">
+    <meta name="msapplication-TileImage" content="/Assets/favicons/mstile-150x150.png" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <meta name="referrer" content="unsafe-url" />
+
+<meta name="fb:app_id" content="135467969954045" />
+    <meta name="robots" content="NOINDEX,NOFOLLOW" />
+
+    <link href="https://www.flir.com/oem/adas/adas-dataset-agree/" hreflang="x-default" rel="alternate" /><link href="https://www.flir.com/oem/adas/adas-dataset-agree/" rel="canonical" /><link href="https://www.flir.com/oem/adas/adas-dataset-agree/" hreflang="en-US" rel="alternate" /><link href="https://www.flir.co.uk/oem/adas/adas-dataset-agree/" hreflang="en-GB" rel="alternate" /><link href="https://www.flir.eu/oem/adas/adas-dataset-agree/" hreflang="en-150" rel="alternate" /><link href="https://www.flir.com.au/oem/adas/adas-dataset-agree/" hreflang="en-AU" rel="alternate" /><link href="https://www.flir.in/oem/adas/adas-dataset-agree/" hreflang="en-IN" rel="alternate" /><link href="https://www.flir.ca/oem/adas/adas-dataset-agree/" hreflang="en-CA" rel="alternate" /><link href="https://www.flirkorea.com/oem/adas/adas-dataset-agree/" hreflang="ko-KR" rel="alternate" /><link href="https://www.flir.asia/oem/adas/adas-dataset-agree/" hreflang="en-HK" rel="alternate" /><link href="https://www.flir.jp/oem/adas/adas-dataset-agree/" hreflang="ja-JP" rel="alternate" /><link href="https://www.flir.cn/oem/adas/adas-dataset-agree/" hreflang="zh-CN" rel="alternate" />
+
+    <!--[if gt IE 8]><!-->
+    <link href="/assets/build/app.css?v=637994370820000000" rel="stylesheet" />
+    <!--<link href="/assets/build/tvs.css?v=637994370920000000" rel="stylesheet" />
+    <link href="/assets/build/app.css?v=637994370820000000" rel="stylesheet" />-->
+    <!--<![endif]-->
+    <!--[if IE]>
+        <link href="/assets/build/ie.css?v=637994370920000000" rel="stylesheet" />
+    <![endif]-->
+    <!--[if lte IE 9]>
+        <script src="/assets/scripts/vendor/html5shiv.min.js"></script>
+        <script src="/assets/scripts/vendor/svg4everybody.legacy.js"></script>
+        <script>
+            svg4everybody({
+                fallback: function(src, svg, use) {
+                    var filename = src.substring(src.indexOf('#') + 1);
+                    return '/assets/icons/fallback/' + filename + '.png';
+                }
+            });
+        </script>
+    <![endif]-->
+    
+
+    <script>document.documentElement.className = document.documentElement.className.replace('no-js', 'js');</script>
+    <script>
+        // IE 9-11 Custom Event Polyfill
+        (function () {
+            if (typeof window.CustomEvent === "function") return false;
+            function CustomEvent(event, params) {
+                params = params || { bubbles: false, cancelable: false, detail: null };
+                var evt = document.createEvent('CustomEvent');
+                evt.initCustomEvent(event, params.bubbles, params.cancelable, params.detail);
+                return evt;
+            }
+            window.CustomEvent = CustomEvent;
+        })();
+    </script>
+
+    
+    <!----------------------- FLIR.com scripts April 7, 2022 -------------------->
+
+<!----------------------- Head scripts ------------------>
+
+<!-- Google Tag Manager TEST -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-NCH6LFN');</script>
+<!-- End Google Tag Manager -->
+
+
+<!-- Google Merchant Verification -->
+<meta name="google-site-verification" content="2d4onYIsTBUTvpweQyCUI1s97QSzphwJE1C5dwxDY5M" />
+<!-- End Google Merchant Verification -->
+
+
+<!-- Marketo Muchkin Script -->
+<script type="text/javascript">
+(function() {
+  var didInit = false;
+  function initMunchkin() {
+    if(didInit === false) {
+      didInit = true;
+      Munchkin.init('491-GZL-797');
+    }
+  }
+  var s = document.createElement('script');
+  s.type = 'text/javascript';
+  s.async = true;
+  s.src = '//munchkin.marketo.net/munchkin.js';
+  s.onreadystatechange = function() {
+    if (this.readyState == 'complete' || this.readyState == 'loaded') {
+      initMunchkin();
+    }
+  };
+  s.onload = initMunchkin;
+  document.getElementsByTagName('head')[0].appendChild(s);
+})();
+</script>
+
+
+<!-- Need to test removing -->
+<script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() {
+	dataLayer.push(arguments);
+    }
+    gtag("consent", "default", {
+        ad_storage: "denied",
+        analytics_storage: "denied",
+        wait_for_update: 500
+    });
+    gtag("set", "ads_data_redaction", true);
+</script>
+
+
+
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://analytics.flir.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-KHQNHTB');</script>
+<!-- End Google Tag Manager -->
+
+
+
+<!-- FLIR Facebook Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+document,'script','//connect.facebook.net/en_US/fbevents.js');
+fbq('consent', 'revoke');
+fbq('init', '777560402362120');
+fbq('track', "PageView");
+</script>
+<noscript>
+<img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=777560402362120&ev=PageView&noscript=1"
+/>
+</noscript>
+<!-- End Facebook Pixel Code -->
+
+<!-- This site is converting visitors into subscribers and customers with OptinMonster - https://optinmonster.com -->
+<script>(function(d,u,ac){var s=d.createElement('script');s.type='text/javascript';s.src='https://a.omappapi.com/app/js/api.min.js';s.async=true;s.dataset.user=u;s.dataset.account=ac;d.getElementsByTagName('head')[0].appendChild(s);})(document,18063,3178);</script>
+<!-- / OptinMonster -->
+
+<style>
+.EPiServerForms,
+.Article-form form {
+    padding: 1.5rem;
+    max-width: 600px;
+    margin: 0 auto;
+}
+ .EPiServerForms h2.Form__Title {
+    font-size: 1.25rem;
+    font-family: Industry-Medium,Industry Medium,Helvetica,sans-serif;
+}
+.EPiServerForms .Form__Description {
+    margin-bottom: .8rem;
+}
+.EPiServerForms .FormTextbox .Form__Element__Caption {
+    font-weight: normal;
+    font-size: .85rem;
+    display: block;
+    position: absolute;
+    color: #666;
+    line-height: 1.1875em;
+    margin-top: 1.5rem;
+    margin-left: 1rem;
+    transition: all .1s ease-in-out;
+}
+.EPiServerForms .FormSelection .Form__Element__Caption {
+    font-size: .85rem;
+    margin-bottom: 6px;
+    font-weight: bold;
+    color: #666;
+}
+div[data-f-element-name="__field_383934"] {
+    margin-top: 0.8rem;
+    margin-bottom: 0.8rem !important;
+}
+div[data-f-element-name="__field_383934"] .Form__Element__Caption {
+    display: none;
+}
+.Form__Element[data-f-element-name="__field_421233"] {
+    height: 0px !important;
+}
+.Form__Element[data-f-element-name="__field_421233"] label {
+display: none !important;
+}
+.EPiServerForms .FormChoice input[type="checkbox"] {
+    margin: 0;
+    margin-right: .25rem;
+}
+.EPiServerForms .Input, .EPiServerForms .Select, .EPiServerForms .Select-list, .EPiServerForms .Select-multiple, .EPiServerForms input, .EPiServerForms textarea {
+    position: initial;
+    display: inline-block;
+    padding: 1.5rem 1rem 0.5rem 1rem;
+    margin: 1.5rem auto;
+    font: 0.875rem/1.375rem Nunito,Helvetica,sans-serif;
+    text-decoration: none;
+    white-space: normal;
+    text-align: left;
+    vertical-align: middle;
+    cursor: pointer;
+    text-shadow: none!important;
+    border: 1px solid #e9e9e9;
+    border-radius: 0;
+    background-color: #fff;
+    background-position: right 0.5em top 50%;
+    background-repeat: no-repeat;
+    background-size: 1.5em;
+    color: #222;
+    transition: all .25s 0s;
+}
+.floatingLabel.FormTextbox .Form__Element__Caption {
+    color: #888;
+    font-size: .7rem;
+    margin-top: 0.7rem;
+}
+.EPiServerForms .Form__Element {
+    margin-bottom: 0.25rem;
+}
+.Modal-content .EPiServerForms .Form__Element {
+    clear: both;
+}
+.EPiServerForms .FormTextbox__Input {
+    width: 100%;
+}
+.EPiServerForms .FormSelection .Form__Element__Caption {
+    display: inline-block;
+}
+.EPiServerForms .FormSelection select {
+    width: 100%;
+    padding: .6rem;
+    color: #666;
+    font: 0.875rem/1.375rem Nunito,Helvetica,sans-serif;
+    margin-bottom: .25rem;
+    border: 1px solid #e9e9e9;
+    -moz-appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, gray 50%), linear-gradient(135deg, gray 50%, transparent 50%);
+    background-position: calc(100% - 20px) calc(1em + 2px), calc(100% - 15px) calc(1em + 2px), calc(100% - 2.5em) 0.5em;
+    background-size: 5px 5px, 5px 5px, 1px 1.5em;
+    background-repeat: no-repeat;
+}
+.EPiServerForms p:last-of-type {
+    line-height: 1.2;
+}
+@media only screen and (min-width: 37.5em) {
+    .Modal-content .Form__Element[data-f-element-name="__field_383925"],
+    .Modal-content .Form__Element[data-f-element-name="__field_384672"] {
+        width: 49%;
+        float: left;
+        clear: none;
+    }
+    .Modal-content .Form__Element[data-f-element-name="__field_384559"],
+    .Modal-content .Form__Element[data-f-element-name="__field_384665"] {
+        width: 49%;
+        float: right;
+        clear: none;
+    }
+}
+
+span.Form__Element__ValidationError {
+    color: #ba0f16;
+}
+.Form__MainBody .ValidationFail input {
+    border: 1px solid #ba0f16;
+}
+/* Captcha styles */
+button[value="RefreshCaptcha"] {
+    background-color: white;
+    border: 1px solid black;
+    margin-right: 10px;
+}
+.FormCaptcha .Form__Element__Caption {
+    display: none;
+}
+.Modal-content .Form__Description {
+    display: none;
+}
+input[name="__field_394826"] {
+    margin-bottom: 0px;
+    margin-top: 0.6rem;
+    padding: 1rem;
+}
+.Modal-dialog {
+    max-height: 95%;
+}
+.Modal-dialog .marketo {
+    height: 800px;
+}
+button[type="submit"]:focus {
+background-color: #ccc;
+color: #666;
+cursor: default;
+}
+</style>
+
+<!-- Temp Form Styles -->
+
+<style>
+.Article td, .Article th, .TextBlock td, .TextBlock th {
+  border: 1px solid #ccc;
+  padding: 6px;
+}
+.Article thead td, .Article th, .TextBlock thead td, TextBlock th {
+    font-family: 'Industry-Demi', 'Industry Demi', 'Helvetica', sans-serif;
+    font-size: .875rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    text-align: left;
+    background-color: #eee;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+.attr, .diff {
+    font-weight: bold;
+}
+@media only screen and (max-width: 37.4375em) {
+.TextBlock thead,
+.Article thead {
+position: relative;
+}
+.TextBlock tbody tr, .Article tbody tr {
+display: table-row;
+}
+.TextBlock tbody td, .Article tbody td {
+text-align: center;
+padding-right: initial;
+display: table-cell;
+}
+}
+/* AB Testing for adding industry and application fields  */
+div[data-f-element-name="__field_434103"],
+div[data-f-element-name="__field_434105"],
+div[data-f-element-name="__field_434106"],
+div[data-f-element-name="__field_434124"],
+div[data-f-element-name="__field_434126"],
+div[data-f-element-name="__field_434127"],
+div[data-f-element-name="__field_434104"] {
+	display: none;
+}
+
+</style>
+
+<style>
+div[data-f-element-name="__field_434065"] {
+display: none;
+}
+</style>
+    
+<script type="text/javascript">var appInsights=window.appInsights||function(config){function t(config){i[config]=function(){var t=arguments;i.queue.push(function(){i[config].apply(i,t)})}}var i={config:config},u=document,e=window,o="script",s="AuthenticatedUserContext",h="start",c="stop",l="Track",a=l+"Event",v=l+"Page",r,f;setTimeout(function(){var t=u.createElement(o);t.src=config.url||"https://az416426.vo.msecnd.net/scripts/a/ai.0.js";u.getElementsByTagName(o)[0].parentNode.appendChild(t)});try{i.cookie=u.cookie}catch(y){}for(i.queue=[],r=["Event","Exception","Metric","PageView","Trace","Dependency"];r.length;)t("track"+r.pop());return t("set"+s),t("clear"+s),t(h+a),t(c+a),t(h+v),t(c+v),t("flush"),config.disableExceptionTracking||(r="onerror",t("_"+r),f=e[r],e[r]=function(config,t,u,e,o){var s=f&&f(config,t,u,e,o);return s!==!0&&i["_"+r](config,t,u,e,o),s}),i}({instrumentationKey:"d6a8d1d3-6510-4e3e-9cf5-442d8ae70027",sdkExtension:"a"});window.appInsights=appInsights;appInsights.queue&&appInsights.queue.length===0&&appInsights.trackPageView();</script></head>
+<body class="Page">
+    <input type="hidden" name="currentMarketHidden" value="DEFAULT" />
+    <!-- Google Tag Manager (noscript) -->
+    <noscript>
+        <iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KHQNHTB"
+                height="0" width="0" style="display:none;visibility:hidden"></iframe>
+    </noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <div style="visibility:hidden;width:0;height:0;opacity:0;">
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><clipPath id="arrow_background-a"><path fill="#fff" transform="translate(0 .6)" d="M0 0h63v62H0z"/></clipPath><clipPath id="browser-icon-a"><path fill="#fff" transform="translate(0 .127)" d="M0 0h42v42H0z"/></clipPath><clipPath id="charging-icon-a"><path fill="#fff" transform="translate(0 .127)" d="M0 0h42v42H0z"/></clipPath><clipPath id="close_icon_camera_modal-a"><path fill="#fff" d="M0 0h33v33H0z"/></clipPath><clipPath id="itc-logo-a"><path fill="#fff" transform="translate(.611)" d="M0 0h108.859v46.623H0z"/></clipPath><filter id="play-icon-a" x="0" y="0" width="59.406" height="59.406" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feFlood flood-opacity="0" result="BackgroundImageFix"/><feColorMatrix in="SourceAlpha" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/><feOffset dy="3"/><feGaussianBlur stdDeviation="3"/><feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.4 0"/><feBlend in2="BackgroundImageFix" result="effect1_dropShadow_343_33434"/><feBlend in="SourceGraphic" in2="effect1_dropShadow_343_33434" result="shape"/></filter><style>.play-circle-1,.play-circle-2{transform-origin:50% 50%;animation:clockwise 28s infinite linear}.play-circle-2{animation:clockwise 22s infinite linear reverse}</style><symbol id="play-circle-1" viewBox="0 0 100 100"><circle opacity=".8" fill="none" stroke="#FFF" stroke-width="3" stroke-dasharray="111,49,23,4" cx="50" cy="50" r="47"/></symbol><symbol id="play-circle-2" viewBox="0 0 100 100"><circle opacity=".8" fill="none" stroke="#FFF" stroke-dasharray="52,49,23,4" cx="50" cy="50" r="42"/></symbol><symbol id="play-triangle" viewBox="0 0 100 100"><path fill="#FFF" d="M66 49L44 64V34z"/></symbol><filter id="play_icon-a" x=".053" y=".585" width="111.943" height="111.943" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feFlood flood-opacity="0" result="BackgroundImageFix"/><feColorMatrix in="SourceAlpha" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/><feOffset dy="3"/><feGaussianBlur stdDeviation="3"/><feColorMatrix values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.4 0"/><feBlend in2="BackgroundImageFix" result="effect1_dropShadow_343_33921"/><feBlend in="SourceGraphic" in2="effect1_dropShadow_343_33921" result="shape"/></filter><clipPath id="plus_icon-a"><path fill="#fff" transform="translate(0 .4)" d="M0 0h24v24H0z"/></clipPath><radialGradient id="quote-a" cx="24.746" cy="21.462" r=".746" gradientTransform="scale(22.7067 -22.7067) rotate(-44.318 -14.266 40.348)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f99d1d"/><stop offset=".48" stop-color="#cb3c6d"/><stop offset="1" stop-color="#782a8f"/></radialGradient></defs><symbol id="arrow-down" viewBox="0 0 18 19"><path opacity=".01" fill="#D62828" d="M.002.3h18v18h-18z"/><path d="M8.493 4.485v8.447l-2.961-2.585a.659.659 0 0 0-.958.092c-.24.303-.2.753.088 1.005l4.076 3.561a.795.795 0 0 0 .102.064c.034 0 .054.036.088.05a.65.65 0 0 0 .245.05.65.65 0 0 0 .244-.05c.034 0 .055-.036.089-.05a.795.795 0 0 0 .102-.064l4.075-3.561a.726.726 0 0 0 .245-.549.734.734 0 0 0-.157-.456.658.658 0 0 0-.958-.093l-2.96 2.586V4.485c0-.394-.305-.713-.68-.713-.375 0-.68.32-.68.713z" fill="#D62828"/></symbol><symbol id="arrow-forward" viewBox="0 0 27 29"><path d="M3.5 16.004h17.79l-5.445 6.54a1.502 1.502 0 1 0 2.31 1.92l7.5-9a1.78 1.78 0 0 0 .135-.225c0-.075.075-.12.105-.195a1.5 1.5 0 0 0 .105-.54 1.5 1.5 0 0 0-.105-.54c0-.075-.075-.12-.105-.195a1.78 1.78 0 0 0-.135-.225l-7.5-9A1.5 1.5 0 0 0 17 4.004a1.5 1.5 0 0 0-1.155 2.46l5.445 6.54H3.5a1.5 1.5 0 0 0 0 3z" fill="#000" fill-opacity=".871"/></symbol><symbol id="arrow-gallery-white" viewBox="0 0 8 17"><path fill="none" stroke="#FFF" stroke-width="1.5" d="M7.256 16L1 8.5 7.256 1"/></symbol><symbol id="arrow-gallery" viewBox="0 0 8 17"><path fill="none" stroke="#000" stroke-width="1.5" d="M7.256 16L1 8.5 7.256 1"/></symbol><symbol id="arrow_background" viewBox="0 0 63 63"><g clip-path="url(#arrow_background-a)" fill="#fff"><path opacity=".01" d="M0 62.6V.6h63v62z"/><path d="M27.722 44.402a2.6 2.6 0 0 1-1.846-4.446l8.606-8.553-8.268-8.605a2.6 2.6 0 0 1 1.846-4.435 2.6 2.6 0 0 1 1.846.77L39.941 29.53a2.6 2.6 0 0 1 0 3.64L29.542 43.57a2.6 2.6 0 0 1-1.82.832z"/></g></symbol><symbol id="arrow_forward_icon" viewBox="0 0 18 20"><path d="M7.852 1.578v14.27L2.849 11.48a1.113 1.113 0 0 0-1.618.157 1.245 1.245 0 0 0 .149 1.696l6.885 6.016c.054.04.112.077.172.109.057 0 .092.06.149.084.132.054.272.083.413.084a1.1 1.1 0 0 0 .413-.084c.057 0 .092-.06.15-.084.06-.032.117-.068.171-.109l6.885-6.016c.262-.229.414-.568.413-.926 0-.281-.093-.554-.264-.77a1.112 1.112 0 0 0-1.618-.156l-5.003 4.367V1.578C10.146.914 9.633.375 9 .375S7.852.914 7.852 1.578z" fill="#F76407"/></symbol><symbol id="battery-charging" viewBox="0 0 31 30"><path fill-rule="evenodd" clip-rule="evenodd" d="M14.414 16.212H9.081a1.249 1.249 0 0 1-1.083-1.866l3.922-6.864H5.548c-1.49 0-2.702 1.358-2.702 3.03v8.906c0 1.67 1.212 3.029 2.702 3.029h5.303l3.563-6.235zm5.682-8.73h-5.303l-3.563 6.235h5.334a1.245 1.245 0 0 1 1.082 1.866l-3.922 6.864h6.372c1.49 0 2.703-1.358 2.703-3.03v-8.906c0-1.67-1.212-3.029-2.703-3.029zm5.196 4.988a1.247 1.247 0 0 1 2.494 0v4.989a1.248 1.248 0 0 1-2.494 0V12.47z" fill="#D62828"/><mask id="battery-charging-a" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="2" y="7" width="26" height="16"><path fill-rule="evenodd" clip-rule="evenodd" d="M14.414 16.212H9.081a1.249 1.249 0 0 1-1.083-1.866l3.922-6.864H5.548c-1.49 0-2.702 1.358-2.702 3.03v8.906c0 1.67 1.212 3.029 2.702 3.029h5.303l3.563-6.235zm5.682-8.73h-5.303l-3.563 6.235h5.334a1.245 1.245 0 0 1 1.082 1.866l-3.922 6.864h6.372c1.49 0 2.703-1.358 2.703-3.03v-8.906c0-1.67-1.212-3.029-2.703-3.029zm5.196 4.988a1.247 1.247 0 0 1 2.494 0v4.989a1.248 1.248 0 0 1-2.494 0V12.47z" fill="#fff"/></mask><g mask="url(#battery-charging-a)"><path fill="#D62828" d="M.352 0H30.28v29.928H.352z"/></g></symbol><symbol id="book_icon" viewBox="0 0 31 30"><path fill-rule="evenodd" clip-rule="evenodd" d="M9.216 23.693a1.25 1.25 0 0 1-1.247-1.247c0-.687.56-1.247 1.247-1.247h13.717v2.494H9.216zM24.18 3.741H9.216a3.746 3.746 0 0 0-3.741 3.741v14.964a3.746 3.746 0 0 0 3.74 3.741H24.18c.688 0 1.247-.558 1.247-1.247V4.99c0-.69-.559-1.248-1.247-1.248z" fill="#D62828"/></symbol><symbol id="bow" viewBox="0 0 566 79"><radialGradient id="bow-a" cx="272.287" cy="47.36" r="1.329" gradientTransform="matrix(75.1962 19.1414 19.1414 -75.196 -21172.791 -1629.464)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f99d1d"/><stop offset=".48" stop-color="#cb3c6d"/><stop offset="1" stop-color="#782a8f"/></radialGradient><path fill="none" stroke="url(#bow-a)" d="M.5 1l56 56h487l21 21"/></symbol><symbol id="box_1_icon" viewBox="0 0 53 53"><path d="M6.625 11.594a1.656 1.656 0 0 0 0 3.312h3.677l4.346 17.39a3.286 3.286 0 0 0 3.208 2.485H38.51c1.495 0 2.765-.993 3.158-2.434l4.293-15.785h-3.468L38.508 31.47H17.854l-4.344-17.39a3.286 3.286 0 0 0-3.208-2.485H6.625zM36.438 34.78c-2.725 0-4.97 2.245-4.97 4.969s2.245 4.969 4.97 4.969c2.724 0 4.968-2.245 4.968-4.969s-2.244-4.969-4.968-4.969zm-14.907 0c-2.724 0-4.968 2.245-4.968 4.969s2.244 4.969 4.968 4.969c2.725 0 4.969-2.245 4.969-4.969s-2.244-4.969-4.969-4.969zM26.5 11.594v8.281h-4.969l6.625 6.625 6.625-6.625h-4.968v-8.281H26.5zm-4.969 26.5c.934 0 1.657.722 1.657 1.656 0 .934-.723 1.656-1.657 1.656a1.632 1.632 0 0 1-1.656-1.656c0-.934.722-1.656 1.656-1.656zm14.907 0c.934 0 1.656.722 1.656 1.656 0 .934-.722 1.656-1.657 1.656a1.632 1.632 0 0 1-1.656-1.656c0-.934.722-1.656 1.657-1.656z" fill="#D62828"/></symbol><symbol id="box_2_icon" viewBox="0 0 50 50"><path d="M3.125 15.625h43.75v3.125H3.125v-3.125zm0 6.25h43.75V25H3.125v-3.125zm6.25 9.375h12.5v3.125h-12.5V31.25z" fill="#D62828"/><path d="M43.75 15.824c0-2.069-.122-2.7-.465-3.344a2.556 2.556 0 0 0-1.082-1.078c-.64-.343-1.272-.465-3.34-.465H11.138c-2.07 0-2.7.122-3.344.465-.461.243-.837.62-1.078 1.082-.344.64-.466 1.271-.466 3.34v18.35c0 2.069.122 2.7.466 3.344.242.461.62.837 1.081 1.078.64.344 1.272.466 3.34.466h27.726c2.069 0 2.7-.122 3.343-.466.462-.242.838-.62 1.079-1.081.343-.64.465-1.272.465-3.34v-18.35zm3.125 0v18.35c0 2.788-.29 3.797-.834 4.813a5.654 5.654 0 0 1-2.363 2.365c-1.018.544-2.03.835-4.812.835H11.135c-2.788 0-3.797-.29-4.813-.835a5.678 5.678 0 0 1-2.366-2.362c-.543-1.019-.834-2.031-.834-4.813V15.821c0-2.787.29-3.797.834-4.812A5.655 5.655 0 0 1 6.32 8.643c1.019-.544 2.031-.834 4.812-.834H38.86c2.787 0 3.797.29 4.812.834a5.654 5.654 0 0 1 2.366 2.362c.544 1.02.834 2.032.834 4.813l.003.006z" fill="#D62828"/></symbol><symbol id="box_3_icon" viewBox="0 0 50 50"><path d="M29.166 6.25v8.333a2.083 2.083 0 0 0 2.084 2.084h8.333" stroke="#D62828" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.416 16.667v-6.25a4.167 4.167 0 0 1 4.167-4.167h14.583l10.417 10.417v22.916a4.167 4.167 0 0 1-4.166 4.167H25" stroke="#D62828" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 35.417a6.25 6.25 0 1 0 0-12.5 6.25 6.25 0 0 0 0 12.5zM9.375 35.417L6.25 45.833l6.25-3.125 6.25 3.125-3.125-10.416" stroke="#D62828" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="box_4_icon" viewBox="0 0 50 50"><path d="M31.25 18.75v21.875h9.375V18.75H31.25zm-1.563-3.125h12.5a1.563 1.563 0 0 1 1.563 1.563v25a1.563 1.563 0 0 1-1.563 1.562h-12.5a1.563 1.563 0 0 1-1.562-1.563v-25a1.563 1.563 0 0 1 1.563-1.562z" fill="#D62828"/><path d="M9.375 6.25v34.375h18.75V6.25H9.375zM7.812 3.125h21.875a1.563 1.563 0 0 1 1.563 1.563v37.5a1.563 1.563 0 0 1-1.563 1.562H7.813a1.563 1.563 0 0 1-1.562-1.563v-37.5a1.562 1.562 0 0 1 1.563-1.562z" fill="#D62828"/><path d="M12.5 12.5H25v3.125H12.5V12.5zm0 9.375H25V25H12.5v-3.125zm0 9.375H25v3.125H12.5V31.25zM31.25 25h6.25v3.125h-6.25V25zm0 6.25h6.25v3.125h-6.25V31.25zM3.125 40.625h43.75v3.125H3.125v-3.125z" fill="#D62828"/></symbol><symbol id="browser-icon" viewBox="0 0 42 43"><g clip-path="url(#browser-icon-a)" fill="#D62828"><path opacity=".01" d="M0 .127h42v42H0z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M31.805 5.621H10.639a5.291 5.291 0 0 0-5.291 5.291v21.166a5.291 5.291 0 0 0 5.291 5.291h21.166a5.291 5.291 0 0 0 5.291-5.29V10.912a5.291 5.291 0 0 0-5.291-5.292zM21.22 10.912a1.764 1.764 0 1 1 0 3.528 1.764 1.764 0 0 1 0-3.528zm-7.055 0a1.764 1.764 0 1 1 0 3.528 1.764 1.764 0 0 1 0-3.528zm19.402 21.166c0 .974-.79 1.764-1.764 1.764H10.64c-.974 0-1.764-.79-1.764-1.764V19.731h24.693v12.347z"/></g></symbol><symbol id="browser_icon" viewBox="0 0 33 33"><path fill-rule="evenodd" clip-rule="evenodd" d="M26.805.621H5.639A5.291 5.291 0 0 0 .348 5.912v21.166a5.291 5.291 0 0 0 5.291 5.292h21.166a5.291 5.291 0 0 0 5.291-5.292V5.912a5.291 5.291 0 0 0-5.291-5.29zM16.22 5.912a1.764 1.764 0 1 1 0 3.528 1.764 1.764 0 0 1 0-3.528zm-7.055 0a1.764 1.764 0 1 1 0 3.528 1.764 1.764 0 0 1 0-3.528zm19.402 21.166c0 .974-.79 1.764-1.764 1.764H5.64c-.974 0-1.764-.79-1.764-1.764V14.731h24.693v12.347z" fill="#D62828"/></symbol><symbol id="bulb_icon" viewBox="0 0 61 63"><path opacity=".01" fill="#D62828" d="M61 62.965H0V.4h61z"/><path d="M30.136 18.822a12.86 12.86 0 0 0-7.717 23.149v10.288a5.144 5.144 0 0 0 5.145 5.145h5.144a5.144 5.144 0 0 0 5.144-5.145V41.971a12.86 12.86 0 0 0-7.716-23.149zM30.136 16.251a2.572 2.572 0 0 0 2.572-2.572V8.535a2.572 2.572 0 1 0-5.144 0v5.144a2.572 2.572 0 0 0 2.572 2.572zM53.284 29.11h-5.145a2.572 2.572 0 1 0 0 5.145h5.145a2.572 2.572 0 1 0 0-5.145zM12.13 29.11H6.986a2.572 2.572 0 1 0 0 5.145h5.144a2.572 2.572 0 1 0 0-5.145zM18.972 17.33l-3.704-3.652a2.602 2.602 0 0 0-3.575 3.781l3.704 3.575c.502.485 1.18.745 1.877.72.7-.002 1.37-.29 1.852-.797a2.572 2.572 0 0 0-.154-3.627zM48.628 13.806a2.572 2.572 0 0 0-3.627 0l-3.703 3.524a2.572 2.572 0 0 0 0 3.627 2.572 2.572 0 0 0 1.852.797 2.572 2.572 0 0 0 1.774-.72l3.704-3.575a2.572 2.572 0 0 0 0-3.652z" fill="#D62828"/></symbol><symbol id="calendar_icon" viewBox="0 0 18 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M15 2h-1V1a1 1 0 1 0-2 0v1H6V1a1 1 0 0 0-2 0v1H3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3zM5 15a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm8 0H9a1 1 0 1 1 0-2h4a1 1 0 1 1 0 2zm3-6H2V5a1 1 0 0 1 1-1h1v1a1 1 0 0 0 2 0V4h6v1a1 1 0 1 0 2 0V4h1a1 1 0 0 1 1 1v4z" fill="#D62828"/></symbol><symbol id="camera_icon" viewBox="0 0 34 31"><path fill-rule="evenodd" clip-rule="evenodd" d="M28.69 7.134h-5.013V4.627A4.178 4.178 0 0 0 19.499.45h-5.014a4.178 4.178 0 0 0-4.178 4.178v2.507H5.293A5.014 5.014 0 0 0 .28 12.148v13.37a5.014 5.014 0 0 0 5.014 5.014h23.398a5.014 5.014 0 0 0 5.013-5.014v-13.37a5.014 5.014 0 0 0-5.013-5.014zM13.649 4.627c0-.462.375-.836.836-.836h5.014c.461 0 .835.374.835.836v2.507h-6.685V4.627zm3.344 20.055a5.85 5.85 0 1 1 0-11.699 5.85 5.85 0 0 1 0 11.7z" fill="#D62828"/></symbol><symbol id="cart" viewBox="0 0 23 21"><path fill="none" stroke="#4F4F4F" d="M0 1h3.184l4.158 10 12.95-.705L22 3.439H4.054M7.3 11L6 15h13"/><circle fill="none" stroke="#4F4F4F" cx="9" cy="19" r="1.5"/><circle fill="none" stroke="#4F4F4F" cx="16" cy="19" r="1.5"/></symbol><symbol id="certification_2_icon" viewBox="0 0 53 53"><path d="M27.972 44.167H5.89a2.944 2.944 0 0 1-2.945-2.945V11.778A2.945 2.945 0 0 1 5.89 8.833H47.11a2.944 2.944 0 0 1 2.944 2.945v15.267a12.278 12.278 0 0 0-19.86 14.413l-1.369 1.678-.854 1.03zm-17.667-26.5v2.355h25.028v-2.355H10.305zm0 8.244H26.5v-2.356H10.305v2.356zm0 10.306h14.723V33.86H10.305v2.356z" fill="#D62828"/><path d="M49.805 34.73a9.377 9.377 0 1 0-15.855 6.757l-2.857 3.49 1.326 5.314 5.388-6.566a9.217 9.217 0 0 0 5.226 0l5.389 6.566 1.325-5.315-2.857-3.489a9.333 9.333 0 0 0 2.915-6.757zm-15.811 0a6.434 6.434 0 1 1 6.433 6.345 6.404 6.404 0 0 1-6.419-6.345h-.014z" fill="#D62828"/></symbol><symbol id="certification_icon" viewBox="0 0 18 26"><path fill-rule="evenodd" clip-rule="evenodd" d="M17.702 23.945L14.82 12.717a7.41 7.41 0 0 0 1.634-4.677 7.485 7.485 0 0 0-14.97 0 7.41 7.41 0 0 0 1.672 4.703L.237 23.944a1.247 1.247 0 0 0 1.847 1.384l6.649-3.904 7.085 3.917c.192.116.413.172.636.162a1.248 1.248 0 0 0 1.248-1.56zM8.969 3.05a4.99 4.99 0 1 1 0 9.98 4.99 4.99 0 0 1 0-9.98z" fill="#D62828"/></symbol><symbol id="charging-icon" viewBox="0 0 42 43"><g clip-path="url(#charging-icon-a)" fill="#D62828"><path opacity=".01" d="M0 .127h42v42H0z"/><path d="M19.916 22.882h-7.468a1.745 1.745 0 0 1-1.5-2.617l5.478-9.596H7.511a4.03 4.03 0 0 0-3.786 4.24v12.457a4.03 4.03 0 0 0 3.786 4.24h7.415l4.99-8.724z"/><path d="M27.854 10.669H20.44l-4.99 8.724h7.468a1.745 1.745 0 0 1 1.5 2.617l-5.478 9.596h8.915a4.03 4.03 0 0 0 3.786-4.24V14.909a4.03 4.03 0 0 0-3.786-4.24zM36.876 15.902c-.964 0-1.745.781-1.745 1.745v6.979a1.745 1.745 0 1 0 3.49 0v-6.979c0-.963-.782-1.745-1.745-1.745z"/></g></symbol><symbol id="checkbox_cookie" viewBox="0 0 26 26"><path fill-rule="evenodd" clip-rule="evenodd" d="M21.667 0H4.333A4.333 4.333 0 0 0 0 4.333v17.334A4.333 4.333 0 0 0 4.333 26h17.334A4.333 4.333 0 0 0 26 21.667V4.333A4.333 4.333 0 0 0 21.667 0zM19.21 9.548l-6.601 8.666a1.445 1.445 0 0 1-1.141.564c-.445.002-.866-.2-1.141-.55l-3.525-4.492a1.446 1.446 0 0 1 2.282-1.776l2.355 3.004 5.46-7.222a1.453 1.453 0 0 1 2.31 1.762v.044z" fill="#304659"/></symbol><symbol id="checkmark-circle" viewBox="0 0 24 24"><path opacity=".01" fill="#0C7424" d="M0 0h24v24H0z"/><path d="M9.71 11.29a1.004 1.004 0 0 0-1.42 1.42l3 3A1 1 0 0 0 12 16a1 1 0 0 0 .72-.34l7-8a1 1 0 0 0-1.5-1.32L12 13.54l-2.29-2.25z" fill="#0C7424"/><path d="M21 11a1 1 0 0 0-1 1 8 8 0 0 1-8 8A8 8 0 0 1 6.33 6.36 7.93 7.93 0 0 1 12 4c.639.004 1.276.078 1.9.22a1 1 0 1 0 .47-1.94A10.54 10.54 0 0 0 12 2a10 10 0 0 0-7 17.09A9.93 9.93 0 0 0 12 22c5.522 0 10-4.477 10-10a1 1 0 0 0-1-1z" fill="#0C7424"/></symbol><symbol id="checkmark" viewBox="0 0 18 15"><path fill="none" stroke="#000" stroke-width="2" d="M1 7.331l4.098 5.38L17 1.324"/></symbol><symbol id="close_black_icon" viewBox="0 0 14 13"><path d="M8.41 6.4l4.3-4.29A1.004 1.004 0 1 0 11.29.69L7 4.99 2.71.69a1.004 1.004 0 0 0-1.42 1.42l4.3 4.29-4.3 4.29a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0L7 7.81l4.29 4.3a1 1 0 0 0 1.42 0 1 1 0 0 0 0-1.42L8.41 6.4z" fill="#000"/></symbol><symbol id="close_icon_camera_modal" viewBox="0 0 33 33"><g clip-path="url(#close_icon_camera_modal-a)" fill="#000" fill-opacity=".8"><path opacity=".01" d="M33 33H0V0h33z"/><path d="M18.553 16.398l5.949-5.935A1.39 1.39 0 1 0 22.537 8.5l-5.935 5.949-5.935-5.95a1.39 1.39 0 0 0-1.965 1.965l5.95 5.935-5.95 5.936a1.384 1.384 0 0 0 0 1.964 1.384 1.384 0 0 0 1.965 0l5.935-5.949 5.935 5.95a1.384 1.384 0 0 0 1.965 0 1.383 1.383 0 0 0 0-1.965l-5.95-5.936z"/></g></symbol><symbol id="contact-sales" viewBox="0 0 120 120"><title>Icon-ContactSales</title><g transform="translate(9 7)" stroke="#000" stroke-width="1.5" fill="none" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"><path d="M59.587 5.237c22.298 2.796 41.25 21.578 41.25 44.33a44.57 44.57 0 0 1-18.333 36.03v20.111M13.754 71.333v-2.291H3.167a2.292 2.292 0 0 1-2.173-2.998c8.75-27.106 15.047-56.256 44.843-60.61M36.67 105.708v-9.166h-9.166c-1.415 0-2.821-.216-4.17-.642"/><rect x="45.837" y=".296" width="13.75" height="41.25" rx="1"/><circle cx="52.712" cy="57.588" r="6.875"/><path d="M59.45 38.086c9.52 3.29 15.273 12.975 13.605 22.909-1.668 9.934-10.267 17.21-20.34 17.21s-18.673-7.276-20.34-17.21c-1.668-9.934 4.084-19.62 13.605-22.91"/><rect x="4.588" y="80.505" width="13.75" height="11.458" rx="1.25"/><path d="M50.627 64.138C42.73 76.769 29.42 86.234 18.337 86.234"/></g></symbol><symbol id="default-doc" viewBox="0 0 32 32"><path fill="none" stroke="#6F6F6F" d="M21 30H5V2h22v22z"/><path fill="none" stroke="#6F6F6F" d="M21 30v-6h6"/></symbol><symbol id="dropdown" viewBox="0 0 13 10"><path d="M7 9.467a1.72 1.72 0 0 1-1.33-.64l-4.21-5.1a2.1 2.1 0 0 1-.26-2.21A1.76 1.76 0 0 1 2.79.467h8.42a1.76 1.76 0 0 1 1.59 1.05 2.1 2.1 0 0 1-.26 2.21l-4.21 5.1a1.72 1.72 0 0 1-1.33.64z" fill="#D62828"/></symbol><symbol id="exam_icon" viewBox="0 0 30 30"><g clip-path="url(#clip0_1117_16903)"><path d="M29.306 21.2l-6.235 6.236-4.365-4.365c-.914-.914-.27-1.572 0-1.87.271-.3 1.08-.79 1.87 0l2.495 2.494 4.365-4.365c.623-.624 1.247-.624 1.87 0 .624.623.624 1.247 0 1.87zM7.482 2.494a2.486 2.486 0 0 0-2.494 2.494v19.954a2.486 2.486 0 0 0 2.494 2.494h9.74a7.45 7.45 0 0 1-1.01-3.741c0-.412.037-.836.1-1.247H8.106c-.624 0-.624-.624-.624-1.248 0-.623 0-1.247.624-1.247h9.116a7.326 7.326 0 0 1 2.332-2.494H8.106c-.624 0-.624-.623-.624-1.247 0-.623 0-1.247.624-1.247h13.718c.623 0 .597.533.623 1.347.412-.063.836-.1 1.248-.1.424 0 .835.038 1.247.1V9.977l-7.483-7.483H7.482zm8.73 1.87l6.859 6.86h-6.859v-6.86z" fill="#D62828"/></g></symbol><symbol id="facebook" viewBox="0 0 10 21"><path d="M9.898 7.15H6.752V5.074c0-.779.515-.961.876-.961h2.219V.685L6.789.674c-3.393 0-4.164 2.556-4.164 4.191V7.15H.661v3.53h1.964v9.994h4.127V10.68h2.785l.361-3.53z"/></symbol><symbol id="facebook_gray_icon" viewBox="0 0 12 20"><path d="M11.82 1.03a.524.524 0 0 0-.525-.524h-2.62a5 5 0 0 0-5.241 4.717v2.83H.814a.524.524 0 0 0-.525.524v2.726c0 .29.235.524.524.524h2.62v7.023c0 .29.235.524.525.524h3.144c.29 0 .524-.235.524-.524v-7.023h2.747a.524.524 0 0 0 .513-.388l.755-2.725a.524.524 0 0 0-.503-.66H7.626v-2.83a1.048 1.048 0 0 1 1.049-.944h2.62c.29 0 .524-.235.524-.524V1.03z" fill="#304659" fill-opacity=".5"/></symbol><symbol id="flir-logo" viewBox="0 0 273.71 43.81"><g data-name="Layer 2"><path d="M107.51 0v3h-4.13v14.8h-3.71V3h-4.13V0zM109.24 17.75V0h9.68v2.73h-6V7.1h5.5v2.73H113V15h6.17v2.73zM121.55 17.75V0h3.71v14.8h5.56v2.95zM132.44 17.75V0h9.69v2.73h-6V7.1h5.51v2.73h-5.51V15h6.17v2.73zM144.81 0H151c4.87 0 5.78 3.25 5.78 8.78 0 2.72.42 9-5.92 9h-6.05zm3.71 15h1.8c2.26 0 2.7-1.7 2.7-6.15 0-3.27 0-6.14-2.58-6.14h-1.92zM162.29 11.6L157.64 0h4.06l2.65 7.5 2.83-7.5H171l-5 11.6v6.15h-3.71zM172.71 17.75V0h5l4.72 12.29h.05V0H186v17.75h-4.89l-4.84-13v13zM189.08 17.75V0h9.69v2.73h-6V7.1h5.5v2.73h-5.5V15H199v2.73zM206.76 17.75V0H216v2.73h-5.51v4.55h5.26V10h-5.26v7.75zM217.77 17.75V0h3.72v14.8H227v2.95zM228.66 17.75V0h3.72v17.75zM238.64 17.75h-3.71V0h6.86c2.53 0 4.21 1.62 4.21 4.65 0 2.26-.89 3.95-3.3 4.35v.05a3.15 3.15 0 0 1 3.22 3.49 24.6 24.6 0 0 0 .42 5.21h-3.64a8.17 8.17 0 0 1-.39-3.44c0-2.12.2-3.91-2.66-3.91h-1zm0-10.08h1.65c1.48 0 1.89-1.48 1.89-2.61 0-1.69-.71-2.33-1.89-2.33h-1.65zM99.66 22.61h10v1.18H101V29h8.07v1.2H101v5.72h8.72v1.18H99.66zM110.25 26.63h1.42l3.33 9.19 3.25-9.19h1.32l-3.92 10.47h-1.36zM121.56 32.21c0 1.87 1 4.12 3.45 4.12a3.19 3.19 0 0 0 3.29-2.68h1.28c-.58 2.35-1.93 3.76-4.58 3.76-3.33 0-4.73-2.56-4.73-5.54 0-2.76 1.4-5.54 4.73-5.54s4.71 2.94 4.61 5.88zm6.78-1.07c-.06-1.93-1.26-3.74-3.33-3.74s-3.25 1.83-3.45 3.74zM131.33 26.63h1.17v2.46a3.87 3.87 0 0 1 4-2.6v1.28a3.61 3.61 0 0 0-3.9 3.75v5.58h-1.27zM136.52 26.63h1.36l3.45 8.93 3.23-8.93h1.28l-4.55 12.08c-.73 1.76-1.16 2.27-2.76 2.27a3.3 3.3 0 0 1-1-.1V39.8a4.47 4.47 0 0 0 .87.1c1.14 0 1.4-.67 1.83-1.64l.44-1.2zM146 26.63h1.36l2.68 9 2.56-9h1.44l2.56 9 2.68-9h1.36l-3.27 10.47H156l-2.58-8.81-2.56 8.81h-1.4zM162.08 22.61h1.28v5.83a3.55 3.55 0 0 1 3.35-2.11c2.94 0 3.83 1.54 3.83 4v6.77h-1.24v-6.53c0-1.81-.58-3.17-2.65-3.17s-3.25 1.54-3.29 3.59v6.11h-1.28zM173.73 32.21c0 1.87 1 4.12 3.45 4.12a3.19 3.19 0 0 0 3.29-2.68h1.28c-.55 2.38-1.93 3.76-4.57 3.76-3.33 0-4.73-2.56-4.73-5.54 0-2.76 1.4-5.54 4.73-5.54s4.71 2.94 4.61 5.88zm6.78-1.07c-.06-1.93-1.26-3.74-3.33-3.74s-3.25 1.83-3.45 3.74zM183.5 26.63h1.17v2.46a3.87 3.87 0 0 1 4-2.6v1.28a3.61 3.61 0 0 0-3.9 3.75v5.58h-1.27zM190.26 32.21c0 1.87 1 4.12 3.45 4.12a3.18 3.18 0 0 0 3.29-2.68h1.28c-.55 2.38-1.93 3.76-4.56 3.76-3.33 0-4.73-2.56-4.73-5.54 0-2.76 1.4-5.54 4.73-5.54s4.7 2.94 4.6 5.88zm6.74-1.07c-.06-1.93-1.25-3.74-3.32-3.74s-3.25 1.83-3.45 3.74zM198.86 26.61h2.54l2.74 7.83 2.66-7.83h2.41l-4.08 11.06c-.75 1.89-1.29 3.59-3.71 3.59a10.48 10.48 0 0 1-1.6-.12v-2a6.78 6.78 0 0 0 1.09.14c1.08 0 1.34-.56 1.63-1.46l.26-.81zM210.05 31.85c0-3.21 1.93-5.52 5.29-5.52s5.3 2.31 5.3 5.52-1.93 5.54-5.3 5.54-5.29-2.32-5.29-5.54zm8.28 0c0-1.81-.91-3.7-3-3.7s-3 1.89-3 3.7.91 3.71 3 3.71 3-1.89 3-3.71zM231.77 37.1h-2.28v-1.46a3.51 3.51 0 0 1-3 1.75c-2.74 0-3.92-1.38-3.92-4.12v-6.66h2.32V33c0 1.85.75 2.52 2 2.52 1.92 0 2.57-1.24 2.57-2.86v-6.05h2.32zM234.2 22.61h1.28V37.1h-1.28zM247.29 31.87c0 3-1.74 5.54-4.95 5.54s-5-2.54-5-5.54 1.75-5.54 5-5.54 4.95 2.53 4.95 5.54zm-8.62 0c0 2.23 1.22 4.46 3.67 4.46S246 34.1 246 31.87s-1.22-4.47-3.68-4.47-3.65 2.23-3.65 4.47zM258.56 31.87c0 3-1.74 5.54-4.95 5.54s-5-2.54-5-5.54 1.74-5.54 5-5.54 4.95 2.53 4.95 5.54zm-8.62 0c0 2.23 1.21 4.46 3.67 4.46s3.67-2.23 3.67-4.46-1.21-4.47-3.67-4.47-3.67 2.23-3.67 4.47zM260.45 22.61h1.28v9.09l5.81-5.07h1.7l-4.47 3.88 4.77 6.59h-1.6l-4.14-5.7-2.07 1.72v4h-1.28zM268.12 22.5h2.31v.43h-.91v2.42H269v-2.42h-.9zM270.75 22.5h.7l.79 2.23.76-2.23h.69v2.85h-.47v-2.2l-.79 2.2H272l-.79-2.2v2.2h-.47zM47.39.43h24.97l18.11 17.68H64.88L47.39.43zM42.69.43H17.61L0 18.11h25.09L42.69.43zM46.07 2l17.37 17.37v24.44L46.07 26.77V2zM44.14 2v24.77L26.29 43.81V19.84L44.14 2z"/></g></symbol><symbol id="globe" viewBox="0 0 22 22"><path d="M11 0C4.925 0 0 4.925 0 11s4.925 11 11 11 11-4.925 11-11S17.075 0 11 0zM1.41 11.688h4.925c.062 1.325.288 2.772.563 4.124h-4.22a9.535 9.535 0 0 1-1.268-4.124zm4.925-1.376H1.41a9.534 9.534 0 0 1 1.268-4.124h4.22c-.275 1.352-.501 2.8-.563 4.125zm1.94-4.124h5.45c.277 1.353.503 2.802.565 4.125H7.71c.062-1.323.288-2.772.564-4.126zm-.565 5.5h6.58c-.062 1.322-.288 2.77-.564 4.124H8.274c-.276-1.354-.502-2.802-.564-4.124zm7.955 0h4.925a9.534 9.534 0 0 1-1.268 4.124h-4.22c.277-1.352.501-2.8.563-4.124zm0-1.376c-.062-1.325-.286-2.772-.563-4.124h4.22a9.534 9.534 0 0 1 1.268 4.125h-4.925zm2.697-5.5h-3.565a53.497 53.497 0 0 0-.788-2.948 9.656 9.656 0 0 1 4.353 2.949zm-5.837-3.304c.195.632.55 1.846.896 3.304H8.579c.345-1.458.7-2.672.896-3.304A9.673 9.673 0 0 1 11 1.375c.521 0 1.027.054 1.525.133zm-4.533.356c-.204.682-.5 1.73-.79 2.949H3.64a9.635 9.635 0 0 1 4.353-2.95zM3.64 17.187h3.564c.288 1.22.584 2.267.788 2.95a9.645 9.645 0 0 1-4.352-2.95zm5.836 3.305a53.286 53.286 0 0 1-.896-3.305h4.842a53.862 53.862 0 0 1-.894 3.305 9.69 9.69 0 0 1-1.527.133 9.673 9.673 0 0 1-1.525-.133zm4.534-.356c.206-.682.501-1.73.79-2.948h3.562a9.656 9.656 0 0 1-4.352 2.948z" fill="#828282" fill-rule="nonzero"/></symbol><symbol id="globe_icon" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M20 10c0-5.523-4.477-10-10-10S0 4.477 0 10s4.477 10 10 10 10-4.477 10-10zm-2.07-1H15a12.91 12.91 0 0 0-2.33-6.54A8 8 0 0 1 17.93 9zM7.08 11H13a11.44 11.44 0 0 1-3 6.61A11 11 0 0 1 7.08 11zm0-2A11.4 11.4 0 0 1 10 2.4 11.19 11.19 0 0 1 13 9H7.08zm.36-6.57A13.18 13.18 0 0 0 5.07 9h-3a8 8 0 0 1 5.37-6.57zM2.07 11h3a12.86 12.86 0 0 0 2.35 6.56A8 8 0 0 1 2.07 11zm10.55 6.55A13.14 13.14 0 0 0 15 11h2.95a8 8 0 0 1-5.33 6.55z" fill="#D62828"/></symbol><symbol id="globe_solid_icon" viewBox="0 0 34 35"><path d="M23.375 17.516c0 1.474-.08 2.895-.22 4.25h-12.31c-.14-1.355-.28-2.776-.28-4.25 0-1.475.14-2.896.28-4.25h12.31c.14 1.354.22 2.775.22 4.25zm10.087-4.25c.352 1.361.538 2.782.538 4.25 0 1.467-.186 2.888-.538 4.25h-8.175a42.837 42.837 0 0 0 0-8.5h8.175zm-.697-2.125h-7.75c-.664-4.241-1.979-7.795-3.672-10.065a17.038 17.038 0 0 1 11.422 10.065zm-9.901 0H11.136c.405-2.418 1.03-4.557 1.793-6.286.698-1.568 1.474-2.705 2.225-3.422C15.898.727 16.515.516 17 .516c.485 0 1.102.21 1.846.917.75.717 1.527 1.854 2.225 3.422.763 1.729 1.388 3.868 1.793 6.286zm-21.628 0A17.034 17.034 0 0 1 12.657 1.076C10.964 3.346 9.649 6.9 8.985 11.141h-7.75zm7.477 2.125c-.14 1.368-.273 2.789-.273 4.25 0 1.4.133 2.882.273 4.25H.536A17.047 17.047 0 0 1 0 17.516c0-1.468.186-2.889.536-4.25h8.177zm4.216 16.907c-.763-1.727-1.388-3.865-1.793-6.282h11.728c-.405 2.417-1.03 4.555-1.793 6.282-.698 1.574-1.475 2.709-2.225 3.426-.744.704-1.361.917-1.906.917-.425 0-1.042-.213-1.786-.917-.75-.717-1.527-1.852-2.225-3.426zm-.272 3.785A17.04 17.04 0 0 1 1.236 23.89h7.749c.664 4.243 1.979 7.796 3.672 10.067zm8.686 0c1.693-2.271 3.008-5.824 3.672-10.067h7.75a17.044 17.044 0 0 1-11.422 10.067z" fill="#D62828"/></symbol><symbol id="google" viewBox="0 0 16 16"><path d="M13.812 2.394V.218h-1.087v2.176h-2.174V3.48h2.174v2.177h1.087V3.48h2.176V2.394zM10.171 0H5.455C3.063 0 1.067 1.765 1.067 3.706c0 1.984 1.311 3.565 3.562 3.565.156 0 .309-.009.457-.02-.147.28-.25.593-.25.92 0 .551.303.864.678 1.229-.284 0-.557.008-.856.008C1.918 9.408 0 11.294 0 13.104 0 14.886 2.313 16 5.053 16c3.123 0 5.044-1.771 5.044-3.555 0-1.429-.31-2.147-1.832-3.289-.437-.328-1.388-1.001-1.388-1.452 0-.528.15-.789.947-1.411.816-.638 1.393-1.477 1.393-2.52 0-1.136-.464-2.166-1.338-2.666h1.238L10.171 0zM8.572 12.139c.039.164.061.334.061.508 0 1.44-.928 2.565-3.591 2.565-1.894 0-3.262-1.198-3.262-2.64 0-1.41 1.605-2.629 3.499-2.606.442.004.854.075 1.227.196 1.029.715 1.857 1.16 2.066 1.977zM5.54 6.55c-1.271-.039-2.479-1.205-2.698-2.874C2.621 2.007 3.475.73 4.745.767c1.271.039 2.359 1.408 2.577 3.077.219 1.669-.511 2.743-1.782 2.706z"/></symbol><symbol id="gridview" viewBox="0 0 20 20"><title>Grid View</title><g fill="none"><path d="M8.75 7.917c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833V1.25c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667zM19.583 7.917c0 .46-.373.833-.833.833h-6.667a.834.834 0 0 1-.833-.833V1.25c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667zM8.75 18.75c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833v-6.667c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667zM19.583 18.75c0 .46-.373.833-.833.833h-6.667a.834.834 0 0 1-.833-.833v-6.667c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667z"/></g></symbol><symbol id="instagram" viewBox="0 0 20 20"><path d="M18.803 4.608c-.6-1.96-1.928-3.104-3.907-3.494-1.009-.198-2.036-.18-3.057-.182a293.129 293.129 0 0 0-4.873.021c-.904.014-1.814.036-2.691.304-1.964.6-3.119 1.939-3.493 3.95-.113.602-.126 1.306-.178 1.918v.01l-.002 6.213c.013.141.033.279.037.419.022.936.122 1.858.494 2.726.646 1.516 1.793 2.439 3.372 2.841.711.182 1.518.226 2.247.245l6.324-.011c.929-.021 2.123-.147 2.985-.521 1.507-.651 2.426-1.805 2.824-3.393.179-.717.224-1.447.228-2.182.009-2.064.02-4.131 0-6.196-.009-.896-.045-1.797-.31-2.668zm-1.567 10.669c-.362 1.404-1.279 2.221-2.682 2.439-.77.121-1.559.135-2.341.16l-5.332-.003c-.672-.011-1.346-.024-2.004-.196-1.397-.368-2.208-1.289-2.426-2.699-.121-.782-.146-1.582-.157-2.375a208.826 208.826 0 0 1-.007-5.068c.007-.768.009-1.541.204-2.294.363-1.405 1.281-2.222 2.683-2.439.776-.122 1.572-.147 2.36-.159 1.678-.025 3.358-.026 5.037-.008.764.008 1.531.011 2.28.207 1.396.366 2.208 1.287 2.425 2.698.119.781.146 1.581.157 2.374.024 1.69.024 3.38.008 5.069-.007.768-.009 1.54-.205 2.294z"/><path d="M9.864 5.458c-2.627.002-4.771 2.161-4.77 4.797.001 2.652 2.148 4.81 4.781 4.805 2.625-.005 4.765-2.167 4.761-4.807-.004-2.641-2.15-4.797-4.772-4.795zm-.01 7.899c-1.693.002-3.067-1.392-3.069-3.113a3.093 3.093 0 0 1 3.099-3.085c1.683-.001 3.059 1.396 3.062 3.105a3.092 3.092 0 0 1-3.092 3.093zM14.795 4.147a1.12 1.12 0 0 0-1.112 1.132 1.12 1.12 0 1 0 2.239-.014 1.117 1.117 0 0 0-1.127-1.118z"/></symbol><symbol id="itc-logo" viewBox="0 0 110 47"><g clip-path="url(#itc-logo-a)"><mask id="itc-logo-b" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="110" height="47"><path fill="#000" d="M.611 0H109.47v46.623H.611z"/></mask><g mask="url(#itc-logo-b)"><path d="M47.23 23.31c0 12.876-10.435 23.313-23.31 23.313C11.048 46.623.612 36.186.612 23.31.611 10.437 11.047 0 23.921 0c12.873 0 23.31 10.437 23.31 23.31" fill="#fff"/><path d="M9.457 34.164h-.521l.052-.783.012-.197c.007-.073.023-1.117.038-2.92.015-1.767.023-3.234.023-4.4l-.001-.068v-.258c0-.974-.002-2.036-.007-3.186A310.032 310.032 0 0 0 9 17.999l-.018-.749h4.366l-.008.558-.002.187c-.02 1.447-.039 2.802-.054 4.063a264.078 264.078 0 0 0-.023 3.365v.088c0 2.295.012 4.14.038 5.53l.04 2.203v.92h-3.88zM20.789 32.823l.118-.144-.118.144c-1.27-1.03-1.887-2.605-1.917-4.489v-.366c0-1.086.008-2.243.023-3.474.013-1.099.02-2.425.022-3.978v.186h-2.062v-3.468h2.2v-3.816h3.897v3.817h4.174v3.467h-4.182c-.004.107-.01.47-.015.903a177.895 177.895 0 0 0-.023 2.348v3.797c.007 1.2.307 1.848.763 2.225.663.508.798.658 2.22.694h.086c.159 0 .346-.003.56-.007l.064-.001.855-.045-.327 3.617-.107.016-.146.02a7.705 7.705 0 0 1-.607.037c-.288.01-.54.015-.754.016H25.41c-2.14 0-3.44-.519-4.621-1.5M36.34 33.973a10.699 10.699 0 0 1-2.998-1.204 8.123 8.123 0 0 1-2.92-3.006c-.709-1.257-1.066-2.682-1.066-4.197v-.002-.014-.012c0-1.385.33-2.693.98-3.858a8.424 8.424 0 0 1 2.498-2.814c.921-.659 2.003-1.145 3.231-1.478 1.188-.322 1.873-.431 3.158-.5h.009s.007 0 0 0c.205-.01.46-.013.663-.013.2 0 .351.003.352.003l.12.009.184 3.845-.14-.006s-.539 0-.824.014l-.117.005c-.975.047-1.134.086-1.834.219-.656.125-1.311.369-1.948.665-.773.35-1.34.858-1.788 1.587-.45.75-.654 1.48-.657 2.3.002 1.056.215 1.849.605 2.484a4.27 4.27 0 0 0 1.67 1.567 6.502 6.502 0 0 0 1.928.682c.002 0 .887.195 1.67.264 0 0 .37.027.623.02.079 0 .26-.003.388-.01.102-.005.426-.026.426-.026l-.319 3.834c.202-.02-.015.026-.474.046l-.25.003a5.3 5.3 0 0 1-.335-.01H39.153c-1.265-.06-1.757-.139-2.813-.397" fill="#000"/><path d="M55.214 20.724v6.617H54.05v-6.617h-2.114V19.68h5.393v1.044h-2.114z" fill="#fff"/><path fill-rule="evenodd" clip-rule="evenodd" d="M63.7 27.341l-1.617-3.228h-1.455v3.228h-1.165V19.68h2.976c1.456 0 2.384.936 2.384 2.238 0 1.097-.669 1.797-1.532 2.034l1.769 3.39H63.7zm-1.348-6.618h-1.725v2.4h1.725c.777 0 1.305-.442 1.305-1.195 0-.753-.528-1.205-1.305-1.205M71.747 27.34l-.528-1.538h-3.03l-.529 1.539h-1.24l2.814-7.661h.939l2.814 7.66h-1.24zm-2.016-5.928l-1.198 3.4h2.362l-1.164-3.4z" fill="#fff"/><path fill="#fff" d="M74.885 19.68h1.165v7.661h-1.165zM83.578 27.34l-3.548-5.39v5.39h-1.165v-7.66h1.068l3.548 5.38v-5.38h1.164v7.66h-1.067zM87.459 19.68h1.165v7.661h-1.165zM96.152 27.34l-3.548-5.39v5.39H91.44v-7.66h1.068l3.548 5.38v-5.38h1.165v7.66h-1.068zM104.626 26.532c-.582.613-1.304.872-2.113.872-.798 0-1.488-.29-2.017-.818-.755-.753-.744-1.603-.744-3.077 0-1.475-.01-2.325.744-3.078.529-.527 1.197-.818 2.017-.818 1.628 0 2.577 1.065 2.793 2.378h-1.175c-.195-.84-.755-1.334-1.618-1.334-.453 0-.863.183-1.133.473-.377.41-.463.84-.463 2.379 0 1.538.086 1.98.463 2.388.27.29.68.463 1.133.463.507 0 .949-.194 1.251-.538.28-.323.388-.71.388-1.205v-.43h-1.639v-.99h2.804v1.172c0 .99-.183 1.625-.691 2.163M54.706 37.977c-.797 0-1.485-.29-2.012-.818-.754-.753-.743-1.603-.743-3.077s-.01-2.325.743-3.078a2.775 2.775 0 0 1 2.012-.819c1.41 0 2.464.83 2.733 2.358h-1.184c-.183-.775-.699-1.313-1.55-1.313-.451 0-.86.172-1.129.463-.377.409-.463.85-.463 2.389 0 1.539.086 1.98.463 2.389.269.29.678.462 1.13.462.85 0 1.377-.538 1.56-1.312h1.173c-.258 1.527-1.345 2.356-2.733 2.356M59.334 37.912V30.25h4.896v1.044h-3.734v2.24h3.185v1.032h-3.185v2.303h3.734v1.043h-4.896zM70.87 37.912l-3.54-5.39v5.39h-1.162V30.25h1.065l3.54 5.381V30.25h1.162v7.662H70.87zM76.875 31.294v6.618h-1.162v-6.618h-2.11V30.25h5.38v1.044h-2.108zM80.654 37.912V30.25h4.896v1.044h-3.734v2.24h3.185v1.032h-3.185v2.303h3.734v1.043h-4.896z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M91.717 37.912l-1.614-3.228H88.65v3.228h-1.162V30.25h2.97c1.453 0 2.378.937 2.378 2.24 0 1.097-.667 1.796-1.528 2.033l1.765 3.39h-1.356zm-1.345-6.619H88.65v2.4h1.722c.775 0 1.302-.44 1.302-1.194s-.527-1.206-1.302-1.206" fill="#fff"/><path d="M13.77 12.498a2.545 2.545 0 1 1-5.09 0 2.545 2.545 0 0 1 5.09 0" fill="#000"/><path fill="#fff" d="M52.037 9.107h1.162v7.661h-1.162zM60.388 16.77l-3.54-5.39v5.39h-1.163V9.11h1.066l3.54 5.38V9.11h1.162v7.66h-1.066zM65.1 10.151v2.335h3.185v1.044H65.1v3.239h-1.162V9.107h4.895v1.044H65.1z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M74.946 16.769l-1.614-3.228h-1.453v3.228h-1.162V9.107h2.97c1.452 0 2.377.937 2.377 2.239 0 1.097-.666 1.796-1.527 2.033l1.764 3.39h-1.355zM73.6 10.152H71.88v2.4H73.6c.775 0 1.302-.441 1.302-1.195 0-.753-.527-1.205-1.302-1.205M82.65 16.769l-.528-1.539H79.1l-.528 1.539h-1.237l2.808-7.662h.937l2.808 7.662H82.65zm-2.012-5.93l-1.195 3.401H81.8l-1.162-3.4zM89.688 16.769l-1.615-3.228h-1.452v3.228H85.46V9.107h2.97c1.452 0 2.378.937 2.378 2.239 0 1.097-.668 1.796-1.528 2.033l1.764 3.39h-1.355zm-1.345-6.617H86.62v2.4h1.722c.774 0 1.302-.441 1.302-1.195 0-.753-.528-1.205-1.302-1.205" fill="#fff"/><path d="M92.99 16.77V9.11h4.896v1.043h-3.734v2.238h3.185v1.033h-3.185v2.303h3.734v1.044H92.99z" fill="#fff"/><path fill-rule="evenodd" clip-rule="evenodd" d="M104.633 16.048c-.485.484-1.184.72-1.98.72h-2.69v-7.66h2.69c.796 0 1.495.236 1.98.72.828.829.774 1.948.774 3.056 0 1.109.054 2.335-.774 3.164m-.796-5.38c-.323-.354-.754-.516-1.302-.516h-1.41v5.574h1.41c.548 0 .979-.161 1.302-.516.397-.442.408-1.27.408-2.325 0-1.054-.011-1.775-.408-2.216M107.575 9.139a1.895 1.895 0 1 1 0-3.79 1.895 1.895 0 0 1 0 3.79m0-3.44c-.848 0-1.518.68-1.518 1.545 0 .864.67 1.545 1.518 1.545s1.513-.681 1.513-1.545c0-.864-.665-1.545-1.513-1.545m.399 2.565l-.419-.811h-.262v.811h-.377V6.217h.77c.387 0 .66.288.66.628a.57.57 0 0 1-.404.555l.456.864h-.424zm-.335-1.729h-.346v.618h.346c.198 0 .335-.136.335-.309s-.137-.309-.335-.309" fill="#fff"/></g></g></symbol><symbol id="itc-search" viewBox="0 0 43 43"><path fill-rule="evenodd" clip-rule="evenodd" d="M42.146 38.23l-7.971-7.888a18.34 18.34 0 0 0 3.962-11.402C38.137 8.659 29.739.325 19.381.325 9.02.325.623 8.659.623 18.94c0 10.281 8.398 18.615 18.757 18.615a18.659 18.659 0 0 0 11.488-3.932l7.948 7.911a2.354 2.354 0 0 0 3.33 0 2.318 2.318 0 0 0 0-3.304zM5.315 18.94c0-7.71 6.298-13.962 14.067-13.962 7.77 0 14.067 6.251 14.067 13.962 0 7.71-6.298 13.961-14.067 13.961-7.77 0-14.067-6.25-14.067-13.961z" fill="#304659"/></symbol><symbol id="landing_icon_1" viewBox="0 0 54 62"><path d="M27 31c8.522 0 15.429-6.939 15.429-15.5S35.522 0 27 0 11.571 6.939 11.571 15.5 18.478 31 27 31zm11.547 3.948l-5.761 23.177-3.857-16.469 3.857-6.781H21.214l3.857 6.781-3.857 16.469-5.761-23.177C6.858 35.359 0 42.419 0 51.15v5.038C0 59.397 2.592 62 5.786 62h42.428C51.408 62 54 59.397 54 56.187V51.15c0-8.73-6.858-15.79-15.453-16.202z" fill="#D62828"/></symbol><symbol id="landing_icon_2" viewBox="0 0 67 67"><path d="M60.803 18.928a2.094 2.094 0 0 0-1.48-3.573h-7.677V7.678a2.094 2.094 0 0 0-3.573-1.48l-6.98 6.98a2.094 2.094 0 0 0-.614 1.479v7.917l-5.533 5.533a5.59 5.59 0 0 0-7.03 5.394 5.586 5.586 0 0 0 6.313 5.533 5.584 5.584 0 0 0 4.665-6.98l5.533-5.533h7.917c.555 0 1.087-.22 1.48-.614l6.979-6.979zM33.5 5.584a27.86 27.86 0 0 1 9.559 1.678l-3.942 3.942a4.755 4.755 0 0 0-.477.558 22.333 22.333 0 1 0 16.602 16.602c.195-.145.382-.307.558-.48l3.936-3.942a27.865 27.865 0 0 1 1.68 9.559c0 15.418-12.497 27.916-27.916 27.916-15.418 0-27.916-12.498-27.916-27.916 0-15.419 12.498-27.917 27.916-27.917zm0 11.167c1.446 0 2.848.184 4.188.53v4.137l-1.156 1.156a5.628 5.628 0 0 0-.137.14A11.18 11.18 0 0 0 22.333 33.5a11.168 11.168 0 1 0 21.954-2.895l.14-.137 1.156-1.156h4.14A16.75 16.75 0 1 1 33.5 16.751z" fill="#D62828"/></symbol><symbol id="landing_icon_3" viewBox="0 0 63 65"><path d="M29.985 61.356a3.05 3.05 0 0 0 2.831-.003C56.52 48.621 58.203 23.744 58.181 16.671a2.922 2.922 0 0 0-1.763-2.672L32.603 3.45a2.973 2.973 0 0 0-2.405.004L6.55 14.003A2.929 2.929 0 0 0 4.8 16.64C4.697 23.68 6.114 48.61 29.984 61.356zm-8.324-33.905l6.783 6.783 12.7-12.7 4.183 4.183L28.444 42.6 17.478 31.634l4.183-4.183z" fill="#D62828"/></symbol><symbol id="layers_icon" viewBox="0 0 30 30"><path opacity=".01" fill="#D62828" d="M0 0h30v30H0z"/><path d="M4.012 9.311l10.549 5.733a.632.632 0 0 0 .594 0l10.55-5.733a.545.545 0 0 0-.062-1.003L15.093 4a.62.62 0 0 0-.47 0L4.073 8.308a.545.545 0 0 0-.061 1.003z" fill="#D62828"/><path d="M25.643 13.483l-2.266-.965-8.221 4.47c-.186.099-.409.099-.595 0l-8.221-4.47-2.266.965a.594.594 0 0 0 0 1.053l10.55 6.067a.57.57 0 0 0 .594 0l10.549-6.067a.594.594 0 0 0-.124-1.053z" fill="#D62828"/><path d="M25.643 18.98l-1.932-.841-8.556 4.655c-.185.1-.408.1-.594 0L6.005 18.14l-1.931.842a.607.607 0 0 0 0 1.077l10.549 6.19a.632.632 0 0 0 .594 0l10.55-6.19a.607.607 0 0 0-.124-1.077z" fill="#D62828"/></symbol><symbol id="linkedin" viewBox="0 0 18 18"><path d="M13.615 5.745c2.438 0 4.266 1.602 4.266 5.046v6.429h-3.703v-5.999c0-1.506-.537-2.537-1.879-2.537-1.021 0-1.632.697-1.9 1.365-.098.24-.122.572-.122.909v6.262H6.573s.047-10.161 0-11.212h3.704v1.588c-.007.012-.015.026-.024.037h.024v-.038c.493-.765 1.373-1.85 3.338-1.85zM2.695.6C1.429.6.601 1.438.601 2.538c0 1.075.804 1.938 2.045 1.938h.025c1.292 0 2.096-.863 2.096-1.938C4.743 1.438 3.963.6 2.695.6M.818 17.22h3.706V6.008H.818V17.22z"/></symbol><symbol id="linkedin_gray_icon" viewBox="0 0 25 26"><g clip-path="url(#clip0_334_8435)" fill="#304659" fill-opacity=".5"><path opacity=".01" d="M24.844 25.515H0V.671h24.844z"/><path d="M15.708 9.34a6.045 6.045 0 0 0-6.066 6.034v6.097c0 .515.418.933.934.933h2.177a.933.933 0 0 0 .933-.933v-6.097a2.012 2.012 0 0 1 2.23-2 2.074 2.074 0 0 1 1.814 2.073v6.024c0 .515.418.933.933.933h2.177a.933.933 0 0 0 .933-.933v-6.097a6.045 6.045 0 0 0-6.065-6.034z"/><rect x="3.11" y="10.273" width="4.666" height="12.131" rx=".442"/><circle cx="5.443" cy="6.075" r="2.333"/></g></symbol><symbol id="listview" viewBox="0 0 20 20"><title>Exported from Streamline App (https://app.streamlineicons.com)</title><g fill="none"><path d="M8.75 7.917c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833V1.25c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667zM8.75 18.75c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833v-6.667c0-.46.373-.833.833-.833h6.667c.46 0 .833.373.833.833v6.667zM11.248 2.08h8.333M11.248 4.58h8.333M11.248 7.08h8.333M11.248 12.914h8.333M11.248 15.414h8.333M11.248 17.914h8.333"/></g></symbol><symbol id="localization" viewBox="0 0 16 18"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.688.25C3.574.25.228 3.342.188 7.18c0 4.795 6.609 10.133 6.89 10.36.351.28.868.28 1.219 0 .328-.227 6.89-5.565 6.89-10.36-.04-3.839-3.386-6.93-7.5-6.93zm0 9.625c-1.813 0-3.282-1.371-3.282-3.063 0-1.69 1.47-3.062 3.282-3.062s3.28 1.371 3.28 3.063c0 1.69-1.468 3.062-3.28 3.062z" fill="#000" fill-opacity=".3"/></symbol><symbol id="localization_icon_dotted_unactive" viewBox="0 0 28 28"><path opacity=".01" fill="#304659" fill-opacity=".5" d="M0 0h28v28H0z"/><circle cx="14" cy="10.548" r="1.5" fill="#304659" fill-opacity=".5"/><path fill-rule="evenodd" clip-rule="evenodd" d="M14 1.75c-5.759 0-10.443 4.328-10.5 9.703 0 6.712 9.253 14.184 9.647 14.503a1.384 1.384 0 0 0 1.706 0c.46-.319 9.647-7.791 9.647-14.504C24.442 6.078 19.758 1.75 14 1.75zm0 13.474c-2.537 0-4.594-1.92-4.594-4.287 0-2.368 2.057-4.288 4.594-4.288 2.537 0 4.594 1.92 4.594 4.288 0 2.368-2.057 4.287-4.594 4.287z" fill="#304659" fill-opacity=".5"/></symbol><symbol id="localization_red_icon" viewBox="0 0 16 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 0a8 8 0 0 0-8 7.92C0 13.4 7.05 19.5 7.35 19.76a1 1 0 0 0 1.3 0C9 19.5 16 13.4 16 7.92A8 8 0 0 0 8 0zm0 11a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" fill="#D62828"/></symbol><symbol id="localization_red_icon_dotted_inside" viewBox="0 0 32 32"><path opacity=".01" fill="#D62828" d="M0 0h32v32H0z"/><circle cx="16" cy="12.548" r="1.5" fill="#D62828"/><path fill-rule="evenodd" clip-rule="evenodd" d="M16 2C9.419 2 4.065 6.947 4 13.088 4 20.76 14.575 29.3 15.025 29.665a1.582 1.582 0 0 0 1.95 0C17.5 29.3 28 20.76 28 13.088 27.934 6.946 22.58 2 16 2zm0 15.4c-2.9 0-5.25-2.194-5.25-4.9 0-2.707 2.35-4.9 5.25-4.9s5.25 2.193 5.25 4.9c0 2.706-2.35 4.9-5.25 4.9z" fill="#D62828"/></symbol><symbol id="mail_icon" viewBox="0 0 40 33"><path d="M40 8.562v18.092a6.396 6.396 0 0 1-1.83 4.487A6.202 6.202 0 0 1 33.75 33H6.25a6.202 6.202 0 0 1-4.42-1.859A6.396 6.396 0 0 1 0 26.654V8.562l19.365 11.57a1.236 1.236 0 0 0 1.27 0L40 8.563zM33.75 0c1.538 0 3.022.575 4.168 1.616a6.379 6.379 0 0 1 2.044 4.027L20 17.566.038 5.643a6.38 6.38 0 0 1 2.044-4.027A6.196 6.196 0 0 1 6.25 0h27.5z" fill="#D62828"/></symbol><symbol id="menu" viewBox="-31 4 27 19"><path d="M-31 4h27v3h-27V4zm0 8h27v3h-27v-3zm0 8h27v3h-27v-3z"/></symbol><symbol id="message_icon" viewBox="0 0 34 33"><path fill-rule="evenodd" clip-rule="evenodd" d="M23.667 15.516a1.667 1.667 0 1 1 0-3.335 1.667 1.667 0 0 1 0 3.335zm-6.667 0A1.667 1.667 0 1 1 17 12.18 1.667 1.667 0 0 1 17 15.516zm-6.667 0a1.667 1.667 0 1 1 .002-3.335 1.667 1.667 0 0 1-.002 3.335zm18.334-15H5.333c-2.756 0-5 2.243-5 5v25a1.667 1.667 0 0 0 2.525 1.428l7.54-4.523c.26-.157.557-.239.859-.239h17.41c2.756 0 5-2.243 5-5V5.516c0-2.757-2.244-5-5-5z" fill="#D62828"/></symbol><symbol id="minus_icon" viewBox="0 0 32 5"><path fill-rule="evenodd" clip-rule="evenodd" d="M30 4.014H2c-1.104 0-2-.884-2-1.977C0 .943.896.059 2 .059h28c1.106 0 2 .884 2 1.978a1.987 1.987 0 0 1-2 1.977z" fill="#D62828"/></symbol><symbol id="modelselectorview" viewBox="0 0 20 20"><title>Model Selector</title><g fill="none"><path d="M1.25.418h17.5c.46 0 .833.373.833.833v17.5c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833V1.25c0-.46.373-.834.833-.834z"/><path d="M10 2.917a1.666 1.666 0 1 1 0 3.333 1.666 1.666 0 0 1 0-3.332zM11.665 4.584h5.436M2.934 4.584H8.33M6.667 8.334a1.666 1.666 0 1 1 0 3.333 1.666 1.666 0 0 1 0-3.333zM8.33 10h8.77M2.934 10h2.063M8.333 13.75a1.666 1.666 0 1 1 .001 3.333 1.666 1.666 0 0 1 0-3.332zM9.997 15.418H17.1M2.934 15.418h3.733"/></g></symbol><symbol id="modelselectorviewblack" viewBox="0 0 20 20"><title>Model Selector</title><g stroke="#2F2F2F" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M1.25.418h17.5c.46 0 .833.373.833.833v17.5c0 .46-.373.833-.833.833H1.25a.834.834 0 0 1-.833-.833V1.25c0-.46.373-.834.833-.834z" stroke-width=".83333"/><path d="M10 2.917a1.666 1.666 0 1 1 0 3.333 1.666 1.666 0 0 1 0-3.332zM11.665 4.584h5.436M2.934 4.584H8.33M6.667 8.334a1.666 1.666 0 1 1 0 3.333 1.666 1.666 0 0 1 0-3.333zM8.33 10h8.77M2.934 10h2.063M8.333 13.75a1.666 1.666 0 1 1 .001 3.333 1.666 1.666 0 0 1 0-3.332zM9.997 15.418H17.1M2.934 15.418h3.733" stroke-width=".83333"/></g></symbol><symbol id="monitor" viewBox="0 0 31 30"><path fill-rule="evenodd" clip-rule="evenodd" d="M6.722 3.741H24.18a3.746 3.746 0 0 1 3.74 3.741v6.235H2.98V7.482a3.746 3.746 0 0 1 3.742-3.74zm0 17.458a3.746 3.746 0 0 1-3.742-3.74V16.21h24.94v1.247a3.746 3.746 0 0 1-3.74 3.741h-7.482v2.494h4.988a1.25 1.25 0 0 1 1.247 1.247 1.25 1.25 0 0 1-1.247 1.247H9.216a1.25 1.25 0 0 1-1.247-1.247 1.25 1.25 0 0 1 1.247-1.247h4.988V21.2H6.72z" fill="#D62828"/><mask id="monitor-a" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="2" y="3" width="26" height="24"><path fill-rule="evenodd" clip-rule="evenodd" d="M6.722 3.741H24.18a3.746 3.746 0 0 1 3.74 3.741v6.235H2.98V7.482a3.746 3.746 0 0 1 3.742-3.74zm0 17.458a3.746 3.746 0 0 1-3.742-3.74V16.21h24.94v1.247a3.746 3.746 0 0 1-3.74 3.741h-7.482v2.494h4.988a1.25 1.25 0 0 1 1.247 1.247 1.25 1.25 0 0 1-1.247 1.247H9.216a1.25 1.25 0 0 1-1.247-1.247 1.25 1.25 0 0 1 1.247-1.247h4.988V21.2H6.72z" fill="#fff"/></mask><g mask="url(#monitor-a)"><path fill="#D62828" d="M.486.001h29.928v29.928H.486z"/></g></symbol><symbol id="news" viewBox="0 0 72 71"><path fill="none" stroke="#979797" d="M.5 22.5V60a9.5 9.5 0 0 0 9.5 9.5h1.5M6 60V22.5M21.5 12.5h37v10h-37zM44.5 28.5h14v16h-14zM21.5 28.5h14v6h-14zM21.5 40.5h14v6h-14zM21.5 53.5h37v6h-37z"/><path fill="none" stroke="#979797" d="M71.5.5h-60v69H62c5.246 0 9.5-4.254 9.5-9.5V.5z"/></symbol><symbol id="orange_arrow_right" viewBox="0 0 20 18"><path d="M1.578 10.148h14.27l-4.368 5.003a1.113 1.113 0 0 0 .157 1.618 1.245 1.245 0 0 0 1.696-.149l6.016-6.885c.04-.054.077-.112.109-.172 0-.057.06-.092.084-.149.054-.132.083-.272.084-.413a1.1 1.1 0 0 0-.084-.413c0-.057-.06-.092-.084-.15a1.349 1.349 0 0 0-.109-.171l-6.016-6.885a1.228 1.228 0 0 0-.926-.413 1.24 1.24 0 0 0-.77.264 1.112 1.112 0 0 0-.156 1.618l4.367 5.003H1.578C.914 7.854.375 8.367.375 9s.539 1.147 1.203 1.147z" fill="#F76407"/></symbol><symbol id="page-up" viewBox="0 0 56 98"><rect class="circle" x="1" y="5" width="54" height="54" rx="27" fill="currentColor" fill-opacity="currentColor" stroke="currentColor" stroke-width="2"/><path class="text" d="M25.504 78.798c0 2.412-.972 3.492-2.898 3.492-1.926 0-2.916-1.08-2.916-3.492V71.58a.18.18 0 0 0-.18-.18h-1.728a.18.18 0 0 0-.18.18v7.236c0 3.51 1.476 5.4 5.004 5.4 3.528 0 4.986-1.89 4.986-5.4V71.58a.18.18 0 0 0-.18-.18h-1.728a.18.18 0 0 0-.18.18v7.218zM32.711 84c.108 0 .18-.072.18-.18v-4.05h2.628c3.186 0 4.788-1.62 4.788-4.266 0-2.466-1.494-4.104-4.68-4.104h-4.644a.18.18 0 0 0-.18.18v12.24c0 .108.072.18.18.18h1.728zm.18-6.102v-4.626h2.592c1.8 0 2.61.954 2.61 2.34 0 1.476-.918 2.286-2.61 2.286h-2.592z" fill="currentColor"/><path class="arrow" fill-rule="evenodd" clip-rule="evenodd" d="M37 36.5c-.34 0-.68-.114-.96-.348l-8.057-6.714-8.043 6.472a1.5 1.5 0 0 1-1.88-2.337l9-7.242a1.497 1.497 0 0 1 1.901.017l9 7.5A1.5 1.5 0 0 1 37 36.5z" fill="currentColor"/></symbol><symbol id="path_down_icon" viewBox="0 0 10 13"><path d="M4.492 1.486v8.447L1.53 7.348a.659.659 0 0 0-.958.092c-.24.303-.2.753.088 1.005l4.076 3.561a.806.806 0 0 0 .102.064c.034 0 .054.036.088.05.078.032.161.05.245.05a.654.654 0 0 0 .244-.05c.034 0 .055-.036.089-.05a.806.806 0 0 0 .102-.064L9.68 8.445a.727.727 0 0 0 .245-.549.734.734 0 0 0-.156-.456.658.658 0 0 0-.958-.093L5.85 9.934V1.486c0-.394-.304-.713-.68-.713-.374 0-.678.32-.678.713z" fill="#D62828"/></symbol><symbol id="path_icon" viewBox="0 0 32 33"><path d="M30 14.6H18v-12a2 2 0 1 0-4 0v12H2a2 2 0 1 0 0 4h12v12a2 2 0 1 0 4 0v-12h12a2 2 0 1 0 0-4z" fill="#D62828"/></symbol><symbol id="path_right" viewBox="0 0 12 11"><path d="M1.21 6.197h8.115L6.84 9.18a.685.685 0 0 0 1.054.876l3.42-4.106a.806.806 0 0 0 .063-.102c0-.035.034-.055.047-.09a.684.684 0 0 0 .048-.246.684.684 0 0 0-.048-.246c0-.034-.034-.055-.048-.089a.807.807 0 0 0-.061-.103L7.895.97a.684.684 0 0 0-1.054.876l2.484 2.983H1.21a.684.684 0 1 0 0 1.369z" fill="#304659"/></symbol><symbol id="person_icon" viewBox="0 0 30 30"><path opacity=".01" fill="#D62828" d="M0 0h30v30H0z"/><path d="M14.827 13.937a4.942 4.942 0 1 0 0-9.884 4.942 4.942 0 0 0 0 9.884zM22.24 26.293c.683 0 1.236-.553 1.236-1.236a8.649 8.649 0 0 0-17.298 0c0 .683.553 1.236 1.235 1.236H22.24z" fill="#D62828"/></symbol><symbol id="phone_icon" viewBox="0 0 34 35"><path fill-rule="evenodd" clip-rule="evenodd" d="M26 34.182C11.846 34.182.333 22.67.333 8.516.333 4.287 3.773.849 8 .849c.433 0 .861.037 1.276.108a7.21 7.21 0 0 1 1.209.305c.543.189.95.644 1.078 1.204l2.283 9.94a1.671 1.671 0 0 1-.421 1.526c-.229.237-.234.242-2.3 1.324 1.673 3.623 4.581 6.521 8.133 8.138 1.082-2.068 1.088-2.075 1.325-2.302.408-.39.983-.541 1.528-.421l9.94 2.281a1.668 1.668 0 0 1 1.202 1.077c.137.393.238.8.307 1.218.07.412.106.839.106 1.269 0 4.228-3.438 7.666-7.666 7.666" fill="#D62828"/></symbol><symbol id="pixel" viewBox="0 0 84.5 126.75"><path d="M42.25 0L0 42.25l21.125 21.125L42.25 42.25l21.125 21.125L84.5 42.25zM42.25 126.75L0 84.5l21.125-21.125L42.25 84.5l21.125-21.125L84.5 84.5z"/></symbol><symbol id="pixels" viewBox="0 0 213 296"><path opacity=".1" fill="#6DFBFF" d="M105.874.125l21.125 21.125-21.125 21.125L84.749 21.25 105.874.125zM21.375 84.624L42.5 105.749l-21.125 21.125L.25 105.749l21.125-21.125zm147.873 21.125l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zm21.125 21.125l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zm-42.25-84.499L169.248 63.5l-21.125 21.125L126.998 63.5l21.125-21.125zM42.499 105.749l21.125 21.125L42.5 147.999l-21.125-21.125 21.124-21.125zm84.499-42.25l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zm-84.498 84.5l21.125 21.125L42.5 190.249l-21.125-21.125L42.5 147.999zm84.498-42.25l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zm-84.499 84.499l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zM148.123.125l21.125 21.125-21.125 21.125-21.125-21.125L148.123.125zM63.624 84.624l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125zm126.749-42.249L211.498 63.5l-21.125 21.125L169.248 63.5l21.125-21.125zm-84.499 84.499l21.125 21.125-21.125 21.125-21.125-21.125 21.125-21.125z"/><path opacity=".3" fill="#6DFBFF" d="M148.123 295.872l-21.125-21.124 21.125-21.125 21.125 21.125-21.125 21.124zm84.5-84.499l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zM84.749 190.248l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm-21.125-21.125L42.5 147.999l21.125-21.125 21.125 21.125-21.126 21.124zm42.25 84.5l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm105.624-63.375l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm-84.5 42.25l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm84.5-84.499l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm-84.5 42.249l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm84.5-84.499l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zM105.874 295.872l-21.125-21.124 21.125-21.125 21.125 21.125-21.125 21.124zm84.499-84.499l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125zm-126.749 42.25L42.5 232.498l21.125-21.125 21.125 21.125-21.126 21.125zm84.499-84.5l-21.125-21.125 21.125-21.125 21.125 21.125-21.125 21.125z"/></symbol><symbol id="play-icon" viewBox="0 0 60 60"><path fill-rule="evenodd" clip-rule="evenodd" d="M29.703 3C16.621 3 6 13.62 6 26.703c0 13.082 10.62 23.703 23.703 23.703 13.082 0 23.703-10.62 23.703-23.703C53.406 13.621 42.786 3 29.703 3zm-4.74 34.37V16.037l14.222 10.666L24.963 37.37z" fill="#fff" filter="url(#play-icon-a)"/></symbol><symbol id="playbutton-playing" viewBox="0 0 100 100"><use xlink:href="#play-circle-1" class="play-circle-1"/><use xlink:href="#play-circle-2" class="play-circle-2"/><use xlink:href="#play-triangle" class="play-triangle"/></symbol><symbol id="playbutton-small" viewBox="0 0 53 53"><circle opacity=".8" fill="none" stroke="#FFF" stroke-width="3" stroke-dasharray="111,49,23,4" cx="26.576" cy="26.575" r="24.364"/><circle opacity=".8" fill="none" stroke="#FFF" stroke-dasharray="52,49,23,4" cx="26.576" cy="26.576" r="21.469"/><path fill="#FFF" d="M34.846 26.426l-11.011 7.406V19.021z"/></symbol><symbol id="playbutton" viewBox="0 0 100 100"><use xlink:href="#play-circle-1"/><use xlink:href="#play-circle-2"/><use xlink:href="#play-triangle"/></symbol><symbol id="play_icon" viewBox="0 0 112 113"><path fill-rule="evenodd" clip-rule="evenodd" d="M56.024 3.585c-27.58 0-49.971 22.391-49.971 49.972 0 27.58 22.39 49.971 49.971 49.971 27.58 0 49.972-22.39 49.972-49.971 0-27.58-22.391-49.972-49.972-49.972zM46.03 76.044V31.069l29.983 22.488L46.03 76.044z" fill="#fff" filter="url(#play_icon-a)"/></symbol><symbol id="plus_icon" viewBox="0 0 24 25"><g clip-path="url(#plus_icon-a)" fill="#fff"><path opacity=".01" d="M24 24.4H0V.4h24z"/><path d="M19 11.4h-6v-6a1 1 0 1 0-2 0v6H5a1 1 0 1 0 0 2h6v6a1 1 0 1 0 2 0v-6h6a1 1 0 1 0 0-2z"/></g></symbol><symbol id="point"><path fill="#0C7424" d="M7.837 11.58A1.004 1.004 0 0 0 6.417 13l3 3a1 1 0 0 0 .71.29 1 1 0 0 0 .72-.34l7-8a1 1 0 0 0-1.5-1.32l-6.22 7.2-2.29-2.25z"/><path fill="#0C7424" d="M20.2 10.307a1 1 0 0 0-1 1 8 8 0 0 1-8 8 8 8 0 0 1-5.67-13.64 7.93 7.93 0 0 1 5.67-2.36 8.79 8.79 0 0 1 1.9.22 1 1 0 1 0 .47-1.94 10.54 10.54 0 0 0-2.37-.28 10 10 0 0 0-7 17.09 9.93 9.93 0 0 0 7 2.91c5.523 0 10-4.477 10-10a1 1 0 0 0-1-1z"/></symbol><symbol id="printer" viewBox="0 0 18 16"><path d="M16 3.5h-1V0H3v3.5H2a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2V16h10v-3.5h2a2 2 0 0 0 2-2v-5a2 2 0 0 0-2-2zM4.25 1.25h9.5V3.5h-9.5V1.25zM13 15H5V8.25h8V15zm3.75-4.5c0 .413-.337.75-.75.75h-2V7H4v4.25H2a.75.75 0 0 1-.75-.75v-5A.75.75 0 0 1 2 4.75h14a.75.75 0 0 1 .75.75v5z"/><path d="M6.5 11h5a.5.5 0 0 0 0-1h-5a.5.5 0 0 0 0 1zM6.5 13h5a.5.5 0 0 0 0-1h-5a.5.5 0 0 0 0 1z"/></symbol><symbol id="question_mark_circle_icon" viewBox="0 0 53 54"><path fill-rule="evenodd" clip-rule="evenodd" d="M28.708 28.39v2.568a2.206 2.206 0 0 1-2.208 2.208 2.206 2.206 0 0 1-2.208-2.208V26.54c0-1.221.987-2.208 2.208-2.208a3.317 3.317 0 0 0 3.313-3.313 3.317 3.317 0 0 0-3.313-3.312 3.317 3.317 0 0 0-3.312 3.312 2.206 2.206 0 0 1-2.209 2.208 2.206 2.206 0 0 1-2.208-2.208c0-4.262 3.467-7.73 7.73-7.73 4.261 0 7.728 3.468 7.728 7.73 0 3.49-2.34 6.41-5.52 7.37zM26.5 39.79a2.206 2.206 0 0 1-2.208-2.207c0-1.222.987-2.209 2.208-2.209s2.208.987 2.208 2.209A2.206 2.206 0 0 1 26.5 39.79zm0-35.332c-12.177 0-22.083 9.906-22.083 22.083 0 12.177 9.906 22.083 22.083 22.083 12.177 0 22.083-9.906 22.083-22.083 0-12.177-9.906-22.083-22.083-22.083z" fill="#D62828"/><mask id="question_mark_circle_icon-a" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="4" y="4" width="45" height="45"><path fill-rule="evenodd" clip-rule="evenodd" d="M28.708 28.39v2.568a2.206 2.206 0 0 1-2.208 2.208 2.206 2.206 0 0 1-2.208-2.208V26.54c0-1.221.987-2.208 2.208-2.208a3.317 3.317 0 0 0 3.313-3.313 3.317 3.317 0 0 0-3.313-3.312 3.317 3.317 0 0 0-3.312 3.312 2.206 2.206 0 0 1-2.209 2.208 2.206 2.206 0 0 1-2.208-2.208c0-4.262 3.467-7.73 7.73-7.73 4.261 0 7.728 3.468 7.728 7.73 0 3.49-2.34 6.41-5.52 7.37zM26.5 39.79a2.206 2.206 0 0 1-2.208-2.207c0-1.222.987-2.209 2.208-2.209s2.208.987 2.208 2.209A2.206 2.206 0 0 1 26.5 39.79zm0-35.332c-12.177 0-22.083 9.906-22.083 22.083 0 12.177 9.906 22.083 22.083 22.083 12.177 0 22.083-9.906 22.083-22.083 0-12.177-9.906-22.083-22.083-22.083z" fill="#fff"/></mask><g mask="url(#question_mark_circle_icon-a)"><path fill="#D62828" d="M0 .041h53v53H0z"/></g></symbol><symbol id="quote" viewBox="0 0 32 25"><path fill="transparent" stroke="url(#quote-a)" stroke-linecap="square" d="M1 23.707h12.932V11.226H8.669L14.834 1h-4.361L4.759 7.09C1.902 10.173 1 12.053 1 15.061v8.646zm16.166 0h12.932V11.226h-5.264L31 1h-4.361l-5.714 6.09c-2.856 3.083-3.759 4.962-3.759 7.97v8.647z"/></symbol><symbol id="refresh_icon" viewBox="0 0 49 48"><path d="M46.123 28.149a2.617 2.617 0 0 0-3.271 1.7 18.685 18.685 0 0 1-17.978 12.876c-10.242.116-18.646-8.077-18.79-18.318.144-10.242 8.548-18.435 18.79-18.319a18.998 18.998 0 0 1 12.168 4.37l-5.679-.941a2.617 2.617 0 0 0-3.009 2.172 2.617 2.617 0 0 0 2.172 3.009l11.095 1.832h.445c.304 0 .605-.054.89-.157a.865.865 0 0 0 .262-.157c.188-.07.364-.167.523-.288l.236-.288c0-.13.235-.235.34-.393.105-.156 0-.261.13-.366.073-.152.134-.31.184-.47l1.963-10.468a2.664 2.664 0 1 0-5.234-.995l-.707 3.795A24.101 24.101 0 0 0 24.873.855C11.742.738.994 11.275.852 24.407c.143 13.131 10.89 23.668 24.023 23.552a23.866 23.866 0 0 0 23.08-16.54 2.617 2.617 0 0 0-1.831-3.27z" fill="#D62828"/></symbol><symbol id="repeat_icon" viewBox="0 0 30 30"><path opacity=".01" fill="#D62828" d="M0 0h30v30H0z"/><path d="M22.169 6.482H7.315l1.61-1.597a1.243 1.243 0 1 0-1.759-1.757L3.454 6.84a1.238 1.238 0 0 0 0 1.758l3.714 3.713a1.238 1.238 0 0 0 1.757 0 1.238 1.238 0 0 0 0-1.757L7.315 8.958h14.854a1.931 1.931 0 0 1 1.968 1.894v3.057a1.238 1.238 0 0 0 2.476 0v-3.057a4.407 4.407 0 0 0-4.444-4.37zM22.54 17.981a1.243 1.243 0 1 0-1.757 1.758l1.61 1.597H7.537a1.931 1.931 0 0 1-1.968-1.894v-3.058a1.238 1.238 0 0 0-2.475 0v3.058a4.407 4.407 0 0 0 4.444 4.37h14.853l-1.609 1.596a1.238 1.238 0 0 0 0 1.758 1.238 1.238 0 0 0 1.758 0l3.713-3.714a1.238 1.238 0 0 0 0-1.758l-3.713-3.713z" fill="#D62828"/></symbol><symbol id="right_arrow" viewBox="0 0 12 10"><path d="M1.21 5.685h8.115L6.84 8.668a.685.685 0 1 0 1.054.876l3.42-4.105a.806.806 0 0 0 .063-.103c0-.034.034-.055.047-.089a.684.684 0 0 0 .048-.246.684.684 0 0 0-.048-.247c0-.034-.034-.054-.048-.089a.807.807 0 0 0-.061-.102L7.895.457a.684.684 0 0 0-1.054.876l2.484 2.983H1.21a.684.684 0 1 0 0 1.369z" fill="#304659"/></symbol><symbol id="search" viewBox="0 0 20 20"><circle fill="none" stroke="#4F4F4F" cx="8.235" cy="8.235" r="7.735"/><path fill="none" stroke="#4F4F4F" d="M14 14l5.7 5.7"/></symbol><symbol id="shoppingcart" viewBox="0 0 33 31"><path opacity=".01" d="M0 .254h33v30H0z"/><path d="M28.515 9.569a2.645 2.645 0 0 0-2.249-1.323H9.336l-.766-2.99c-.16-.593-.708-.999-1.323-.978H4.602a1.323 1.323 0 1 0 0 2.645h1.64l3.65 13.57c.16.595.708 1 1.323.98h11.904a1.323 1.323 0 0 0 1.177-.728l4.338-8.677c.382-.8.337-1.739-.12-2.5z" fill="#fff"/><circle cx="10.5" cy="24.754" r="2.5" fill="#fff"/><circle cx="24.5" cy="24.754" r="2.5" fill="#fff"/></symbol><symbol id="student-info-icon" viewBox="0 0 20 21"><path fill-rule="evenodd" clip-rule="evenodd" d="M10 .922c-5.523 0-10 4.477-10 10s4.477 10 10 10 10-4.477 10-10-4.477-10-10-10zm1 14a1 1 0 1 1-2 0v-5a1 1 0 1 1 2 0v5zm-1-7a1 1 0 1 1 0-2 1 1 0 0 1 0 2z" fill="#304659" fill-opacity=".3"/></symbol><symbol id="student_icon" viewBox="0 0 44 51"><path fill-rule="evenodd" clip-rule="evenodd" d="M6.216 11.936l3.811 1.053a9.347 9.347 0 0 0-.446 2.862 9.352 9.352 0 1 0 16.945-5.462l6.27-3.293c1.167-.613.974-2.34-.3-2.68L19.86 1.042c-.386-.09-.663-.142-1.25-.038-.131.023-.258.07-.376.132L3.859 8.687c-.61.32-.849.945-.756 1.518v8.933a1.556 1.556 0 0 0 3.113 0v-7.202zm18.711 30.365h10.134v2.027H24.927v-2.027zm-8.686 2.896v4.343a1.448 1.448 0 0 0 1.448 1.448h24.61a1.448 1.448 0 0 0 1.448-1.448V35.063a1.448 1.448 0 0 0-1.448-1.448H32.166v-2.128a1.448 1.448 0 0 0-2.896 0v2.128h-2.895s-7.715-.1-8.55-.1c-.836 0-1.67.835-1.67 1.67 0 .836.086 10.012.086 10.012zm10.134-16.764v2.577h-8.55c-1.535 0-4.176 1.67-4.176 4.175v10.022l-13.362-.01v-9.57a4.749 4.749 0 0 1 2.722-4.342 37.64 37.64 0 0 1 15.925-3.46c2.492.003 4.98.206 7.44.608zm14.477 19.66H19.136V36.51H29.27v.608a1.448 1.448 0 1 0 2.896 0v-.608h8.686v11.581z" fill="#D62828"/></symbol><symbol id="teledyne" viewBox="0 0 273.7 43.8"><path d="M108.1.1V3H104v14.8h-3.7V3h-4.1V.1h11.9zM109.8 17.8V.1h9.7v2.7h-6v4.4h5.5v2.7h-5.5v5.2h6.2v2.7h-9.9zM122.1 17.8V.1h3.7v14.8h5.6v2.9h-9.3zM133 17.8V.1h9.7v2.7h-6v4.4h5.5v2.7h-5.5v5.2h6.2v2.7H133zM145.4.1h6.2c4.9 0 5.8 3.2 5.8 8.8 0 2.7.4 9-5.9 9h-6V.1zm3.7 15h1.8c2.3 0 2.7-1.7 2.7-6.1 0-3.3 0-6.1-2.6-6.1h-1.9v12.2zM162.9 11.7L158.3.1h4.1l2.7 7.5 2.8-7.5h3.8l-5 11.6v6.1H163v-6.1zM173.3 17.8V.1h5l4.7 12.3V.1h3.5v17.7h-4.9l-4.8-13v13h-3.5zM189.7 17.8V.1h9.7v2.7h-6v4.4h5.5v2.7h-5.5v5.2h6.2v2.7h-9.9zM97.5 41.2V23.5h9.2v2.7h-5.5v4.5h5.3v2.7h-5.3v7.7h-3.7zM108.5 41.2V23.5h3.7v14.8h5.6v2.9h-9.3zM119.4 41.2V23.5h3.7v17.7h-3.7zM129.3 41.2h-3.7V23.5h6.9c2.5 0 4.2 1.6 4.2 4.6 0 2.3-.9 4-3.3 4.4.8.1 3.2.3 3.2 3.5 0 1.1.1 4.5.4 5.2h-3.6c-.5-1.1-.4-2.3-.4-3.4 0-2.1.2-3.9-2.7-3.9h-1v7.3zm0-10h1.6c1.5 0 1.9-1.5 1.9-2.6 0-1.7-.7-2.3-1.9-2.3h-1.6v4.9zM48 .5h24.9l18.2 17.7H65.5zM43.3.5H18.2L.6 18.2h25.1zM46.7 2.1L64 19.5v24.4l-17.3-17zM44.7 2.1v24.8l-17.8 17v-24z"/></symbol><symbol id="therm_camera_icon" viewBox="0 0 53 54"><g clip-path="url(#clip0_334_8570)" fill="#D62828"><g clip-path="url(#clip1_334_8570)"><path d="M38.528.412H15.792a4.02 4.02 0 0 0-4.014 4.016v14.789c0 .825.253 1.63.726 2.306l5.768 8.217a4.026 4.026 0 0 0 3.287 1.707h.55v5.097h8.926a11.775 11.775 0 0 1 0-5.097 11.81 11.81 0 0 1 10.25-9.168l.53-.758c.476-.675.73-1.48.73-2.306V4.428A4.022 4.022 0 0 0 38.527.412zM23.66 24.952a3.498 3.498 0 1 1 6.996-.001 3.498 3.498 0 0 1-6.997.002zm14.88-5.762a.734.734 0 0 1-.733.734H16.51a.734.734 0 0 1-.734-.734V4.61a.735.735 0 0 1 .734-.733h21.298a.733.733 0 0 1 .733.734v14.58zM32.212 39.667v8.544a5.051 5.051 0 0 1-10.103 0v-10.2h9.351c.208.571.459 1.125.752 1.656z"/><path d="M37.074 5.343h-19.83v13.113h19.83V5.343zM29.191 24.954a2.032 2.032 0 1 1-4.063.002 2.032 2.032 0 0 1 4.063-.002z"/></g><g clip-path="url(#clip2_334_8570)"><path d="M15.605.412h22.737a4.02 4.02 0 0 1 4.013 4.016v14.789c.001.825-.253 1.63-.726 2.306L35.86 29.74a4.026 4.026 0 0 1-3.287 1.707h-.55v5.097h-8.926a11.778 11.778 0 0 0 0-5.097 11.81 11.81 0 0 0-10.25-9.168l-.53-.758a3.998 3.998 0 0 1-.73-2.306V4.428A4.023 4.023 0 0 1 15.607.412zm14.867 24.54a3.5 3.5 0 1 0-6.998-.001 3.5 3.5 0 0 0 6.998.002zm-14.88-5.762a.732.732 0 0 0 .734.734h21.296a.734.734 0 0 0 .734-.734V4.61a.735.735 0 0 0-.734-.733H16.325a.733.733 0 0 0-.734.734v14.58zM21.922 39.667v8.544a5.05 5.05 0 1 0 10.102 0v-10.2h-9.351c-.207.571-.459 1.125-.751 1.656z"/><path d="M17.06 5.343h19.829v13.113h-19.83V5.343zM24.942 24.954a2.032 2.032 0 1 0 4.063.002 2.032 2.032 0 0 0-4.063-.002z"/></g></g></symbol><symbol id="twitter" viewBox="0 0 19 16"><path d="M18.795 1.787a7.595 7.595 0 0 1-2.176.601A3.82 3.82 0 0 0 18.285.28a7.557 7.557 0 0 1-2.405.924A3.77 3.77 0 0 0 13.115 0c-2.092 0-3.788 1.706-3.788 3.811 0 .298.034.59.098.868A10.733 10.733 0 0 1 1.618.698a3.816 3.816 0 0 0-.512 1.915c0 1.322.668 2.488 1.685 3.172a3.741 3.741 0 0 1-1.716-.477v.049a3.807 3.807 0 0 0 3.037 3.736 3.786 3.786 0 0 1-1.709.067 3.792 3.792 0 0 0 3.537 2.646 7.558 7.558 0 0 1-4.703 1.631c-.305 0-.605-.017-.903-.052a10.679 10.679 0 0 0 5.805 1.711c6.966 0 10.777-5.808 10.777-10.843 0-.166-.004-.33-.012-.494a7.677 7.677 0 0 0 1.891-1.972"/></symbol><symbol id="twitter_gray_icon" viewBox="0 0 19 18"><path d="M5.38 17.367A11.48 11.48 0 0 0 17.244 5.96a8.39 8.39 0 0 0 1.535-2.946.456.456 0 0 0-.643-.529 1.95 1.95 0 0 1-2.24-.394 4.034 4.034 0 0 0-5.787-.176A4.283 4.283 0 0 0 8.916 5.96c-3.474.207-5.86-1.442-7.768-3.703a.446.446 0 0 0-.777.249 10.04 10.04 0 0 0 4.77 10.423 6.98 6.98 0 0 1-4.636 2.364.467.467 0 0 0-.145.872c1.56.779 3.277 1.19 5.02 1.203" fill="#304659" fill-opacity=".5"/></symbol><symbol id="user" viewBox="0 0 21 23"><path fill="none" stroke="#737373" d="M10.519 14.966c1.804 0 3.692-1.208 5.668-3.625 2.739.836 4.135 2.044 4.187 3.625.053 1.58.078 2.789.078 3.627-3.166 2.189-6.477 3.284-9.933 3.284-3.457 0-6.779-1.095-9.968-3.284v-3.627c0-1.583 1.612-2.792 4.835-3.625 1.618 2.417 3.329 3.625 5.133 3.625zM10.317 11.318c2.15 0 3.998-4.308 3.998-7.927 0-3.62-7.606-3.959-7.606 0s1.458 7.927 3.608 7.927z"/></symbol><symbol id="video-close" viewBox="0 0 39 39"><path d="M22.458 19.5L39 36.04 36.34 38.7 19.8 22.158 3.258 38.7.6 36.04 17.14 19.5.6 2.958 3.258.3 19.8 16.84 36.34.3l1.33 1.33L39 2.957 22.458 19.5z" fill="#fff"/></symbol><symbol id="video-next" viewBox="0 0 60 60"><path fill-rule="evenodd" clip-rule="evenodd" d="M24.999 47.5a2.5 2.5 0 0 1-1.92-4.1l11.19-13.428L23.48 16.567a2.501 2.501 0 0 1 3.898-3.135l12.07 15a2.501 2.501 0 0 1-.028 3.168l-12.5 15c-.495.592-1.205.9-1.922.9z" fill="#fff"/><mask id="video-next-a" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="22" y="12" width="18" height="36"><path fill-rule="evenodd" clip-rule="evenodd" d="M24.999 47.5a2.5 2.5 0 0 1-1.92-4.1l11.19-13.428L23.48 16.567a2.501 2.501 0 0 1 3.898-3.135l12.07 15a2.501 2.501 0 0 1-.028 3.168l-12.5 15c-.495.592-1.205.9-1.922.9z" fill="#fff"/></mask><g mask="url(#video-next-a)"><path fill="#fff" d="M0 0h60v60H0z"/></g></symbol><symbol id="video-previous" viewBox="0 0 60 60"><path fill-rule="evenodd" clip-rule="evenodd" d="M35.001 12.5a2.5 2.5 0 0 1 1.92 4.1l-11.19 13.428L36.52 43.433a2.501 2.501 0 0 1-3.898 3.135l-12.07-15a2.501 2.501 0 0 1 .028-3.168l12.5-15A2.498 2.498 0 0 1 35 12.5z" fill="#fff"/><mask id="video-previous-a" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="19" y="12" width="19" height="36"><path fill-rule="evenodd" clip-rule="evenodd" d="M35.001 12.5a2.5 2.5 0 0 1 1.92 4.1l-11.19 13.428L36.52 43.433a2.501 2.501 0 0 1-3.898 3.135l-12.07-15a2.501 2.501 0 0 1 .028-3.168l12.5-15A2.498 2.498 0 0 1 35 12.5z" fill="#fff"/></mask><g mask="url(#video-previous-a)"><path fill="#fff" d="M60 60H0V0h60z"/></g></symbol><symbol id="youtube" viewBox="0 0 20 20"><path d="M16.162 9.479H3.904C1.956 9.479.377 11.07.377 13.03v2.854c0 1.96 1.579 3.55 3.527 3.55h12.258c1.949 0 3.529-1.59 3.529-3.55V13.03c0-1.961-1.58-3.551-3.529-3.551zm-9.682 2.22H5.34v5.699H4.239v-5.699H3.101v-.969h3.38v.969zm3.22 5.699h-.978v-.541c-.18.199-.367.352-.564.455a1.18 1.18 0 0 1-.566.158c-.229 0-.396-.072-.512-.221-.113-.146-.171-.364-.171-.658v-4.112h.978v3.772c0 .117.021.2.06.252.042.055.11.078.201.078.07 0 .162-.032.271-.102.111-.07.211-.158.303-.266v-3.735H9.7v4.92zm3.544-1.015c0 .347-.075.613-.229.801-.152.186-.376.277-.664.277-.192 0-.362-.035-.511-.105a1.276 1.276 0 0 1-.418-.334v.377h-.988V10.73h.988v2.147c.132-.148.271-.264.418-.341a.942.942 0 0 1 .451-.117c.311 0 .546.104.709.313.164.21.244.518.244.919v2.732zm3.389-1.326h-1.869v.927c0 .259.032.438.096.54.064.1.176.148.332.148.161 0 .274-.042.34-.127.062-.086.097-.272.097-.562v-.225h1.005v.253c0 .504-.121.885-.369 1.142-.242.253-.609.379-1.096.379-.438 0-.782-.134-1.033-.405-.25-.27-.378-.641-.378-1.115v-2.209c0-.426.138-.775.415-1.044.276-.267.631-.401 1.07-.401.447 0 .791.125 1.03.372.24.249.36.606.36 1.073v1.254zm-1.108-1.703c.066.087.102.235.102.441v.497h-.863v-.497c0-.206.033-.354.102-.441.068-.092.179-.137.334-.137.148 0 .259.045.325.137zm-3.39-.026c.07.086.104.211.104.379v2.539c0 .158-.029.27-.084.34-.057.07-.145.105-.264.105a.562.562 0 0 1-.236-.054.871.871 0 0 1-.232-.173v-3.066c.067-.068.133-.119.201-.15s.138-.047.208-.047c.129 0 .232.042.303.127zM5.51 4.86L4.035.425h1.248l.804 2.937h.078L6.933.425H8.19L6.748 4.723V7.77H5.51V4.86zm3.202 2.638C8.424 7.225 8.28 6.86 8.28 6.4V3.59c0-.42.148-.754.443-1.002.296-.249.695-.373 1.195-.373.455 0 .827.131 1.121.394.288.26.433.601.433 1.013V6.42c0 .464-.141.826-.426 1.092-.285.264-.678.395-1.178.395-.483 0-.868-.136-1.156-.409zm.699-.996c0 .149.04.262.118.344.078.083.19.123.334.123.15 0 .268-.042.355-.124a.45.45 0 0 0 .133-.342V3.55a.355.355 0 0 0-.134-.288.542.542 0 0 0-.354-.108.487.487 0 0 0-.327.108.37.37 0 0 0-.125.288v2.952zm3.722 1.348c.206 0 .418-.061.637-.175.221-.114.432-.284.634-.505v.601h1.101V2.353h-1.101v4.112a1.547 1.547 0 0 1-.339.292.642.642 0 0 1-.307.113c-.104 0-.18-.028-.225-.086-.045-.057-.071-.149-.071-.277V2.353h-1.099v4.528c0 .323.065.565.193.724.132.163.321.245.577.245z"/></symbol><symbol id="youtube_gray_icon" viewBox="0 0 25 21"><path fill-rule="evenodd" clip-rule="evenodd" d="M12.117 20.245c-3.858 0-8.914-.989-8.965-.999l-.004-.005C1.328 18.948.004 17.37 0 15.489V5.31C0 3.438 1.32 1.864 3.14 1.567l.013-.015c.215-.042 5.195-.997 8.965-.997 3.904 0 8.945.992 8.97 1.002 1.822.293 3.146 1.871 3.148 3.753v10.18c-.002 1.883-1.327 3.462-3.15 3.756-.051.01-5.107 1-8.968 1zM9.694 6.094v8.614l7.271-4.307-7.27-4.307z" fill="#304659" fill-opacity=".5"/></symbol></svg>
+    </div>
+    <!--[if lt IE 8]>
+        <p class="Status Status--info">You are using an <strong>outdated</strong> browser. Please <a href="http://browsehappy.com/">upgrade your browser</a> to improve your experience.</p>
+    <![endif]-->
+
+    
+
+    <header class="Header" role="banner" data-module="Navigation" data-navigation="">
+
+    <a href="#main" class="SkipNav">[Missing text &#39;/header/skiptomaincontent&#39; for &#39;English (United States)&#39;]</a>
+
+    <input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MobileNav" value="open" id="MobileMenu-open" />
+
+    <nav class="MobileNavbar">
+        <ul class="MobileNavbar-list">
+            <li class="MobileNavbar-listItem--logo">
+                
+                    <a href="/" class="Logo-link"><svg class="Logo"><title>Logo</title><use xlink:href="#teledyne"></use></svg></a>
+            </li>
+            
+                <li class="MobileNavbar-listItem" id="SearchButtonMobile">
+                    <label class="Nav-button Nav-link" for="MobileNav_Search"><svg class="icon-search"><title>Search</title><use xlink:href="#search"></use></svg></label>
+                </li>
+            <li class="MobileNavbar-listItem">
+                <label class="MobileNav-trigger Hamburger" for="MobileMenu-open"><span></span></label>
+            </li>
+        </ul>
+    </nav>
+
+
+    <div class="MainNav">
+
+        <nav class="MainNav_Menu" role="navigation">
+            <ul class="MainNav_Menu-list">
+
+                <!--<li class="MainNav_Menu-listItem--logo  u-xsm-hidden">-->
+                
+                <!--<a href="/"><svg class="Logo"><title>Logo</title><use xlink:href="#flir-logo"></use></svg></a>
+                </li>-->
+
+                    <li class="MainNav_Menu-listItem--cart">
+                        <a class="Nav-link Cart-link" for="MainNav_MyAccount" data-module="CartCount" href="https://cart.flir.com/us"><svg class="icon-cart"><title>Cart</title><use xlink:href="#cart"></use></svg>Cart</a>
+
+                        
+                    </li>
+
+                    <li class="MainNav_Menu-listItem--account">
+                        <input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="MyAccount" id="MainNav_MyAccount" />
+                        <label class="Nav-link" for="MainNav_MyAccount">My Account</label>
+
+
+
+<a nohref class="Nav-link UserName UserName--anon">Hello, Guest</a>
+
+<div class="subNav">
+    <ul class="subNav-list">
+            <li class="subNav-listItem">
+                <a href="/auth">Log In</a>
+            </li>
+            <li class="subNav-listItem">
+                <a href="/auth">Sign Up</a>
+            </li>
+    </ul>
+</div>
+                      
+                    </li>
+
+
+                        <li class="MainNav_Menu-listItem">
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="Solutions" id="MainNav_Solutions" />
+<label class="Nav-link" for="MainNav_Solutions">Solutions</label>
+
+<div class="subNav has-flyout" data-module="subNav">
+	<div class="subNav-list">
+		<div class="subNav-Cat">
+			<ul>
+
+					<li>
+                        <h4 data-title="Automotive" class="active">Automotive</h4>
+					</li>
+					<li>
+                        <h4 data-title="Defense" class="">Defense</h4>
+					</li>
+					<li>
+                        <h4 data-title="Industrial" class="">Industrial</h4>
+					</li>
+					<li>
+                        <h4 data-title="Intelligent Transportation Systems" class="">Intelligent Transportation Systems</h4>
+					</li>
+					<li>
+                        <h4 data-title="Marine" class="">Marine</h4>
+					</li>
+					<li>
+                        <h4 data-title="Outdoor" class="">Outdoor</h4>
+					</li>
+					<li>
+                        <h4 data-title="Professional Trades" class="">Professional Trades</h4>
+					</li>
+					<li>
+                        <h4 data-title="Public Safety" class="">Public Safety</h4>
+					</li>
+					<li>
+                        <h4 data-title="Research &amp; Development" class="">Research &amp; Development</h4>
+					</li>
+					<li>
+                        <h4 data-title="Security" class="">Security</h4>
+					</li>
+					<li>
+                        <h4 data-title="Smart Cities" class="">Smart Cities</h4>
+					</li>
+			</ul>
+		</div>
+		<div class="subNav-Items">
+
+                <div data-title="Automotive" class="active">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/automotive/"><p>All Automotive Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/oem/adas/">Advanced Driver Assistance Systems (ADAS)</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/manufacturing/">Factory Automation and Quality Inspection</a>
+                            </li>
+                            <li>
+                                <a href="/applications/camera-cores-components/">OEM Camera Cores</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/automotive/automotive-repair--maintenance/">Repair &amp; Maintenance</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/automotive/automotive-research--development/">Research &amp; Development</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/iis/deep-learning--ai/">Deep Learning / AI</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/high-speed-ir/">High Speed Thermal Imaging</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/machine-vision/">Machine Vision Cameras</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/test--measurement/">Test &amp; Measurement</a>
+                                </li>
+                                <li>
+                                    <a href="/oem/adas/dataset/">Thermal Datasets</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Defense" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/government-defense/"><p>All Defense Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/surveillance/airborne/">Airborne Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/border-surveillance/">Border Security</a>
+                            </li>
+                            <li>
+                                <a href="/threat-detection/">CBRNE Interdiction &amp; Response</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/force-protection/">Force Protection</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/maritime-patrol/">Maritime Patrol &amp; Coastal Surveillance</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/elevated-skin-temperature-screening/">Public Health and Safety</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/search-and-rescue/">Search &amp; Rescue</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/threat-detection/">CBRNE &amp; Trace Detection</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/elevated-skin-temperature-screening/">Elevated Skin Temperature Screening</a>
+                                </li>
+                                <li>
+                                    <a href="/oem/high-performance-infrared-optical-assemblies/">Infrared Optical Assemblies</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/integrated-solutions/">Integrated Solutions</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/long-range/">Long-Range, Wide-Area Surveillance</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/optics/">Optical Solutions &amp; Components</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/targeting/">Targeting</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/thermal-vision/">Thermal Vision</a>
+                                </li>
+                                <li>
+                                    <a href="/uis/uas/global-military/">Unmanned Aerial Systems</a>
+                                </li>
+                                <li>
+                                    <a href="/uis/ugs/government-defense/">Unmanned Ground Systems &amp; Robotics</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Industrial" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/industrial/"><p>All Industrial Applications</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/instruments/building-diagnostics/building-inspection/">Building Diagnostics</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/condition-monitoring-solutions/">Condition Monitoring</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/manufacturing/">Manufacturing</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/condition-monitoring-solutions/ensuring-uptime-through-mining-equipment-inspections/">Mining Equipment Inspections</a>
+                            </li>
+                            <li>
+                                <a href="/applications/camera-cores-components/">OEM Integration</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/oilandgas/">Oil &amp; Gas</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/optical-gas-imaging/">Petro Chemical</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/public-safety/industrial-safety/">Public Safety</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/utilities/">Utilities</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/instruments/continuous-monitoring/">Continuous Monitoring Systems</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/early-fire-detection/">Early Fire Detection</a>
+                                </li>
+                                <li>
+                                    <a href="/oem/high-performance-infrared-optical-assemblies/">Infrared Optical Assemblies</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/machine-vision/">Machine Vision Cameras</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/on-camera-inference/">On-Camera Inference</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/optical-gas-imaging/">Optical Gas Imaging</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/test--measurement/">Test &amp; Measurement</a>
+                                </li>
+                                <li>
+                                    <a href="/applications/camera-cores-components/">Thermal Camera Modules</a>
+                                </li>
+                                <li>
+                                    <a href="/suas/">Unmanned Aerial Systems</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Intelligent Transportation Systems" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/traffic/"><p>All ITS Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/traffic/advanced-signal-control/">Advanced Signal Control</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/incident-detection/">Incident Detection</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/traffic-data-analysis/">Traffic Data Analysis</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/">Urban Planning</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/traffic/incident-detection/">Incident Response</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/public-transportation-solutions/">Public Transportation Monitoring</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/transportation-security/">Transportation Security</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Marine" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/marine/"><p>All Marine Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/marine/commercial/">Commercial Marine</a>
+                            </li>
+                            <li>
+                                <a href="/marine/first-responders/">Marine Law Enforcement</a>
+                            </li>
+                            <li>
+                                <a href="/marine/recreational-boating/">Recreational Boating</a>
+                            </li>
+                            <li>
+                                <a href="/surveillance/maritime-patrol/">Naval Systems and Coastal Surveillance</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/marine/autopilot/">Autopilot</a>
+                                </li>
+                                <li>
+                                    <a href="/marine/thermal-vision/">Marine Thermal Vision</a>
+                                </li>
+                                <li>
+                                    <a href="/marine/navigation/">Navigation</a>
+                                </li>
+                                <li>
+                                    <a href="/marine/radar/">Radar</a>
+                                </li>
+                                <li>
+                                    <a href="/marine/sonar/">Sonar</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Outdoor" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/home-outdoor/"><p>All Outdoor Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/ots/farm-management/">Farm Management</a>
+                            </li>
+                            <li>
+                                <a href="/ots/hunting/">Hunting</a>
+                            </li>
+                            <li>
+                                <a href="/ots/parks-wildlife-management/">Parks &amp; Wildlife Management</a>
+                            </li>
+                            <li>
+                                <a href="/ots/search-rescue/">Search &amp; Rescue</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/ots/forensics-evidence-retrieval/">Forensics &amp; Evidence Retrieval</a>
+                                </li>
+                                <li>
+                                    <a href="/ots/patrolling--policing/">Patrolling &amp; Policing</a>
+                                </li>
+                                <li>
+                                    <a href="/ots/thermal-vision/">Thermal Vision</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Professional Trades" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/professional-tools/"><p>All Professional Trades Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/instruments/building-diagnostics/building-inspection/">Building Inspection</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/electrical-mechanical/">Electrical</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/energy-audit/">Energy Audit</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/building-diagnostics/facility-management--maintenance/">Facility Management / Maintenance</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/thermal-camera-home-inspection/">Home Inspection</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/hvac-r/">HVAC</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/moisture-restoration/">Restoration &amp; Remediation</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/utilities/">Utilities</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/iis/machine-vision/spherical-vision-systems/">360&#176; Spherical Vision Cameras - Survey Grade</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/continuous-monitoring/">Continuous Monitoring Systems</a>
+                                </li>
+                                <li>
+                                    <a href="/suas/">Unmanned Aerial Systems</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Public Safety" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/public-safety/"><p>All Public Safety Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/surveillance/border-surveillance/">Border Security</a>
+                            </li>
+                            <li>
+                                <a href="/security/large-enterprises/">Commercial Security</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/public-safety/environmental-health-and-safety/">Environment, Health, and Safety</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/firefighting/">Firefighting</a>
+                            </li>
+                            <li>
+                                <a href="/threat-detection/hazmat/">HAZMAT Response</a>
+                            </li>
+                            <li>
+                                <a href="/ots/law-enforcement/">Law Enforcement</a>
+                            </li>
+                            <li>
+                                <a href="/ots/search-rescue/">Search &amp; Rescue</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/threat-detection/">CBRNE &amp; Trace Detection</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/early-fire-detection/">Early Fire Detection</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/public-safety/environmental-health-and-safety/">Elevated Skin Temperature Screening</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/incident-detection/">Incident Response</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/people-counting/">People Counting &amp; Flow Intelligence</a>
+                                </li>
+                                <li>
+                                    <a href="/security/perimeter-protection/">Perimeter Protection</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/public-transportation-solutions/">Public Transportation Monitoring</a>
+                                </li>
+                                <li>
+                                    <a href="/uis/public-safety/">Unmanned Systems &amp; Robotics</a>
+                                </li>
+                                <li>
+                                    <a href="/security/united-vms/">Video Management Systems</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Research &amp; Development" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/science/"><p>All R&amp;D Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/instruments/science/long-range-measurement--tracking/">Aerospace</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/automotive/automotive-research--development/">Automotive</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/science/long-range-measurement--tracking/">Defense</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/manufacturing/">Manufacturing</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/oem/adas/">Advanced Driver Assistance Systems (ADAS)</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/electronics/">Electronics Testing</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/high-speed-ir/">High Speed Thermal</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/hyperspectral-imaging/">Hyperspectral Imaging</a>
+                                </li>
+                                <li>
+                                    <a href="/oem/high-performance-infrared-optical-assemblies/">Infrared Optical Assemblies</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/long-range-measurement--tracking/">Long Range Measurement &amp; Tracking</a>
+                                </li>
+                                <li>
+                                    <a href="/instruments/science/ndt-materials-testing/">NDT &amp; Materials Testing</a>
+                                </li>
+                                <li>
+                                    <a href="/surveillance/optics/">Optical Solutions &amp; Components</a>
+                                </li>
+                                <li>
+                                    <a href="/applications/camera-cores-components/">Thermal Camera Modules</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Security" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/security/"><p>All Security Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/security/large-enterprises/">Commercial</a>
+                            </li>
+                            <li>
+                                <a href="/security/construction/">Construction</a>
+                            </li>
+                            <li>
+                                <a href="/security/stadiums/">Stadiums &amp; Venues</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/transportation-security/">Transportation</a>
+                            </li>
+                            <li>
+                                <a href="/security/total-solutions-for-critical-infrastructure/">Critical Infrastructure</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/security/analytics/">Analytics</a>
+                                </li>
+                                <li>
+                                    <a href="/security/applications--integration-center-aic/">Applications &amp; Third Party Integrations</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/deep-learning--ai/">Deep Learning / AI</a>
+                                </li>
+                                <li>
+                                    <a href="/uis/uas/public-safety/">Drones</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/people-counting/">People Flow Intelligence</a>
+                                </li>
+                                <li>
+                                    <a href="/security/perimeter-protection/">Perimeter Protection</a>
+                                </li>
+                                <li>
+                                    <a href="/security/thermal-cameras/">Thermal Vision</a>
+                                </li>
+                                <li>
+                                    <a href="/security/united-vms/">Video Management Systems</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Smart Cities" class="">
+<div class="subNav-Item">
+    <div class="Items">
+            <a href="/applications/smart-cities/"><p>All Smart Cities Solutions</p></a>
+        <div class="Columns">
+            <div class="Column">
+                <h5><p>Applications</p></h5>
+                    <ul >
+                            <li>
+                                <a href="/oem/adas/">Advanced Driver Assistance Systems (ADAS)</a>
+                            </li>
+                            <li>
+                                <a href="/security/stadiums/">Events &amp; Stadiums</a>
+                            </li>
+                            <li>
+                                <a href="/instruments/public-safety/environmental-health-and-safety/">Environment, Health, and Safety</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/">Intelligent Transportation Systems</a>
+                            </li>
+                            <li>
+                                <a href="/ots/law-enforcement/">Law Enforcement</a>
+                            </li>
+                            <li>
+                                <a href="/applications/security/">Security</a>
+                            </li>
+                            <li>
+                                <a href="/iis/people-counting/smart-buildings/">Smart Buildings</a>
+                            </li>
+                            <li>
+                                <a href="/traffic/">Urban Planning</a>
+                            </li>
+                    </ul>
+            </div>
+                <div class="Column">
+                    <h5><p>Capabilities</p></h5>
+                        <ul >
+                                <li>
+                                    <a href="/threat-detection/">CBRNE &amp; Trace Detection</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/incident-detection/">Incident Response</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/advanced-signal-control/">Intersection Control</a>
+                                </li>
+                                <li>
+                                    <a href="/iis/people-counting/smart-buildings/">Occupancy Management</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/public-transportation-solutions/">Public Transportation Monitoring</a>
+                                </li>
+                                <li>
+                                    <a href="/traffic/traffic-data-analysis/">Traffic Data Analysis</a>
+                                </li>
+                                <li>
+                                    <a href="/uis/public-safety/">Unmanned Systems and Robotics</a>
+                                </li>
+                                <li>
+                                    <a href="/security/united-vms/">Video Management Systems</a>
+                                </li>
+                        </ul>
+                </div>
+        </div>
+    </div>
+</div>
+                </div>
+		</div>
+	</div>
+</div>
+                        </li>
+                        <li class="MainNav_Menu-listItem">
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="Products" id="MainNav_Products" />
+<label class="Nav-link" for="MainNav_Products">Products</label>
+
+<div class="subNav has-flyout" data-module="subNav">
+	<div class="subNav-list">
+		<div class="subNav-Cat">
+			<ul>
+
+					<li>
+                        <h4 data-title="Government &amp; Defense" class="active">Government &amp; Defense</h4>
+					</li>
+					<li>
+                        <h4 data-title="Industrial" class="">Industrial</h4>
+					</li>
+					<li>
+                        <h4 data-title="Public Safety" class="">Public Safety</h4>
+					</li>
+					<li>
+                        <h4 data-title="Intelligent Transportation Systems" class="">Intelligent Transportation Systems</h4>
+					</li>
+					<li>
+                        <h4 data-title="Security" class="">Security</h4>
+					</li>
+					<li>
+                        <h4 data-title="Professional Tools" class="">Professional Tools</h4>
+					</li>
+					<li>
+                        <h4 data-title="Research &amp; Development" class="">Research &amp; Development</h4>
+					</li>
+					<li>
+                        <h4 data-title="Marine" class="">Marine</h4>
+					</li>
+					<li>
+                        <h4 data-title="Home &amp; Outdoor" class="">Home &amp; Outdoor</h4>
+					</li>
+					<li>
+                        <h4 data-title="Camera Modules &amp; Components" class="">Camera Modules &amp; Components</h4>
+					</li>
+			</ul>
+		</div>
+		<div class="subNav-Items">
+
+                <div data-title="Government &amp; Defense" class="active">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/government-defense/airborne-systems/">Airborne Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/unmanned-aerial-systems/">Unmanned Aerial Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/unmanned-ground-systems/">Unmanned Ground Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/land-systems/">Land Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/counter-uas/">Counter-UAS</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/tactical-solutions/">Tactical Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/maritime-systems/">Maritime Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/cbrne-detectors/">CBRNE Detectors</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/integrated-solutions/">Integrated Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/government-defense/command-amp-control/">Command &amp; Control</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Industrial" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/industrial/handheld-thermal-cameras/">Handheld Thermal Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/fixed-thermal-cameras/">Fixed Thermal Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/gas-detection-cameras/">Gas Detection Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/aerial-kits/">sUAS Cameras &amp; Kits</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/test-amp-measurement/">Test &amp; Measurement</a>
+                            </li>
+                            <li>
+                                <a href="/iis/machine-vision/">Machine Vision Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/people-counting-and-tracking/">People Counting and Tracking</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/acoustic-imaging-cameras/">Acoustic Imaging Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/flir-est-thermal-screening-solutions/">FLIR EST Thermal Screening Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/hardware-amp-software-solutions/">Hardware &amp; Software Solutions </a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/software/">Software</a>
+                            </li>
+                            <li>
+                                <a href="/browse/industrial/unmanned-ground-systems/">Unmanned Ground Systems</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Public Safety" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/public-safety/firefighting-cameras/">Firefighting Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/tactical-amp-law-enforcement-systems/">Tactical &amp; Law Enforcement</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/cbrne-detectors/">CBRNE Detectors for Public Safety</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/aerial-kits/">sUAS Cameras &amp; Kits</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/unmanned-ground-systems/">Unmanned Ground Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/flir-est-thermal-screening-solutions/">FLIR EST Thermal Screening Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/public-safety/people-flow-intelligence/">People Flow Intelligence</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Intelligent Transportation Systems" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/intelligent-transportation-systems/traffic-sensors/">Urban</a>
+                            </li>
+                            <li>
+                                <a href="/browse/intelligent-transportation-systems/traffic-cameras/">Inter-Urban</a>
+                            </li>
+                            <li>
+                                <a href="/browse/intelligent-transportation-systems/traffic-software/">Traffic Management Software</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Security" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/security/thermal-security-cameras/">Thermal Security Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/visible-security-cameras/">Visible Security Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/video-management-systems/">Video Management Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/flir-est-thermal-screening-solutions/">FLIR EST Thermal Screening Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/radars/">Radars</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/counter-uas/">Counter UAS</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/command-and-control-software/">Command and Control Software</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/encoders/">Encoders</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/servers-storage-amp-clients/">Servers, Storage &amp; Clients</a>
+                            </li>
+                            <li>
+                                <a href="/browse/security/people-flow-intelligence/">People Flow Intelligence</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Professional Tools" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/professional-tools/test-amp-measurement/">Test &amp; Measurement</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/flir-est-thermal-screening-solutions/">FLIR EST Thermal Screening Solutions</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/thermography-cameras/">Thermography Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/infrared-guided-measurement/">Infrared Guided Measurement</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/mobile-accessories/">Mobile Accessories</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/thermography-software/">Thermography Software</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/bench-instruments/">Bench Instruments</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/calibration-tools/">Calibration Tools</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/electrical-tools/">Electrical Tools</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/health-safety-amp-environmental/">Health, Safety &amp; Environmental</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/hvac-amp-air-quality/">HVAC &amp; Air Quality</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/industrial-imaging-amp-inspection/">Industrial Imaging &amp; Inspection</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/mechanical-maintenance/">Mechanical Maintenance</a>
+                            </li>
+                            <li>
+                                <a href="/browse/professional-tools/temperature-amp-humidity/">Temperature &amp; Humidity</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Research &amp; Development" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/rampd-and-science/bench-top-test-kits/">Bench Top Test Kits</a>
+                            </li>
+                            <li>
+                                <a href="/browse/rampd-and-science/high-performance-cameras/">High Performance Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/rampd-and-science/high-speed-data-recorders/">High Speed Data Recorders</a>
+                            </li>
+                            <li>
+                                <a href="/browse/rampd-and-science/rampd-software/">R&amp;D Software</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Marine" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/marine/fixed-mount-thermal-cameras/">Fixed Mount Thermal Cameras</a>
+                            </li>
+                            <li>
+                                <a href="/browse/marine/monitoring-systems/">Monitoring Systems</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Home &amp; Outdoor" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/home-amp-outdoor/mobile-accessories/">Mobile Accessories</a>
+                            </li>
+                            <li>
+                                <a href="/browse/home-amp-outdoor/handheld-optics/">Handheld Optics</a>
+                            </li>
+                            <li>
+                                <a href="/browse/home-amp-outdoor/drone-cameras/">sUAS Cameras &amp; Kits</a>
+                            </li>
+                            <li>
+                                <a href="/browse/home-amp-outdoor/test-amp-measurement/">Test &amp; Measurement</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+                <div data-title="Camera Modules &amp; Components" class="">
+<div class="subNav-Item">
+    <div class="Items">
+        <div class="Columns">
+            <div class="Column">
+                <h5></h5>
+                    <ul >
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/thermal-camera-cores/">Infrared Camera Cores &amp; Lenses</a>
+                            </li>
+                            <li>
+                                <a href="/iis/machine-vision/">Machine Vision Cameras - Area Scan</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/automotive/">Automotive</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/deep-learning-inference-cameras/">Deep Learning Inference Cameras - Area Scan</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/packaged-sensors/">Packaged Sensors</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/roics/">ROICs</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/spherical-imaging-systems/">Spherical Imaging Systems</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/lasers/">Lasers</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/focal-plane-arrays/">Focal Plane Arrays</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/pan-tilts/">Pan Tilts</a>
+                            </li>
+                            <li>
+                                <a href="/browse/camera-cores-amp-components/software-development-kits/">Software Development Kits</a>
+                            </li>
+                    </ul>
+            </div>
+        </div>
+    </div>
+</div>
+                </div>
+		</div>
+	</div>
+</div>
+                        </li>
+                        <li class="MainNav_Menu-listItem">
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="Discover" id="MainNav_Discover" />
+<label class="Nav-link" for="MainNav_Discover">Discover</label>
+
+<div class="subNav">
+	<ul class="subNav-list">
+			<li class="subNav-listItem">
+				<a href="/discover/articles/">Articles</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="/discover/webinars/">Webinars</a>
+			</li>
+	</ul>
+</div>
+                        </li>
+                        <li class="MainNav_Menu-listItem">
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="Support" id="MainNav_Support" />
+<label class="Nav-link" for="MainNav_Support">Support</label>
+
+<div class="subNav">
+	<ul class="subNav-list">
+			<li class="subNav-listItem">
+				<a href="/support-center/support-center/">Support Center</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="/support-center/training/">Training</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="https://customer.flir.com/ProductRegistration/Register">Product Registration</a>
+			</li>
+	</ul>
+</div>
+                        </li>
+                        <li class="MainNav_Menu-listItem">
+<a class="Nav-link" href="/news-center/">News</a>
+                        </li>
+                        <li class="MainNav_Menu-listItem">
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="About" id="MainNav_About" />
+<label class="Nav-link" for="MainNav_About">About</label>
+
+<div class="subNav">
+	<ul class="subNav-list">
+			<li class="subNav-listItem">
+				<a href="/about/about-flir/">About Teledyne FLIR</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="/about/wss/">Worlds Sixth Sense</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="/about/careers/">Careers</a>
+			</li>
+			<li class="subNav-listItem">
+				<a href="/about/general-inquiries/">General Inquiries</a>
+			</li>
+	</ul>
+</div>
+                        </li>
+
+                
+
+
+            </ul>
+        </nav>
+    </div>
+
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MainNav" value="Search" id="MainNav_Search" data-focus="#SearchQuery" />
+<input class="Nav-checkbox" aria-hidden="true" type="checkbox" name="MobileNav" value="Search" id="MobileNav_Search" data-focus="#SearchQuery" />
+<div class="Searchbar">
+    <div class="subNav subNav--search">
+
+        <form action="/search/"
+              data-module="search" data-search="url: '/search/Auto/', searchElement: '#SearchQuery', submitElement: '#SearchButton', contentElement: '#SearchSuggestions', minCharacters: 2">
+            <fieldset class="Fieldset">
+                <input type="search" class="Search" name="query" id="SearchQuery" autocomplete="off" placeholder="Search By Product or Keyword" /><button class="Button" id="SearchButton"><svg class="icon-search"><title>Search</title><use xlink:href="#search"></use></svg></button>
+            </fieldset>
+            <input type="hidden" name="currentMarketId" value="DEFAULT" />
+            <input type="hidden" name="currentLanguageCode" value="en-US" />
+        </form>
+        <div class="Autocomplete" id="SearchSuggestions">
+            <a href="/search" class="Link u-hidden">View All Search Results</a>
+        </div>
+    </div>
+</div>
+    <div class="TopNav">
+        
+        <div>
+                <a href="/" class="Logo-link"><svg class="Logo"><title>Logo</title><use xlink:href="#teledyne"></use></svg></a>
+        </div>
+        <nav class="TopNav_User">
+            <ul class="TopNav_User-list">
+                    <li class="TopNav_User-listItem">
+
+                        <a class="UserIcon Nav-link" tabindex="0"><svg class="icon-user"><title>User</title><use xlink:href="#user"></use></svg></a>
+
+
+
+<a nohref class="Nav-link UserName UserName--anon">Hello, Guest</a>
+
+<div class="subNav">
+    <ul class="subNav-list">
+            <li class="subNav-listItem">
+                <a href="/auth">Log In</a>
+            </li>
+            <li class="subNav-listItem">
+                <a href="/auth">Sign Up</a>
+            </li>
+    </ul>
+</div>                </li>
+
+               
+
+                    <li class="TopNav_User-listItem">
+                        <a href="https://cart.flir.com/us" class="UserCart" data-module="CartCount"><svg class="icon-cart"><title>Cart</title><use xlink:href="#cart"></use></svg></a>
+                    </li>
+
+                    <li class="TopNav_User-listItem">
+                        <div class="Nav-link RegionMap" data-module="modal" data-modal="api: '/RegionSelector/Html?culture=en-US', contentElement: '.js-regionModal', replaceHtmlAfterClose: false">
+                            <svg class="icon-globe"><title>Location</title><use xlink:href="#globe"></use></svg>
+                        </div>
+                    </li>
+
+                    <li class="MainNav_Menu-listItem--search  u-xsm-hidden" id="SearchIconDesktop">
+                        <label class="Nav-button Nav-link" for="MainNav_Search"><svg class="icon-search"><title>Search</title><use xlink:href="#search"></use></svg></label>
+                    </li>
+            </ul>
+        </nav>
+    </div>
+
+</header>
+
+
+    <main role="main" id="main" data-module="objectfit lazyloadimages">
+        
+    <div class="Page-content-container">
+        <div class="Grid"><div class="Grid-cell"><style>
+	
+</style>
+
+<div class="Page-content-container TextBlock" dir="auto" data-module="ArabicTextDirection">
+	<p>Please read and accept the Terms of Use and Teledyne FLIR Non-Commercial Image Dataset License Agreement below to download the Image Dataset.</p>
+<h1>Terms of Use</h1>
+<p>To aid in the research and development community in making advancements in machine perception and autonomous driving technology, Teledyne FLIR, LLC. (together with its affiliates and subsidiaries, &ldquo;FLIR,&rdquo; &ldquo;we,&rdquo; &ldquo;us,&rdquo; or &ldquo;our&rdquo;) is making available this proprietary machine learning thermal and visible image dataset (the &ldquo;Image Data&rdquo;) that can be used for research and non-commercial development of machine learning models. The Image Data feature a compilation of more than 26,000 annotated thermal and visible Image Data of person, bike, car, motorcycle, bus, train, truck, traffic light, fire hydrant, street sign, dog, skateboard, stroller scooter, and other vehicle in day and nighttime scenarios, and can be used by developers and others as part of their efforts to test and evolve convolutional neural networks (&ldquo;CNN&rdquo;) while using the FLIR ADK&trade; (automotive development kit).</p>
+<p>By downloading and/or using the Image Data, you, the entity you represent and all third parties obtaining access to the Image Data through you (collectively, &ldquo;you&rdquo;), acknowledge FLIR&rsquo;s complete ownership rights in the Image Data and agree to access and use the Image Data only in accordance with these Terms of Use, including the terms of the Teledyne FLIR Non-commercial Image Dataset License Agreement (the &ldquo;License&rdquo; or &ldquo;Agreement&rdquo;) and FLIR&rsquo;s Privacy Policy described in the License. If you do not agree to the Terms of Use including the License, do not download the Image Data.</p>
+<p>THE IMAGE DATA, INCLUDING THE ANNOTATIONS CONTAINED THEREON, ARE PROVIDED "AS IS", &ldquo;WITH ALL FAULTS,&rdquo; AND &ldquo;AS AVAILABLE&rdquo;. YOUR USE OF THE IMAGE DATA, INCLUDING THE ANNOTATIONS THEREON, IS AT YOUR OWN RISK AND WE DO NOT REPRESENT, PROMISE, OR WARRANT THAT THE IMAGE DATA OR ANNOTATIONS TO THE IMAGE DATA WILL BE ERROR-FREE. SOME JURISDICTIONS PROVIDE FOR CERTAIN IMPLIED WARRANTIES, SUCH AS THE IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, WE DISCLAIM ANY AND ALL ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, NONINFRINGMENT OR QUIET ENJOYMENT, AND ANY WARRANTIES THAT THE IMAGE DATA ARE ERROR-FREE. TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, YOU AGREE AND UNDERSTAND THAT FLIR WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR EXEMPLARY DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR GOODWILL OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THE IMAGE DATA, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</p>
+<p>Teledyne FLIR Non-Commercial Image Dataset License Agreement&nbsp;(Last modified January 19, 2022)</p>
+<p>This FLIR Non-commercial Image Dataset License Agreement (the &ldquo;License&rdquo; or &ldquo;Agreement&rdquo;) is an agreement between Teledyne FLIR, LLC (together with its affiliates and subsidiaries, officers, directors, employees, contractors, agents, partners, licensors and distributors, &ldquo;FLIR,&rdquo; &ldquo;we,&rdquo; &ldquo;us,&rdquo; or &ldquo;our&rdquo;) and you or the entity you represent (&ldquo;you&rdquo;). This Agreement is a legal agreement between you and FLIR. Please read it.</p>
+<p>The FLIR owned machine learning thermal and visible image data (the &ldquo;Image Dataset&rdquo;) for Advanced Driver Assistance Systems (&ldquo;ADAS&rdquo;) are or will be installed on your device. By installing or using the Image Dataset, you accept this Agreement, including the Terms of Use. If you do not accept the terms of this Agreement, do not download, use, or modify the Image Dataset. You can withdraw your consent to the terms of this Agreement by not using the Image Dataset and permanently deleting/removing the Image Dataset files from all electronic medium in your possession. This Agreement applies to the Image Dataset and your use of the Image Dataset. If you comply with the terms of this Agreement, you have the rights described below.</p>
+<p>Please see Section 9 for definitions of certain capitalized terms used in this Agreement.</p>
+<h4>1. License and Restrictions</h4>
+<p><strong>1.1 License.</strong>&nbsp;As between you and us, we or our licensors own and reserve all right, title, and interest in and to the Image Dataset. We grant you a limited, revocable, non-exclusive, non-sublicensable, non-transferrable license to access, use and modify the Image Data for Non-Commercial Purposes only and in the field of neural network development for automotive and other autonomous vehicle applications (&ldquo;Field&rdquo;), and for non-commercial educational and research purposes outside the Field. Except as provided in this Section 1, you obtain no rights under this Agreement from us or our licensors to the Image Dataset, including the right to reproduce, redistribute or make derivative works of the Image Dataset.</p>
+<p><strong>1.2 License Restrictions.</strong>&nbsp;You may not use the Image Dataset in any manner or for any purpose other than as expressly permitted by this Agreement. To ensure the Image Dataset is only used for Non-Commercial Purposes, You further agree (a) not to distribute or publish any models trained on or refined using the Image Dataset, or the weights or biases from such trained models, in whole or in part; and (b) not to use or deploy the Image Dataset, any models trained on or refined using the Image Dataset, or the weights or biases from such trained models, in whole or in part, (i) in operation of a vehicle or to assist in the operation of a vehicle, (ii) in any production systems, or (iii) for any other primarily commercial purposes. All licenses granted to you in this Agreement are conditional on your continued compliance with this Agreement and will immediately and automatically terminate if you do not comply with any term or condition of this Agreement. During and after the Term, you will not assert, nor will you authorize, assist, or encourage any third party to assert, against us or any of our customers, vendors, business partners, or licensors, any patent infringement or other intellectual property infringement claim regarding any Image Dataset you have used.</p>
+<p><strong>1.3 Your Responsibilities.</strong>&nbsp;You may access and use the Image Dataset in accordance with this Agreement. You are solely responsible for any and all use of the Image Dataset by you, including the annotations contained thereon, regardless of whether the activities are undertaken directly by you or by your employees or third parties getting access to the Image Dataset through you (including your contractors or agents). You will notify us immediately if you become aware of, or suspect, any security breach of your obligations under this Agreement. For example, you are solely responsible for:</p>
+<p>(a) Adhering to all laws, rules, and regulations applicable to your use of the Image Dataset, and adhering to the terms of the Agreement and the Policies;</p>
+<p>(b) Any claims relating to Your Content (as defined below); and</p>
+<p>(c) Immediately ceasing use of and destroy all copies of any Image Dataset that are considered personal data within the meeting of the data privacy laws of any country.</p>
+<p><strong>1.4 IP Rights in the Image Dataset.</strong>&nbsp;By accepting this Agreement, you acknowledge that FLIR is the owner of all intellectual property rights in the Image Dataset, including, but not limited to all copyrights, data rights, and trademarks.</p>
+<h4>2. Term; Termination</h4>
+<p><strong>2.1. Term.</strong>&nbsp;The Term of this Agreement will commence on the Effective Date and will remain in effect until terminated by you or us in accordance with Section 2.2.</p>
+<p><strong>2.2 Termination.</strong>&nbsp;We may terminate this Agreement for cause immediately upon notice to you (i) for cause for your breach of the terms of this Agreement, or (ii) in order to comply with the law or requests of governmental entities.</p>
+<p><strong>2.3. Effect of Termination.</strong>&nbsp;Upon any termination of this Agreement, (i) all your rights under this Agreement immediately terminate; (ii) you will immediately return or, if instructed by us, destroy all Image Dataset in your possession; and (iii) Sections 1.2, 1.3, 2.3, and 3 through 9 will continue to apply in accordance with their terms.</p>
+<h4>3. Proprietary Rights</h4>
+<p><strong>3.1 Your Content.</strong>&nbsp;As between you and us, you or your licensors own all right, title, and interest in and to Your Content. Your Content shall not include any derivative works made based on the Image Dataset. All such derivative works shall belong to us. Except as provided in this paragraph and in Section 3.2 below, we obtain no rights under this Agreement from you or your licensors to Your Content, including any related intellectual property rights.</p>
+<p><strong>3.2 Suggestions.</strong>&nbsp;If you provide any Suggestions to us, we will own all right, title, and interest in and to the Suggestions, even if you have designated the Suggestions as confidential. We will be entitled to use the Suggestions without restriction. You hereby irrevocably assign to us all right, title, and interest in and to the Suggestions and agree to provide us any assistance we may require to document, perfect, and maintain our rights in the Suggestions.</p>
+<h4>4. Indemnification</h4>
+<p><strong>4.1. General.</strong>&nbsp;You will defend, indemnify, and hold harmless us and our licensors, and each of their respective employees, officers, directors, and representatives from and against any claims, damages, losses, liabilities, costs, and expenses (including reasonable attorneys&rsquo; fees) arising out of or relating to any third party claim concerning: (a) your use of the Image Dataset; (b) your breach of this Agreement or violation of applicable law; or (c) Your Content or the combination of Your Content with other applications, devices, content or processes, including any claim involving alleged direct or indirect infringement or misappropriation of third-party rights by Your Content or by the use, development, design, production, advertising or marketing of Your Content. If we are obligated to respond to a third party subpoena or other compulsory legal order or process described above, you will also reimburse us for reasonable attorneys&rsquo; fees, as well as our employees&rsquo; and contractors&rsquo; time and materials spent responding to the third party subpoena or other compulsory legal order or process at our then-current hourly rates.</p>
+<p><strong>4.2. Process.</strong>&nbsp;We will promptly notify you of any claim subject to Section 4.1, but our failure to promptly notify you will only affect your obligations under Section 4.1 to the extent that our failure prejudices your ability to defend the claim. You may: (a) use counsel of your own choosing (subject to our written consent) to defend against any claim; and (b) settle the claim as you deem appropriate, provided that you obtain our prior written consent before entering into any settlement. We may also assume control of the defense and settlement of the claim at any time.</p>
+<h4>5. Disclaimers</h4>
+<p>THE IMAGE DATASET, INCLUDING THE ANNOTATIONS CONTAINED THEREON, ARE PROVIDED "AS IS", &ldquo;WITH ALL FAULTS,&rdquo; AND &ldquo;AS AVAILABLE&rdquo;. YOUR USE OF THE IMAGE DATASET, INCLUDING THE ANNOTATIONS THEREON, IS AT YOUR OWN RISK AND WE DO NOT REPRESENT, PROMISE, OR WARRANT THAT THE IMAGE DATASET AND ANNOTATIONSWILL BE ERROR-FREE. SOME JURISDICTIONS PROVIDE FOR CERTAIN IMPLIED WARRANTIES, SUCH AS THE IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, WE DISCLAIM ANY AND ALL ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, NONINFRINGMENT OR QUIET ENJOYMENT, AND ANY WARRANTIES THAT THE IMAGE DATASET ARE ERROR-FREE.</p>
+<h4>6. Limitations of Liability</h4>
+<p>TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, YOU AGREE AND UNDERSTAND THAT FLIR WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR EXEMPLARY DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR GOODWILL OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THE IMAGE DATASET, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. FURTHER, WE WILL NOT BE RESPONSIBLE FOR ANY COMPENSATION, REIMBURSEMENT, OR DAMAGES ARISING IN CONNECTION WITH: (A) YOUR INABILITY TO USE THE IMAGE DATASET, INCLUDING AS A RESULT OF ANY TERMINATION OF THIS AGREEMENT; (B) THE COST OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; OR (C) ANY INVESTMENTS, EXPENDITURES, OR COMMITMENTS BY YOU IN CONNECTION WITH THIS AGREEMENT OR YOUR USE OF OR ACCESS TO THE IMAGE DATASET. IN ANY CASE, OUR AGGREGATE LIABILITY UNDER THIS AGREEMENT WILL BE LIMITED TO THE GREATER OF THE AMOUNT YOU ACTUALLY PAY US UNDER THIS AGREEMENT FOR THE IMAGE DATASET THAT GAVE RISE TO THE CLAIM OR $10 USD.</p>
+<h4>7. Modifications to the Agreement</h4>
+<p>We may modify this Agreement (including any Policies) at any time by posting a revised version on www.FLIR.com or by otherwise notifying you in accordance with the Agreement. The modified terms will become effective upon posting or, if we notify you by email, as stated in the email message. By continuing to use the Image Dataset after the effective date of any modifications to this Agreement, you agree to be bound by the modified terms. It is your responsibility go to www.FLIR.com regularly to review modifications to this Agreement. We last modified this Agreement on the date listed at the top of this Agreement.</p>
+<h4>8. Miscellaneous</h4>
+<p><strong>8.1 Data Privacy.</strong>&nbsp;FLIR&rsquo;s Privacy Policy explains how we treat your personal data. By submitting your personal data, you agree to our Privacy Policy and that FLIR can use your information in accordance with our Privacy Policy and this Agreement.</p>
+<p><strong>8.2 Publicity.</strong>&nbsp;Unless you have obtained express written permission from us, you will not issue any press release or make any other public communication with respect to this Agreement or your use of the Image Dataset. You will not misrepresent or embellish the relationship between us and you (including by expressing or implying that we support, sponsor, endorse, or contribute to you or your business endeavors), or express or imply any relationship or affiliation between us and you or any other person or entity except as expressly permitted by this Agreement.</p>
+<p><strong>8.3 Force Majeure.</strong>&nbsp;We will not be liable for any delay or failure to perform any obligation under this Agreement where the delay or failure results from any cause beyond our reasonable control, including acts of God, labor disputes or other industrial disturbances, systemic electrical, telecommunications, or other utility failures, earthquake, storms or other elements of nature, blockages, embargoes, riots, acts or orders of government, acts of terrorism, or war.</p>
+<p><strong>8.4 Independent Contractors; Non-Exclusive Rights.</strong>&nbsp;We and you are independent contractors, and neither party, nor any of their respective affiliates, is an agent of the other for any purpose or has the authority to bind the other. Both parties reserve the right (a) to develop or have developed for it products, services, concepts, systems, or techniques that are similar to or compete with the products, services, concepts, systems, or techniques developed or contemplated by the other party and (b) to assist third party developers or systems integrators who may offer products or services which compete with the other party&rsquo;s products or services.</p>
+<p><strong>8.5 No Third-Party Beneficiaries.</strong>&nbsp;This Agreement does not create any third-party beneficiary rights in any individual or entity that is not a party to this Agreement.</p>
+<p><strong>8.6 U.S. Government Rights.</strong>&nbsp;The Image Dataset are provided to the U.S. Government as &ldquo;commercial items,&rdquo; &ldquo;commercial computer software,&rdquo; &ldquo;commercial computer software documentation,&rdquo; and &ldquo;technical data&rdquo; subject to the same rights and restrictions set forth in this Agreement. If you are using the Image Dataset on behalf of the U.S. Government and these terms fail to meet the U.S. Government&rsquo;s needs or are inconsistent in any respect with federal law, you will immediately discontinue your use of the Image Dataset. The terms &ldquo;commercial item&rdquo; &ldquo;commercial computer software,&rdquo; &ldquo;commercial computer software documentation,&rdquo; and &ldquo;technical data&rdquo; are defined in the Federal Acquisition Regulation and the Defense Federal Acquisition Regulation Supplement.</p>
+<p><strong>8.7 Import and Export Compliance; Other Laws.</strong>&nbsp;You will comply with all laws, regulations and executive orders of the U.S. and all other countries applicable to your performance of this Agreement and your use of the Image Dataset, including but not limited to the Arms Export Control Act (22 U.S.C. 2751-2794), the International Traffic in Arms Regulations (&ldquo;ITAR&rdquo;) (22 C.F.R. 120 et seq., the Export Administration Act of 1979 (50 U.S.C. 2401-2420), the Export Administration Regulations (&ldquo;EAR&rdquo;) (15 C.F.R. 730-774), the Office of Foreign Assets Control (OFAC) regulations (31 C.F.R. Chapter V), the International Emergency Economic Powers Act (IEEPA) (50 U.S.C. 1701-1706), the Trading with the Enemy Act (TWEA) (50 U.S.C. 5, 16), the Bureau of Alcohol, Tobacco, Firearms, and Explosives (ATF) regulations (22 C.F.R. Parts 447, 478, 479, and 555), U.S. customs regulations (22 C.F.R. Part 19), the U.S. Foreign Corrupt Practices Act, the UK Antibribery Act, and all other applicable international, national, state, regional and local laws and regulations, including without limitation laws relating to privacy and data protection (the &ldquo;Laws&rdquo;). For clarity, you are solely responsible for compliance with Laws related to the manner in which you choose to use the Image Dataset, including your transfer and processing of Your Content and the provision of Your Content to end users.</p>
+<p><strong>8.8 Notice.</strong>&nbsp;(i) To You. We may provide any notice to you under this Agreement by: (i) posting a notice on www.FLIR.com; or (ii) sending a message to the email address then associated with your registration. Notices we provide by posting on www.FLIR.com will be effective upon posting and notices we provide by email will be effective when we send the email. It is your responsibility to keep your email address current. You will be deemed to have received any email sent to the email address then associated with your account when we send the email, whether or not you actually receive the email. (ii) To Us. For privacy matters, you may contact us in accordance with the Privacy Policy. For any other notice to us under this Agreement, you must contact FLIR by personal delivery, overnight courier or registered or certified mail to FLIR Systems, Inc., 27700 SW Parkway Avenue, Wilsonville, OR 97070 USA, Attention: General Counsel. We may update the address for notices to us by posting a notice on www.FLIR.com. Notices provided by personal delivery will be effective immediately. Notices provided by facsimile transmission or overnight courier will be effective one business day after they are sent. Notices provided registered or certified mail will be effective three business days after they are sent. (c) Language. All communications and notices to be made or given pursuant to this Agreement must be in the English language.</p>
+<p><strong>8.9 Assignment.</strong>&nbsp;You will not assign this Agreement, or delegate or sublicense any of your rights under this Agreement, without our prior written consent. Any assignment or transfer in violation of this Section will be void. Subject to the foregoing, this Agreement will be binding upon, and inure to the benefit of the parties and their respective successors and assigns.</p>
+<p><strong>8.10 No Waivers.</strong>&nbsp;The failure by us to enforce any provision of this Agreement will not constitute a present or future waiver of such provision nor limit our right to enforce such provision at a later time. All waivers by us must be in writing to be effective.</p>
+<p><strong>8.11 Severability.</strong>&nbsp;If any portion of this Agreement is held to be invalid or unenforceable, the remaining portions of this Agreement will remain in full force and effect. Any invalid or unenforceable portions will be interpreted to effect and intent of the original portion. If such construction is not possible, the invalid or unenforceable portion will be severed from this Agreement but the rest of the Agreement will remain in full force and effect.</p>
+<p><strong>8.12 Governing Law; Venue.</strong>&nbsp;The laws of the State of California, without reference to conflict of law rules, govern this Agreement and any dispute of any sort that might arise between you and us. The United Nations Convention for the International Sale of Goods does not apply to this Agreement.</p>
+<p><strong>8.13 Governing Law.</strong>&nbsp;This Agreement and any action related thereto will be governed, controlled, interpreted, and defined by and under the laws of the jurisdiction indicated below (the &ldquo;Jurisdiction&rdquo;), without giving effect to any conflicts of laws principles that require the application of the law of a different jurisdiction, and the parties irrevocably submit to the jurisdiction of those courts. The parties agree that venue in any action arising under this Agreement shall be exclusively in state or federal courts located in the Jurisdiction indicated below. The rights and obligations of the parties to this Agreement will not be governed by the provisions of the United Nations Convention on Contracts for the International Sale of Goods, 1980. If the country you identified in the registration information you provided to obtain the Image Dataset is in the Americas (or you did not provide an address), the Jurisdiction is the State of California in the U.S., if in the European Union, the Jurisdiction is Belgium and, otherwise, the Jurisdiction is England.</p>
+<p><strong>8.14 Entire Agreement; English Language.</strong>&nbsp;This Agreement includes the Policies and is the entire agreement between you and us regarding the subject matter of this Agreement. This Agreement supersedes all prior or contemporaneous representations, understandings, agreements, or communications between you and us, whether written or verbal, regarding the subject matter of this Agreement. We will not be bound by, and specifically object to, any term, condition or other provision which is different from or in addition to the provisions of this Agreement (whether or not it would materially alter this Agreement) and which is submitted by you in any order, receipt, acceptance, confirmation, correspondence or other document. If the terms of this Agreement are inconsistent with the terms contained in any Policy, the terms contained in this Agreement will control. If we provide a translation of the English language version of this Agreement, the English language version of the Agreement will control if there is any conflict.</p>
+<h4>9. Definitions</h4>
+<p>&ldquo;Non-commercial Purposes&rdquo; means research, teaching, scientific publication and personal experimentation, and includes use of the Image Dataset to perform benchmarking for purposes of academic or applied research publication. Non-commercial Purposes does not include purposes primarily intended for or directed towards commercial advantage or monetary compensation, or purposes intended for or directed towards litigation, licensing, or enforcement, even in part.</p>
+<p>&ldquo;Policies&rdquo; means any policy or terms referenced in or incorporated into this Agreement. Policies does not include whitepapers or other marketing materials referenced on www.FLIR.com.</p>
+<p>&ldquo;Privacy Policy&rdquo; means FLIR&rsquo;s privacy policy available at www.FLIR.com, as it may be updated by us from time to time.</p>
+<p>&ldquo;Suggestions&rdquo; means all suggested improvements to the FLIR&rsquo;s products or services that you provide to us.</p>
+<p>&ldquo;Term&rdquo; means the term of this Agreement described in Section 2.1.</p>
+<p>&ldquo;Your Content&rdquo; means the products or services, including convolutional neural networks, that you develop or improve using the Image Dataset, and any computational results that you derive from the use of the Image Dataset.</p>
+<p><a class="Button" href="https://adas-dataset-v2.flirconservator.com/#downloadguide" target="_blank" rel="noopener">Accept &amp; Download</a></p>
+<p class="figuretext">Please be advised download times will vary depending on your internet connection, compressed file size is ~14GB.</p>
+</div></div></div>
+    </div>
+
+    </main>
+
+    <footer class="Footer" role="contentinfo">
+    <div class="Page-content-container">
+        <div class="Footer-col">
+            <p class="Tagline" style="font-family: Industry-Medium,Industry Medium,Helvetica,sans-serif; font-size: 1.25rem; display: block; font-weight: 400; line-height: 1.2; margin: 0.5em auto;">The World's Sixth Sense<sup>&reg;</sup></p>
+<p>2022 &copy; Teledyne FLIR LLC&nbsp;All rights reserved.</p>
+
+                <div class="globe-footer">
+                    <svg class="icon-globe"><title>Location</title><use xlink:href="#globe"></use></svg>
+                    <span class="globe-text">US - English (United States) (<span class="globe-click" data-module="modal" data-modal="api: '/RegionSelector/Html?culture=en-US', contentElement: '.js-regionModal', replaceHtmlAfterClose: false">change language</span>)</span>
+                </div>
+
+            <div class="SocialSharing  Footer-SocialSharing">
+                <ul class="SocialSharing-list"><li class="SocialSharing-listItem"><a href="http://www.facebook.com/FLIR"><svg class="icon-facebook"><title>facebook</title><use xlink:href="#facebook"></use></svg></a></li><li class="SocialSharing-listItem"><a href="http://www.instagram.com/flir"><svg class="icon-instagram"><title>instagram</title><use xlink:href="#instagram"></use></svg></a></li><li class="SocialSharing-listItem"><a href="https://www.linkedin.com/company/flir-systems"><svg class="icon-linkedin"><title>linkedin</title><use xlink:href="#linkedin"></use></svg></a></li><li class="SocialSharing-listItem"><a href="http://www.twitter.com/flir"><svg class="icon-twitter"><title>twitter</title><use xlink:href="#twitter"></use></svg></a></li><li class="SocialSharing-listItem"><a href="http://www.youtube.com/flir"><svg class="icon-youtube"><title>youtube</title><use xlink:href="#youtube"></use></svg></a></li></ul>
+            </div>
+        </div>
+        <div class="Footer-col">
+<nav class="FooterNav_Menu">
+      <p class="Caption">About Teledyne FLIR</p>
+  <ul class="FooterNav_Menu-list">
+        <li class="FooterNav_Menu-listItem">
+          <a href="/about/about-flir/">About Teledyne FLIR</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/about/wss/">The World&#39;s Sixth Sense</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/about/investor-relations/">Investors</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/news-center/">Newsroom</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/about/careers/">Careers</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/corporate/supplier/">Supply Chain</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/corporate/Cookie-Policies/">Cookie Policy</a>
+        </li>
+  </ul>
+
+</nav>
+</div><div class="Footer-col">
+<nav class="FooterNav_Menu">
+      <p class="Caption">Customer Service</p>
+  <ul class="FooterNav_Menu-list">
+        <li class="FooterNav_Menu-listItem">
+          <a href="/support-center/support-center/">Product Support</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="https://cart.flir.com/us/docs/faq">Online Orders</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="https://customer.flir.com/ProductRegistration/Register">Product Registration</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/support-center/support-center/">Product Manuals &amp; Documentation</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/support-center/warranty/">Warranty Information</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/corporate/reseller-and-customer-information/">Reseller &amp; Customer Info</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/promotions/">Current Promotions</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="/store/">FLIR Store</a>
+        </li>
+  </ul>
+
+</nav>
+</div><div class="Footer-col">
+<nav class="FooterNav_Menu">
+      <p class="Caption">Our Brands</p>
+  <ul class="FooterNav_Menu-list">
+        <li class="FooterNav_Menu-listItem">
+          <a href="http://www.raymarine.com/">Raymarine</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="http://www.extech.com/">Extech</a>
+        </li>
+        <li class="FooterNav_Menu-listItem">
+          <a href="http://www.infraredtraining.com/">Infrared Training Center</a>
+        </li>
+  </ul>
+
+</nav>
+</div>
+
+        <div class="Footer-col--span">
+            <nav class="FooterNav_Menu">
+                <ul class="FooterNav_Menu-list--inline">
+                        <li class="FooterNav_Menu-listItem">
+                            <a href="/corporate/privacy-policy/">Privacy Policy</a>
+                        </li>
+                        <li class="FooterNav_Menu-listItem">
+                            <a href="/corporate/copyright/">Copyright Policy</a>
+                        </li>
+                        <li class="FooterNav_Menu-listItem">
+                            <a href="/corporate/terms-of-use/">Terms of Use</a>
+                        </li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+</footer>
+
+
+
+
+    <section class="Modal Modal--sm" data-module="modal" data-modal="openOnLoad: true">
+        <div class="Modal-dialog">
+            <a class="Modal-close Modal-close--inner js-close" onclick="SaveRegionConfirmCookie(&#39;US&#39;, &#39;EN&#39;)">&times;</a>
+
+            <!-- Please feel free to change how/where these parameters are printed, as long as they come from the page variables -->
+            <h4 class="u-textCenter u-marginAlg">Confirm Location</h4>
+
+            <ol class="Grid Grid--equalHeight Grid--gutterA u-marginAlg RegionConfirm">
+                    <li class="Grid-cell u-md-size1of2">
+
+                        <a href="/LanguageSelection/SelectLanguage?redirectUrl=www.flir.de&amp;country=DE&amp;preferredLanguage=DE&amp;saveCookie=True&amp;isConfirmation=True" class="Button--outline Button--flag" style="background-image: url('/globalassets/flags/DE.png')">Germany</a>
+                    </li>
+                                    <li class="Grid-cell u-md-size1of2">
+                        <a href="/LanguageSelection/SelectLanguage?redirectUrl=www.flir.com&amp;country=US&amp;preferredLanguage=EN&amp;saveCookie=True&amp;isConfirmation=True" class="Button--outline Button--flag" style="background-image: url('/globalassets/flags/US.png')">United States</a>
+                    </li>
+            </ol>
+        </div>
+    </section>
+<script type="text/javascript" src="/Assets/Scripts/Modules/RegionConfirm.js"></script>
+
+
+    <script src="/assets/build/bootstrap.js?v=637994370500000000"></script>
+    <script>System['import']('app');</script>
+
+    
+    
+    
+
+    
+    
+    <!----------------------- End of body scripts ------------------>
+
+<!-- Google Tag Manager (noscript) -->
+<noscript>
+    <iframe src="https://analytics.flir.com/ns.html?id=GTM-KHQNHTB"
+            height="0" width="0" style="display:none;visibility:hidden"></iframe>
+</noscript>
+<!-- End Google Tag Manager (noscript) -->
+
+
+
+<!---Pingdom for flir.com only--->
+<script src="//rum-static.pingdom.net/pa-559d7ea1abe53d384e773225.js" async></script>
+<!---Pingdom for all--->
+<script src="//rum-static.pingdom.net/pa-5de590c33a70310008000967.js" async></script>
+
+
+<script>       
+// RB SCRIPT
+        document.addEventListener("DOMContentLoaded", function (event) {
+            document.querySelectorAll('.FormTextbox__Input').forEach(item => {
+                // CHECK INPUT FIELDS FOR VALUE AND SET FLOATING LABEL CLASS
+                if (item && item.value) {
+                    item.parentElement.classList.add('floatingLabel');
+                }
+                //ADD * FOR REQUIRED FIELDS
+                if(item.hasAttribute('required')){
+                    let thelabel =  item.parentElement.getElementsByTagName('label')[0];
+                    if (!thelabel.innerHTML.includes("*")) {
+                        let thelabelhtml = thelabel.innerHTML + " *";
+                        thelabel.innerHTML = thelabelhtml;
+                    }
+                }
+            })
+        });
+        // RB SCRIPT
+</script>
+
+
+
+</body>
+</html>

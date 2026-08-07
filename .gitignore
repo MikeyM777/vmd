@@ -4,3 +4,11 @@ __pycache__/
 clips/
 *.db
 *.mp4
+*.avi
+*.mov
+*.wav
+footage/
+.superpowers/
+yolo11n.pt
+label.bat
+bench.bat

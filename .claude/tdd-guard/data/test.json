@@ -1,0 +1,19 @@
+{
+  "testModules": [
+    {
+      "moduleId": "tests/test_package.py",
+      "tests": [
+        {
+          "name": "collection_error_tests/test_package.py",
+          "fullName": "tests/test_package.py",
+          "state": "failed",
+          "errors": [
+            {
+              "message": "ImportError while importing test module 'C:\\dev\\VMD\\tests\\test_package.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\nC:\\Users\\noams\\AppData\\Local\\Programs\\Python\\Python310\\lib\\importlib\\__init__.py:126: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\ntests\\test_package.py:1: in <module>\n    import vmd\nE   ModuleNotFoundError: No module named 'vmd'"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
