@@ -69,6 +69,14 @@ class SegmentRecorder:
             # Do not add -stimeout here: it was renamed and then removed in modern
             # ffmpeg builds, and an unknown option makes ffmpeg exit immediately.
             command += ["-rtsp_transport", "tcp"]
+        else:
+            # -re paces reading at the input's own frame rate. RTSP already arrives in
+            # real time, so it does not need this. A local file (or a looped test
+            # source) would otherwise be read as fast as disk/CPU allow, so an entire
+            # multi-segment recording finishes within the same wall-clock second and
+            # every segment gets the same -strftime filename, silently overwriting the
+            # previous one.
+            command += ["-re"]
         command += [
             "-i", self.source_url,
             "-c", "copy",
