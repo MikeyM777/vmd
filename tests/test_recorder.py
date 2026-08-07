@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from vmd.storage.recorder import SegmentRecorder
@@ -21,7 +23,7 @@ class FakeProcess:
 def build(tmp_path, url="rtsp://example/stream", processes=None):
     spawned = []
 
-    def spawn(command):
+    def spawn(command, log_path=None):
         process = (processes or []).pop(0) if processes else FakeProcess()
         spawned.append(command)
         return process
@@ -104,7 +106,7 @@ def test_running_is_false_before_start(tmp_path):
     assert recorder.running is False
 
 
-def test_default_spawn_pins_the_timezone_to_utc(monkeypatch):
+def test_default_spawn_pins_the_timezone_to_utc_and_avoids_a_stderr_pipe(monkeypatch, tmp_path):
     from vmd.storage import recorder as recorder_module
 
     captured = {}
@@ -114,5 +116,59 @@ def test_default_spawn_pins_the_timezone_to_utc(monkeypatch):
         return FakeProcess()
 
     monkeypatch.setattr(recorder_module.subprocess, "Popen", fake_popen)
-    recorder_module._default_spawn(["ffmpeg", "-version"])
+    recorder_module._default_spawn(["ffmpeg", "-version"], tmp_path / "x.ffmpeg.log")
     assert captured["env"]["TZ"] == "UTC"
+    assert captured["stderr"] is not recorder_module.subprocess.PIPE
+
+
+def test_stop_kills_a_process_that_ignores_terminate(tmp_path):
+    class Stubborn(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.killed = False
+            self._waits = 0
+
+        def wait(self, timeout=None):
+            self._waits += 1
+            if self._waits == 1:
+                raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=timeout)
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    process = Stubborn()
+    recorder, _ = build(tmp_path, processes=[process])
+    recorder.start()
+    recorder.stop()
+    assert process.killed is True
+    assert recorder.running is False
+
+
+def test_a_process_that_survives_kill_keeps_running_true(tmp_path):
+    class Immortal(FakeProcess):
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=timeout)
+
+        def kill(self):
+            pass
+
+    recorder, _ = build(tmp_path, processes=[Immortal()])
+    recorder.start()
+    recorder.stop()
+    # It could not be killed, so the handle is deliberately kept: reporting False here
+    # would let the supervisor start a second ffmpeg into the same directory.
+    assert recorder.running is True
+
+
+def test_exit_code_is_captured(tmp_path):
+    recorder, _ = build(tmp_path, processes=[FakeProcess(exit_codes=[3])])
+    recorder.start()
+    assert recorder.running is False
+    assert recorder.exit_code == 3
+
+
+def test_log_path_sits_beside_the_segment_directory(tmp_path):
+    recorder, _ = build(tmp_path)
+    assert recorder.log_path == tmp_path / "thermal.ffmpeg.log"
+    assert recorder.log_path.parent == recorder.output_dir.parent
