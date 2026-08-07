@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VMD — UI preview</title>
+<style>
+  :root {
+    --bg: #0e1013;
+    --panel: #171b21;
+    --panel-2: #1e242c;
+    --line: #2a323d;
+    --text: #e6ebf2;
+    --dim: #8b97a8;
+    --accent: #4da3ff;
+    --ok: #35c46a;
+    --warn: #f0a92a;
+    --bad: #e5484d;
+    --thermal: #f07a2a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex; align-items: center; gap: 18px;
+    padding: 0 16px; height: 52px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  .brand { font-weight: 600; letter-spacing: .5px; }
+  .brand span { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .tabs { display: flex; gap: 4px; margin-left: 12px; }
+  .tab {
+    padding: 7px 16px; border-radius: 6px; cursor: pointer;
+    color: var(--dim); border: 1px solid transparent; background: none;
+    font: inherit;
+  }
+  .tab:hover { color: var(--text); background: var(--panel-2); }
+  .tab.on { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    font-size: 12px; color: var(--dim);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+
+  /* ---------- layout ---------- */
+  main { flex: 1; min-height: 0; display: none; }
+  main.on { display: flex; }
+  .stage { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 14px; gap: 12px; }
+  .side {
+    width: 300px; flex: 0 0 300px; background: var(--panel);
+    border-left: 1px solid var(--line); padding: 14px; overflow-y: auto;
+  }
+
+  /* ---------- video ---------- */
+  .videowrap {
+    position: relative; flex: 1; min-height: 0; background: #000;
+    border-radius: 8px; overflow: hidden; border: 1px solid var(--line);
+    display: flex; gap: 0;
+    /* width is explicit because a flex container inside a column flex parent
+       sizes to its content instead of stretching, which collapsed this to the
+       canvas's intrinsic 300px. */
+    width: 100%; align-self: stretch;
+  }
+  .pane { position: relative; background: #000; min-width: 0; }
+  .pane canvas { width: 100%; height: 100%; display: block; }
+  .lbl {
+    position: absolute; top: 6px; left: 8px; font-size: 11px; letter-spacing: .5px;
+    background: rgba(0,0,0,.55); padding: 2px 7px; border-radius: 4px; color: var(--dim);
+    pointer-events: none;
+  }
+
+  /* picture in picture: A fills, B floats bottom-right */
+  .videowrap.pip .pane-a { position: absolute; inset: 0; }
+  .videowrap.pip .pane-b {
+    position: absolute; right: 14px; bottom: 14px; width: 210px; height: 158px;
+    border: 2px solid var(--line); border-radius: 6px; overflow: hidden;
+    cursor: pointer; box-shadow: 0 6px 22px rgba(0,0,0,.6); z-index: 2;
+  }
+  .videowrap.pip .pane-b:hover { border-color: var(--accent); }
+
+  /* side by side: two equal panes */
+  .videowrap.side .pane { position: relative; flex: 1 1 50%; }
+  .videowrap.side .pane-b { border-left: 1px solid var(--line); cursor: pointer; }
+
+  /* single sensor */
+  .videowrap.solo-a .pane-a { position: relative; flex: 1; }
+  .videowrap.solo-a .pane-b { display: none; }
+  .videowrap.solo-b .pane-b { position: relative; flex: 1; cursor: default; }
+  .videowrap.solo-b .pane-a { display: none; }
+  .osd {
+    position: absolute; left: 12px; bottom: 12px; font-size: 12px;
+    background: rgba(0,0,0,.55); padding: 7px 11px; border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .osd b { color: var(--accent); font-weight: 600; }
+  .banner {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 8px; background: rgba(10,10,12,.72); backdrop-filter: blur(2px);
+  }
+  .banner.on { display: flex; }
+  .banner .big { font-size: 22px; font-weight: 600; color: var(--warn); letter-spacing: 1px; }
+  .banner .sub { color: var(--dim); font-size: 13px; }
+
+  /* ---------- controls ---------- */
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .btn {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    padding: 7px 13px; border-radius: 6px; cursor: pointer; font: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.on { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+  .btn.sm { padding: 5px 10px; font-size: 12px; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); margin: 16px 0 8px; }
+  .label:first-child { margin-top: 0; }
+
+  .ptz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: 100%; }
+  .ptz .btn { padding: 14px 0; text-align: center; font-size: 16px; }
+  .ptz .mid { background: none; border-color: transparent; cursor: default; }
+
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .kv { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .kv span:first-child { color: var(--dim); }
+  .kv span:last-child { font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: var(--dim); line-height: 1.5; }
+
+  /* ---------- warning strip ---------- */
+  .warnstrip {
+    background: rgba(240,169,42,.12); border: 1px solid rgba(240,169,42,.4);
+    color: #ffd489; padding: 9px 13px; border-radius: 7px; font-size: 13px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .warnstrip .btn { margin-left: auto; }
+
+  /* ---------- playback ---------- */
+  .timeline { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .tl-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .track { position: relative; height: 46px; background: #10141a; border-radius: 5px; overflow: hidden; cursor: pointer; }
+  .cov { position: absolute; top: 0; bottom: 0; background: linear-gradient(180deg,#2c6ea8,#20507c); }
+  .gap { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg,#2a1113,#2a1113 5px,#3a181b 5px,#3a181b 10px); }
+  .ev { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--ok); }
+  .ev.veh { background: var(--accent); }
+  .ev:hover { width: 5px; }
+  .play { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--bad); }
+  .ticks { position: relative; height: 16px; margin-top: 4px; font-size: 10px; color: var(--dim); }
+  .ticks span { position: absolute; transform: translateX(-50%); }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--dim); margin-top: 10px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  tr.click:hover { background: var(--panel-2); cursor: pointer; }
+
+  /* ---------- settings ---------- */
+  .form { max-width: 620px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+  .field input, .field select {
+    width: 100%; padding: 8px 10px; background: #10141a; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 4px; font-size: 14px; }
+  .card p.note { margin: 0 0 14px; }
+  .bar { height: 9px; background: #10141a; border-radius: 5px; overflow: hidden; margin: 8px 0 6px; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg,var(--ok),var(--warn)); }
+  .mockbadge {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50;
+    background: rgba(229,72,77,.15); border: 1px solid rgba(229,72,77,.5);
+    color: #ff9a9d; font-size: 11px; padding: 6px 11px; border-radius: 999px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="brand">VMD <span>Elara DX · site 1</span></div>
+    <div class="tabs">
+      <button class="tab on" data-tab="live">Live</button>
+      <button class="tab" data-tab="playback">Playback</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill"><i class="dot" id="linkdot"></i><span id="linktxt">Link 68% · 4.0 Mbps</span></div>
+    <div class="pill"><i class="dot"></i><span id="disktxt">11 d held · 512 / 600 GB</span></div>
+  </div>
+
+  <!-- ============ LIVE ============ -->
+  <main class="on" id="tab-live">
+    <div class="stage">
+      <div class="warnstrip" id="warnstrip" style="display:none">
+        <span id="warntext">Storage 92% full. Footage from 22 March will be deleted in about 18 hours.</span>
+        <button class="btn sm" onclick="document.getElementById('warnstrip').style.display='none'">Dismiss</button>
+      </div>
+
+      <div class="videowrap pip" id="videowrap">
+        <div class="pane pane-a">
+          <canvas id="main"></canvas>
+          <div class="lbl" id="mainlbl">VISIBLE · 4K · zoom 31×</div>
+        </div>
+        <div class="pane pane-b" onclick="swapSensors(event)">
+          <canvas id="pipc"></canvas>
+          <div class="lbl" id="piplbl">THERMAL · VGA</div>
+        </div>
+        <div class="osd">
+          FOV <b id="fov">2.15°</b> &nbsp;·&nbsp; person at 700 m ≈ <b id="pxh">132 px</b>
+          &nbsp;·&nbsp; <span id="clock">--:--:--</span>
+        </div>
+        <div class="banner" id="lostbanner">
+          <div class="big">LINK LOST</div>
+          <div class="sub">last frame <span id="lostsecs">14</span> s ago · reconnecting…</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn on" data-layout="pip">Picture in picture</button>
+        <button class="btn" data-layout="side">Side by side</button>
+        <button class="btn" data-layout="vis">Visible only</button>
+        <button class="btn" data-layout="thm">Thermal only</button>
+        <div class="spacer"></div>
+        <button class="btn sm" onclick="toggleLost()">simulate link loss</button>
+        <button class="btn sm" onclick="toggleWarn()">simulate storage warning</button>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="label">Steering</div>
+      <div class="ptz">
+        <button class="btn" onclick="nudge('↖')">↖</button>
+        <button class="btn" onclick="nudge('↑')">↑</button>
+        <button class="btn" onclick="nudge('↗')">↗</button>
+        <button class="btn" onclick="nudge('←')">←</button>
+        <button class="btn mid"></button>
+        <button class="btn" onclick="nudge('→')">→</button>
+        <button class="btn" onclick="nudge('↙')">↙</button>
+        <button class="btn" onclick="nudge('↓')">↓</button>
+        <button class="btn" onclick="nudge('↘')">↘</button>
+      </div>
+      <p class="note" style="margin-top:10px">Or click any point on the video and the camera centres on it.</p>
+
+      <div class="label">Speed</div>
+      <input type="range" min="1" max="100" value="18" id="speed">
+      <div class="kv"><span>slow · fine aim</span><span>fast · slew</span></div>
+
+      <div class="label">Zoom</div>
+      <input type="range" min="1" max="31" value="31" id="zoom">
+      <div class="kv"><span>Optical</span><span id="zoomv">31×</span></div>
+      <div class="kv"><span>Field of view</span><span id="fov2">2.15°</span></div>
+      <div class="kv"><span>Person at 700 m</span><span id="pxh2">132 px</span></div>
+      <p class="note" style="margin-top:8px" id="zoomhint">Big enough for the detector to identify a person.</p>
+
+      <div class="label">Link</div>
+      <div class="kv"><span>Signal</span><span>−63 dBm</span></div>
+      <div class="kv"><span>Capacity</span><span>42 Mbps</span></div>
+      <div class="kv"><span>Video bitrate</span><span id="brate">4.0 Mbps</span></div>
+      <div class="kv"><span>Mode</span><span>Automatic</span></div>
+      <p class="note" style="margin-top:8px">Bitrate steps down when the link degrades, and back up once it stays healthy.</p>
+
+      <div class="label">Recording</div>
+      <div class="kv"><span>Visible</span><span style="color:var(--ok)">recording</span></div>
+      <div class="kv"><span>Thermal</span><span style="color:var(--ok)">recording</span></div>
+      <div class="kv"><span>Oldest footage</span><span>27 Jul 04:10</span></div>
+    </div>
+  </main>
+
+  <!-- ============ PLAYBACK ============ -->
+  <main id="tab-playback">
+    <div class="stage">
+      <div class="videowrap" style="flex:1">
+        <canvas id="pbc"></canvas>
+        <div class="lbl">VISIBLE · 07 Aug 2026 · 21:14:07</div>
+        <div class="osd">playback · <span id="pbtime">21:14:07</span></div>
+      </div>
+
+      <div class="timeline">
+        <div class="tl-head">
+          <input type="date" value="2026-08-07" style="padding:6px 9px;background:#10141a;color:var(--text);border:1px solid var(--line);border-radius:6px;">
+          <button class="btn sm on">Visible</button>
+          <button class="btn sm">Thermal</button>
+          <div class="spacer"></div>
+          <button class="btn sm">⏮ 1 min</button>
+          <button class="btn sm">◀ 10 s</button>
+          <button class="btn sm" id="pbplay">▶ Play</button>
+          <button class="btn sm">10 s ▶</button>
+          <button class="btn sm">1 min ⏭</button>
+          <select style="padding:5px 8px;background:#10141a;color:var(--text);border:1px solid var(--line);border-radius:6px;">
+            <option>1×</option><option>2×</option><option>4×</option><option>8×</option>
+          </select>
+          <button class="btn sm">Export range</button>
+        </div>
+        <div class="track" id="track"></div>
+        <div class="ticks" id="ticks"></div>
+        <div class="legend">
+          <span><i style="background:#2c6ea8"></i>recorded</span>
+          <span><i style="background:#3a181b"></i>gap — link was down</span>
+          <span><i style="background:var(--ok)"></i>person</span>
+          <span><i style="background:var(--accent)"></i>vehicle</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="label">Events today</div>
+      <table>
+        <thead><tr><th>Time</th><th>What</th><th>Conf</th></tr></thead>
+        <tbody id="evtable"></tbody>
+      </table>
+      <p class="note" style="margin-top:12px">Click an event to jump to 5 seconds before it. Marks come from whatever writes to the events table — the camera's own analytics, the detector, or a manual mark.</p>
+
+      <div class="label">Coverage</div>
+      <div class="kv"><span>Recorded today</span><span>22 h 41 m</span></div>
+      <div class="kv"><span>Gaps</span><span style="color:var(--warn)">3 (1 h 19 m)</span></div>
+      <div class="kv"><span>Longest gap</span><span>47 m</span></div>
+    </div>
+  </main>
+
+  <!-- ============ SETTINGS ============ -->
+  <main id="tab-settings">
+    <div class="stage" style="overflow-y:auto">
+      <div class="form">
+        <div class="card">
+          <h3>Camera</h3>
+          <p class="note">The Elara DX. Credentials are stored on this machine only.</p>
+          <div class="two">
+            <div class="field"><label>Address</label><input value="192.168.1.64"></div>
+            <div class="field"><label>Username</label><input value="admin"></div>
+          </div>
+          <div class="two">
+            <div class="field"><label>Password</label><input type="password" value="········"></div>
+            <div class="field"><label>Target distance (m)</label><input value="700"></div>
+          </div>
+          <div class="field"><label>Visible stream</label><input value="rtsp://192.168.1.64/stream1"></div>
+          <div class="field"><label>Thermal stream</label><input value="rtsp://192.168.1.64/thermal"></div>
+        </div>
+
+        <div class="card">
+          <h3>Radio</h3>
+          <p class="note">Optional. Reading the Ubiquiti link lets the bitrate drop <em>before</em> the picture breaks, instead of after.</p>
+          <div class="two">
+            <div class="field"><label>Address</label><input value="192.168.1.20"></div>
+            <div class="field"><label>Username</label><input value="ubnt"></div>
+          </div>
+          <div class="field" style="max-width:300px"><label>Password</label><input type="password" value="········"></div>
+        </div>
+
+        <div class="card">
+          <h3>Storage</h3>
+          <p class="note">Detected: 1 TB drive, 780 GB free.</p>
+          <div class="two">
+            <div class="field"><label>Recordings folder</label><input value="D:\vmd\recordings"></div>
+            <div class="field"><label>Space this program may use (GB)</label><input value="600"></div>
+          </div>
+          <div class="bar"><i style="width:85%"></i></div>
+          <div class="kv"><span>Used</span><span>512 GB of 600 GB · 11 days held</span></div>
+          <div class="two" style="margin-top:14px">
+            <div class="field">
+              <label>Also delete footage older than</label>
+              <input value="13 days">
+            </div>
+            <div class="field">
+              <label>Age rule</label>
+              <select><option>Off — keep as much as fits</option><option selected>On</option></select>
+            </div>
+          </div>
+          <p class="note">The disk rule always applies: when the budget is reached, the oldest footage goes so that recording never stops.</p>
+        </div>
+
+        <div class="card">
+          <h3>Bitrate</h3>
+          <div class="two">
+            <div class="field"><label>Mode</label><select><option selected>Automatic</option><option>Manual</option></select></div>
+            <div class="field"><label>Manual bitrate (Mbps)</label><input value="3.0"></div>
+          </div>
+          <div class="two">
+            <div class="field"><label>Never below (Mbps)</label><input value="1.0"></div>
+            <div class="field"><label>Never above (Mbps)</label><input value="5.0"></div>
+          </div>
+        </div>
+
+        <button class="btn on">Save settings</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="mockbadge">MOCKUP — nothing is connected, all values are invented</div>
+
+<script>
+// ---------- tabs ----------
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  document.querySelectorAll('main').forEach(m => m.classList.toggle('on', m.id === 'tab-' + t.dataset.tab));
+});
+const wrap = document.getElementById('videowrap');
+document.querySelectorAll('[data-layout]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('[data-layout]').forEach(x => x.classList.toggle('on', x === b));
+  const mode = b.dataset.layout;
+  // solo-a / solo-b follow the swap, so "visible only" always shows the visible
+  // sensor whichever pane it currently lives in.
+  const soloVisible = swapped ? 'solo-b' : 'solo-a';
+  const soloThermal = swapped ? 'solo-a' : 'solo-b';
+  wrap.className = 'videowrap ' + (
+    mode === 'pip' ? 'pip' :
+    mode === 'side' ? 'side' :
+    mode === 'vis' ? soloVisible : soloThermal
+  );
+});
+
+// ---------- fake scene ----------
+function scene(canvas, opts) {
+  const c = canvas.getContext('2d');
+  let t = 0;
+  function draw() {
+    const w = canvas.width = canvas.clientWidth;
+    const h = canvas.height = canvas.clientHeight;
+    if (!w || !h) return requestAnimationFrame(draw);
+    t += 0.006;
+
+    if (opts.thermal) {
+      c.fillStyle = '#111014'; c.fillRect(0, 0, w, h);
+      const g = c.createLinearGradient(0, h * 0.55, 0, h);
+      g.addColorStop(0, '#2a2320'); g.addColorStop(1, '#16130f');
+      c.fillStyle = g; c.fillRect(0, h * 0.55, w, h * 0.45);
+    } else {
+      c.fillStyle = '#0a0d12'; c.fillRect(0, 0, w, h);
+      const g = c.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#0d1622'); g.addColorStop(0.55, '#111820'); g.addColorStop(1, '#0a0c0f');
+      c.fillStyle = g; c.fillRect(0, 0, w, h);
+      c.strokeStyle = 'rgba(120,150,190,.10)';
+      for (let i = 1; i < 6; i++) { c.beginPath(); c.moveTo(0, h * 0.58 + i * 9); c.lineTo(w, h * 0.58 + i * 12); c.stroke(); }
+      c.fillStyle = 'rgba(240,220,160,.16)';
+      for (let i = 0; i < 4; i++) c.fillRect(w * (0.12 + i * 0.24), h * 0.5, 3, 3);
+    }
+
+    // sensor noise
+    const noise = c.createImageData(w, h);
+    const amt = opts.thermal ? 26 : 12;
+    for (let i = 0; i < noise.data.length; i += 4) {
+      const v = (Math.random() * amt) | 0;
+      noise.data[i] = noise.data[i+1] = noise.data[i+2] = v; noise.data[i+3] = 26;
+    }
+    c.putImageData(noise, 0, 0);
+
+    // a person walking
+    const px = w * (0.18 + (t % 1) * 0.6);
+    const py = h * 0.66;
+    const ph = opts.thermal ? h * 0.05 : h * 0.16;
+    c.fillStyle = opts.thermal ? '#ffb46b' : '#7d8896';
+    c.fillRect(px, py - ph, ph * 0.34, ph);
+    c.beginPath(); c.arc(px + ph * 0.17, py - ph - ph * 0.14, ph * 0.16, 0, 7); c.fill();
+
+    if (opts.box) {
+      c.strokeStyle = '#35c46a'; c.lineWidth = 2;
+      c.strokeRect(px - 7, py - ph - ph * 0.32, ph * 0.34 + 14, ph * 1.36);
+      c.fillStyle = '#35c46a'; c.font = '12px Segoe UI';
+      c.fillText('person 0.79', px - 7, py - ph - ph * 0.32 - 6);
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+}
+let swapped = false;
+scene(document.getElementById('main'), { box: true });
+scene(document.getElementById('pipc'), { thermal: true });
+scene(document.getElementById('pbc'), { box: true });
+
+const VIS_LABEL = 'VISIBLE · 4K · zoom 31×';
+const THM_LABEL = 'THERMAL · VGA';
+
+function swapSensors(event) {
+  if (event) event.stopPropagation();
+  swapped = !swapped;
+  document.getElementById('mainlbl').textContent = swapped ? THM_LABEL : VIS_LABEL;
+  document.getElementById('piplbl').textContent = swapped ? VIS_LABEL : THM_LABEL;
+  // Replace the canvases so the old animation loops stop drawing into them.
+  document.getElementById('main').replaceWith(Object.assign(document.createElement('canvas'), { id: 'main' }));
+  document.getElementById('pipc').replaceWith(Object.assign(document.createElement('canvas'), { id: 'pipc' }));
+  scene(document.getElementById('main'), { thermal: swapped, box: true });
+  scene(document.getElementById('pipc'), { thermal: !swapped, box: swapped });
+  // If a single sensor is showing, keep showing the same sensor after the swap.
+  const active = document.querySelector('[data-layout].on').dataset.layout;
+  if (active === 'vis' || active === 'thm') {
+    document.querySelector(`[data-layout="${active}"]`).click();
+  }
+}
+
+// ---------- zoom readout ----------
+const zoom = document.getElementById('zoom');
+zoom.oninput = () => {
+  const z = +zoom.value;
+  const fov = 61.8 / z;                    // 61.8° wide, 31× optical
+  const px = Math.round(0.147 * (1920 / fov)); // person 0.147° at 700 m, 1080p stream
+  const f = fov.toFixed(2) + '°';
+  document.getElementById('zoomv').textContent = z + '×';
+  document.getElementById('fov').textContent = f;
+  document.getElementById('fov2').textContent = f;
+  document.getElementById('pxh').textContent = px + ' px';
+  document.getElementById('pxh2').textContent = px + ' px';
+  const hint = document.getElementById('zoomhint');
+  if (px >= 60) { hint.textContent = 'Big enough for the detector to identify a person.'; hint.style.color = 'var(--ok)'; }
+  else if (px >= 30) { hint.textContent = 'Marginal — detection works, identification is unreliable.'; hint.style.color = 'var(--warn)'; }
+  else { hint.textContent = 'Too small at 700 m. A person is a smudge at this zoom.'; hint.style.color = 'var(--bad)'; }
+};
+
+function restoreLabel() {
+  document.getElementById('mainlbl').textContent = swapped ? THM_LABEL : VIS_LABEL;
+}
+function nudge(d) {
+  document.getElementById('mainlbl').textContent = 'moving ' + d + ' …';
+  setTimeout(restoreLabel, 550);
+}
+document.querySelector('.pane-a').addEventListener('click', () => {
+  document.getElementById('mainlbl').textContent = 'centring on click …';
+  setTimeout(restoreLabel, 700);
+});
+
+// ---------- link / clock ----------
+function tick() {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toTimeString().slice(0, 8);
+  document.getElementById('pbtime').textContent = '21:14:' + String(d.getSeconds()).padStart(2, '0');
+}
+setInterval(tick, 1000); tick();
+
+let lost = false;
+function toggleLost() {
+  lost = !lost;
+  document.getElementById('lostbanner').classList.toggle('on', lost);
+  const dot = document.getElementById('linkdot');
+  dot.className = 'dot' + (lost ? ' bad' : '');
+  document.getElementById('linktxt').textContent = lost ? 'Link down · reconnecting' : 'Link 68% · 4.0 Mbps';
+  if (lost) { let s = 0; const i = setInterval(() => { if (!lost) return clearInterval(i); document.getElementById('lostsecs').textContent = ++s; }, 1000); }
+}
+function toggleWarn() {
+  const w = document.getElementById('warnstrip');
+  w.style.display = w.style.display === 'none' ? 'flex' : 'none';
+}
+
+// ---------- timeline ----------
+const track = document.getElementById('track');
+const DAY = 24 * 60;
+function pct(min) { return (min / DAY * 100) + '%'; }
+const gaps = [[190, 237], [604, 618], [1105, 1123]];
+let cursor = 0;
+gaps.forEach(([a, b]) => {
+  const cov = document.createElement('div'); cov.className = 'cov';
+  cov.style.left = pct(cursor); cov.style.width = pct(a - cursor); track.appendChild(cov);
+  const g = document.createElement('div'); g.className = 'gap';
+  g.style.left = pct(a); g.style.width = pct(b - a); g.title = 'no recording — link was down'; track.appendChild(g);
+  cursor = b;
+});
+const last = document.createElement('div'); last.className = 'cov';
+last.style.left = pct(cursor); last.style.width = pct(DAY - cursor); track.appendChild(last);
+
+const events = [
+  [1274, 'person', 0.79], [1276, 'person', 0.71], [1281, 'vehicle', 0.66],
+  [1290, 'person', 0.83], [1297, 'person', 0.75], [402, 'vehicle', 0.61],
+  [688, 'person', 0.69], [944, 'vehicle', 0.58],
+];
+events.forEach(([m, kind]) => {
+  const e = document.createElement('div');
+  e.className = 'ev' + (kind === 'vehicle' ? ' veh' : '');
+  e.style.left = pct(m);
+  e.title = kind + ' at ' + String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  track.appendChild(e);
+});
+const head = document.createElement('div'); head.className = 'play'; head.style.left = pct(1274); track.appendChild(head);
+track.onclick = e => { head.style.left = (e.offsetX / track.clientWidth * 100) + '%'; };
+
+const ticks = document.getElementById('ticks');
+for (let h = 0; h <= 24; h += 3) {
+  const s = document.createElement('span');
+  s.style.left = pct(h * 60); s.textContent = String(h).padStart(2, '0') + ':00';
+  ticks.appendChild(s);
+}
+document.getElementById('evtable').innerHTML = events
+  .sort((a, b) => b[0] - a[0])
+  .map(([m, k, c]) => `<tr class="click"><td>${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}</td><td>${k}</td><td>${c.toFixed(2)}</td></tr>`)
+  .join('');
+</script>
+</body>
+</html>

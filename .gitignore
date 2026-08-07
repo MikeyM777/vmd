@@ -19,3 +19,5 @@ gui_out.log
 flir_saved.html
 wb.html
 .claude/tdd-guard/
+.playwright-mcp/
+mockup/*.png
