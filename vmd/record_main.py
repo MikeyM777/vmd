@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from vmd.settings import Settings, load_settings
+from vmd.settings import Settings, SettingsError, load_settings
 from vmd.storage.discovery import find_closed_segments, parse_segment_start
 from vmd.storage.index import SegmentIndex
 from vmd.storage.recorder import SegmentRecorder
@@ -152,15 +152,20 @@ class RecordingService:
                 if start is None:
                     continue
                 try:
-                    size = path.stat().st_size
+                    stat = path.stat()
                 except OSError:
                     continue
+                # The observed close time, not the nominal duration. A recorder that
+                # died mid-segment wrote a short file, and recording that honestly is
+                # what makes a dropout visible in the coverage timeline instead of
+                # being papered over.
+                end = max(stat.st_mtime, start)
                 self.index.add(
                     stream=recorder.stream,
                     path=str(path),
                     start=start,
-                    end=start + self.settings.storage.segment_seconds,
-                    size_bytes=size,
+                    end=end,
+                    size_bytes=stat.st_size,
                 )
                 self._seen.add(str(path))
                 self._last_segment_at[recorder.stream] = now
@@ -227,24 +232,33 @@ class RecordingService:
         for directory in sorted(p for p in self.root.iterdir() if p.is_dir()):
             if directory.name in owned:
                 continue
-            for path in sorted(directory.glob("*.mp4")):
+            candidates = []
+            for path in directory.glob("*.mp4"):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_size == 0:
+                    continue
+                candidates.append((stat.st_mtime, path, stat))
+            if not candidates:
+                continue
+            candidates.sort()
+            # Skip the newest file, exactly as find_closed_segments does. If anything
+            # is still writing into this directory it is that file, and indexing it
+            # would expose a live recording to retention.
+            for mtime, path, stat in candidates[:-1]:
                 if str(path) in self._seen:
                     continue
                 start = parse_segment_start(path.name)
                 if start is None:
                     continue
-                try:
-                    size = path.stat().st_size
-                except OSError:
-                    continue
-                if size == 0:
-                    continue
                 self.index.add(
                     stream=directory.name,
                     path=str(path),
                     start=start,
-                    end=start + self.settings.storage.segment_seconds,
-                    size_bytes=size,
+                    end=max(mtime, start),
+                    size_bytes=stat.st_size,
                     commit=False,
                 )
                 self._seen.add(str(path))
@@ -322,7 +336,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args(argv)
-    settings = load_settings(args.settings)
+    try:
+        settings = load_settings(args.settings)
+    except SettingsError as exc:
+        # A broken settings file must fail with a readable message, not a traceback.
+        # Nothing restarts this process, so an unhandled error here means the machine
+        # records nothing until somebody notices.
+        logger.error("%s", exc)
+        return 1
     # Say which file was used. Without this, "running with defaults" looks identical
     # whether it is a genuine first run or a mistyped path.
     if Path(args.settings).exists():

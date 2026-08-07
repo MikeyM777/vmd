@@ -1,7 +1,7 @@
 import os
 import time
 
-from vmd.record_main import RecordingService, parse_args
+from vmd.record_main import RecordingService, main, parse_args
 from vmd.settings import Settings, StreamSettings
 from vmd.storage.index import SegmentIndex
 
@@ -326,3 +326,32 @@ def test_stuck_paths_stay_in_seen(tmp_path, monkeypatch):
     service.run_once(now=1000.0)
     assert str(directory / names[0]) in service._seen
     service.stop()
+
+
+def test_main_reports_a_broken_settings_file_without_crashing(tmp_path, capsys):
+    path = tmp_path / "settings.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    assert main(["--settings", str(path), "--once"]) == 1
+
+
+def test_main_refuses_to_start_with_no_enabled_streams(tmp_path):
+    from vmd.settings import Settings, save_settings
+
+    path = tmp_path / "settings.json"
+    save_settings(Settings(), path)
+    assert main(["--settings", str(path), "--once"]) == 1
+
+
+def test_main_runs_a_single_pass_over_a_file_source(tmp_path):
+    from vmd.settings import Settings, StreamSettings, save_settings
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"not really a video")  # ffmpeg will fail; that is fine here
+    settings = Settings()
+    settings.camera.streams = [StreamSettings(name="thermal", url=str(source))]
+    settings.storage.root = tmp_path / "recordings"
+    path = tmp_path / "settings.json"
+    save_settings(settings, path)
+
+    # A single pass must complete and clean up even though the source is unusable.
+    assert main(["--settings", str(path), "--once"]) == 0

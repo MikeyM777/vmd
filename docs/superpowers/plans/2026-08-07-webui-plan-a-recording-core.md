@@ -2688,4 +2688,19 @@ git commit -m "feat: detect stalled streams and throttle repeated failure loggin
 
 **Carried-forward decisions worth re-examining in Plan B.** `detect_free_bytes()` exists in Task 1 but nothing calls it yet — the first-run flow that displays detected free space belongs to the settings UI in Plan B, and it is defined here so the UI has it ready. `RecordingService.status()` returns exactly the fields the status bar in §5 needs, so Plan B can render it without changing this module.
 
-**Known limitation.** A segment's `end` is computed as `start + segment_seconds` rather than read from the file, so the last segment before a dropout is recorded as slightly longer than it really is. Correcting it means running `ffprobe` on every segment, which costs a process spawn per five minutes of footage. If the playback timeline in Plan D shows visible drift at gap boundaries, that is the cause and the fix.
+**Corrected during final review.** An earlier draft of Task 10 computed a segment's `end`
+as `start + segment_seconds` rather than reading it from the file, so a segment cut short
+by a dropout was recorded as if it had run the full nominal duration — silently papering
+over exactly the gap `SegmentIndex.gaps()` exists to surface. Both `_index_new_segments`
+and `_adopt_orphans` now use the file's mtime (the observed close time, already proven
+closed by `find_closed_segments` or by the orphan-adoption "not the newest file" rule) as
+`end`, clamped to be no earlier than `start`.
+
+**Known limitation: a forcefully killed service leaves orphaned writers.** `stop()`
+terminates each ffmpeg child, but a service killed without running it — a crash, a
+forced reboot, `taskkill /F` — leaves those children running and still writing. The
+next start has no way to detect an existing writer for a stream and will spawn a
+second one, and both use the same UTC-second filenames. Nothing in Plan A guards
+against this. A fix belongs with whatever supervises the service at the OS level, or
+as a per-stream lock file checked in `SegmentRecorder.start()`; it is recorded here so
+it is not rediscovered after months of unattended running.

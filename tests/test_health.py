@@ -40,17 +40,27 @@ def write_segment(directory, name, mtime):
 def test_orphaned_segments_on_disk_are_adopted(tmp_path):
     # A stream that was renamed or disabled leaves recordings behind. They must still
     # be counted and eventually deleted, or they occupy the budget forever.
+    # A second, newer file is required here: a lone file can never be proven closed
+    # (it could be a live writer left behind by an orphaned ffmpeg process from a
+    # previous run), so adoption only trusts a file once something newer exists after
+    # it - exactly the rule find_closed_segments already applies to owned streams.
     settings = build_settings(tmp_path)
     root = tmp_path / "recordings"
     orphan_dir = root / "an_old_stream_name"
     orphan_dir.mkdir(parents=True)
     orphan = orphan_dir / "2026-08-07_09-00-00.mp4"
     orphan.write_bytes(b"x" * 4096)
+    os.utime(orphan, (100.0, 100.0))
+    newer = orphan_dir / "2026-08-07_09-05-00.mp4"
+    newer.write_bytes(b"x" * 2048)
+    os.utime(newer, (400.0, 400.0))
 
     service = RecordingService(settings, spawn=spawn_fake)
 
     indexed = [s.path for s in service.index.all()]
     assert str(orphan) in indexed
+    # The newer file is still (possibly) being written and must not be adopted.
+    assert str(newer) not in indexed
     assert service.index.total_bytes() == 4096
     service.stop()
 
