@@ -31,28 +31,34 @@ class RecordingService:
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
-
-        recorder_kwargs = {"spawn": spawn} if spawn else {}
-        self.recorders = [
-            SegmentRecorder(
-                stream=stream.name,
-                source_url=stream.url,
-                output_dir=self.root / stream.name,
-                segment_seconds=settings.storage.segment_seconds,
-                **recorder_kwargs,
+        try:
+            recorder_kwargs = {"spawn": spawn} if spawn else {}
+            self.recorders = [
+                SegmentRecorder(
+                    stream=stream.name,
+                    source_url=stream.url,
+                    output_dir=self.root / stream.name,
+                    segment_seconds=settings.storage.segment_seconds,
+                    **recorder_kwargs,
+                )
+                for stream in settings.camera.streams
+                if stream.enabled
+            ]
+            self.supervisor = Supervisor(
+                [Managed(name=r.stream, service=r) for r in self.recorders]
             )
-            for stream in settings.camera.streams
-            if stream.enabled
-        ]
-        self.supervisor = Supervisor(
-            [Managed(name=r.stream, service=r) for r in self.recorders]
-        )
-        self._seen: set[str] = {s.path for s in self.index.all()}
-        self._last_warning: str | None = None
-        # Retention runs on its own slower cadence; see _apply_retention.
-        self.retention_interval = retention_interval
-        self._last_retention = 0.0
-        self._stuck_deletions = 0
+            self._seen: set[str] = {s.path for s in self.index.all()}
+            self._last_warning: str | None = None
+            # Retention runs on its own slower cadence; see _apply_retention.
+            self.retention_interval = retention_interval
+            self._last_retention = 0.0
+            self._stuck_deletions = 0
+        except Exception:
+            # Nothing will hold a reference to this half-built service, so the
+            # connection would leak. On Windows a lingering handle can make an
+            # immediate retry fail with "database is locked".
+            self.index.close()
+            raise
 
     def run_once(self, now: float | None = None) -> None:
         """One pass: keep recorders alive, index finished segments, apply retention."""
@@ -62,9 +68,20 @@ class RecordingService:
         self._apply_retention(now)
 
     def run_forever(self, interval: float = 5.0) -> None:
+        """Run until interrupted. A failed pass must never end the process.
+
+        This runs unattended for months. Any exception escaping run_once would stop
+        recording permanently, since nothing outside this process restarts it, so a
+        failed pass is logged and the loop continues. The sleep happens on the failure
+        path too: without it a persistent fault, such as a full disk, would become a
+        tight busy loop.
+        """
         try:
             while True:
-                self.run_once()
+                try:
+                    self.run_once()
+                except Exception:  # noqa: BLE001 - a bad pass must not end the service
+                    logger.exception("recording pass failed; continuing")
                 time.sleep(interval)
         except KeyboardInterrupt:
             pass
@@ -73,6 +90,13 @@ class RecordingService:
 
     def stop(self) -> None:
         self.supervisor.stop_all()
+        # stop_all() blocks until each ffmpeg has exited, so the segment it was writing
+        # is now closed and valid. Index it before shutting down, or it stays on disk
+        # while being invisible to the budget.
+        try:
+            self._index_new_segments(time.time())
+        except Exception:  # noqa: BLE001 - shutdown must always complete
+            logger.exception("final indexing pass failed")
         self.index.close()
 
     def status(self) -> dict:
@@ -149,15 +173,15 @@ class RecordingService:
         if plan.warning:
             logger.warning(plan.warning)
         removed = apply_plan(plan, self.index)
+        for segment in removed:
+            self._seen.discard(segment.path)
         if removed:
-            for segment in plan.delete:
-                self._seen.discard(segment.path)
-            logger.info("retention removed %d segments", removed)
+            logger.info("retention removed %d segments", len(removed))
 
         # A file that cannot be deleted is retried forever. Counting only what was
         # removed would report a healthy number every pass while the budget is never
         # actually met, so the shortfall is tracked and surfaced in status().
-        self._stuck_deletions = len(plan.delete) - removed
+        self._stuck_deletions = len(plan.delete) - len(removed)
         if self._stuck_deletions:
             logger.warning(
                 "%d segment(s) could not be deleted; storage budget cannot be met",
@@ -166,7 +190,13 @@ class RecordingService:
 
     @staticmethod
     def _write_rate(segments) -> float:
-        """Bytes per second, measured from what has actually been recorded."""
+        """Bytes per second, measured from what has actually been recorded.
+
+        This averages over the entire retained history, so a long outage makes the
+        figure read low. It feeds only the operator-facing estimate of when footage
+        will be deleted, never a deletion decision, so an optimistic estimate after a
+        link outage is a display inaccuracy rather than a data-loss risk.
+        """
         if len(segments) < 2:
             return 0.0
         span = segments[-1].end - segments[0].start
@@ -200,9 +230,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     service = RecordingService(settings)
     if args.once:
-        service.run_once()
-        print(service.status())
-        service.stop()
+        try:
+            service.run_once()
+            print(service.status())
+        finally:
+            service.stop()
         return 0
     service.run_forever(interval=args.interval)
     return 0

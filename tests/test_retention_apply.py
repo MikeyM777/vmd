@@ -24,7 +24,7 @@ def test_deletes_files_and_index_rows(tmp_path):
     )
     removed = apply_plan(plan, index)
 
-    assert removed == 2
+    assert len(removed) == 2
     assert not paths[0].exists()
     assert not paths[1].exists()
     assert paths[2].exists()
@@ -39,7 +39,7 @@ def test_missing_file_still_clears_the_index_row(tmp_path):
         index.all(), now=10000.0, budget_bytes=1, budget_enabled=True,
         retention_days=None, warn_at_fraction=0.9, bytes_per_second=1000.0,
     )
-    assert apply_plan(plan, index) == 1
+    assert len(apply_plan(plan, index)) == 1
     assert index.all() == []
     index.close()
 
@@ -56,7 +56,7 @@ def test_undeletable_file_keeps_its_row_for_a_later_attempt(tmp_path):
     def refuse(_path):
         raise PermissionError("file is in use")
 
-    assert apply_plan(plan, index, unlink=refuse) == 0
+    assert len(apply_plan(plan, index, unlink=refuse)) == 0
     assert len(index.all()) == 1
     index.close()
 
@@ -69,6 +69,6 @@ def test_empty_plan_does_nothing(tmp_path):
         index.all(), now=400.0, budget_bytes=100 * GB, budget_enabled=True,
         retention_days=None, warn_at_fraction=0.9, bytes_per_second=1000.0,
     )
-    assert apply_plan(plan, index) == 0
+    assert len(apply_plan(plan, index)) == 0
     assert path.exists()
     index.close()

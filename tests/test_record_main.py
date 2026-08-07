@@ -256,3 +256,73 @@ def test_retention_does_not_run_on_every_pass(tmp_path):
     assert len(calls) == 3
     assert service._last_retention == 1000.0
     service.stop()
+
+
+def test_run_forever_survives_a_failing_pass(tmp_path, monkeypatch):
+    # A transient error must never end the service: nothing restarts this process.
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("transient disk error")
+        if calls["n"] >= 3:
+            raise KeyboardInterrupt
+        return None
+
+    monkeypatch.setattr(service, "run_once", flaky)
+    monkeypatch.setattr("vmd.record_main.time.sleep", lambda _s: None)
+
+    service.run_forever(interval=0.0)  # must return normally, not raise
+
+    assert calls["n"] >= 3, "the loop must have continued after the failure"
+
+
+def test_stop_indexes_the_final_segment(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    for name, mtime in (("2026-08-07_10-00-00.mp4", 100.0), ("2026-08-07_10-05-00.mp4", 400.0)):
+        path = directory / name
+        path.write_bytes(b"x" * 2048)
+        os.utime(path, (mtime, mtime))
+
+    index_path = tmp_path / "recordings" / "segments.db"
+    service.stop()
+
+    from vmd.storage.index import SegmentIndex
+    reopened = SegmentIndex(index_path)
+    names = [os.path.basename(s.path) for s in reopened.all()]
+    assert "2026-08-07_10-00-00.mp4" in names
+    reopened.close()
+
+
+def test_stuck_paths_stay_in_seen(tmp_path, monkeypatch):
+    # A segment whose deletion failed must not be re-discovered and re-indexed on
+    # every pass; that is wasted work exactly when the disk is under pressure.
+    from vmd import record_main as record_main_module
+    from vmd.storage.retention import apply_plan as real_apply_plan
+
+    def refuse(_path):
+        raise PermissionError("file is in use")
+
+    monkeypatch.setattr(
+        record_main_module,
+        "apply_plan",
+        lambda plan, index, unlink=None: real_apply_plan(plan, index, unlink=refuse),
+    )
+
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    service.run_once()
+    directory = tmp_path / "recordings" / "thermal"
+    names = ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4", "2026-08-07_10-10-00.mp4"]
+    for offset, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * 2000)
+        os.utime(path, (100.0 + offset, 100.0 + offset))
+
+    service.run_once(now=1000.0)
+    assert str(directory / names[0]) in service._seen
+    service.stop()

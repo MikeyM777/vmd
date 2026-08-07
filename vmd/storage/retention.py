@@ -122,13 +122,17 @@ def apply_plan(
     plan: RetentionPlan,
     index: SegmentIndex,
     unlink: Callable[[str], None] = os.unlink,
-) -> int:
-    """Delete the planned segments from disk and from the index. Returns the count.
+) -> list[Segment]:
+    """Delete the planned segments from disk and from the index.
+
+    Returns the segments actually removed, which is not always everything that was
+    planned: a locked file is left for a later attempt. Callers need to know which
+    ones really went, not just how many.
 
     A file that is already gone is not an error - the index row is still removed, so the
     catalogue converges on the truth rather than accumulating dead entries.
     """
-    removed = 0
+    removed: list[Segment] = []
     for segment in plan.delete:
         try:
             unlink(segment.path)
@@ -141,5 +145,5 @@ def apply_plan(
             logger.warning("could not delete %s: %s", segment.path, exc)
             continue
         index.delete(segment.id)
-        removed += 1
+        removed.append(segment)
     return removed
