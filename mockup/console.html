@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VMD — console</title>
+<style>
+/* ============================================================
+   VMD console. Visual system: DESIGN.md ("Console").
+   Graphite, square, system faces, monospace telemetry.
+   Colour encodes state and nothing else.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --bg:      oklch(0.23 0.006 265);
+  --surface: oklch(0.28 0.007 265);
+  --raised:  oklch(0.33 0.008 265);
+  --well:    oklch(0.12 0.005 265);
+  --line:    oklch(0.40 0.010 265);
+  --line-strong: oklch(0.52 0.012 265);
+  --ink:     oklch(0.97 0.003 265);
+  --muted:   oklch(0.78 0.010 265);
+  --ok:      oklch(0.80 0.15 150);
+  --warn:    oklch(0.84 0.14 75);
+  --alarm:   oklch(0.68 0.21 27);
+  --accent:  oklch(0.82 0.13 82);
+
+  --ui:   system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+
+  --bevel: inset 0 1px 0 oklch(1 0 0 / 0.05);
+  --tap: 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+
+  --z-video: 1;
+  --z-overlay: 10;
+  --z-sticky: 20;
+  --z-modal: 40;
+}
+
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--ui); font-size: 12.5px;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.app { display: grid; grid-template-rows: 46px 1fr 30px; height: 100vh; }
+
+/* ---------------------------------------------------------- header */
+.bar {
+  display: flex; align-items: center; gap: 22px; padding: 0 14px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  box-shadow: var(--bevel);
+}
+.site { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.site strong { font-size: 14px; font-weight: 650; letter-spacing: 0.01em; }
+.site span { font-size: 12px; color: var(--muted); }
+
+.tabs { display: flex; gap: 2px; }
+.tabs button {
+  font-size: 13px; padding: 6px 15px; cursor: pointer;
+  background: none; color: var(--muted); border: 1px solid transparent;
+  transition: color var(--tap), background var(--tap);
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button[aria-selected="true"] { color: var(--ink); background: var(--raised); border-color: var(--line); }
+
+.bar .right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border: 1px solid var(--line); background: var(--raised);
+  font-size: 12px; white-space: nowrap;
+}
+.chip .g { font-size: 10px; line-height: 1; }
+.chip .v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.chip.ok .g { color: var(--ok); }
+.chip.warn { border-color: color-mix(in oklch, var(--warn) 55%, var(--line)); }
+.chip.warn .g { color: var(--warn); }
+.chip.bad { border-color: color-mix(in oklch, var(--alarm) 60%, var(--line)); }
+.chip.bad .g { color: var(--alarm); }
+
+/* ---------------------------------------------------------- panes */
+main { display: none; min-height: 0; }
+main.on { display: grid; grid-template-columns: 1fr 292px; }
+
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 10px; gap: 8px; }
+
+.wall {
+  position: relative; flex: 1; min-height: 0; width: 100%;
+  display: flex; background: var(--well); border: 1px solid var(--line); overflow: hidden;
+}
+.pane { position: relative; flex: 1 1 50%; min-width: 0; background: var(--well); }
+.pane + .pane { border-left: 1px solid var(--line-strong); }
+.pane canvas { display: block; width: 100%; height: 100%; }
+.pane.hidden { display: none; }
+.wall.solo .pane { flex: 1 1 100%; }
+
+.tag {
+  position: absolute; top: 7px; left: 8px; z-index: var(--z-overlay);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.05em;
+  background: oklch(0.08 0 0 / 0.74); padding: 3px 8px; color: oklch(0.99 0 0);
+}
+.tag em { font-style: normal; color: oklch(0.74 0 0); }
+
+.readout {
+  position: absolute; left: 8px; bottom: 7px; z-index: var(--z-overlay);
+  display: flex; gap: 15px; font-family: var(--mono); font-size: 11.5px;
+  background: oklch(0.08 0 0 / 0.74); padding: 4px 9px;
+  font-variant-numeric: tabular-nums; color: oklch(0.99 0 0);
+}
+.readout .k { color: oklch(0.72 0 0); }
+
+.wall.alarm { outline: 2px solid var(--alarm); outline-offset: -2px; }
+
+/* Sits below the video, never over it: an alarm is when the picture matters most. */
+.alarmstrip {
+  display: none; align-items: center; gap: 14px; padding: 9px 13px;
+  background: color-mix(in oklch, var(--alarm) 86%, black); color: oklch(0.99 0 0);
+  font-size: 13px;
+}
+.stage.alarm .alarmstrip { display: flex; }
+.alarmstrip .what { font-weight: 650; letter-spacing: 0.03em; }
+.alarmstrip .when { font-family: var(--mono); font-variant-numeric: tabular-nums; opacity: 0.92; }
+.alarmstrip button {
+  margin-left: auto; font-size: 12px; padding: 5px 13px; cursor: pointer;
+  background: oklch(1 0 0 / 0.16); border: 1px solid oklch(1 0 0 / 0.42);
+}
+.alarmstrip button:hover { background: oklch(1 0 0 / 0.26); }
+
+.controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.seg { display: flex; border: 1px solid var(--line); }
+.seg button {
+  font-size: 12.5px; padding: 6px 13px; cursor: pointer; border: 0;
+  border-right: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  transition: background var(--tap), color var(--tap);
+}
+.seg button:last-child { border-right: 0; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--ink); font-weight: 600; }
+
+/* ---------------------------------------------------------- side */
+.side {
+  background: var(--surface); border-left: 1px solid var(--line);
+  padding: 11px; overflow-y: auto; box-shadow: var(--bevel);
+}
+.group + .group { margin-top: 17px; }
+.group > h2 {
+  margin: 0 0 7px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+
+.pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+.pad button {
+  font-size: 15px; line-height: 1; padding: 11px 0; cursor: pointer;
+  background: var(--raised); color: var(--ink); border: 1px solid var(--line);
+  transition: border-color var(--tap), background var(--tap);
+}
+.pad button:hover { border-color: var(--line-strong); }
+.pad button:active { background: var(--surface); }
+.pad .home { background: var(--surface); color: var(--muted); font-size: 10.5px; letter-spacing: 0.05em; }
+
+.row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+.row:last-child { border-bottom: 0; }
+.row .k { color: var(--muted); }
+.row .v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.row .v.ok { color: var(--ok); }
+.row .v.warn { color: var(--warn); }
+.row .v.bad { color: var(--alarm); }
+
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px; }
+.hint { margin: 7px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
+.events { border: 1px solid var(--line); display: grid; gap: 1px; background: var(--line); }
+.event {
+  display: grid; grid-template-columns: 56px 1fr auto; gap: 9px; align-items: baseline;
+  padding: 6px 8px; background: var(--surface); cursor: pointer; transition: background var(--tap);
+}
+.event:hover { background: var(--raised); }
+.event .t { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.event .c { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.event.new { background: color-mix(in oklch, var(--alarm) 15%, var(--surface)); }
+.event.new .t { color: var(--ink); }
+
+/* ---------------------------------------------------------- footer */
+.foot {
+  display: flex; align-items: center; gap: 16px; padding: 0 13px;
+  background: var(--surface); border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.foot b { color: var(--ink); font-weight: 600; }
+.foot .sep { color: var(--line-strong); }
+.foot .right { margin-left: auto; }
+
+/* ---------------------------------------------------------- playback */
+.timeline { border: 1px solid var(--line); background: var(--surface); padding: 10px; box-shadow: var(--bevel); }
+.tl-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; flex-wrap: wrap; }
+.tl-head input[type=date], .tl-head select {
+  background: var(--well); border: 1px solid var(--line); padding: 5px 8px;
+  font-family: var(--mono); font-size: 12px;
+}
+.track { position: relative; height: 42px; background: var(--well); cursor: pointer; border: 1px solid var(--line); }
+.cov { position: absolute; top: 0; bottom: 0; background: oklch(0.44 0.07 250); }
+.gap { position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(45deg, oklch(0.22 0.05 27), oklch(0.22 0.05 27) 4px, oklch(0.28 0.07 27) 4px, oklch(0.28 0.07 27) 8px); }
+.ev { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ok); }
+.ev.vis { background: var(--accent); }
+.ev:hover { width: 4px; }
+.play { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--alarm); }
+.ticks { position: relative; height: 15px; margin-top: 3px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.ticks span { position: absolute; transform: translateX(-50%); }
+.legend { display: flex; gap: 15px; margin-top: 9px; font-size: 11.5px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; }
+
+/* ---------------------------------------------------------- settings */
+.settings { padding: 14px; overflow-y: auto; }
+/* Blocks flow into however many columns fit. A single 760px column left most of a
+   console screen empty, which reads as unfinished; the 420px floor keeps each
+   block's own field labels and prose at a readable width. */
+.form {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px; align-items: start; max-width: 1500px;
+}
+.block { margin: 0; }
+.block.wide { grid-column: 1 / -1; }
+.actions { grid-column: 1 / -1; }
+.block { border: 1px solid var(--line); background: var(--surface); padding: 14px; box-shadow: var(--bevel); }
+.block > h2 {
+  margin: 0 0 3px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.block > p.hint { margin: 0 0 12px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.field label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.field input, .field select {
+  width: 100%; padding: 6px 9px; background: var(--well);
+  border: 1px solid var(--line); font-family: var(--mono); font-size: 12px;
+}
+.field input:focus, .field select:focus { border-color: var(--accent); outline: none; }
+
+.sourcepick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.source {
+  border: 1px solid var(--line); background: var(--well); padding: 11px; cursor: pointer;
+  transition: border-color var(--tap), background var(--tap);
+}
+.source:hover { border-color: var(--line-strong); }
+.source[aria-pressed="true"] { border-color: var(--accent); background: var(--raised); }
+.source h3 { margin: 0 0 4px; font-size: 12.5px; font-weight: 650; display: flex; align-items: center; gap: 7px; }
+.source h3 .dot { width: 7px; height: 7px; background: var(--line-strong); }
+.source[aria-pressed="true"] h3 .dot { background: var(--accent); }
+.source p { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.source.disabled { opacity: 0.55; cursor: not-allowed; }
+
+.streamrow {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+}
+.streamrow:last-child { border-bottom: 0; }
+.streamrow .nm { font-family: var(--mono); }
+.toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: var(--muted); }
+.toggle input { accent-color: var(--accent); width: 14px; height: 14px; }
+
+.actions { display: flex; gap: 8px; }
+.btn {
+  padding: 7px 15px; cursor: pointer; background: var(--raised);
+  border: 1px solid var(--line); transition: border-color var(--tap);
+}
+.btn:hover { border-color: var(--line-strong); }
+.btn.primary { background: var(--accent); color: oklch(0.18 0.02 82); border-color: var(--accent); font-weight: 650; }
+
+/* Lives inside the footer rather than floating: a fixed badge covered the storage
+   panel, which is exactly the kind of thing this design is supposed to avoid. */
+.mock { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="bar">
+    <div class="site"><strong>NORTH PERIMETER</strong><span>Elara DX · 700 m</span></div>
+    <nav class="tabs">
+      <button aria-selected="true" data-tab="live">Live</button>
+      <button aria-selected="false" data-tab="playback">Playback</button>
+      <button aria-selected="false" data-tab="settings">Settings</button>
+    </nav>
+    <div class="right">
+      <span class="chip ok"><span class="g">●</span>Link <span class="v">68%</span></span>
+      <span class="chip ok"><span class="g">●</span>Rec <span class="v">2</span></span>
+      <span class="chip warn"><span class="g">▲</span>Disk <span class="v">11 d</span></span>
+    </div>
+  </header>
+
+  <!-- ================= LIVE ================= -->
+  <main class="on" id="tab-live">
+    <div class="stage alarm" id="stage">
+      <div class="wall alarm" id="wall">
+        <div class="pane" id="pane-thermal">
+          <canvas id="cv-t"></canvas>
+          <div class="tag"><em>THERMAL</em> 640×512 · 8°</div>
+          <div class="readout"><span><span class="k">person@700m</span> 13 px</span></div>
+        </div>
+        <div class="pane" id="pane-visible">
+          <canvas id="cv-v"></canvas>
+          <div class="tag"><em>VISIBLE</em> 1080p · zoom 31×</div>
+          <div class="readout">
+            <span><span class="k">fov</span> 2.15°</span>
+            <span><span class="k">person@700m</span> 132 px</span>
+            <span><span class="k">rate</span> 4.0 Mb/s</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="alarmstrip">
+        <span class="what">MOVEMENT — THERMAL</span>
+        <span class="when" id="alarm-age">21:14:07 · 3 s ago</span>
+        <button onclick="ack()">Acknowledge</button>
+      </div>
+
+      <div class="controls">
+        <div class="seg" id="layout">
+          <button aria-pressed="true" data-view="both">Both</button>
+          <button aria-pressed="false" data-view="thermal">Thermal</button>
+          <button aria-pressed="false" data-view="visible">Visible</button>
+        </div>
+        <div class="seg">
+          <button aria-pressed="true" data-toggle="boxes">Detection overlay</button>
+          <button aria-pressed="false" data-toggle="mask">Ignore mask</button>
+        </div>
+        <div class="seg">
+          <button onclick="fireAlarm()">simulate movement</button>
+          <button onclick="dropLink()">simulate link loss</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="group">
+        <h2>Steering</h2>
+        <div class="pad">
+          <button>↖</button><button>↑</button><button>↗</button>
+          <button>←</button><button class="home">HOME</button><button>→</button>
+          <button>↙</button><button>↓</button><button>↘</button>
+        </div>
+        <p class="hint">Or click a point on the video to centre on it.</p>
+      </div>
+
+      <div class="group">
+        <h2>Zoom</h2>
+        <input type="range" min="1" max="31" value="31" id="zoom">
+        <div class="row"><span class="k">Optical</span><span class="v" id="z-x">31×</span></div>
+        <div class="row"><span class="k">Field of view</span><span class="v" id="z-fov">2.15°</span></div>
+        <div class="row"><span class="k">Person at 700 m</span><span class="v ok" id="z-px">132 px</span></div>
+        <p class="hint" id="z-hint">Large enough to identify what moved.</p>
+      </div>
+
+      <div class="group">
+        <h2>Recent movement</h2>
+        <div class="events" id="eventlist"></div>
+        <p class="hint">Blank confidence means the object was too small to identify. The movement is still real.</p>
+      </div>
+
+      <div class="group">
+        <h2>Link</h2>
+        <div class="row"><span class="k">Signal</span><span class="v" id="l-sig">−63 dBm</span></div>
+        <div class="row"><span class="k">Capacity</span><span class="v">42 Mb/s</span></div>
+        <div class="row"><span class="k">Bitrate</span><span class="v" id="l-rate">4.0 Mb/s</span></div>
+        <div class="row"><span class="k">Mode</span><span class="v">auto</span></div>
+      </div>
+
+      <div class="group">
+        <h2>Storage</h2>
+        <div class="row"><span class="k">Held</span><span class="v">11 days</span></div>
+        <div class="row"><span class="k">Used</span><span class="v warn">512 / 600 GB</span></div>
+        <div class="row"><span class="k">Oldest</span><span class="v">27 Jul 04:10</span></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ================= PLAYBACK ================= -->
+  <main id="tab-playback">
+    <div class="stage">
+      <div class="wall">
+        <div class="pane">
+          <canvas id="cv-p"></canvas>
+          <div class="tag"><em>VISIBLE</em> 07 Aug 2026 · 21:14:07</div>
+          <div class="readout"><span><span class="k">playback</span> <span id="pb-t">21:14:07</span></span></div>
+        </div>
+      </div>
+
+      <div class="timeline">
+        <div class="tl-head">
+          <input type="date" value="2026-08-07">
+          <div class="seg">
+            <button aria-pressed="true">Visible</button>
+            <button aria-pressed="false">Thermal</button>
+          </div>
+          <div class="seg" style="margin-left:auto">
+            <button>⏮ 1 m</button><button>◀ 10 s</button><button>▶</button>
+            <button>10 s ▶</button><button>1 m ⏭</button>
+          </div>
+          <select><option>1×</option><option>2×</option><option>4×</option><option>8×</option></select>
+          <button class="btn">Export range</button>
+        </div>
+        <div class="track" id="track"></div>
+        <div class="ticks" id="ticks"></div>
+        <div class="legend">
+          <span><i style="background:oklch(0.44 0.07 250)"></i>recorded</span>
+          <span><i style="background:oklch(0.28 0.07 27)"></i>no recording — link down</span>
+          <span><i style="background:var(--ok)"></i>thermal movement</span>
+          <span><i style="background:var(--accent)"></i>visible detection</span>
+        </div>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="group">
+        <h2>Events · 07 Aug</h2>
+        <div class="events" id="pb-events"></div>
+        <p class="hint">Click an event to jump to five seconds before it.</p>
+      </div>
+      <div class="group">
+        <h2>Coverage</h2>
+        <div class="row"><span class="k">Recorded</span><span class="v">22 h 41 m</span></div>
+        <div class="row"><span class="k">Gaps</span><span class="v warn">3 · 1 h 19 m</span></div>
+        <div class="row"><span class="k">Longest gap</span><span class="v warn">47 m</span></div>
+        <p class="hint">Gaps are shown because lost coverage must be visible, not silent.</p>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ================= SETTINGS ================= -->
+  <main id="tab-settings" style="grid-template-columns:1fr">
+    <div class="settings">
+      <div class="form">
+
+        <section class="block wide">
+          <h2>Alarm source</h2>
+          <p class="hint">Which system decides that something moved. Only one is active at a time; both write to the same event log, so playback and history look identical either way.</p>
+          <div class="sourcepick">
+            <div class="source" aria-pressed="true" onclick="pickSource(this)">
+              <h3><span class="dot"></span>Built-in detector</h3>
+              <p>Our own motion gate and AI. Runs on the streams selected below. Tunable, and every decision is logged with a reason.</p>
+            </div>
+            <div class="source disabled" aria-pressed="false" title="Not yet verified against the camera">
+              <h3><span class="dot"></span>Camera analytics</h3>
+              <p>The camera's own detection, received as events over its API. Untested — availability will be confirmed when the camera is reachable.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="block wide">
+          <h2>Detection</h2>
+          <p class="hint">Alarm on anything that moves. Wind, rain, foliage and birds are suppressed by track filters, not by the AI — the AI only labels what it can, and never blocks an alarm it cannot explain.</p>
+          <div class="streamrow">
+            <span class="nm">thermal</span>
+            <label class="toggle"><input type="checkbox" checked> detect</label>
+            <label class="toggle"><input type="checkbox"> run AI</label>
+          </div>
+          <div class="streamrow">
+            <span class="nm">visible</span>
+            <label class="toggle"><input type="checkbox" checked> detect</label>
+            <label class="toggle"><input type="checkbox" checked> run AI</label>
+          </div>
+          <p class="hint">AI is off for thermal by default: at 700 m a person is about 13 px there, too few for identification. Movement is still detected — it just arrives unlabelled.</p>
+          <div class="fields" style="margin-top:12px">
+            <div class="field"><label>Sensitivity</label><select><option>Low</option><option selected>Normal</option><option>High</option></select></div>
+            <div class="field"><label>Confirm over (frames)</label><input value="3 of 5"></div>
+            <div class="field"><label>Minimum travel (px)</label><input value="12"></div>
+            <div class="field"><label>Ignore above horizon</label><select><option selected>Yes — suppresses birds</option><option>No</option></select></div>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>Camera</h2>
+          <div class="fields">
+            <div class="field"><label>Address</label><input value="192.168.1.64"></div>
+            <div class="field"><label>Username</label><input value="admin"></div>
+            <div class="field"><label>Password</label><input type="password" value="••••••••"></div>
+            <div class="field"><label>Target distance (m)</label><input value="700"></div>
+            <div class="field"><label>Thermal field of view</label><input value="unknown — set at commissioning" style="color:var(--warn)"></div>
+            <div class="field"><label>Model</label><input value="Elara DX — variant unknown" style="color:var(--warn)"></div>
+          </div>
+          <p class="hint">Field of view is measured on site rather than assumed: point the thermal camera at an object of known size and distance, and the software derives the lens angle.</p>
+        </section>
+
+        <section class="block">
+          <h2>Radio</h2>
+          <p class="hint">Optional. Reading the Ubiquiti link lets the bitrate drop before the picture breaks rather than after.</p>
+          <div class="fields">
+            <div class="field"><label>Address</label><input value="192.168.1.20"></div>
+            <div class="field"><label>Username</label><input value="ubnt"></div>
+            <div class="field"><label>Password</label><input type="password" value="••••••••"></div>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>Storage</h2>
+          <div class="fields">
+            <div class="field"><label>Folder</label><input value="D:\vmd\recordings"></div>
+            <div class="field"><label>Budget (GB)</label><input value="600"></div>
+            <div class="field"><label>Also delete older than</label><input value="13 days"></div>
+            <div class="field"><label>Age rule</label><select><option selected>On</option><option>Off — keep as much as fits</option></select></div>
+          </div>
+          <p class="hint">The budget rule always applies: when it is reached the oldest footage goes, so recording never stops.</p>
+        </section>
+
+        <div class="actions">
+          <button class="btn primary">Save</button>
+          <button class="btn">Revert</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span>REC <b id="rec">02:14:31</b></span><span class="sep">│</span>
+    <span>oldest <b>27 Jul 04:10</b></span><span class="sep">│</span>
+    <span>512 / 600 GB</span><span class="sep">│</span>
+    <span>11 days</span>
+    <span class="sep">│</span><span class="mock">MOCKUP — nothing connected</span>
+    <span class="right">latency <b>0.4 s</b> · dropped <b>0</b> · <span id="clock">--:--:--</span></span>
+  </footer>
+</div>
+
+<script>
+/* ---- tabs ---- */
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  document.querySelectorAll('main').forEach(m => m.classList.toggle('on', m.id === 'tab-' + b.dataset.tab));
+});
+
+/* ---- layout ---- */
+document.querySelectorAll('#layout button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#layout button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  const v = b.dataset.view, wall = document.getElementById('wall');
+  wall.classList.toggle('solo', v !== 'both');
+  document.getElementById('pane-thermal').classList.toggle('hidden', v === 'visible');
+  document.getElementById('pane-visible').classList.toggle('hidden', v === 'thermal');
+});
+document.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () => {
+  const on = b.getAttribute('aria-pressed') !== 'true';
+  b.setAttribute('aria-pressed', String(on));
+  if (b.dataset.toggle === 'boxes') SHOW_BOXES = on;
+});
+function pickSource(el) {
+  if (el.classList.contains('disabled')) return;
+  document.querySelectorAll('.source').forEach(s => s.setAttribute('aria-pressed', String(s === el)));
+}
+
+/* ---- zoom readout: real optics, 61.8° wide over 31x, 1080-row stream ---- */
+const zoom = document.getElementById('zoom');
+zoom.oninput = () => {
+  const fov = 61.8 / +zoom.value;
+  const px = Math.round(0.147 * (1920 / fov));
+  document.getElementById('z-x').textContent = zoom.value + '×';
+  document.getElementById('z-fov').textContent = fov.toFixed(2) + '°';
+  const pxEl = document.getElementById('z-px');
+  pxEl.textContent = px + ' px';
+  pxEl.className = 'v ' + (px >= 60 ? 'ok' : px >= 30 ? 'warn' : 'bad');
+  const h = document.getElementById('z-hint');
+  h.textContent = px >= 60 ? 'Large enough to identify what moved.'
+    : px >= 30 ? 'Movement detectable; identification unreliable.'
+    : 'Too small at 700 m to identify anything.';
+};
+
+/* ---- alarm ---- */
+let alarmAt = Date.now() - 3000;
+function fireAlarm() {
+  alarmAt = Date.now();
+  document.getElementById('stage').classList.add('alarm');
+  document.getElementById('wall').classList.add('alarm');
+  addEvent('Thermal — movement', null);
+}
+function ack() {
+  document.getElementById('stage').classList.remove('alarm');
+  document.getElementById('wall').classList.remove('alarm');
+}
+function dropLink() {
+  const chip = document.querySelector('.chip.ok');
+  const bad = chip.classList.toggle('bad'); chip.classList.toggle('ok', !bad);
+  chip.querySelector('.v').textContent = bad ? 'down' : '68%';
+  document.getElementById('l-sig').textContent = bad ? '— dBm' : '−63 dBm';
+  document.getElementById('l-rate').textContent = bad ? '0.0 Mb/s' : '4.0 Mb/s';
+}
+
+const EVENTS = [
+  ['21:14:07', 'Thermal — movement', null, true],
+  ['21:09:52', 'Visible — person', 0.79, false],
+  ['20:51:18', 'Thermal — movement', null, false],
+  ['20:44:03', 'Visible — vehicle', 0.66, false],
+  ['20:12:37', 'Thermal — movement', null, false],
+];
+function renderEvents() {
+  document.getElementById('eventlist').innerHTML = EVENTS.slice(0, 6).map(([t, what, c, isNew]) =>
+    `<div class="event${isNew ? ' new' : ''}"><span class="t">${t}</span><span>${what}</span><span class="c">${c == null ? '—' : c.toFixed(2)}</span></div>`
+  ).join('');
+}
+function addEvent(what, conf) {
+  const d = new Date();
+  EVENTS.forEach(e => e[3] = false);
+  EVENTS.unshift([d.toTimeString().slice(0, 8), what, conf, true]);
+  renderEvents();
+}
+renderEvents();
+
+/* ---- clocks ---- */
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toTimeString().slice(0, 8);
+  document.getElementById('pb-t').textContent = '21:14:' + String(d.getSeconds()).padStart(2, '0');
+  const age = Math.round((Date.now() - alarmAt) / 1000);
+  document.getElementById('alarm-age').textContent =
+    new Date(alarmAt).toTimeString().slice(0, 8) + ' · ' + age + ' s ago';
+}, 1000);
+
+/* ---- timeline ---- */
+const DAY = 1440, track = document.getElementById('track');
+const pct = m => (m / DAY * 100) + '%';
+let cursor = 0;
+[[190, 237], [604, 618], [1105, 1123]].forEach(([a, b]) => {
+  const c = document.createElement('div'); c.className = 'cov';
+  c.style.left = pct(cursor); c.style.width = pct(a - cursor); track.appendChild(c);
+  const g = document.createElement('div'); g.className = 'gap';
+  g.style.left = pct(a); g.style.width = pct(b - a);
+  g.title = 'no recording — link was down'; track.appendChild(g);
+  cursor = b;
+});
+const tail = document.createElement('div'); tail.className = 'cov';
+tail.style.left = pct(cursor); tail.style.width = pct(DAY - cursor); track.appendChild(tail);
+
+const MARKS = [[1274, 'thermal'], [1276, 'thermal'], [1281, 'visible'], [1290, 'thermal'],
+               [1297, 'visible'], [402, 'thermal'], [688, 'visible'], [944, 'thermal']];
+MARKS.forEach(([m, kind]) => {
+  const e = document.createElement('div');
+  e.className = 'ev' + (kind === 'visible' ? ' vis' : '');
+  e.style.left = pct(m);
+  e.title = kind + ' at ' + String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  track.appendChild(e);
+});
+const head = document.createElement('div'); head.className = 'play'; head.style.left = pct(1274);
+track.appendChild(head);
+track.onclick = e => { head.style.left = (e.offsetX / track.clientWidth * 100) + '%'; };
+
+const ticks = document.getElementById('ticks');
+for (let h = 0; h <= 24; h += 3) {
+  const s = document.createElement('span');
+  s.style.left = pct(h * 60); s.textContent = String(h).padStart(2, '0') + ':00';
+  ticks.appendChild(s);
+}
+document.getElementById('pb-events').innerHTML = MARKS
+  .slice().sort((a, b) => b[0] - a[0])
+  .map(([m, k]) => `<div class="event"><span class="t">${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}</span><span>${k === 'visible' ? 'Visible — detection' : 'Thermal — movement'}</span><span class="c">${k === 'visible' ? '0.71' : '—'}</span></div>`)
+  .join('');
+
+/* ---- stand-in footage. Figure sizes are the real ratios at 700 m. ---- */
+let SHOW_BOXES = true;
+function scene(canvas, opts) {
+  const c = canvas.getContext('2d');
+  let t = Math.random() * 10;
+  (function draw() {
+    const w = canvas.width = canvas.clientWidth, h = canvas.height = canvas.clientHeight;
+    if (!w || !h) return requestAnimationFrame(draw);
+    t += 0.0035;
+
+    if (opts.thermal) {
+      c.fillStyle = '#0c0b0f'; c.fillRect(0, 0, w, h);
+      const g = c.createLinearGradient(0, h * 0.5, 0, h);
+      g.addColorStop(0, '#211c19'); g.addColorStop(1, '#100e0c');
+      c.fillStyle = g; c.fillRect(0, h * 0.5, w, h * 0.5);
+    } else {
+      const g = c.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#0a1017'); g.addColorStop(0.55, '#0e141a'); g.addColorStop(1, '#07090b');
+      c.fillStyle = g; c.fillRect(0, 0, w, h);
+      c.fillStyle = 'rgba(235,215,160,0.12)';
+      for (let i = 0; i < 5; i++) c.fillRect(w * (0.1 + i * 0.2), h * 0.47, 2, 2);
+    }
+    const n = c.createImageData(w, h), amt = opts.thermal ? 22 : 11;
+    for (let i = 0; i < n.data.length; i += 4) {
+      const v = (Math.random() * amt) | 0;
+      n.data[i] = n.data[i+1] = n.data[i+2] = v; n.data[i+3] = 22;
+    }
+    c.putImageData(n, 0, 0);
+
+    const px = w * (0.2 + (t % 1) * 0.6), py = h * 0.68;
+    const ph = opts.thermal ? h * (13 / 512) : h * (132 / 1080);
+    c.fillStyle = opts.thermal ? '#ffb877' : '#8d97a4';
+    c.fillRect(px, py - ph, Math.max(ph * 0.32, 2), ph);
+    c.beginPath(); c.arc(px + ph * 0.16, py - ph - ph * 0.13, Math.max(ph * 0.15, 1.5), 0, 7); c.fill();
+
+    if (SHOW_BOXES) {
+      const pad = Math.max(ph * 0.28, 3);
+      c.strokeStyle = '#43d17a'; c.lineWidth = 1.5;
+      c.strokeRect(px - pad, py - ph - pad, ph * 0.32 + pad * 2, ph + pad * 1.6);
+    }
+    requestAnimationFrame(draw);
+  })();
+}
+scene(document.getElementById('cv-t'), { thermal: true });
+scene(document.getElementById('cv-v'), {});
+scene(document.getElementById('cv-p'), {});
+</script>
+</body>
+</html>
