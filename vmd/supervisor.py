@@ -39,12 +39,15 @@ class Supervisor:
         managed: list[Managed],
         clock: Callable[[], float] = time.monotonic,
         restart_delay: float = 2.0,
+        stable_after: float = 60.0,
     ) -> None:
         self.managed = managed
         self.restarts: dict[str, int] = {entry.name: 0 for entry in managed}
         self.failures: dict[str, int] = {entry.name: 0 for entry in managed}
         self._clock = clock
         self._restart_delay = restart_delay
+        self._stable_after = stable_after
+        self._up_since: dict[str, float] = {}
         self._next_attempt: dict[str, float] = {entry.name: 0.0 for entry in managed}
         self._started_once: set[str] = set()
 
@@ -54,6 +57,9 @@ class Supervisor:
         now = self._clock()
         for entry in self.managed:
             if entry.service.running:
+                started_at = self._up_since.get(entry.name)
+                if started_at is not None and now - started_at >= self._stable_after:
+                    self.failures[entry.name] = 0
                 continue
             if now < self._next_attempt[entry.name]:
                 continue
@@ -74,7 +80,7 @@ class Supervisor:
                     )
                 self._next_attempt[entry.name] = now + self._restart_delay
                 continue
-            self.failures[entry.name] = 0
+            self._up_since[entry.name] = now
             started.append(entry.name)
             self._next_attempt[entry.name] = now + self._restart_delay
             if entry.name in self._started_once:

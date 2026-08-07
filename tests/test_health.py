@@ -154,3 +154,71 @@ def test_repeated_identical_start_failures_are_logged_once(caplog):
     # seconds; that alone would fill the disk this system exists to manage.
     assert len(tracebacks) <= 2
     assert supervisor.failures["broken"] == 50
+
+
+def test_a_stalled_stream_is_restarted(tmp_path):
+    # Detection alone leaves the stream dead. The recorder must actually be stopped
+    # so the supervisor's normal restart path can bring it back.
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    write_segment(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    write_segment(directory, "2026-08-07_10-00-10.mp4", 110.0)
+    service.run_once(now=115.0)
+
+    assert service.status(now=115.0)["stall_restarts"] == 0
+    service.run_once(now=200.0)  # long past 2x segment_seconds with nothing new
+    assert service.status(now=200.0)["stall_restarts"] == 1
+    service.stop()
+
+
+def test_a_restarted_stall_gets_a_fresh_grace_period(tmp_path):
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    write_segment(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    write_segment(directory, "2026-08-07_10-00-10.mp4", 110.0)
+    service.run_once(now=115.0)
+    service.run_once(now=200.0)  # restarted here
+    # Immediately after the restart it must not be judged stalled again.
+    assert service.stalled_streams(now=205.0) == []
+    service.stop()
+
+
+def test_a_flapping_service_still_reaches_the_log_throttle():
+    # Succeeding briefly then failing must not reset the throttle, or a stream that
+    # flaps writes a full traceback forever.
+    from vmd.supervisor import Managed, Supervisor
+
+    class Flapping:
+        def __init__(self):
+            self.running = False
+            self.attempts = 0
+
+        def start(self):
+            self.attempts += 1
+            if self.attempts % 2 == 0:
+                self.running = True  # comes up briefly
+                return
+            raise RuntimeError("cannot start")
+
+        def stop(self):
+            self.running = False
+
+    service = Flapping()
+    clock = {"now": 0.0}
+    supervisor = Supervisor(
+        [Managed(name="flappy", service=service)],
+        clock=lambda: clock["now"],
+        restart_delay=1.0,
+        stable_after=60.0,
+    )
+    for _ in range(40):
+        service.running = False  # dies again immediately after each success
+        supervisor.tick()
+        clock["now"] += 2.0
+
+    # It never stays up for stable_after, so failures must accumulate rather than reset.
+    assert supervisor.failures["flappy"] > 2

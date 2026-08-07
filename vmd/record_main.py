@@ -55,6 +55,7 @@ class RecordingService:
             self._stuck_deletions = 0
             self._last_segment_at: dict[str, float] = {}
             self._started_at: dict[str, float] = {}
+            self._stall_restarts = 0
             self._adopt_orphans()
         except Exception:
             # Nothing will hold a reference to this half-built service, so the
@@ -70,6 +71,7 @@ class RecordingService:
             self._started_at.setdefault(recorder.stream, now)
         self.supervisor.tick()
         self._index_new_segments(now)
+        self._restart_stalled(now)
         self._apply_retention(now)
 
     def run_forever(self, interval: float = 5.0) -> None:
@@ -139,6 +141,7 @@ class RecordingService:
             "oldest": oldest,
             "warning": self._last_warning,
             "stuck_deletions": self._stuck_deletions,
+            "stall_restarts": self._stall_restarts,
             "restarts": dict(self.supervisor.restarts),
         }
 
@@ -183,6 +186,31 @@ class RecordingService:
                 stalled.append(recorder.stream)
         return stalled
 
+    def _restart_stalled(self, now: float) -> None:
+        """Stop any stream that is alive but producing nothing, so it gets restarted.
+
+        The supervisor only restarts a recorder whose process has exited. A recorder
+        blocked on a dead RTSP socket reports itself as running indefinitely, so
+        without this it would never recover on its own - detection alone would leave
+        the stream dead until somebody looked at a dashboard.
+        """
+        limit = 2 * self.settings.storage.segment_seconds
+        for stream in self.stalled_streams(now):
+            recorder = next((r for r in self.recorders if r.stream == stream), None)
+            if recorder is None:
+                continue
+            logger.warning(
+                "%s is alive but has produced no segment for over %.0fs; restarting it",
+                stream,
+                limit,
+            )
+            recorder.stop()
+            # Give the restarted recorder a fresh grace period, or it would be judged
+            # stalled again before it has had time to write anything.
+            self._started_at[stream] = now
+            self._last_segment_at.pop(stream, None)
+            self._stall_restarts += 1
+
     def _adopt_orphans(self) -> None:
         """Index segments already on disk that no current recorder is responsible for.
 
@@ -217,9 +245,11 @@ class RecordingService:
                     start=start,
                     end=start + self.settings.storage.segment_seconds,
                     size_bytes=size,
+                    commit=False,
                 )
                 self._seen.add(str(path))
                 logger.info("adopted orphaned segment %s", path.name)
+        self.index.commit()
 
     def _apply_retention(self, now: float) -> None:
         # Retention reads the entire index, which is expensive once the catalogue is

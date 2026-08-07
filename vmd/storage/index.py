@@ -54,20 +54,32 @@ class SegmentIndex:
         self._connection.executescript(SCHEMA)
         self._connection.commit()
 
-    def add(self, stream: str, path: str, start: float, end: float, size_bytes: int) -> int:
-        """Register a segment. Adding the same path twice is a no-op."""
+    def add(
+        self, stream: str, path: str, start: float, end: float, size_bytes: int,
+        commit: bool = True,
+    ) -> int:
+        """Register a segment. Adding the same path twice is a no-op.
+
+        `commit=False` defers the commit so a caller inserting many rows can pay for
+        one fsync instead of one per row; it must call commit() afterwards.
+        """
         cursor = self._connection.execute(
             "INSERT OR IGNORE INTO segments (stream, path, start, end, size_bytes) "
             "VALUES (?, ?, ?, ?, ?)",
             (stream, path, start, end, size_bytes),
         )
-        self._connection.commit()
+        if commit:
+            self._connection.commit()
         if cursor.lastrowid:
             return int(cursor.lastrowid)
         existing = self._connection.execute(
             "SELECT id FROM segments WHERE path = ?", (path,)
         ).fetchone()
         return int(existing["id"])
+
+    def commit(self) -> None:
+        """Flush any deferred inserts."""
+        self._connection.commit()
 
     def all(self, stream: str | None = None) -> list[Segment]:
         if stream is None:
