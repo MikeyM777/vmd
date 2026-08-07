@@ -42,6 +42,7 @@ class Supervisor:
     ) -> None:
         self.managed = managed
         self.restarts: dict[str, int] = {entry.name: 0 for entry in managed}
+        self.failures: dict[str, int] = {entry.name: 0 for entry in managed}
         self._clock = clock
         self._restart_delay = restart_delay
         self._next_attempt: dict[str, float] = {entry.name: 0.0 for entry in managed}
@@ -59,9 +60,21 @@ class Supervisor:
             try:
                 entry.service.start()
             except Exception:  # noqa: BLE001 - one bad service must not stop the others
-                logger.exception("failed to start %s", entry.name)
+                self.failures[entry.name] += 1
+                # A permanently broken stream is retried every couple of seconds for
+                # months. Logging a full traceback each time would write hundreds of
+                # thousands of them and fill the disk this system exists to manage.
+                if self.failures[entry.name] <= 2:
+                    logger.exception("failed to start %s", entry.name)
+                elif self.failures[entry.name] % 100 == 0:
+                    logger.warning(
+                        "%s has failed to start %d times",
+                        entry.name,
+                        self.failures[entry.name],
+                    )
                 self._next_attempt[entry.name] = now + self._restart_delay
                 continue
+            self.failures[entry.name] = 0
             started.append(entry.name)
             self._next_attempt[entry.name] = now + self._restart_delay
             if entry.name in self._started_once:

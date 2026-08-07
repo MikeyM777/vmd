@@ -2356,8 +2356,17 @@ and:
 
         Renaming or disabling a stream leaves its recordings behind. Without this they
         occupy the storage budget forever while being invisible to retention.
+
+        Directories belonging to a currently configured recorder are deliberately
+        skipped. Those are handled by _index_new_segments, which uses
+        find_closed_segments and therefore never touches the file ffmpeg still has
+        open. Sweeping them here would index the in-progress segment and expose a live
+        recording to retention.
         """
+        owned = {recorder.stream for recorder in self.recorders}
         for directory in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            if directory.name in owned:
+                continue
             for path in sorted(directory.glob("*.mp4")):
                 if str(path) in self._seen:
                     continue

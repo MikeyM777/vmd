@@ -53,6 +53,9 @@ class RecordingService:
             self.retention_interval = retention_interval
             self._last_retention = 0.0
             self._stuck_deletions = 0
+            self._last_segment_at: dict[str, float] = {}
+            self._started_at: dict[str, float] = {}
+            self._adopt_orphans()
         except Exception:
             # Nothing will hold a reference to this half-built service, so the
             # connection would leak. On Windows a lingering handle can make an
@@ -63,6 +66,8 @@ class RecordingService:
     def run_once(self, now: float | None = None) -> None:
         """One pass: keep recorders alive, index finished segments, apply retention."""
         now = time.time() if now is None else now
+        for recorder in self.recorders:
+            self._started_at.setdefault(recorder.stream, now)
         self.supervisor.tick()
         self._index_new_segments(now)
         self._apply_retention(now)
@@ -99,7 +104,9 @@ class RecordingService:
             logger.exception("final indexing pass failed")
         self.index.close()
 
-    def status(self) -> dict:
+    def status(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        stalled = set(self.stalled_streams(now))
         segments = self.index.all()
         used = sum(s.size_bytes for s in segments)
         oldest = segments[0].start if segments else None
@@ -107,6 +114,7 @@ class RecordingService:
             {
                 "name": r.stream,
                 "running": r.running,
+                "stalled": r.stream in stalled,
                 "restarts": self.supervisor.restarts.get(r.stream, 0),
                 "exit_code": r.exit_code,
             }
@@ -116,7 +124,15 @@ class RecordingService:
             "streams": streams,
             # A stream that never starts successfully keeps `restarts` at zero, so
             # health must be derived from `running`, never from the restart count.
-            "healthy": all(s["running"] for s in streams) and not self._stuck_deletions,
+            # `all([])` is True, so a service with no streams at all would otherwise
+            # report itself healthy while recording nothing. The CLI refuses to start
+            # in that state, but status() is about to become a web API and must be
+            # trustworthy on its own.
+            "healthy": (
+                bool(streams)
+                and all(s["running"] and not s["stalled"] for s in streams)
+                and not self._stuck_deletions
+            ),
             "segments": len(segments),
             "used_bytes": used,
             "budget_bytes": self.settings.storage.budget_bytes,
@@ -144,6 +160,66 @@ class RecordingService:
                     size_bytes=size,
                 )
                 self._seen.add(str(path))
+                self._last_segment_at[recorder.stream] = now
+
+    def stalled_streams(self, now: float | None = None) -> list[str]:
+        """Streams whose process is alive but which have produced nothing recently.
+
+        `running` only says the ffmpeg process exists. On a long wireless link the
+        RTSP socket can die without closing, leaving ffmpeg blocked on a read: the
+        process is alive, the supervisor is satisfied, and nothing is recorded.
+        Segment production is the only signal that distinguishes the two.
+        """
+        now = time.time() if now is None else now
+        limit = 2 * self.settings.storage.segment_seconds
+        stalled = []
+        for recorder in self.recorders:
+            if not recorder.running:
+                continue  # already visibly down; the supervisor handles that
+            last = self._last_segment_at.get(
+                recorder.stream, self._started_at.get(recorder.stream, now)
+            )
+            if now - last > limit:
+                stalled.append(recorder.stream)
+        return stalled
+
+    def _adopt_orphans(self) -> None:
+        """Index segments already on disk that no current recorder is responsible for.
+
+        Renaming or disabling a stream leaves its recordings behind. Without this they
+        occupy the storage budget forever while being invisible to retention.
+
+        Directories belonging to a currently configured recorder are deliberately
+        skipped. Those are handled by _index_new_segments, which uses
+        find_closed_segments and therefore never touches the file ffmpeg still has
+        open. Sweeping them here would index the in-progress segment and expose a live
+        recording to retention.
+        """
+        owned = {recorder.stream for recorder in self.recorders}
+        for directory in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            if directory.name in owned:
+                continue
+            for path in sorted(directory.glob("*.mp4")):
+                if str(path) in self._seen:
+                    continue
+                start = parse_segment_start(path.name)
+                if start is None:
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size == 0:
+                    continue
+                self.index.add(
+                    stream=directory.name,
+                    path=str(path),
+                    start=start,
+                    end=start + self.settings.storage.segment_seconds,
+                    size_bytes=size,
+                )
+                self._seen.add(str(path))
+                logger.info("adopted orphaned segment %s", path.name)
 
     def _apply_retention(self, now: float) -> None:
         # Retention reads the entire index, which is expensive once the catalogue is
