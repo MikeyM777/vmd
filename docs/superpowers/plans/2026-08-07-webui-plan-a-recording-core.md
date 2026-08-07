@@ -1793,7 +1793,9 @@ class FakeProcess:
         return 0
 
 
-def spawn_fake(command):
+def spawn_fake(command, log_path=None):
+    # SegmentRecorder passes the log path as a second argument, so this stand-in
+    # must accept it even though the fake never writes anything.
     return FakeProcess()
 
 
@@ -1924,7 +1926,19 @@ def test_status_reports_unhealthy_when_a_stream_is_down(tmp_path):
 
 
 def test_stuck_deletions_are_reported(tmp_path, monkeypatch):
-    from vmd.storage import retention as retention_module
+    # `apply_plan`'s `unlink` default is bound at import time, so patching os.unlink
+    # afterwards cannot reach it. The seam that does work is record_main's own module
+    # reference to apply_plan, which is resolved at call time.
+    from vmd import record_main as record_main_module
+    from vmd.storage.retention import apply_plan as real_apply_plan
+
+    def refuse(_path):
+        raise PermissionError("file is in use")
+
+    def refusing_apply_plan(plan, index, unlink=None):
+        return real_apply_plan(plan, index, unlink=refuse)
+
+    monkeypatch.setattr(record_main_module, "apply_plan", refusing_apply_plan)
 
     settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
     service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
@@ -1936,14 +1950,11 @@ def test_stuck_deletions_are_reported(tmp_path, monkeypatch):
         path.write_bytes(b"x" * 2000)
         os.utime(path, (100.0 + offset, 100.0 + offset))
 
-    def refuse(_path):
-        raise PermissionError("file is in use")
-
-    monkeypatch.setattr(retention_module.os, "unlink", refuse)
     service.run_once(now=1000.0)
     status = service.status()
     assert status["stuck_deletions"] > 0
     assert status["healthy"] is False
+    assert (directory / names[0]).exists(), "a refused deletion must leave the file alone"
     service.stop()
 
 
@@ -1966,6 +1977,25 @@ def test_the_segment_being_written_is_never_deleted(tmp_path):
 
     assert open_now.exists(), "the segment still being written must never be deleted"
     assert str(open_now) not in [s.path for s in service.index.all()]
+    service.stop()
+
+
+def test_retention_survives_the_clock_going_backwards(tmp_path):
+    # This machine may correct its clock by NTP after boot. A backwards step must not
+    # stall retention until the clock catches up, or the disk fills in the meantime.
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=60.0)
+    service.run_once(now=1_000_000.0)  # retention runs, remembers a large timestamp
+
+    directory = tmp_path / "recordings" / "thermal"
+    names = ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4", "2026-08-07_10-10-00.mp4"]
+    for offset, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * 2000)
+        os.utime(path, (100.0 + offset, 100.0 + offset))
+
+    service.run_once(now=500.0)  # clock stepped far backwards
+    assert not (directory / names[0]).exists(), "retention must still run after a clock step"
     service.stop()
 
 
@@ -2126,7 +2156,13 @@ class RecordingService:
         # Retention reads the entire index, which is expensive once the catalogue is
         # large. Its input only changes when a segment closes, so running it on the
         # 5-second loop cadence would be pure waste.
-        if now - self._last_retention < self.retention_interval:
+        #
+        # The elapsed check deliberately tolerates a clock that moves backwards. This
+        # machine may correct its time by NTP after boot, and a backwards step would
+        # otherwise stall retention for the length of the jump while the disk fills.
+        # A negative elapsed means the clock changed, so run rather than wait.
+        elapsed = now - self._last_retention
+        if self._last_retention and 0 <= elapsed < self.retention_interval:
             return
         self._last_retention = now
 
@@ -2285,16 +2321,86 @@ git commit -m "feat: add recording service wiring recorders, index and retention
 
 ---
 
-### Task 10: Health — stalled streams and log storms
+### Task 10: Health — stalled streams, orphan segments and log storms
 
 **Files:**
 - Modify: `vmd/record_main.py`
 - Modify: `vmd/supervisor.py`
 - Test: `tests/test_health.py`
 
-Two failure modes that the wiring in Task 9 cannot detect, both raised during review of
-Tasks 4 and 8. Both only appear after the system has been running unattended for a while,
-which is exactly why they need building deliberately rather than being noticed in the field.
+Three failure modes that the wiring in Task 9 cannot detect. Two were raised during review
+of Tasks 4 and 8; the third was found while smoke-testing Task 9 against real recordings.
+All only appear after the system has been running unattended for a while, which is exactly
+why they need building deliberately rather than being noticed in the field.
+
+**0. Segments on disk that the index does not know about.** `_index_new_segments` only
+looks inside the output directory of a *currently configured* recorder. Rename a stream,
+disable one, or change the recordings folder, and the files it already wrote stay on disk
+while vanishing from the catalogue — never counted against the budget, never deleted. On a
+system whose whole purpose is managing a fixed amount of disk, that is a silent leak. This
+was observed for real during the Task 9 smoke check: four files on disk, two in the index.
+
+The fix is to reconcile at startup — walk every subdirectory of `storage.root`, and adopt
+any `.mp4` whose path is not already indexed, so the catalogue converges on what the disk
+actually holds. Add to `RecordingService.__init__`, after the index is opened:
+
+```python
+        self._adopt_orphans()
+```
+
+and:
+
+```python
+    def _adopt_orphans(self) -> None:
+        """Index segments already on disk that no current recorder is responsible for.
+
+        Renaming or disabling a stream leaves its recordings behind. Without this they
+        occupy the storage budget forever while being invisible to retention.
+        """
+        for directory in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            for path in sorted(directory.glob("*.mp4")):
+                if str(path) in self._seen:
+                    continue
+                start = parse_segment_start(path.name)
+                if start is None:
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size == 0:
+                    continue
+                self.index.add(
+                    stream=directory.name,
+                    path=str(path),
+                    start=start,
+                    end=start + self.settings.storage.segment_seconds,
+                    size_bytes=size,
+                )
+                self._seen.add(str(path))
+                logger.info("adopted orphaned segment %s", path.name)
+```
+
+Test it:
+
+```python
+def test_orphaned_segments_on_disk_are_adopted(tmp_path):
+    # A stream that was renamed or disabled leaves recordings behind. They must still
+    # be counted and eventually deleted, or they occupy the budget forever.
+    settings = build_settings(tmp_path)
+    root = tmp_path / "recordings"
+    orphan_dir = root / "an_old_stream_name"
+    orphan_dir.mkdir(parents=True)
+    orphan = orphan_dir / "2026-08-07_09-00-00.mp4"
+    orphan.write_bytes(b"x" * 4096)
+
+    service = RecordingService(settings, spawn=spawn_fake)
+
+    indexed = [s.path for s in service.index.all()]
+    assert str(orphan) in indexed
+    assert service.index.total_bytes() == 4096
+    service.stop()
+```
 
 **1. A recorder that is alive but producing nothing.** `running` only reports whether the
 ffmpeg process exists. If the RTSP socket dies without closing — routine on a long wireless

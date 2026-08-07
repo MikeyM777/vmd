@@ -21,3 +21,7 @@ wb.html
 .claude/tdd-guard/
 .playwright-mcp/
 mockup/*.png
+
+recordings/
+settings.json
+smoke_record.*

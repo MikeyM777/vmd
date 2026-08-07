@@ -34,13 +34,23 @@ class Segment:
 
 
 class SegmentIndex:
-    """The record of what exists on disk. Never scans the filesystem."""
+    """The record of what exists on disk. Never scans the filesystem.
+
+    One instance belongs to one thread. Another thread or process that needs to read
+    the catalogue must open its own instance against the same file; WAL mode makes
+    concurrent readers safe alongside the single writer.
+    """
 
     def __init__(self, db_path: str | Path) -> None:
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(str(db_path))
         self._connection.row_factory = sqlite3.Row
+        # WAL lets a reader and the writer work at the same time; the busy timeout
+        # makes a reader wait for a brief write lock instead of failing immediately
+        # with "database is locked". Both matter once the web UI reads this file.
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA busy_timeout=5000")
         self._connection.executescript(SCHEMA)
         self._connection.commit()
 

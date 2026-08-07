@@ -11,6 +11,9 @@ dependencies = [
     "PySide6>=6.6",
 ]
 
+[project.scripts]
+vmd-record = "vmd.record_main:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
