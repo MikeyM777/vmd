@@ -121,3 +121,37 @@ def test_zero_write_rate_does_not_divide_by_zero():
         retention_days=None, warn_at_fraction=0.9, bytes_per_second=0.0,
     )
     assert plan.warning is not None
+
+
+def test_warning_still_appears_while_deleting():
+    # Once the budget is reached the system deletes on almost every pass. If the
+    # warning were suppressed during deletion the operator would never be told that
+    # footage is being lost.
+    segments = [segment(i, i * 300.0) for i in range(1, 11)]  # 10 GB
+    plan = plan_retention(
+        segments, now=10000.0, budget_bytes=5 * GB, budget_enabled=True,
+        retention_days=None, warn_at_fraction=0.9, bytes_per_second=GB / HOUR,
+    )
+    assert plan.delete != []
+    assert plan.warning is not None
+    assert "being deleted continuously" in plan.warning
+
+
+def test_deleting_warning_names_the_oldest_surviving_footage():
+    segments = [segment(i, i * 300.0) for i in range(1, 11)]
+    plan = plan_retention(
+        segments, now=10000.0, budget_bytes=5 * GB, budget_enabled=True,
+        retention_days=None, warn_at_fraction=0.9, bytes_per_second=GB / HOUR,
+    )
+    surviving_ids = {s.id for s in segments} - {s.id for s in plan.delete}
+    assert surviving_ids  # something is kept
+    assert "Nothing before" in plan.warning
+
+
+def test_warning_includes_the_year():
+    segments = [segment(i, i * 300.0) for i in range(1, 10)]
+    plan = plan_retention(
+        segments, now=10000.0, budget_bytes=10 * GB, budget_enabled=True,
+        retention_days=None, warn_at_fraction=0.9, bytes_per_second=GB / HOUR,
+    )
+    assert "1970" in plan.warning  # segment starts are epoch-relative in these tests
