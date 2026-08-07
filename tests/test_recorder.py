@@ -172,3 +172,29 @@ def test_log_path_sits_beside_the_segment_directory(tmp_path):
     recorder, _ = build(tmp_path)
     assert recorder.log_path == tmp_path / "thermal.ffmpeg.log"
     assert recorder.log_path.parent == recorder.output_dir.parent
+
+
+def test_log_file_is_truncated_not_appended(monkeypatch, tmp_path):
+    from vmd.storage import recorder as recorder_module
+
+    log = tmp_path / "old.ffmpeg.log"
+    log.write_bytes(b"stale output from a previous run\n")
+    monkeypatch.setattr(recorder_module.subprocess, "Popen", lambda command, **kw: FakeProcess())
+    recorder_module._default_spawn(["ffmpeg", "-version"], log)
+    # A restarted recorder must not keep growing the same file forever.
+    assert log.read_bytes() == b""
+
+
+def test_stop_keeps_running_true_when_kill_raises_oserror(tmp_path):
+    class Hostile(FakeProcess):
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=timeout)
+
+        def kill(self):
+            raise OSError("access denied")
+
+    recorder, _ = build(tmp_path, processes=[Hostile()])
+    recorder.start()
+    recorder.stop()
+    # Death could not be confirmed, so the handle is kept deliberately.
+    assert recorder.running is True

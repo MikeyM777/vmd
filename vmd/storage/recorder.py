@@ -26,14 +26,20 @@ def _default_spawn(command: list[str], log_path: Path | None = None):
         stderr = subprocess.DEVNULL
     else:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        stderr = open(log_path, "ab")
-    return subprocess.Popen(
+        # Truncate rather than append: this is restarted every time the link drops,
+        # and an unbounded log on an unattended box eventually fills the disk and
+        # stops recording. One run's stderr is what matters when diagnosing.
+        stderr = open(log_path, "wb")
+    process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=stderr,
         env=environment,
     )
+    if hasattr(stderr, "close"):
+        stderr.close()  # the child holds its own duplicate of the handle
+    return process
 
 
 class SegmentRecorder:
@@ -98,12 +104,12 @@ class SegmentRecorder:
         self._process.terminate()
         try:
             self._process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             logger.warning("ffmpeg for %s ignored terminate; killing it", self.stream)
-            self._process.kill()
             try:
+                self._process.kill()
                 self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, OSError):
                 logger.error(
                     "ffmpeg for %s survived kill; not clearing the handle so that "
                     "running stays True and no second recorder is started",
