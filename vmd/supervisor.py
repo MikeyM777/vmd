@@ -11,7 +11,15 @@ logger = logging.getLogger(__name__)
 
 
 class Service(Protocol):
-    running: bool
+    """Anything the supervisor can keep alive.
+
+    `running` is declared as a read-only property rather than a plain attribute:
+    a plain attribute would require the implementer to allow assignment, which
+    excludes SegmentRecorder, whose `running` is a computed property.
+    """
+
+    @property
+    def running(self) -> bool: ...
 
     def start(self) -> None: ...
     def stop(self) -> None: ...

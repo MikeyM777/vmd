@@ -115,3 +115,22 @@ def test_a_service_that_throws_on_start_does_not_break_the_tick():
     restarted = supervisor.tick()
     assert "good" in restarted
     assert healthy.starts == 1
+
+
+def test_a_service_that_throws_on_stop_does_not_block_other_stops():
+    # Shutdown must always complete. If one service's stop() could abort the loop,
+    # the remaining recordings would never be closed cleanly.
+    class Exploding(FakeService):
+        def stop(self):
+            self.stops += 1
+            raise RuntimeError("cannot stop")
+
+    exploding = Exploding(alive=True)
+    healthy = FakeService(alive=True)
+    supervisor, _ = build({"bad": exploding, "good": healthy})
+
+    supervisor.stop_all()  # must not raise
+
+    assert exploding.stops == 1
+    assert healthy.stops == 1
+    assert healthy.running is False
