@@ -47,11 +47,8 @@ def find_closed_segments(
         return []  # the only file present is the one being written
 
     candidates.sort()
-    newest_mtime = candidates[-1][0]
     closed = []
-    for mtime, path in candidates:
-        if mtime == newest_mtime:
-            continue
+    for mtime, path in candidates[:-1]:
         if now - mtime < settle_seconds:
             continue
         if str(path) in seen:

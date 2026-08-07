@@ -51,6 +51,17 @@ def test_already_seen_paths_are_skipped(tmp_path):
     assert closed == []
 
 
+def test_tied_newest_mtime_still_yields_the_finished_file(tmp_path):
+    # Two files share the newest mtime. Only the one ffmpeg is still writing
+    # should be withheld; the other is finished and must be indexed.
+    touch(tmp_path / "2026-08-07_10-00-00.mp4", 100.0)
+    touch(tmp_path / "2026-08-07_10-05-00.mp4", 400.0)
+    touch(tmp_path / "2026-08-07_10-10-00.mp4", 400.0)
+    closed = find_closed_segments(tmp_path, now=1000.0)
+    assert len(closed) == 2
+    assert tmp_path / "2026-08-07_10-00-00.mp4" in closed
+
+
 def test_parse_segment_start():
     assert parse_segment_start("2026-08-07_14-35-00.mp4") is not None
 
