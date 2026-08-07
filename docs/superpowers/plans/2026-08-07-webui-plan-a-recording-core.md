@@ -638,12 +638,18 @@ SEGMENT_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 
 def parse_segment_start(filename: str) -> float | None:
-    """Epoch seconds encoded in a segment filename, or None if it does not match."""
+    """Epoch seconds encoded in a segment filename, or None if it does not match.
+
+    Filenames are UTC: the recorder runs ffmpeg with TZ=UTC so that names stay monotonic
+    across daylight-saving transitions. Reading them as local time would shift every
+    timestamp by the UTC offset.
+    """
     stem = Path(filename).stem
     try:
-        return datetime.datetime.strptime(stem, SEGMENT_FORMAT).timestamp()
+        parsed = datetime.datetime.strptime(stem, SEGMENT_FORMAT)
     except ValueError:
         return None
+    return parsed.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
 def find_closed_segments(
@@ -707,9 +713,23 @@ git commit -m "feat: detect which segment files ffmpeg has finished writing"
 
 **Files:**
 - Create: `vmd/storage/recorder.py`
+- Modify: `vmd/storage/discovery.py` — `parse_segment_start` must read filenames as UTC
 - Test: `tests/test_recorder.py`
+- Modify: `tests/test_discovery.py` — replace the local-time assertion with a UTC one
 
 One ffmpeg process per stream, copying the incoming H.264 without re-encoding. The process spawner is injected so the lifecycle is testable without running ffmpeg.
+
+**Timezone decision, and why this task changes Task 3's module.** ffmpeg's `-strftime 1`
+formats the output filename using the process's local time. In a timezone with daylight
+saving, the autumn transition repeats an hour of local time, so ffmpeg writes a filename
+that already exists and **silently overwrites an hour of footage**, once a year. The
+deployment is in Israel, which observes DST, so this is a real annual data-loss bug.
+
+The fix is to run ffmpeg with `TZ=UTC` in its environment, making segment filenames UTC
+and therefore always monotonic, and to parse them back as UTC. Local time becomes purely
+a display concern for the playback UI, which is standard practice for surveillance
+recording. Both halves must change together or timestamps will be wrong by the UTC
+offset, which is why they are in one task.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -822,6 +842,42 @@ def test_running_is_false_before_start(tmp_path):
     assert recorder.running is False
 ```
 
+Also update the timezone half. In `tests/test_discovery.py`, **replace** the existing
+`test_parse_segment_start_is_local_time_epoch` with this test — the other ten tests in
+that file stay exactly as they are:
+
+```python
+def test_parse_segment_start_is_utc_epoch(tmp_path):
+    # Segment filenames are written by ffmpeg under TZ=UTC, so they must be read back
+    # as UTC. Reading them as local time would shift every timestamp by the UTC offset
+    # and would make the autumn daylight-saving hour ambiguous.
+    import datetime
+
+    parsed = parse_segment_start("2026-08-07_14-35-00.mp4")
+    expected = datetime.datetime(
+        2026, 8, 7, 14, 35, 0, tzinfo=datetime.timezone.utc
+    ).timestamp()
+    assert parsed == expected
+```
+
+And add this test to `tests/test_recorder.py`, proving the recorder really pins the
+timezone rather than relying on the machine's:
+
+```python
+def test_default_spawn_pins_the_timezone_to_utc(monkeypatch):
+    from vmd.storage import recorder as recorder_module
+
+    captured = {}
+
+    def fake_popen(command, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(recorder_module.subprocess, "Popen", fake_popen)
+    recorder_module._default_spawn(["ffmpeg", "-version"])
+    assert captured["env"]["TZ"] == "UTC"
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_recorder.py -v`
@@ -836,6 +892,7 @@ Create `vmd/storage/recorder.py`:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -846,11 +903,16 @@ RTSP_SCHEMES = ("rtsp://", "rtsps://")
 
 
 def _default_spawn(command: list[str]):
+    # TZ=UTC so ffmpeg's -strftime filenames are UTC and therefore monotonic. With local
+    # time, the autumn daylight-saving transition repeats an hour and ffmpeg overwrites
+    # the segments it already wrote for that hour.
+    environment = {**os.environ, "TZ": "UTC"}
     return subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=environment,
     )
 
 
