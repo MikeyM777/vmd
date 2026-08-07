@@ -1721,9 +1721,38 @@ git commit -m "feat: add supervisor that restarts failed services independently"
 
 **Files:**
 - Create: `vmd/record_main.py`
+- Modify: `vmd/storage/index.py` — enable WAL and a busy timeout
 - Test: `tests/test_record_main.py`
 
 Ties everything together: start a recorder per enabled stream, index finished segments, run retention, keep everything alive.
+
+**Findings carried in from earlier reviews.** Each was raised while building Tasks 1–8 and
+deliberately deferred to here, because this is the first task where the pieces run together.
+
+1. **SQLite is opened with defaults that break under a second connection.** `SegmentIndex`
+   uses `check_same_thread=True` and no busy timeout, so sharing one index between this
+   service loop and a future web request raises immediately, and a second connection can
+   hit `database is locked` with no retry. Plan B will add a web server that reads this
+   index. Fix the pragmas here, and record the threading rule explicitly.
+2. **Retention must not re-read the whole index every 5 seconds.** `plan_retention` needs
+   every segment, and `index.all()` at 100,000 rows costs hundreds of milliseconds. At a
+   5-second cadence that is wasteful for a job whose input changes every 5 minutes. Run
+   retention on its own slower cadence.
+3. **A stuck deletion is invisible.** `apply_plan` returns how many segments it removed,
+   not how many it was asked to remove. A permanently locked file makes it report a
+   healthy-looking number forever while the budget is never met.
+4. **A permanently failing recorder reports as healthy.** `Supervisor.restarts` counts only
+   successful re-starts, so a stream that has failed every 2 seconds for a week still shows
+   `0`. The status output must not imply health when a stream is down.
+5. **Which settings file was used is not logged.** "Running with defaults" currently looks
+   identical whether it is genuine first run or a typo'd path.
+6. **The in-progress segment must never be deleted.** Discovery already excludes the file
+   ffmpeg is still writing, so it never reaches the index and therefore never reaches
+   retention. That is a load-bearing invariant of the whole design and deserves an explicit
+   test rather than an assumption.
+
+Restart-storm log volume and stalled-but-alive recorder detection are also real, but they
+are behavioural additions rather than wiring, so they are Task 10.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1876,6 +1905,88 @@ def test_parse_args_accepts_settings_path():
     args = parse_args(["--settings", "/tmp/s.json", "--once"])
     assert args.settings == "/tmp/s.json"
     assert args.once is True
+
+
+def test_status_reports_unhealthy_when_a_stream_is_down(tmp_path):
+    class DeadProcess(FakeProcess):
+        def poll(self):
+            return 1
+
+    service = RecordingService(build_settings(tmp_path), spawn=lambda c, log=None: DeadProcess())
+    service.run_once()
+    status = service.status()
+    # A stream that never starts keeps `restarts` at zero, so health must never be
+    # inferred from the restart count alone.
+    assert status["streams"][0]["running"] is False
+    assert status["streams"][0]["restarts"] == 0
+    assert status["healthy"] is False
+    service.stop()
+
+
+def test_stuck_deletions_are_reported(tmp_path, monkeypatch):
+    from vmd.storage import retention as retention_module
+
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    service.run_once()
+    directory = tmp_path / "recordings" / "thermal"
+    names = ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4", "2026-08-07_10-10-00.mp4"]
+    for offset, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * 2000)
+        os.utime(path, (100.0 + offset, 100.0 + offset))
+
+    def refuse(_path):
+        raise PermissionError("file is in use")
+
+    monkeypatch.setattr(retention_module.os, "unlink", refuse)
+    service.run_once(now=1000.0)
+    status = service.status()
+    assert status["stuck_deletions"] > 0
+    assert status["healthy"] is False
+    service.stop()
+
+
+def test_the_segment_being_written_is_never_deleted(tmp_path):
+    # The whole design rests on this: discovery excludes the file ffmpeg still has
+    # open, so it never enters the index and retention can never reach it. If that
+    # ever stopped being true, retention would delete a recording in progress.
+    settings = build_settings(tmp_path, budget_gb=1 / 1024**3)  # absurdly small budget
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    service.run_once()
+    directory = tmp_path / "recordings" / "thermal"
+    closed = directory / "2026-08-07_10-00-00.mp4"
+    open_now = directory / "2026-08-07_10-05-00.mp4"
+    closed.write_bytes(b"x" * 2000)
+    open_now.write_bytes(b"x" * 2000)
+    os.utime(closed, (100.0, 100.0))
+    os.utime(open_now, (400.0, 400.0))
+
+    service.run_once(now=1000.0)
+
+    assert open_now.exists(), "the segment still being written must never be deleted"
+    assert str(open_now) not in [s.path for s in service.index.all()]
+    service.stop()
+
+
+def test_retention_does_not_run_on_every_pass(tmp_path):
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=60.0)
+    calls = []
+    original = service._apply_retention
+
+    def counted(now):
+        calls.append(now)
+        return original(now)
+
+    service._apply_retention = counted
+    service.run_once(now=1000.0)
+    service.run_once(now=1005.0)
+    service.run_once(now=1010.0)
+    # Called every pass, but the expensive index read inside is rate-limited.
+    assert len(calls) == 3
+    assert service._last_retention == 1000.0
+    service.stop()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1911,7 +2022,12 @@ logger = logging.getLogger(__name__)
 class RecordingService:
     """Owns the recorders, the index and the retention pass."""
 
-    def __init__(self, settings: Settings, spawn: Callable | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        spawn: Callable | None = None,
+        retention_interval: float = 60.0,
+    ) -> None:
         self.settings = settings
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1934,6 +2050,10 @@ class RecordingService:
         )
         self._seen: set[str] = {s.path for s in self.index.all()}
         self._last_warning: str | None = None
+        # Retention runs on its own slower cadence; see _apply_retention.
+        self.retention_interval = retention_interval
+        self._last_retention = 0.0
+        self._stuck_deletions = 0
 
     def run_once(self, now: float | None = None) -> None:
         """One pass: keep recorders alive, index finished segments, apply retention."""
@@ -1960,15 +2080,26 @@ class RecordingService:
         segments = self.index.all()
         used = sum(s.size_bytes for s in segments)
         oldest = segments[0].start if segments else None
+        streams = [
+            {
+                "name": r.stream,
+                "running": r.running,
+                "restarts": self.supervisor.restarts.get(r.stream, 0),
+                "exit_code": r.exit_code,
+            }
+            for r in self.recorders
+        ]
         return {
-            "streams": [
-                {"name": r.stream, "running": r.running} for r in self.recorders
-            ],
+            "streams": streams,
+            # A stream that never starts successfully keeps `restarts` at zero, so
+            # health must be derived from `running`, never from the restart count.
+            "healthy": all(s["running"] for s in streams) and not self._stuck_deletions,
             "segments": len(segments),
             "used_bytes": used,
             "budget_bytes": self.settings.storage.budget_bytes,
             "oldest": oldest,
             "warning": self._last_warning,
+            "stuck_deletions": self._stuck_deletions,
             "restarts": dict(self.supervisor.restarts),
         }
 
@@ -1992,6 +2123,13 @@ class RecordingService:
                 self._seen.add(str(path))
 
     def _apply_retention(self, now: float) -> None:
+        # Retention reads the entire index, which is expensive once the catalogue is
+        # large. Its input only changes when a segment closes, so running it on the
+        # 5-second loop cadence would be pure waste.
+        if now - self._last_retention < self.retention_interval:
+            return
+        self._last_retention = now
+
         storage = self.settings.storage
         segments = self.index.all()
         plan = plan_retention(
@@ -2011,6 +2149,16 @@ class RecordingService:
             for segment in plan.delete:
                 self._seen.discard(segment.path)
             logger.info("retention removed %d segments", removed)
+
+        # A file that cannot be deleted is retried forever. Counting only what was
+        # removed would report a healthy number every pass while the budget is never
+        # actually met, so the shortfall is tracked and surfaced in status().
+        self._stuck_deletions = len(plan.delete) - removed
+        if self._stuck_deletions:
+            logger.warning(
+                "%d segment(s) could not be deleted; storage budget cannot be met",
+                self._stuck_deletions,
+            )
 
     @staticmethod
     def _write_rate(segments) -> float:
@@ -2035,6 +2183,14 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args(argv)
     settings = load_settings(args.settings)
+    # Say which file was used. Without this, "running with defaults" looks identical
+    # whether it is a genuine first run or a mistyped path.
+    if Path(args.settings).exists():
+        logger.info("settings loaded from %s", Path(args.settings).resolve())
+    else:
+        logger.warning(
+            "no settings file at %s; using defaults", Path(args.settings).resolve()
+        )
     if not [s for s in settings.camera.streams if s.enabled]:
         print(f"no enabled streams in {args.settings}; nothing to record")
         return 1
@@ -2057,6 +2213,39 @@ Add the console script to `pyproject.toml` under `[project.scripts]` (create the
 ```toml
 [project.scripts]
 vmd-record = "vmd.record_main:main"
+```
+
+Also change `SegmentIndex.__init__` in `vmd/storage/index.py` so a second connection can
+coexist. Plan B adds a web server that will read this index while the service writes to it:
+
+```python
+    def __init__(self, db_path: str | Path) -> None:
+        db_path = Path(db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(str(db_path))
+        self._connection.row_factory = sqlite3.Row
+        # WAL lets a reader and the writer work at the same time; the busy timeout
+        # makes a reader wait for a brief write lock instead of failing immediately
+        # with "database is locked". Both matter once the web UI reads this file.
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA busy_timeout=5000")
+        self._connection.executescript(SCHEMA)
+        self._connection.commit()
+```
+
+**Threading rule, to be stated in the class docstring:** one `SegmentIndex` instance
+belongs to one thread. `sqlite3` connections default to `check_same_thread=True` and will
+raise if shared. A second consumer must construct its own instance against the same file,
+which is exactly what WAL makes safe. Add this to `SegmentIndex`'s docstring:
+
+```python
+class SegmentIndex:
+    """The record of what exists on disk. Never scans the filesystem.
+
+    One instance belongs to one thread. Another thread or process that needs to read
+    the catalogue must open its own instance against the same file; WAL mode makes
+    concurrent readers safe alongside the single writer.
+    """
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -2092,6 +2281,271 @@ Expected: segment files appear under `recordings/test/`, the log reports segment
 ```bash
 git add vmd/record_main.py tests/test_record_main.py pyproject.toml
 git commit -m "feat: add recording service wiring recorders, index and retention"
+```
+
+---
+
+### Task 10: Health — stalled streams and log storms
+
+**Files:**
+- Modify: `vmd/record_main.py`
+- Modify: `vmd/supervisor.py`
+- Test: `tests/test_health.py`
+
+Two failure modes that the wiring in Task 9 cannot detect, both raised during review of
+Tasks 4 and 8. Both only appear after the system has been running unattended for a while,
+which is exactly why they need building deliberately rather than being noticed in the field.
+
+**1. A recorder that is alive but producing nothing.** `running` only reports whether the
+ffmpeg process exists. If the RTSP socket dies without closing — routine on a long wireless
+link — ffmpeg can block on a read forever. `poll()` returns None, `running` stays True, the
+supervisor is satisfied, and not one frame is recorded. The supervisor cannot see this,
+because from its point of view nothing failed.
+
+The signal that does detect it is segment production. A recorder that has produced no new
+segment for more than twice its segment length is stalled regardless of what `poll()` says.
+`RecordingService` already watches the output directory, so it is the right owner.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_health.py`:
+
+```python
+import os
+
+from vmd.record_main import RecordingService
+from vmd.settings import Settings, StreamSettings
+
+
+class FakeProcess:
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def spawn_fake(command, log_path=None):
+    return FakeProcess()
+
+
+def build_settings(tmp_path):
+    settings = Settings()
+    settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://example/thermal")]
+    settings.storage.root = tmp_path / "recordings"
+    settings.storage.segment_seconds = 10
+    return settings
+
+
+def write_segment(directory, name, mtime):
+    path = directory / name
+    path.write_bytes(b"x" * 2048)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_a_stream_producing_segments_is_not_stalled(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    write_segment(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    write_segment(directory, "2026-08-07_10-00-10.mp4", 110.0)
+    service.run_once(now=115.0)
+    assert service.stalled_streams(now=115.0) == []
+    service.stop()
+
+
+def test_a_stream_with_no_new_segment_is_stalled(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    write_segment(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    write_segment(directory, "2026-08-07_10-00-10.mp4", 110.0)
+    service.run_once(now=115.0)
+    # Twice the 10-second segment length has passed with nothing new.
+    assert service.stalled_streams(now=140.0) == ["thermal"]
+    service.stop()
+
+
+def test_a_stream_is_not_stalled_before_it_has_had_time(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=100.0)
+    # No segments yet, but it has only just started - not a stall.
+    assert service.stalled_streams(now=105.0) == []
+    service.stop()
+
+
+def test_status_reports_a_stalled_stream_as_unhealthy(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=100.0)
+    directory = tmp_path / "recordings" / "thermal"
+    write_segment(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    write_segment(directory, "2026-08-07_10-00-10.mp4", 110.0)
+    service.run_once(now=115.0)
+    status = service.status(now=140.0)
+    assert status["streams"][0]["stalled"] is True
+    assert status["healthy"] is False
+    service.stop()
+
+
+def test_repeated_identical_start_failures_are_logged_once(caplog):
+    from vmd.supervisor import Managed, Supervisor
+
+    class Broken:
+        running = False
+
+        def start(self):
+            raise RuntimeError("cannot start")
+
+        def stop(self):
+            pass
+
+    clock = {"now": 0.0}
+    supervisor = Supervisor(
+        [Managed(name="broken", service=Broken())],
+        clock=lambda: clock["now"],
+        restart_delay=1.0,
+    )
+    with caplog.at_level("WARNING"):
+        for _ in range(50):
+            supervisor.tick()
+            clock["now"] += 2.0
+
+    tracebacks = [r for r in caplog.records if r.exc_info]
+    # A stream that is broken for a month must not write a traceback every two
+    # seconds; that alone would fill the disk this system exists to manage.
+    assert len(tracebacks) <= 2
+    assert supervisor.failures["broken"] == 50
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_health.py -v`
+Expected: FAIL — `RecordingService` has no `stalled_streams`, `status()` takes no `now`, and `Supervisor` has no `failures`.
+
+- [ ] **Step 3: Implement stall detection**
+
+In `vmd/record_main.py`, record when each stream last produced a segment. In `__init__`:
+
+```python
+        self._last_segment_at: dict[str, float] = {}
+        self._started_at: dict[str, float] = {}
+```
+
+In `_index_new_segments`, after a segment is successfully added:
+
+```python
+                self._last_segment_at[recorder.stream] = now
+```
+
+And in `run_once`, before `self.supervisor.tick()`, note when each stream first started so a
+freshly started stream is not immediately called stalled:
+
+```python
+        for recorder in self.recorders:
+            self._started_at.setdefault(recorder.stream, now)
+```
+
+Then add:
+
+```python
+    def stalled_streams(self, now: float | None = None) -> list[str]:
+        """Streams whose process is alive but which have produced nothing recently.
+
+        `running` only says the ffmpeg process exists. On a long wireless link the
+        RTSP socket can die without closing, leaving ffmpeg blocked on a read: the
+        process is alive, the supervisor is satisfied, and nothing is recorded.
+        Segment production is the only signal that distinguishes the two.
+        """
+        now = time.time() if now is None else now
+        limit = 2 * self.settings.storage.segment_seconds
+        stalled = []
+        for recorder in self.recorders:
+            if not recorder.running:
+                continue  # already visibly down; the supervisor handles that
+            last = self._last_segment_at.get(
+                recorder.stream, self._started_at.get(recorder.stream, now)
+            )
+            if now - last > limit:
+                stalled.append(recorder.stream)
+        return stalled
+```
+
+Change `status` to accept `now` and include the flag:
+
+```python
+    def status(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        stalled = set(self.stalled_streams(now))
+        ...
+        streams = [
+            {
+                "name": r.stream,
+                "running": r.running,
+                "stalled": r.stream in stalled,
+                "restarts": self.supervisor.restarts.get(r.stream, 0),
+                "exit_code": r.exit_code,
+            }
+            for r in self.recorders
+        ]
+        ...
+            "healthy": (
+                all(s["running"] and not s["stalled"] for s in streams)
+                and not self._stuck_deletions
+            ),
+```
+
+- [ ] **Step 4: Implement log throttling**
+
+In `vmd/supervisor.py`, add a `failures` counter and log the full traceback only for the
+first couple of consecutive failures, then a single line:
+
+```python
+        self.failures: dict[str, int] = {entry.name: 0 for entry in managed}
+```
+
+and in `tick`'s except block:
+
+```python
+            except Exception:  # noqa: BLE001 - one bad service must not stop the others
+                self.failures[entry.name] += 1
+                # A permanently broken stream is retried every couple of seconds for
+                # months. Logging a full traceback each time would write hundreds of
+                # thousands of them and fill the disk this system exists to manage.
+                if self.failures[entry.name] <= 2:
+                    logger.exception("failed to start %s", entry.name)
+                elif self.failures[entry.name] % 100 == 0:
+                    logger.warning(
+                        "%s has failed to start %d times",
+                        entry.name,
+                        self.failures[entry.name],
+                    )
+                self._next_attempt[entry.name] = now + self._restart_delay
+                continue
+```
+
+Reset the counter on a successful start, next to the existing restart bookkeeping:
+
+```python
+            self.failures[entry.name] = 0
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `uv run pytest tests/test_health.py -v` — expect 5 passed.
+Then `uv run pytest -v` — everything must pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add vmd/record_main.py vmd/supervisor.py tests/test_health.py
+git commit -m "feat: detect stalled streams and throttle repeated failure logging"
 ```
 
 ---
