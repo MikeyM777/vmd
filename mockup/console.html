@@ -769,7 +769,9 @@ const EVENTS = [
 ];
 function renderEvents() {
   document.getElementById('eventlist').innerHTML = EVENTS.slice(0, 6).map(([t, what, c, isNew]) =>
-    `<div class="event${isNew ? ' new' : ''}"><span class="t">${t}</span><span>${what}</span><span class="c">${c == null ? '—' : c.toFixed(2)}</span></div>`
+    // No confidence renders as nothing at all. A dash placeholder reads as a
+    // value, and the operator does not need a glyph to tell them a column is empty.
+    `<div class="event${isNew ? ' new' : ''}"><span class="t">${t}</span><span>${what}</span><span class="c">${c == null ? '' : c.toFixed(2)}</span></div>`
   ).join('');
 }
 function addEvent(what, conf) {
