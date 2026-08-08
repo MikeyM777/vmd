@@ -154,35 +154,16 @@ main.on { display: grid; grid-template-columns: 1fr 292px; }
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
 }
 
-/* ---- steering: edge-of-frame and keyboard, no on-screen arrow pad ----
+/* ---- steering: edge-of-frame and keyboard, nothing drawn on the picture ----
    A pad of buttons steals a corner of the screen permanently and forces the
    operator to look away from the picture to press it. Steering at the frame
-   edge keeps the eye on the target, and the keyboard is faster still. */
-.wall { cursor: crosshair; }
-.wall.steering { cursor: none; }
+   edge keeps the eye on the target, and the keyboard is faster still.
 
-.edgehint {
-  position: absolute; inset: 0; z-index: var(--z-overlay);
-  pointer-events: none; opacity: 0; transition: opacity var(--tap);
-}
-.wall.steering .edgehint { opacity: 1; }
-/* Deliberately restrained: this sits on top of the footage while the operator is
-   steering, so it marks the direction without obscuring what they are steering
-   toward. An indicator that hides the picture defeats its own purpose. */
-.edgehint .band {
-  position: absolute; background: linear-gradient(var(--dir, to right),
-    color-mix(in oklch, var(--accent) 20%, transparent), transparent);
-}
-.edgehint .glyph {
-  position: absolute; transform: translate(-50%, -50%);
-  font-size: 26px; line-height: 1; color: var(--accent);
-  text-shadow: 0 0 6px oklch(0.1 0 0 / 0.8);
-}
-.edgehint .rate {
-  position: absolute; transform: translate(-50%, -50%) translateY(22px);
-  font-family: var(--mono); font-size: 11px; color: oklch(0.99 0 0);
-  background: oklch(0.08 0 0 / 0.76); padding: 2px 7px; white-space: nowrap;
-}
+   Nothing is drawn over the footage for either. Direction and rate read out in
+   the side column; the cursor's own shape carries the affordance. Every pixel
+   of overlay is a pixel of the thing the operator is steering toward. */
+.wall { cursor: crosshair; }
+.wall.steering { cursor: move; }
 
 .keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: baseline; }
 .keys kbd {
@@ -345,11 +326,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
             <span><span class="k">person@700m</span> 132 px</span>
             <span><span class="k">rate</span> 4.0 Mb/s</span>
           </div>
-        </div>
-        <div class="edgehint" id="edgehint">
-          <div class="band" id="eh-band"></div>
-          <div class="glyph" id="eh-glyph">→</div>
-          <div class="rate" id="eh-rate">12 °/s</div>
         </div>
       </div>
 
@@ -612,62 +588,35 @@ zoom.oninput = () => {
 
 /* ---- steering -------------------------------------------------------------
    Two ways in, both keeping the operator's eye on the picture: the frame edge
-   for the pointer, and the arrow keys. There is no on-screen arrow pad.
+   for the pointer, and the arrow keys. There is no on-screen arrow pad and
+   nothing is painted over the footage — direction and rate read out in the
+   side column, where every other number on this screen already lives.
 
-   The edge band is 14% of each side. Speed scales with how far into the band
-   the pointer sits, so a nudge and a fast slew are the same gesture. */
+   The edge zone is 14% of each side. Speed scales with how far into it the
+   pointer sits, so a nudge and a fast slew are the same gesture. */
 const EDGE = 0.14, MAX_RATE = 90;  // deg/sec, the camera's own pan ceiling
 const wall = document.getElementById('wall');
-const hint = document.getElementById('edgehint');
-const band = document.getElementById('eh-band');
-const glyph = document.getElementById('eh-glyph');
-const rateEl = document.getElementById('eh-rate');
 const stateEl = document.getElementById('ptz-state');
 
-const GLYPHS = { n: '↑', s: '↓', e: '→', w: '←', ne: '↗', nw: '↖', se: '↘', sw: '↙' };
 let holding = false;
 
 function edgeAt(event) {
   const r = wall.getBoundingClientRect();
   const x = (event.clientX - r.left) / r.width, y = (event.clientY - r.top) / r.height;
   let vert = '', horiz = '', depth = 0;
-  if (y < EDGE)          { vert = 'n'; depth = Math.max(depth, (EDGE - y) / EDGE); }
-  else if (y > 1 - EDGE) { vert = 's'; depth = Math.max(depth, (y - (1 - EDGE)) / EDGE); }
-  if (x < EDGE)          { horiz = 'w'; depth = Math.max(depth, (EDGE - x) / EDGE); }
-  else if (x > 1 - EDGE) { horiz = 'e'; depth = Math.max(depth, (x - (1 - EDGE)) / EDGE); }
+  if (y < EDGE)          { vert = 'N'; depth = Math.max(depth, (EDGE - y) / EDGE); }
+  else if (y > 1 - EDGE) { vert = 'S'; depth = Math.max(depth, (y - (1 - EDGE)) / EDGE); }
+  if (x < EDGE)          { horiz = 'W'; depth = Math.max(depth, (EDGE - x) / EDGE); }
+  else if (x > 1 - EDGE) { horiz = 'E'; depth = Math.max(depth, (x - (1 - EDGE)) / EDGE); }
   const dir = vert + horiz;
-  return dir ? { dir, depth: Math.min(depth, 1), x, y, r } : null;
+  return dir ? { dir, depth: Math.min(depth, 1) } : null;
 }
 
 function showEdge(hit) {
-  const { dir, depth, r } = hit;
+  const { dir, depth } = hit;
   wall.classList.add('steering');
-  glyph.textContent = GLYPHS[dir];
   const rate = Math.max(0.5, depth * MAX_RATE).toFixed(depth * MAX_RATE < 10 ? 1 : 0);
-  rateEl.textContent = rate + ' °/s';
-
-  // Park the glyph on the edge being pushed, not under the cursor: the cursor is
-  // hidden while steering, and an indicator that follows it is just a fake pointer.
-  const gx = dir.includes('w') ? 6 : dir.includes('e') ? 94 : 50;
-  const gy = dir.includes('n') ? 8 : dir.includes('s') ? 92 : 50;
-  glyph.style.left = rateEl.style.left = gx + '%';
-  glyph.style.top = rateEl.style.top = gy + '%';
-
-  const thickness = (5 + depth * 9) + '%';
-  Object.assign(band.style, { top: '', bottom: '', left: '', right: '', width: '', height: '' });
-  if (dir.includes('w')) Object.assign(band.style,
-    { left: 0, top: 0, bottom: 0, width: thickness, '--dir': 'to left' });
-  else if (dir.includes('e')) Object.assign(band.style,
-    { right: 0, top: 0, bottom: 0, width: thickness, '--dir': 'to right' });
-  else if (dir.includes('n')) Object.assign(band.style,
-    { top: 0, left: 0, right: 0, height: thickness, '--dir': 'to top' });
-  else Object.assign(band.style,
-    { bottom: 0, left: 0, right: 0, height: thickness, '--dir': 'to bottom' });
-  band.style.setProperty('--dir',
-    dir.includes('w') ? 'to left' : dir.includes('e') ? 'to right' :
-    dir.includes('n') ? 'to top' : 'to bottom');
-
-  if (holding) stateEl.textContent = dir.toUpperCase() + ' ' + rate + '°/s';
+  if (holding) stateEl.textContent = dir + ' ' + rate + '°/s';
 }
 
 function clearEdge() {
