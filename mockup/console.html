@@ -380,7 +380,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
       <div class="group">
         <h2>Steering</h2>
         <div class="keys">
-          <kbd>← ↑ → ↓</kbd><span>pan and tilt</span>
+          <kbd>← ↑ → ↓</kbd><span>pan and tilt — hold two for diagonal</span>
           <kbd>+ −</kbd><span>zoom</span>
           <kbd>Home</kbd><span>return to rest position</span>
           <kbd>Shift</kbd><span>hold for fine movement</span>
@@ -691,15 +691,38 @@ wall.addEventListener('mousedown', e => {
 });
 window.addEventListener('mouseup', () => { holding = false; stateEl.textContent = 'idle'; });
 
-const KEYS = { ArrowUp: 'N', ArrowDown: 'S', ArrowLeft: 'W', ArrowRight: 'E' };
+/* Arrow keys drive pan and tilt on separate axes, so holding two at once slews
+   diagonally rather than the last key winning. Opposing keys cancel, which is
+   what the head would physically do. Keyboard steering reports in the side
+   column only — nothing is drawn over the picture for it. */
+const KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+const held = new Set();
+
+function keyDir() {
+  const up = held.has('ArrowUp'), down = held.has('ArrowDown');
+  const left = held.has('ArrowLeft'), right = held.has('ArrowRight');
+  const v = up === down ? '' : up ? 'N' : 'S';
+  const h = left === right ? '' : left ? 'W' : 'E';
+  return v + h;
+}
+
+function showKeySteer(shift) {
+  const dir = keyDir();
+  if (dir) stateEl.textContent = dir + (shift ? ' 2°/s' : ' 30°/s');
+  else if (!holding) stateEl.textContent = 'idle';
+}
+
 window.addEventListener('keydown', e => {
   // e.target is window when nothing is focused, and window has no .matches —
   // calling it unguarded threw and killed the whole handler.
   const t = e.target;
   if (t instanceof Element && t.matches('input, select, textarea')) return;
-  if (KEYS[e.key]) {
+  if (KEYS.includes(e.key)) {
     e.preventDefault();
-    stateEl.textContent = KEYS[e.key] + (e.shiftKey ? ' 2°/s' : ' 30°/s');
+    held.add(e.key);
+    showKeySteer(e.shiftKey);
+  } else if (e.key === 'Shift') {
+    showKeySteer(true);
   } else if (e.key === '+' || e.key === '=') {
     zoom.value = Math.min(31, +zoom.value + 1); zoom.oninput();
   } else if (e.key === '-') {
@@ -709,7 +732,13 @@ window.addEventListener('keydown', e => {
     setTimeout(() => { stateEl.textContent = 'idle'; }, 900);
   }
 });
-window.addEventListener('keyup', e => { if (KEYS[e.key]) stateEl.textContent = 'idle'; });
+window.addEventListener('keyup', e => {
+  if (KEYS.includes(e.key)) { held.delete(e.key); showKeySteer(e.shiftKey); }
+  else if (e.key === 'Shift') showKeySteer(false);
+});
+// Alt-Tab away mid-slew and the keyup never arrives, leaving the head "moving"
+// forever. Releasing everything on blur is the only correct answer.
+window.addEventListener('blur', () => { held.clear(); showKeySteer(false); });
 
 /* ---- alarm ---- */
 let alarmAt = Date.now() - 3000;
