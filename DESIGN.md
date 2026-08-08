@@ -128,6 +128,14 @@ weight 600. Used for layout and overlay switching.
 Cards are not part of this system. The side column is rows and groups; the main area is
 video. Nothing is a card.
 
+**Settings note — passwords are shown, not masked.** Every credential field renders as
+plain text. This is deliberate. The machine is offline, physically controlled, and reachable
+only from `127.0.0.1`, so masking defends against nothing here — while a wrong camera
+password means no video and no recording, and a masked field makes that typo invisible
+precisely when it matters. The threat this interface actually faces is a mistyped
+credential, not a shoulder-surfer. If the console is ever exposed beyond the local machine,
+this decision must be revisited along with everything else about its access model.
+
 ## Motion
 
 Minimal and functional. The only thing worth animating is a state change.
