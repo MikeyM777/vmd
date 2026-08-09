@@ -26,8 +26,13 @@ class RecordingService:
         settings: Settings,
         spawn: Callable | None = None,
         retention_interval: float = 60.0,
+        settle_seconds: float = 5.0,
     ) -> None:
         self.settings = settings
+        # How long a file must sit untouched before it counts as finished. The
+        # same window guards both discovery and orphan adoption; adoption used
+        # to have none, which made it the weaker of the two paths.
+        self.settle_seconds = settle_seconds
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
@@ -56,6 +61,7 @@ class RecordingService:
             self._last_segment_at: dict[str, float] = {}
             self._started_at: dict[str, float] = {}
             self._stall_restarts = 0
+            self._stage_failures: dict[str, int] = {}
             self._adopt_orphans()
         except Exception:
             # Nothing will hold a reference to this half-built service, so the
@@ -65,14 +71,33 @@ class RecordingService:
             raise
 
     def run_once(self, now: float | None = None) -> None:
-        """One pass: keep recorders alive, index finished segments, apply retention."""
+        """One pass: keep recorders alive, index finished segments, apply retention.
+
+        Each stage is isolated from the others. They used to run in sequence with
+        no guard, which made a full disk self-locking: the index write failed,
+        the exception ended the pass before retention could run, so nothing was
+        deleted, so the disk stayed full - forever, and reported healthy.
+        Retention is the stage that frees the disk, so it must run even when
+        everything before it has failed.
+        """
         now = time.time() if now is None else now
         for recorder in self.recorders:
             self._started_at.setdefault(recorder.stream, now)
-        self.supervisor.tick()
-        self._index_new_segments(now)
-        self._restart_stalled(now)
-        self._apply_retention(now)
+        self._stage("supervisor", self.supervisor.tick)
+        self._stage("indexing", self._index_new_segments, now)
+        self._stage("stall check", self._restart_stalled, now)
+        self._stage("retention", self._apply_retention, now)
+
+    def _stage(self, name: str, work, *args) -> None:
+        try:
+            work(*args)
+        except Exception:  # noqa: BLE001 - one broken stage must not skip the rest
+            self._stage_failures[name] = self._stage_failures.get(name, 0) + 1
+            count = self._stage_failures[name]
+            # Loud the first few times, then rare: a fault that lasts for days
+            # must stay visible in the log without burying everything else.
+            if count <= 3 or count % 100 == 0:
+                logger.exception("%s failed (%d times); continuing", name, count)
 
     def run_forever(self, interval: float = 5.0) -> None:
         """Run until interrupted. A failed pass must never end the process.
@@ -147,7 +172,9 @@ class RecordingService:
 
     def _index_new_segments(self, now: float) -> None:
         for recorder in self.recorders:
-            for path in find_closed_segments(recorder.output_dir, now=now, seen=self._seen):
+            for path in find_closed_segments(
+                recorder.output_dir, now=now, settle_seconds=self.settle_seconds, seen=self._seen
+            ):
                 start = parse_segment_start(path.name)
                 if start is None:
                     continue
@@ -247,7 +274,17 @@ class RecordingService:
             # Skip the newest file, exactly as find_closed_segments does. If anything
             # is still writing into this directory it is that file, and indexing it
             # would expose a live recording to retention.
+            #
+            # "Newest" by mtime alone is not enough. A backwards clock step makes
+            # a file written before the step look newer than the one being
+            # written now, so the live file stops being last in this list. The
+            # settle window closes that: a file touched within it is treated as
+            # possibly still open, whatever the ordering says.
+            settle = max(self.settle_seconds, 0.0)
+            wall_now = time.time()
             for mtime, path, stat in candidates[:-1]:
+                if wall_now - mtime < settle:
+                    continue
                 if str(path) in self._seen:
                     continue
                 start = parse_segment_start(path.name)

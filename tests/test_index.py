@@ -105,3 +105,15 @@ def test_index_survives_reopen(tmp_path):
     reopened = build(tmp_path)
     assert len(reopened.all()) == 1
     reopened.close()
+
+
+def test_adding_a_duplicate_path_returns_that_path_s_own_id(tmp_path):
+    """An ignored insert used to return the id of whatever was inserted last."""
+    index = build(tmp_path)
+    try:
+        first = index.add("thermal", "a.mp4", 1000.0, 1010.0, 10)
+        index.add("thermal", "b.mp4", 1010.0, 1020.0, 10)
+        again = index.add("thermal", "a.mp4", 1000.0, 1010.0, 10)
+        assert again == first
+    finally:
+        index.close()

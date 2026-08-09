@@ -15,7 +15,7 @@ from pathlib import Path
 
 from vmd.settings import SettingsError, load_settings
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
-from vmd.webui.server import DEFAULT_HOST, DEFAULT_PORT, make_server
+from vmd.webui.server import DEFAULT_HOST, DEFAULT_PORT, capture_logs, make_server
 
 logger = logging.getLogger("vmd.webui")
 
@@ -88,6 +88,9 @@ def start_streaming(args: argparse.Namespace) -> Go2rtcService | None:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # Before anything else that might log: the Logs tab should show the startup
+    # of the very session the operator is looking at.
+    capture_logs()
     args = parse_args(argv)
 
     streaming = start_streaming(args)

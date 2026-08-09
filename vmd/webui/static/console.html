@@ -305,6 +305,24 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 .toggle input { accent-color: var(--accent); width: 14px; height: 14px; }
 
 .actions { display: flex; gap: 8px; align-items: center; }
+/* ---------------------------------------------------------- logs */
+.logs { display: flex; flex-direction: column; min-height: 0; padding: 10px; gap: 8px; }
+.logbar { display: flex; align-items: center; gap: 12px; }
+.logcount { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.logview {
+  flex: 1; min-height: 0; overflow-y: auto; background: var(--well);
+  border: 1px solid var(--line); padding: 8px 10px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+}
+.logline { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-word; }
+.logline + .logline { margin-top: 1px; }
+.logline .lt { color: var(--muted); flex: none; }
+.logline .ll { flex: none; width: 62px; color: var(--muted); }
+.logline.WARNING .ll { color: var(--warn); }
+.logline.ERROR .ll, .logline.CRITICAL .ll { color: var(--alarm); }
+.logline.ERROR .lm, .logline.CRITICAL .lm { color: var(--ink); }
+.logempty { color: var(--muted); }
+
 .savemsg { font-size: 12px; color: var(--muted); }
 .notyet {
   font-size: 10.5px; font-weight: 400; letter-spacing: 0; text-transform: none;
@@ -331,15 +349,16 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 <div class="app">
 
   <header class="bar">
-    <div class="site"><strong>NORTH PERIMETER</strong><span>Elara DX · 700 m</span></div>
+    <div class="site"><strong id="site-name">VMD</strong><span id="site-sub">no camera set</span></div>
     <nav class="tabs">
       <button aria-selected="true" data-tab="live">Live</button>
       <button aria-selected="false" data-tab="playback">Playback</button>
+      <button aria-selected="false" data-tab="logs">Logs</button>
       <button aria-selected="false" data-tab="settings">Settings</button>
     </nav>
     <div class="right">
-      <span class="chip ok" id="chip-link"><span class="g">●</span>Link <span class="v">68%</span></span>
-      <span class="chip ok"><span class="g">●</span>Rec <span class="v">2</span></span>
+      <span class="chip" id="chip-link"><span class="g">●</span>Live <span class="v" id="chip-live-v">—</span></span>
+      <span class="chip" id="chip-rec"><span class="g">●</span>Rec <span class="v" id="chip-rec-v">off</span></span>
       <span class="chip warn"><span class="g">▲</span>Disk <span class="v">11 d</span></span>
     </div>
   </header>
@@ -350,21 +369,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
       <div class="wall alarm" id="wall" tabindex="0" aria-label="Camera view. Arrow keys pan and tilt.">
         <div class="pane" id="pane-thermal">
           <video id="vid-thermal" class="live" muted autoplay playsinline></video>
-          <canvas id="cv-t" class="demo"></canvas>
           <div class="nosignal" id="ns-thermal"><b>NO SIGNAL</b><span>waiting</span></div>
           <div class="tag"><em>THERMAL</em> <span id="tag-thermal">no stream</span></div>
-          <div class="readout"><span><span class="k">person@700m</span> 13 px</span></div>
+          <div class="readout"><span><span class="k">stream</span> <span id="ro-thermal">—</span></span></div>
         </div>
         <div class="pane" id="pane-visible">
           <video id="vid-visible" class="live" muted autoplay playsinline></video>
-          <canvas id="cv-v" class="demo"></canvas>
           <div class="nosignal" id="ns-visible"><b>NO SIGNAL</b><span>waiting</span></div>
           <div class="tag"><em>VISIBLE</em> <span id="tag-visible">no stream</span></div>
-          <div class="readout">
-            <span><span class="k">fov</span> 2.15°</span>
-            <span><span class="k">person@700m</span> 132 px</span>
-            <span><span class="k">rate</span> 4.0 Mb/s</span>
-          </div>
+          <div class="readout"><span><span class="k">stream</span> <span id="ro-visible">—</span></span></div>
         </div>
       </div>
 
@@ -383,10 +396,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
         <div class="seg">
           <button aria-pressed="true" data-toggle="boxes">Detection overlay</button>
           <button aria-pressed="false" data-toggle="mask">Ignore mask</button>
-        </div>
-        <div class="seg">
-          <button onclick="fireAlarm()">simulate movement</button>
-          <button onclick="dropLink()">simulate link loss</button>
         </div>
       </div>
     </div>
@@ -422,16 +431,16 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 
       <div class="group">
         <h2>Link</h2>
-        <div class="row"><span class="k">Signal</span><span class="v" id="l-sig">−63 dBm</span></div>
-        <div class="row"><span class="k">Capacity</span><span class="v">42 Mb/s</span></div>
+        <div class="row"><span class="k">Signal</span><span class="v" id="l-sig">—</span></div>
+        <div class="row"><span class="k">Capacity</span><span class="v">—</span></div>
         <div class="row"><span class="k">Bitrate</span><span class="v" id="l-rate">4.0 Mb/s</span></div>
         <div class="row"><span class="k">Mode</span><span class="v">auto</span></div>
       </div>
 
       <div class="group">
         <h2>Storage</h2>
-        <div class="row"><span class="k">Held</span><span class="v">11 days</span></div>
-        <div class="row"><span class="k">Used</span><span class="v warn">512 / 600 GB</span></div>
+        <div class="row"><span class="k">Free on disk</span><span class="v" id="st-free">—</span></div>
+        <div class="row"><span class="k">Budget</span><span class="v" id="st-budget">—</span></div>
         <div class="row"><span class="k">Oldest</span><span class="v">27 Jul 04:10</span></div>
       </div>
     </aside>
@@ -441,10 +450,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
   <main id="tab-playback">
     <div class="stage">
       <div class="wall">
-        <div class="pane">
-          <canvas id="cv-p"></canvas>
-          <div class="tag"><em>VISIBLE</em> 07 Aug 2026 · 21:14:07</div>
-          <div class="readout"><span><span class="k">playback</span> <span id="pb-t">21:14:07</span></span></div>
+        <div class="pane nostream">
+          <div class="nosignal">
+            <b>NO RECORDING LOADED</b>
+            <span>playback is not connected to the recordings yet</span>
+          </div>
+          <div class="tag"><em>PLAYBACK</em> <span id="pb-t">—</span></div>
         </div>
       </div>
 
@@ -490,6 +501,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
   </main>
 
   <!-- ================= SETTINGS ================= -->
+  <!-- ================= LOGS ================= -->
+  <main id="tab-logs" style="grid-template-columns:1fr">
+    <div class="logs">
+      <div class="logbar">
+        <div class="seg">
+          <button data-loglevel="ALL" aria-pressed="true">All</button>
+          <button data-loglevel="WARNING" aria-pressed="false">Warnings and errors</button>
+        </div>
+        <label class="toggle"><input type="checkbox" id="log-follow" checked> follow</label>
+        <span class="logcount" id="log-count"></span>
+      </div>
+      <div class="logview" id="logview"></div>
+    </div>
+  </main>
+
   <main id="tab-settings" style="grid-template-columns:1fr">
     <div class="settings">
       <div class="form">
@@ -585,12 +611,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
   </main>
 
   <footer class="foot">
-    <span>REC <b id="rec">02:14:31</b></span><span class="sep">│</span>
-    <span>oldest <b>27 Jul 04:10</b></span><span class="sep">│</span>
-    <span>512 / 600 GB</span><span class="sep">│</span>
-    <span>11 days</span>
-    <span class="sep">│</span><span class="mock" id="feedstate">connecting</span>
-    <span class="right">latency <b>0.4 s</b> · dropped <b>0</b> · <span id="clock">--:--:--</span></span>
+    <span id="feedstate">starting</span>
+    <span class="sep">│</span><span id="foot-storage">—</span>
+    <span class="right"><span id="clock">--:--:--</span></span>
   </footer>
 </div>
 
@@ -742,143 +765,54 @@ window.addEventListener('keyup', e => {
 // forever. Releasing everything on blur is the only correct answer.
 window.addEventListener('blur', () => { held.clear(); holding = false; clearEdge(); showKeySteer(false); });
 
-/* ---- alarm ---- */
-let alarmAt = Date.now() - 3000;
-function fireAlarm() {
-  alarmAt = Date.now();
-  document.getElementById('stage').classList.add('alarm');
-  document.getElementById('wall').classList.add('alarm');
-  addEvent('Thermal — movement', null);
-}
+/* ---- alarm -----------------------------------------------------------------
+   The alarm strip is real UI driven by a detector that does not exist yet, so
+   nothing raises it. It stays in the page because the recording and detection
+   work will drive it, and an operator briefed on a control that never appears
+   is worse than one who has seen it. Nothing here invents an event. */
 function ack() {
   document.getElementById('stage').classList.remove('alarm');
   document.getElementById('wall').classList.remove('alarm');
 }
-function dropLink() {
-  const chip = document.getElementById('chip-link');
-  const bad = chip.classList.toggle('bad'); chip.classList.toggle('ok', !bad);
-  chip.querySelector('.v').textContent = bad ? 'down' : '68%';
-  document.getElementById('l-sig').textContent = bad ? '— dBm' : '−63 dBm';
-  document.getElementById('l-rate').textContent = bad ? '0.0 Mb/s' : '4.0 Mb/s';
-}
 
-const EVENTS = [
-  ['21:14:07', 'Thermal — movement', null, true],
-  ['21:09:52', 'Visible — person', 0.79, false],
-  ['20:51:18', 'Thermal — movement', null, false],
-  ['20:44:03', 'Visible — vehicle', 0.66, false],
-  ['20:12:37', 'Thermal — movement', null, false],
-];
 function renderEvents() {
-  document.getElementById('eventlist').innerHTML = EVENTS.slice(0, 6).map(([t, what, c, isNew]) =>
-    // No confidence renders as nothing at all. A dash placeholder reads as a
-    // value, and the operator does not need a glyph to tell them a column is empty.
-    `<div class="event${isNew ? ' new' : ''}"><span class="t">${t}</span><span>${what}</span><span class="c">${c == null ? '' : c.toFixed(2)}</span></div>`
-  ).join('');
-}
-function addEvent(what, conf) {
-  const d = new Date();
-  EVENTS.forEach(e => e[3] = false);
-  EVENTS.unshift([d.toTimeString().slice(0, 8), what, conf, true]);
-  renderEvents();
+  const empty = '<p class="hint">No movement recorded yet. The detector is not built.</p>';
+  const list = document.getElementById('eventlist');
+  if (list) list.innerHTML = empty;
+  const pb = document.getElementById('pb-events');
+  if (pb) pb.innerHTML = empty;
 }
 renderEvents();
 
-/* ---- clocks ---- */
+/* ---- clock ---- */
 setInterval(() => {
-  const d = new Date();
-  document.getElementById('clock').textContent = d.toTimeString().slice(0, 8);
-  document.getElementById('pb-t').textContent = '21:14:' + String(d.getSeconds()).padStart(2, '0');
-  const age = Math.round((Date.now() - alarmAt) / 1000);
-  document.getElementById('alarm-age').textContent =
-    new Date(alarmAt).toTimeString().slice(0, 8) + ' · ' + age + ' s ago';
+  document.getElementById('clock').textContent = new Date().toTimeString().slice(0, 8);
 }, 1000);
 
-/* ---- timeline ---- */
-const DAY = 1440, track = document.getElementById('track');
-const pct = m => (m / DAY * 100) + '%';
-let cursor = 0;
-[[190, 237], [604, 618], [1105, 1123]].forEach(([a, b]) => {
-  const c = document.createElement('div'); c.className = 'cov';
-  c.style.left = pct(cursor); c.style.width = pct(a - cursor); track.appendChild(c);
-  const g = document.createElement('div'); g.className = 'gap';
-  g.style.left = pct(a); g.style.width = pct(b - a);
-  g.title = 'no recording — link was down'; track.appendChild(g);
-  cursor = b;
-});
-const tail = document.createElement('div'); tail.className = 'cov';
-tail.style.left = pct(cursor); tail.style.width = pct(DAY - cursor); track.appendChild(tail);
-
-const MARKS = [[1274, 'thermal'], [1276, 'thermal'], [1281, 'visible'], [1290, 'thermal'],
-               [1297, 'visible'], [402, 'thermal'], [688, 'visible'], [944, 'thermal']];
-MARKS.forEach(([m, kind]) => {
-  const e = document.createElement('div');
-  e.className = 'ev' + (kind === 'visible' ? ' vis' : '');
-  e.style.left = pct(m);
-  e.title = kind + ' at ' + String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
-  track.appendChild(e);
-});
-const head = document.createElement('div'); head.className = 'play'; head.style.left = pct(1274);
-track.appendChild(head);
-track.onclick = e => { head.style.left = ((e.clientX - track.getBoundingClientRect().left) / track.clientWidth * 100) + '%'; };
-
-const ticks = document.getElementById('ticks');
-for (let h = 0; h <= 24; h += 3) {
-  const s = document.createElement('span');
-  s.style.left = pct(h * 60); s.textContent = String(h).padStart(2, '0') + ':00';
-  ticks.appendChild(s);
+/* ---- timeline --------------------------------------------------------------
+   Drawn empty until playback reads the segment index. An invented coverage bar
+   would tell the operator footage exists where it does not. */
+const track = document.getElementById('track');
+if (track) track.innerHTML = '';
+const head = document.getElementById('head');
+if (head && track) {
+  track.parentElement.addEventListener('click', e => {
+    const box = track.getBoundingClientRect();
+    const fraction = Math.min(Math.max((e.clientX - box.left) / box.width, 0), 1);
+    head.style.left = (fraction * 100) + '%';
+    const minutes = Math.round(fraction * 1440);
+    const label = document.getElementById('pb-t');
+    if (label) {
+      label.textContent =
+        String(Math.floor(minutes / 60)).padStart(2, '0') + ':' +
+        String(minutes % 60).padStart(2, '0');
+    }
+  });
 }
-document.getElementById('pb-events').innerHTML = MARKS
-  .slice().sort((a, b) => b[0] - a[0])
-  .map(([m, k]) => `<div class="event"><span class="t">${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}</span><span>${k === 'visible' ? 'Visible — detection' : 'Thermal — movement'}</span><span class="c">${k === 'visible' ? '0.71' : '—'}</span></div>`)
-  .join('');
 
-/* ---- stand-in footage. Figure sizes are the real ratios at 700 m. ---- */
-let SHOW_BOXES = true;
-function scene(canvas, opts) {
-  const c = canvas.getContext('2d');
-  let t = Math.random() * 10;
-  (function draw() {
-    const w = canvas.width = canvas.clientWidth, h = canvas.height = canvas.clientHeight;
-    if (!w || !h) return requestAnimationFrame(draw);
-    t += 0.0035;
-
-    if (opts.thermal) {
-      c.fillStyle = '#0c0b0f'; c.fillRect(0, 0, w, h);
-      const g = c.createLinearGradient(0, h * 0.5, 0, h);
-      g.addColorStop(0, '#211c19'); g.addColorStop(1, '#100e0c');
-      c.fillStyle = g; c.fillRect(0, h * 0.5, w, h * 0.5);
-    } else {
-      const g = c.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, '#0a1017'); g.addColorStop(0.55, '#0e141a'); g.addColorStop(1, '#07090b');
-      c.fillStyle = g; c.fillRect(0, 0, w, h);
-      c.fillStyle = 'rgba(235,215,160,0.12)';
-      for (let i = 0; i < 5; i++) c.fillRect(w * (0.1 + i * 0.2), h * 0.47, 2, 2);
-    }
-    const n = c.createImageData(w, h), amt = opts.thermal ? 22 : 11;
-    for (let i = 0; i < n.data.length; i += 4) {
-      const v = (Math.random() * amt) | 0;
-      n.data[i] = n.data[i+1] = n.data[i+2] = v; n.data[i+3] = 22;
-    }
-    c.putImageData(n, 0, 0);
-
-    const px = w * (0.2 + (t % 1) * 0.6), py = h * 0.68;
-    const ph = opts.thermal ? h * (13 / 512) : h * (132 / 1080);
-    c.fillStyle = opts.thermal ? '#ffb877' : '#8d97a4';
-    c.fillRect(px, py - ph, Math.max(ph * 0.32, 2), ph);
-    c.beginPath(); c.arc(px + ph * 0.16, py - ph - ph * 0.13, Math.max(ph * 0.15, 1.5), 0, 7); c.fill();
-
-    if (SHOW_BOXES) {
-      const pad = Math.max(ph * 0.28, 3);
-      c.strokeStyle = '#43d17a'; c.lineWidth = 1.5;
-      c.strokeRect(px - pad, py - ph - pad, ph * 0.32 + pad * 2, ph + pad * 1.6);
-    }
-    requestAnimationFrame(draw);
-  })();
-}
-scene(document.getElementById('cv-t'), { thermal: true });
-scene(document.getElementById('cv-v'), {});
-scene(document.getElementById('cv-p'), {});
+/* The drawn camera scene that used to live here is gone. The panels now show
+   the camera or they say they have nothing - never an animation standing in for
+   footage. */
 
 /* ---- settings ---------------------------------------------------------------
    The form is the only place settings are entered. It reads and writes through
@@ -1146,6 +1080,87 @@ function setFeedState(text, live) {
 
 pollStreams();
 setInterval(pollStreams, LIVE_POLL_MS);
+
+/* ---- what the system actually knows about itself ---------------------------
+   Every number in the chrome comes from the server or reads "—". Nothing on
+   this screen is a placeholder pretending to be a measurement. */
+function human(bytes) {
+  if (bytes == null) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes, i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+  return value.toFixed(value >= 100 || i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+async function pollStatus() {
+  if (!LIVE) return;
+  try {
+    const st = await (await fetch('/api/status')).json();
+    const settings = await (await fetch('/api/settings')).json();
+
+    el('site-name').textContent = settings.camera.host || 'VMD';
+    el('site-sub').textContent = settings.camera.host
+      ? `${settings.target_distance_m} m` : 'no camera set';
+
+    const rec = el('chip-rec');
+    el('chip-rec-v').textContent = st.recording ? String(st.streams.length) : 'off';
+    rec.classList.toggle('ok', !!st.recording);
+
+    const free = human(st.free_bytes);
+    el('st-free').textContent = free;
+    el('st-budget').textContent = settings.storage.budget_enabled
+      ? settings.storage.budget_gb + ' GB' : 'no limit';
+    el('foot-storage').textContent = `${free} free · budget ` +
+      (settings.storage.budget_enabled ? settings.storage.budget_gb + ' GB' : 'off');
+  } catch (e) { /* the footer already reports a dead server */ }
+}
+pollStatus();
+setInterval(pollStatus, 10000);
+
+/* ---- logs ------------------------------------------------------------------
+   The operator has a browser and a black window, and cannot be asked to open a
+   file. Whatever the system says about itself has to be readable here. */
+let logFilter = 'ALL';
+document.querySelectorAll('[data-loglevel]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('[data-loglevel]').forEach(x =>
+    x.setAttribute('aria-pressed', String(x === b)));
+  logFilter = b.dataset.loglevel;
+  pollLogs();
+});
+
+const SEVERE = { WARNING: 1, ERROR: 1, CRITICAL: 1 };
+
+async function pollLogs() {
+  const view = el('logview');
+  if (!view || !LIVE) return;
+  if (!document.getElementById('tab-logs').classList.contains('on')) return;
+  try {
+    const data = await (await fetch('/api/logs')).json();
+    const lines = (data.lines || []).filter(l => logFilter === 'ALL' || SEVERE[l.level]);
+    el('log-count').textContent = lines.length + (logFilter === 'ALL' ? ' lines' : ' of concern');
+    if (!lines.length) {
+      view.innerHTML = '<div class="logempty">Nothing logged yet.</div>';
+      return;
+    }
+    // Follow only when the operator has not scrolled away to read something.
+    const follow = el('log-follow').checked;
+    view.innerHTML = lines.map(l => {
+      const t = new Date(l.time * 1000).toTimeString().slice(0, 8);
+      return `<div class="logline ${l.level}"><span class="lt">${t}</span>` +
+             `<span class="ll">${l.level}</span><span class="lm">${escapeHtml(l.text)}</span></div>`;
+    }).join('');
+    if (follow) view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    view.innerHTML = '<div class="logempty">Cannot reach the console server.</div>';
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+pollLogs();
+setInterval(pollLogs, 3000);
 </script>
 </body>
 </html>

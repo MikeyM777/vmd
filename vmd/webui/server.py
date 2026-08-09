@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import threading
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,8 +30,58 @@ STATIC_DIR = Path(__file__).parent / "static"
 # A settings document is a few kilobytes. Anything approaching this is either a
 # mistake or an attempt to exhaust memory, and reading it in costs that memory.
 MAX_BODY_BYTES = 1_000_000
+# Enough history for an operator to see what happened while they were away, and
+# small enough that it can never be the thing that fills memory.
+LOG_LINES = 500
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8723
+
+
+class LogBuffer(logging.Handler):
+    """The last few hundred log lines, kept in memory for the Logs tab.
+
+    A file on disk would be the obvious answer, but the operator cannot open a
+    file - they have a browser and a black window. Whatever the system says
+    about itself has to be reachable from the console.
+    """
+
+    def __init__(self, capacity: int = LOG_LINES) -> None:
+        super().__init__()
+        self.records: deque[dict] = deque(maxlen=capacity)
+        self._lock_ = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            text = record.getMessage()
+            if record.exc_info:
+                text += "\n" + logging.Formatter().formatException(record.exc_info)
+        except Exception:  # noqa: BLE001 - logging must never raise into the caller
+            text = "<unformattable log record>"
+        with self._lock_:
+            self.records.append(
+                {
+                    "time": record.created,
+                    "level": record.levelname,
+                    "source": record.name,
+                    "text": text,
+                }
+            )
+
+    def snapshot(self) -> list[dict]:
+        with self._lock_:
+            return list(self.records)
+
+
+LOG_BUFFER = LogBuffer()
+
+
+def capture_logs() -> LogBuffer:
+    """Attach the buffer to the root logger. Idempotent."""
+    root = logging.getLogger()
+    if LOG_BUFFER not in root.handlers:
+        LOG_BUFFER.setLevel(logging.INFO)
+        root.addHandler(LOG_BUFFER)
+    return LOG_BUFFER
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -114,6 +166,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_status()
         elif path == "/api/streams":
             self._get_streams()
+        elif path == "/api/logs":
+            self._get_logs()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -256,6 +310,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 "streams": status.streams,
             },
         )
+
+
+    def _get_logs(self) -> None:
+        """Everything the console has said about itself, newest last."""
+        self._send_json(HTTPStatus.OK, {"lines": LOG_BUFFER.snapshot()})
 
 
 def _first_problem(exc: ValidationError) -> str:

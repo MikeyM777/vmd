@@ -144,6 +144,15 @@ def apply_plan(
             # that still occupies the budget - but it must not fail silently forever.
             logger.warning("could not delete %s: %s", segment.path, exc)
             continue
-        index.delete(segment.id)
+        try:
+            index.delete(segment.id)
+        except Exception as exc:  # noqa: BLE001 - the file is already gone
+            # The file has been unlinked; only the catalogue entry is left. If
+            # this raised, the whole plan aborted on its first entry and the
+            # same entry was retried forever - so a full disk could free exactly
+            # one file, because freeing space required writing to the database
+            # that was out of space. Skip the row and keep deleting.
+            logger.warning("deleted %s but could not remove its index row: %s", segment.path, exc)
+            continue
         removed.append(segment)
     return removed

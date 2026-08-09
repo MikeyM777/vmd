@@ -70,7 +70,11 @@ class SegmentIndex:
         )
         if commit:
             self._connection.commit()
-        if cursor.lastrowid:
+        # rowcount, not lastrowid: an INSERT OR IGNORE that ignored leaves
+        # lastrowid holding the *previous* successful insert's id, which is
+        # truthy, so the lookup below was never reached and the caller was
+        # handed a different segment's id.
+        if cursor.rowcount:
             return int(cursor.lastrowid)
         existing = self._connection.execute(
             "SELECT id FROM segments WHERE path = ?", (path,)
