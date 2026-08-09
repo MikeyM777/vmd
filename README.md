@@ -45,32 +45,41 @@ classifier, a per-machine benchmark, and a camera prober for commissioning day.
 
 ## Install
 
-Three things: Python, **uv** (which installs everything else), and **ffmpeg**
-(which does the actual recording). Nothing else.
+### Windows — double-click
 
-### Windows
+Download the project, then double-click **`install.bat`**. That is the whole
+procedure. It installs anything missing, builds the environment, and opens the
+console when it finishes:
+
+| | |
+|---|---|
+| **uv** | fetches Python itself and every Python library |
+| **ffmpeg** | records the video |
+| **go2rtc** | serves the live stream to the browser, in place of VLC |
+
+Anything already on the machine is left alone, so running it again is quick. The
+first run downloads the detector stack and takes several minutes.
+
+If it stops at step 1, Windows is missing `winget` — install *App Installer*
+from the Microsoft Store and run it again.
+
+### Windows — by hand
 
 ```powershell
-winget install --id Python.Python.3.12 -e
 winget install --id astral-sh.uv -e
 winget install --id Gyan.FFmpeg -e
-```
-
-Close and reopen the terminal so the new commands are on `PATH`, then:
-
-```powershell
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
-uv sync
+uv sync --extra detect
 ```
 
 ### macOS
 
 ```bash
-brew install uv ffmpeg
+brew install uv ffmpeg go2rtc
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
-uv sync
+uv sync --extra detect
 ```
 
 ### Linux (Debian / Ubuntu)
@@ -80,8 +89,11 @@ sudo apt update && sudo apt install -y ffmpeg git
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
-uv sync
+uv sync --extra detect
 ```
+
+go2rtc is a single binary — download the one for your platform from
+<https://github.com/AlexxIT/go2rtc/releases/latest> and drop it in `bin/`.
 
 `uv sync` creates the virtual environment and installs every Python dependency at
 the exact versions in `uv.lock`. You do not need to create a venv, activate
@@ -90,7 +102,7 @@ anything, or run `pip` — `uv run` uses the right environment automatically.
 ### Check it worked
 
 ```bash
-uv run python -c "import cv2, pydantic; print('python deps ok')"
+uv run python -c "import cv2, pydantic, ultralytics; print('python deps ok')"
 ffmpeg -version
 uv run pytest
 ```
@@ -101,10 +113,10 @@ fix that before anything else.
 ### Offline machines
 
 The console runs on a machine with no internet, so install on a connected machine
-first and carry it over. `uv sync` on the connected machine fills `.venv/`; copy
-the whole project directory, `.venv/` included, plus an `ffmpeg` binary. Match the
-operating system and CPU architecture between the two machines, or the environment
-will not run.
+first and carry it over. Run `install.bat` on the connected machine, then copy the
+whole project directory across — `.venv/` and `bin/` included — plus an `ffmpeg`
+binary. Match the operating system and CPU architecture between the two machines,
+or the environment will not run.
 
 ## Running
 
@@ -113,7 +125,8 @@ uv run pytest                    # test suite
 uv run python -m vmd.record_main # recording service
 ```
 
-The console mockup needs nothing at all — open `mockup/console.html` in a browser.
+The console mockup needs nothing at all — open `mockup/console.html` in a browser,
+or double-click `install.bat` again, which opens it at the end.
 
 Camera address, credentials and storage budget are entered by the operator; nothing
 is preset. Field of view is unknown until commissioning and is a setting, not a

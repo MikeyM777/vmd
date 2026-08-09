@@ -1,0 +1,167 @@
+# =============================================================================
+#  VMD installer. Run it by double-clicking install.bat in the project root.
+#
+#  It puts three things on the machine and then builds the environment:
+#
+#    uv      - installs Python itself and every Python library
+#    ffmpeg  - records the video
+#    go2rtc  - serves the live stream to the browser, in place of VLC
+#
+#  Python is deliberately not installed on its own: uv fetches the exact version
+#  this project needs, which avoids the usual mess of several Pythons on one
+#  machine and the Microsoft Store stub that only pretends to be one.
+#
+#  Anything already present is left alone, so running this twice is quick.
+#
+#  -NoLaunch skips opening the console at the end. It exists so the install can
+#  be tested without a browser window appearing.
+# =============================================================================
+param([switch]$NoLaunch)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$STEPS = 6
+
+function Write-Step($n, $text) { Write-Host "`n[$n/$STEPS] $text" -ForegroundColor Cyan }
+function Write-Ok($text)       { Write-Host "      $text" -ForegroundColor Green }
+function Write-Info($text)     { Write-Host "      $text" -ForegroundColor Gray }
+function Write-Bad($text)      { Write-Host "      $text" -ForegroundColor Red }
+
+function Test-Have($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+
+# A winget install writes the new folder into the stored PATH, not into this
+# already-running process. Without this the command stays "missing" until the
+# window is reopened, which is exactly the confusion this script exists to avoid.
+function Update-PathFromRegistry {
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user    = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
+}
+
+function Install-Package($id, $command, $label) {
+    if (Test-Have $command) {
+        Write-Ok "$label is already installed."
+        return $true
+    }
+    Write-Info "$label is missing. Installing it with winget - this can take a few minutes."
+    winget install --id $id --exact --silent `
+        --accept-source-agreements --accept-package-agreements | Out-Host
+    Update-PathFromRegistry
+    if (Test-Have $command) {
+        Write-Ok "$label installed."
+        return $true
+    }
+    Write-Bad "$label still is not runnable after installing it."
+    return $false
+}
+
+Write-Host ""
+Write-Host "  VMD installer" -ForegroundColor White
+Write-Host "  $root" -ForegroundColor DarkGray
+
+# --- 1. winget ---------------------------------------------------------------
+Write-Step 1 "Checking the Windows package manager"
+if (-not (Test-Have 'winget')) {
+    Write-Bad "winget is not available on this machine."
+    Write-Info "It ships with 'App Installer'. Install that from the Microsoft Store,"
+    Write-Info "reopen this installer, and it will carry on:"
+    Write-Info "  https://apps.microsoft.com/detail/9nblggh4nns1"
+    exit 1
+}
+Write-Ok "winget is available."
+
+# --- 2 and 3. the packaged dependencies --------------------------------------
+Write-Step 2 "Checking uv (brings Python and the libraries with it)"
+$haveUv = Install-Package 'astral-sh.uv' 'uv' 'uv'
+
+Write-Step 3 "Checking ffmpeg (records the video)"
+$haveFfmpeg = Install-Package 'Gyan.FFmpeg' 'ffmpeg' 'ffmpeg'
+
+if (-not $haveUv) {
+    Write-Bad "Cannot continue without uv."
+    exit 1
+}
+
+# --- 4. go2rtc ---------------------------------------------------------------
+# Not in winget, and it is a single self-contained binary, so it is fetched
+# straight from the project's own releases and kept inside bin\ rather than
+# installed system-wide. Deleting bin\ undoes it completely.
+Write-Step 4 "Checking go2rtc (serves the live stream, in place of VLC)"
+$binDir = Join-Path $root 'bin'
+$go2rtc = Join-Path $binDir 'go2rtc.exe'
+
+if (Test-Path $go2rtc) {
+    Write-Ok "go2rtc is already here: bin\go2rtc.exe"
+} else {
+    $asset = switch ($env:PROCESSOR_ARCHITECTURE) {
+        'ARM64' { 'go2rtc_win_arm64.zip' }
+        'x86'   { 'go2rtc_win32.zip' }
+        default { 'go2rtc_win64.zip' }
+    }
+    $url = "https://github.com/AlexxIT/go2rtc/releases/latest/download/$asset"
+    $zip = Join-Path $env:TEMP "vmd-$asset"
+    Write-Info "Downloading $asset"
+    try {
+        New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $binDir -Force
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        if (Test-Path $go2rtc) { Write-Ok "go2rtc installed to bin\go2rtc.exe" }
+        else { Write-Bad "The download unpacked but go2rtc.exe is not in bin\." }
+    } catch {
+        # A missing streamer does not invalidate the rest of the install, and the
+        # live view is not wired up yet anyway. Say so and carry on.
+        Write-Bad "Could not download go2rtc: $($_.Exception.Message)"
+        Write-Info "Everything else still installs. Fetch it later from:"
+        Write-Info "  https://github.com/AlexxIT/go2rtc/releases/latest"
+    }
+}
+
+# --- 5. the environment ------------------------------------------------------
+Write-Step 5 "Building the Python environment"
+Write-Info "Fetching Python and the libraries at the versions in uv.lock."
+Write-Info "This includes the detector stack, which is a large download."
+Write-Info "The first run takes several minutes; later runs are seconds."
+Push-Location $root
+try {
+    # --extra detect matters: a plain `uv sync` prunes anything not declared,
+    # which would strip the detector out of an environment that had it.
+    uv sync --extra detect | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Bad "uv sync failed. The output above says why."
+        exit 1
+    }
+
+    uv run python -c "import cv2, pydantic, ultralytics" | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Bad "The environment was built but the libraries do not import."
+        exit 1
+    }
+    Write-Ok "Environment ready."
+}
+finally { Pop-Location }
+
+# --- 6. open the console -----------------------------------------------------
+Write-Step 6 "Opening the console"
+$console = Join-Path $root 'mockup\console.html'
+
+Write-Host ""
+if (-not $haveFfmpeg) {
+    # Not fatal: everything except recording still works, and saying so plainly
+    # beats failing the whole install over a component this run may not use.
+    Write-Host "  WARNING - ffmpeg is not installed, so nothing can be recorded." -ForegroundColor Yellow
+    Write-Host "  Install it and run this again before using the system for real." -ForegroundColor Yellow
+    Write-Host ""
+}
+Write-Host "  Installed." -ForegroundColor Green
+Write-Host ""
+Write-Host "  What opens now is the console interface. The live video server is" -ForegroundColor Gray
+Write-Host "  not wired up yet, so the picture is drawn rather than streamed." -ForegroundColor Gray
+Write-Host "  Everything else - steering, layout, playback, settings - is real." -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Recording service:  uv run python -m vmd.record_main" -ForegroundColor Gray
+Write-Host "  Tests:              uv run pytest" -ForegroundColor Gray
+Write-Host "  Console again:      mockup\console.html" -ForegroundColor Gray
+
+if (-not $NoLaunch) { Start-Process $console }
+exit 0

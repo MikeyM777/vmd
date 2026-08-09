@@ -11,6 +11,13 @@ dependencies = [
     "PySide6>=6.6",
 ]
 
+# The detector stack, declared rather than hand-installed. It was previously
+# only ever installed ad-hoc, which meant any `uv sync` silently removed it and
+# broke every tool in spike/. It is an extra because it drags in torch, and the
+# recording service runs perfectly well without it.
+[project.optional-dependencies]
+detect = ["ultralytics>=8.3"]
+
 [project.scripts]
 vmd-record = "vmd.record_main:main"
 

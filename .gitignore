@@ -25,3 +25,6 @@ mockup/*.png
 recordings/
 settings.json
 smoke_record.*
+
+# Downloaded binaries (go2rtc). The installer refetches them.
+bin/
