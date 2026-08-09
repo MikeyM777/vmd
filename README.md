@@ -45,6 +45,10 @@ classifier, a per-machine benchmark, and a camera prober for commissioning day.
 
 ## Install
 
+**New to this? Read [INSTALL.md](INSTALL.md) instead** — the same thing written
+out click by click, with what every screen should say and what to do when it says
+something else.
+
 ### Windows — double-click
 
 Download the project, then double-click **`install.bat`**. That is the whole
