@@ -55,3 +55,11 @@ def test_no_simulation_controls_remain() -> None:
     html = PAGE.read_text(encoding="utf-8")
     assert "simulate movement" not in html
     assert "simulate link loss" not in html
+
+
+def test_the_alarm_is_not_raised_by_default() -> None:
+    """It was shipped shown, announcing movement on a console with no detector
+    and no picture."""
+    html = PAGE.read_text(encoding="utf-8")
+    assert 'class="stage alarm"' not in html
+    assert 'class="wall alarm"' not in html

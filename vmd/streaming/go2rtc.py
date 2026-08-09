@@ -18,12 +18,17 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
+# Its own name in the Logs tab, so the camera's answers are distinguishable from
+# ours at a glance.
+stream_logger = logging.getLogger("go2rtc")
 
 BINARY_NAMES = ("go2rtc.exe", "go2rtc")
 
@@ -53,6 +58,36 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def with_credentials(url: str, username: str, password: str) -> str:
+    """Put the camera's username and password into an RTSP URL that lacks them.
+
+    The operator types the address in one field and the credentials in another,
+    which is the sane way round - but RTSP carries them in the URL, and a camera
+    handed a bare rtsp://host/path answers "user/pass not provided" and nothing
+    plays. So they are joined here.
+
+    A URL that already carries its own credentials is left exactly as typed:
+    what the operator wrote for that specific stream wins.
+    """
+    if not username and not password:
+        return url
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("rtsp", "rtsps", "http", "https"):
+        return url  # exec: and other source kinds have no place for credentials
+    if "@" in parsed.netloc or not parsed.hostname:
+        return url
+
+    # Percent-encoded: camera passwords contain @ : / and # often enough that
+    # not encoding them produces a URL pointing at the wrong host entirely.
+    credentials = quote(username, safe="") + ":" + quote(password, safe="")
+    host = parsed.hostname
+    if ":" in host:  # IPv6
+        host = f"[{host}]"
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, f"{credentials}@{host}", parsed.path, parsed.query, parsed.fragment))
+
+
 def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
     """The go2rtc config for the streams the operator has enabled.
 
@@ -61,7 +96,11 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
     the network is not a feature here, it is a hole.
     """
     streams = {
-        stream.name: stream.url for stream in settings.camera.streams if stream.enabled and stream.url
+        stream.name: with_credentials(
+            stream.url, settings.camera.username, settings.camera.password
+        )
+        for stream in settings.camera.streams
+        if stream.enabled and stream.url
     }
     return {
         "api": {"listen": f"127.0.0.1:{api_port}"},
@@ -163,6 +202,7 @@ class Go2rtcService:
         write_config(build_config(self.settings, self.api_port, self.rtsp_port), self.config_path)
         try:
             self._process = self._spawn([str(self.binary), "-c", str(self.config_path)])
+            self._pump_output(self._process)
         except OSError:
             logger.exception("could not start go2rtc")
             self._process = None
@@ -189,6 +229,32 @@ class Go2rtcService:
                     return
         self._process = None
 
+    def _pump_output(self, process: subprocess.Popen) -> None:
+        """Forward go2rtc's own output into the console log, on a daemon thread.
+
+        A pipe nobody reads eventually fills and blocks the child, so this is not
+        optional once stdout is a pipe.
+        """
+        stream = getattr(process, "stdout", None)
+        if stream is None:
+            return
+
+        def pump() -> None:
+            try:
+                for line in stream:
+                    text = line.rstrip()
+                    if not text:
+                        continue
+                    lowered = text.lower()
+                    if "err" in lowered or "unauthorized" in lowered or "401" in lowered:
+                        stream_logger.warning("%s", text)
+                    else:
+                        stream_logger.info("%s", text)
+            except Exception:  # noqa: BLE001 - the pump must never take the console with it
+                logger.debug("go2rtc output pump stopped", exc_info=True)
+
+        threading.Thread(target=pump, name="go2rtc-log", daemon=True).start()
+
     def apply(self, settings: Settings) -> None:
         """Take new settings. go2rtc reads its config once, so changing streams
         means restarting it - which is why this is one call and not two."""
@@ -207,8 +273,14 @@ def _default_spawn(command: list[str]) -> subprocess.Popen:
         creation_flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
     return subprocess.Popen(
         command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        # Captured, not discarded. When the camera answers "401 Unauthorized" or
+        # "connection refused", this is the only place that says so - and it has
+        # to reach the operator's Logs tab, not /dev/null.
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+        bufsize=1,
         creationflags=creation_flags,
     )

@@ -386,8 +386,8 @@ dialog#updatebox h2 {
 
   <!-- ================= LIVE ================= -->
   <main class="on" id="tab-live">
-    <div class="stage alarm" id="stage">
-      <div class="wall alarm" id="wall" tabindex="0" aria-label="Camera view. Arrow keys pan and tilt.">
+    <div class="stage" id="stage">
+      <div class="wall" id="wall" tabindex="0" aria-label="Camera view. Arrow keys pan and tilt.">
         <div class="pane" id="pane-thermal">
           <video id="vid-thermal" class="live" muted autoplay playsinline></video>
           <div class="nosignal" id="ns-thermal"><b>NO SIGNAL</b><span>waiting</span></div>
@@ -402,9 +402,11 @@ dialog#updatebox h2 {
         </div>
       </div>
 
+      <!-- Hidden until something raises it. Nothing does yet: there is no
+           detector. It is not shown, not pre-filled, and not acknowledgeable. -->
       <div class="alarmstrip">
-        <span class="what">MOVEMENT — THERMAL</span>
-        <span class="when" id="alarm-age">21:14:07 · 3 s ago</span>
+        <span class="what" id="alarm-what">MOVEMENT</span>
+        <span class="when" id="alarm-age"></span>
         <button onclick="ack()">Acknowledge</button>
       </div>
 

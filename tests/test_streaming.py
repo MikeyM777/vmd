@@ -276,3 +276,40 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def test_camera_credentials_are_put_into_the_stream_url() -> None:
+    """The operator types the password in its own field; RTSP carries it in the
+    URL. Without this the camera answers "user/pass not provided"."""
+    settings = Settings(
+        camera=CameraSettings(
+            host="192.168.1.64",
+            username="admin",
+            password="p@ss:w/rd",
+            streams=[StreamSettings(name="visible", url="rtsp://192.168.1.64:554/live", enabled=True)],
+        )
+    )
+    url = build_config(settings, 1984, 8554)["streams"]["visible"]
+    assert url == "rtsp://admin:p%40ss%3Aw%2Frd@192.168.1.64:554/live"
+
+
+def test_a_url_with_its_own_credentials_is_left_alone() -> None:
+    settings = Settings(
+        camera=CameraSettings(
+            username="admin",
+            password="fromform",
+            streams=[StreamSettings(name="t", url="rtsp://own:creds@10.0.0.2/s", enabled=True)],
+        )
+    )
+    assert build_config(settings, 1984, 8554)["streams"]["t"] == "rtsp://own:creds@10.0.0.2/s"
+
+
+def test_non_rtsp_sources_are_untouched() -> None:
+    settings = Settings(
+        camera=CameraSettings(
+            username="admin",
+            password="x",
+            streams=[StreamSettings(name="t", url="exec:ffmpeg -i thing {output}", enabled=True)],
+        )
+    )
+    assert build_config(settings, 1984, 8554)["streams"]["t"] == "exec:ffmpeg -i thing {output}"
