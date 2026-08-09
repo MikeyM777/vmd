@@ -23,9 +23,10 @@ Working:
   budget- and age-based retention, stall detection and restart, and a supervisor
   that keeps the whole thing alive across link drops, clock steps and full disks.
   Retention deletes the oldest footage rather than ever stopping the recorder.
-- **Console mockup** (`mockup/console.html`) — the full interface in the chosen
-  visual system: live, playback and settings, edge-of-frame and keyboard steering.
-  Open it directly in a browser; it is self-contained and needs no server.
+- **The console** — a local web server on `127.0.0.1` serving the interface:
+  live, playback and settings, with edge-of-frame and keyboard steering. Camera
+  address, credentials, stream addresses and storage budget are typed into the
+  Settings tab and saved from there. Start it by double-clicking `VMD.exe`.
 
 Not built yet: the live streaming layer, and the detection service itself. The
 `spike/` directory holds the throwaway tools that established how detection should
@@ -38,7 +39,8 @@ classifier, a per-machine benchmark, and a camera prober for commissioning day.
 |---|---|
 | `vmd/` | The application: settings, recording, storage, supervisor |
 | `tests/` | Test suite (`uv run pytest`) |
-| `mockup/` | Interface mockups, self-contained HTML |
+| `vmd/webui/` | The console: local web server and the page it serves |
+| `mockup/` | Early visual explorations, kept for reference |
 | `spike/` | Experiments and field tools. Throwaway by intent, kept for their findings |
 | `docs/superpowers/` | Design specs and implementation plans |
 | `PRODUCT.md`, `DESIGN.md` | Who this is for, and the visual system it is built in |
@@ -60,6 +62,7 @@ console when it finishes:
 | **uv** | fetches Python itself and every Python library |
 | **ffmpeg** | records the video |
 | **go2rtc** | serves the live stream to the browser, in place of VLC |
+| **VMD.exe** | built at the end — one file you double-click to start the console |
 
 Anything already on the machine is left alone, so running it again is quick. The
 first run downloads the detector stack and takes several minutes.
@@ -124,14 +127,20 @@ or the environment will not run.
 
 ## Running
 
+**Double-click `VMD.exe`.** It starts the console and opens it in your browser.
+`VMD.bat` does the same thing without the executable.
+
 ```bash
-uv run pytest                    # test suite
+uv run python -m vmd.webui       # the console, same as VMD.exe
 uv run python -m vmd.record_main # recording service
+uv run pytest                    # test suite
 ```
 
-The console mockup needs nothing at all — open `mockup/console.html` in a browser,
-or double-click `install.bat` again, which opens it at the end.
+Everything the operator configures is in the console's **Settings** tab: camera
+address, username, password, the RTSP stream addresses, the radio, and the storage
+budget. Press **Save**. The console keeps them in `settings.json` beside the
+program so they survive a restart — you never open that file yourself, and the
+recording service reads the same one.
 
-Camera address, credentials and storage budget are entered by the operator; nothing
-is preset. Field of view is unknown until commissioning and is a setting, not a
+Nothing is preset. Field of view is unknown until commissioning and is a setting, not a
 guess.

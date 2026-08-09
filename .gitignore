@@ -28,3 +28,8 @@ smoke_record.*
 
 # Downloaded binaries (go2rtc). The installer refetches them.
 bin/
+
+# Built artefacts (VMD.exe and PyInstaller scratch). The installer rebuilds them.
+dist/
+build/
+/VMD.exe

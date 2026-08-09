@@ -20,7 +20,7 @@ param([switch]$NoLaunch)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$STEPS = 6
+$STEPS = 7
 
 function Write-Step($n, $text) { Write-Host "`n[$n/$STEPS] $text" -ForegroundColor Cyan }
 function Write-Ok($text)       { Write-Host "      $text" -ForegroundColor Green }
@@ -141,9 +141,20 @@ try {
 }
 finally { Pop-Location }
 
-# --- 6. open the console -----------------------------------------------------
-Write-Step 6 "Opening the console"
-$console = Join-Path $root 'mockup\console.html'
+# --- 6. the single-file launcher ---------------------------------------------
+Write-Step 6 "Building VMD.exe (the thing you double-click from now on)"
+try {
+    & (Join-Path $PSScriptRoot 'build_exe.ps1') | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "build failed" }
+}
+catch {
+    # The exe is convenience, not function: VMD.bat starts the same console.
+    Write-Bad "Could not build VMD.exe: $($_.Exception.Message)"
+    Write-Info "Not a problem - double-click VMD.bat instead. It does the same thing."
+}
+
+# --- 7. start the console ----------------------------------------------------
+Write-Step 7 "Starting the console"
 
 Write-Host ""
 if (-not $haveFfmpeg) {
@@ -155,13 +166,27 @@ if (-not $haveFfmpeg) {
 }
 Write-Host "  Installed." -ForegroundColor Green
 Write-Host ""
-Write-Host "  What opens now is the console interface. The live video server is" -ForegroundColor Gray
-Write-Host "  not wired up yet, so the picture is drawn rather than streamed." -ForegroundColor Gray
-Write-Host "  Everything else - steering, layout, playback, settings - is real." -ForegroundColor Gray
+Write-Host "  From now on, to start the console:  double-click VMD.exe" -ForegroundColor White
+Write-Host "  (or VMD.bat - same thing)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Enter the camera address, username, password and stream addresses" -ForegroundColor Gray
+Write-Host "  in the Settings tab and press Save. There is no file to edit." -ForegroundColor Gray
+Write-Host ""
+Write-Host "  The live video layer is not built yet, so the picture in the console" -ForegroundColor Gray
+Write-Host "  is drawn rather than streamed. Everything else is real." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Recording service:  uv run python -m vmd.record_main" -ForegroundColor Gray
 Write-Host "  Tests:              uv run pytest" -ForegroundColor Gray
-Write-Host "  Console again:      mockup\console.html" -ForegroundColor Gray
 
-if (-not $NoLaunch) { Start-Process $console }
+if ($NoLaunch) { exit 0 }
+
+# Hand over to the console itself. It prints its own address and stays running,
+# so this window becomes the console's window rather than a second one.
+$exe = Join-Path $root 'VMD.exe'
+if (Test-Path $exe) { & $exe }
+else {
+    Push-Location $root
+    try { uv run python -m vmd.webui }
+    finally { Pop-Location }
+}
 exit 0

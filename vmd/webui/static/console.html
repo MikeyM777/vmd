@@ -277,7 +277,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 .toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; color: var(--muted); }
 .toggle input { accent-color: var(--accent); width: 14px; height: 14px; }
 
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.savemsg { font-size: 12px; color: var(--muted); }
+.savemsg.ok { color: var(--ok); }
+.savemsg.bad { color: var(--alarm); }
 .btn {
   padding: 7px 15px; cursor: pointer; background: var(--raised);
   border: 1px solid var(--line); transition: border-color var(--tap);
@@ -495,23 +498,32 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
         <section class="block">
           <h2>Camera</h2>
           <div class="fields">
-            <div class="field"><label>Address</label><input value="192.168.1.64"></div>
-            <div class="field"><label>Username</label><input value="admin"></div>
-            <div class="field"><label>Password</label><input value="camera-password-here"></div>
-            <div class="field"><label>Target distance (m)</label><input value="700"></div>
-            <div class="field"><label>Thermal field of view</label><input value="unknown — set at commissioning" style="color:var(--warn)"></div>
-            <div class="field"><label>Model</label><input value="Elara DX — variant unknown" style="color:var(--warn)"></div>
+            <div class="field"><label>Address</label><input id="s-cam-host" placeholder="192.168.1.64"></div>
+            <div class="field"><label>Username</label><input id="s-cam-user" placeholder="admin"></div>
+            <div class="field"><label>Password</label><input id="s-cam-pass" placeholder="the camera's password"></div>
+            <div class="field"><label>Target distance (m)</label><input id="s-distance" placeholder="700"></div>
           </div>
           <p class="hint">Field of view is measured on site rather than assumed: point the thermal camera at an object of known size and distance, and the software derives the lens angle.</p>
+        </section>
+
+        <section class="block">
+          <h2>Streams</h2>
+          <p class="hint">The RTSP addresses the camera serves. Nothing is recorded until at least one is filled in and ticked.</p>
+          <div class="fields">
+            <div class="field"><label>Thermal <input type="checkbox" id="s-thermal-on"> record</label><input id="s-thermal-url" placeholder="rtsp://192.168.1.64:554/thermal"></div>
+            <div class="field"><label>Visible <input type="checkbox" id="s-visible-on"> record</label><input id="s-visible-url" placeholder="rtsp://192.168.1.64:554/visible"></div>
+          </div>
+          <p class="hint">If you do not know the paths, run <code>uv run python spike/probe_camera.py &lt;address&gt;</code> — it asks the camera and prints the ones that answer.</p>
         </section>
 
         <section class="block">
           <h2>Radio</h2>
           <p class="hint">Optional. Reading the Ubiquiti link lets the bitrate drop before the picture breaks rather than after.</p>
           <div class="fields">
-            <div class="field"><label>Address</label><input value="192.168.1.20"></div>
-            <div class="field"><label>Username</label><input value="ubnt"></div>
-            <div class="field"><label>Password</label><input value="radio-password-here"></div>
+            <div class="field"><label>Address</label><input id="s-radio-host" placeholder="192.168.1.20"></div>
+            <div class="field"><label>Username</label><input id="s-radio-user" placeholder="ubnt"></div>
+            <div class="field"><label>Password</label><input id="s-radio-pass" placeholder="the radio's password"></div>
+            <div class="field"><label>Use it</label><select id="s-radio-on"><option value="false">No</option><option value="true">Yes</option></select></div>
           </div>
           <p class="hint">Passwords are shown, not masked — see Settings note in DESIGN.md.</p>
         </section>
@@ -519,17 +531,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
         <section class="block">
           <h2>Storage</h2>
           <div class="fields">
-            <div class="field"><label>Folder</label><input value="D:\vmd\recordings"></div>
-            <div class="field"><label>Budget (GB)</label><input value="600"></div>
-            <div class="field"><label>Also delete older than</label><input value="13 days"></div>
-            <div class="field"><label>Age rule</label><select><option selected>On</option><option>Off — keep as much as fits</option></select></div>
+            <div class="field"><label>Folder</label><input id="s-root" placeholder="D:\vmd\recordings"></div>
+            <div class="field"><label>Budget (GB)</label><input id="s-budget" placeholder="600"></div>
+            <div class="field"><label>Also delete older than (days)</label><input id="s-days" placeholder="leave empty for no age rule"></div>
+            <div class="field"><label>Segment length (s)</label><input id="s-seg" placeholder="300"></div>
           </div>
           <p class="hint">The budget rule always applies: when it is reached the oldest footage goes, so recording never stops.</p>
         </section>
 
         <div class="actions">
-          <button class="btn primary">Save</button>
-          <button class="btn">Revert</button>
+          <button class="btn primary" onclick="saveSettings()">Save</button>
+          <button class="btn" onclick="loadSettings()">Revert</button>
+          <span class="savemsg" id="savemsg"></span>
         </div>
       </div>
     </div>
@@ -826,6 +839,114 @@ function scene(canvas, opts) {
 scene(document.getElementById('cv-t'), { thermal: true });
 scene(document.getElementById('cv-v'), {});
 scene(document.getElementById('cv-p'), {});
+
+/* ---- settings ---------------------------------------------------------------
+   The form is the only place settings are entered. It reads and writes through
+   the server, which keeps them in a file so they survive a restart — the
+   operator never opens that file and never needs to know its format.
+
+   When the page is opened straight from disk there is no server to talk to. It
+   still runs; the settings tab just says so rather than failing silently. */
+const el = id => document.getElementById(id);
+const LIVE = location.protocol.startsWith('http');
+
+function say(text, bad) {
+  const m = el('savemsg');
+  if (!m) return;
+  m.textContent = text;
+  m.className = 'savemsg' + (bad ? ' bad' : text ? ' ok' : '');
+}
+
+function streamOf(s, name) {
+  return (s.camera.streams || []).find(x => x.name === name) || { name, url: '', enabled: false };
+}
+
+function fill(s) {
+  el('s-cam-host').value = s.camera.host || '';
+  el('s-cam-user').value = s.camera.username || '';
+  el('s-cam-pass').value = s.camera.password || '';
+  el('s-distance').value = s.target_distance_m ?? '';
+  const th = streamOf(s, 'thermal'), vi = streamOf(s, 'visible');
+  el('s-thermal-url').value = th.url; el('s-thermal-on').checked = !!th.enabled;
+  el('s-visible-url').value = vi.url; el('s-visible-on').checked = !!vi.enabled;
+  el('s-radio-host').value = s.radio.host || '';
+  el('s-radio-user').value = s.radio.username || '';
+  el('s-radio-pass').value = s.radio.password || '';
+  el('s-radio-on').value = String(!!s.radio.enabled);
+  el('s-root').value = s.storage.root || '';
+  el('s-budget').value = s.storage.budget_gb ?? '';
+  el('s-days').value = s.storage.retention_days ?? '';
+  el('s-seg').value = s.storage.segment_seconds ?? '';
+}
+
+function collect() {
+  const num = (id, fallback) => {
+    const v = el(id).value.trim();
+    return v === '' ? fallback : Number(v);
+  };
+  // A stream with no address is left out entirely rather than saved as an empty
+  // one: an enabled stream pointing nowhere is how a recorder ends up retrying
+  // a blank URL forever.
+  const streams = [];
+  for (const [name, urlId, onId] of [
+    ['thermal', 's-thermal-url', 's-thermal-on'],
+    ['visible', 's-visible-url', 's-visible-on'],
+  ]) {
+    const url = el(urlId).value.trim();
+    if (url) streams.push({ name, url, enabled: el(onId).checked });
+  }
+  return {
+    camera: {
+      host: el('s-cam-host').value.trim(),
+      username: el('s-cam-user').value.trim(),
+      password: el('s-cam-pass').value,
+      streams,
+    },
+    radio: {
+      host: el('s-radio-host').value.trim(),
+      username: el('s-radio-user').value.trim(),
+      password: el('s-radio-pass').value,
+      enabled: el('s-radio-on').value === 'true',
+    },
+    storage: {
+      root: el('s-root').value.trim() || 'recordings',
+      budget_gb: num('s-budget', 100),
+      budget_enabled: true,
+      retention_days: el('s-days').value.trim() === '' ? null : num('s-days', null),
+      segment_seconds: num('s-seg', 300),
+    },
+    target_distance_m: num('s-distance', 700),
+  };
+}
+
+async function loadSettings() {
+  if (!LIVE) { say('Opened from a file — settings cannot be saved. Start the console instead.', true); return; }
+  try {
+    const r = await fetch('/api/settings');
+    const s = await r.json();
+    if (!r.ok) { say(s.error || 'Could not read settings.', true); return; }
+    fill(s);
+    say('');
+  } catch (e) { say('No server: ' + e.message, true); }
+}
+
+async function saveSettings() {
+  if (!LIVE) { say('Opened from a file — settings cannot be saved. Start the console instead.', true); return; }
+  say('Saving…');
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collect()),
+    });
+    const s = await r.json();
+    if (!r.ok) { say(s.error || 'Rejected.', true); return; }
+    fill(s);
+    say('Saved.');
+  } catch (e) { say('Could not save: ' + e.message, true); }
+}
+
+loadSettings();
 </script>
 </body>
 </html>

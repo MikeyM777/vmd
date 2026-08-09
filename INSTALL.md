@@ -128,17 +128,18 @@ block the file. Close the window and continue.
    device?"** — click **Yes**. This is Windows installing the components, and it
    can appear more than once.
 
-5. **Now wait and watch.** The window prints six steps. Here is what each one is
+5. **Now wait and watch.** The window prints seven steps. Here is what each one is
    doing and what "good" looks like:
 
    | Step | What it is doing | You should see |
    |---|---|---|
-   | `[1/6]` | Checking that Windows can install software | `winget is available.` |
-   | `[2/6]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
-   | `[3/6]` | Installing **ffmpeg** — the thing that records video | `ffmpeg is already installed.` or `ffmpeg installed.` |
-   | `[4/6]` | Downloading **go2rtc** — the thing that shows live video, instead of VLC | `go2rtc installed to bin\go2rtc.exe` |
-   | `[5/6]` | Downloading Python and all the libraries | A long list of lines starting with `+`, then `Environment ready.` |
-   | `[6/6]` | Opening the console | `Installed.` and your browser opens |
+   | `[1/7]` | Checking that Windows can install software | `winget is available.` |
+   | `[2/7]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
+   | `[3/7]` | Installing **ffmpeg** — the thing that records video | `ffmpeg is already installed.` or `ffmpeg installed.` |
+   | `[4/7]` | Downloading **go2rtc** — the thing that shows live video, instead of VLC | `go2rtc installed to bin\go2rtc.exe` |
+   | `[5/7]` | Downloading Python and all the libraries | A long list of lines starting with `+`, then `Environment ready.` |
+   | `[6/7]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (12 MB)` |
+   | `[7/7]` | Starting the console | `Installed.` and your browser opens |
 
    **Step 5 is the long one.** It downloads roughly 3 GB. The screen may look
    frozen for minutes at a time. It is not frozen. Leave it alone.
@@ -147,8 +148,18 @@ block the file. Close the window and continue.
    web browser will open showing the console — a dark screen with two video
    panels and a column of readings on the right.
 
-7. The black window says **`Press any key to close this window.`** Press any key.
-   You are finished.
+7. **Leave the black window open while you use the console.** It is the console.
+   Closing it stops the server and the page goes dead. To stop it, press
+   `Ctrl` + `C` in that window, or just close it.
+
+---
+
+## Starting it again, any time after that
+
+**Double-click `VMD.exe`** in the `C:\VMD` folder. That is all. A window opens
+saying `http://127.0.0.1:8723/`, and your browser opens at the console.
+
+You do not run `install.bat` again unless something is broken.
 
 ---
 
@@ -170,7 +181,7 @@ Optional, but it takes thirty seconds and tells you for certain.
    uv run pytest
    ```
 
-   After a moment you should see a row of dots and `111 passed`. Dots are good.
+   After a moment you should see a row of dots and `119 passed`. Dots are good.
    Letters like `F` or `E` mean something is wrong — see the table below.
 
 5. Type this and press **Enter**:
@@ -195,7 +206,9 @@ Optional, but it takes thirty seconds and tells you for certain.
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
 | Antivirus blocks or deletes something | Some antivirus tools dislike newly downloaded `.exe` files | Allow the `C:\VMD` folder in your antivirus, then run `install.bat` again |
 | `Access is denied` | The folder is protected | Move the whole `VMD` folder to `C:\VMD` and try again. Avoid `C:\Program Files` |
-| The browser does not open at the end | Only the last step failed; everything is installed | Open `C:\VMD\mockup\console.html` by double-clicking it |
+| The browser does not open at the end | Only the last step failed; everything is installed | Open http://127.0.0.1:8723/ in your browser yourself |
+| `Cannot start on 127.0.0.1:8723` | The console is already running | Look for a black window already open, or a browser tab at that address. Otherwise close the window and double-click `VMD.exe` again |
+| `Could not build VMD.exe` | Only the convenience launcher failed | Everything works — double-click `VMD.bat` instead |
 | It asks about Python or opens the Microsoft Store | Windows is offering its own Python | Close that window. You do not need it. `uv` installs the Python this project uses |
 
 **Running `install.bat` again is always safe.** It skips whatever is already
@@ -231,13 +244,31 @@ Open PowerShell in `C:\VMD` (Part 4, steps 1–3), then:
 
 | To do this | Type this |
 |---|---|
-| Open the console again | `start mockup\console.html` |
+| Open the console | `.\VMD.exe` — or just double-click it |
 | Start recording | `uv run python -m vmd.record_main` |
 | Run the tests | `uv run pytest` |
 | Find out what camera is on the network | `uv run python spike\probe_camera.py 192.168.1.64 --user admin --password YOURPASSWORD` |
 
-You can also just double-click `install.bat` again — it finishes in seconds and
-opens the console for you.
+## Entering the camera details
+
+There is **no file to edit**. Everything goes in the console:
+
+1. Start the console (double-click `VMD.exe`).
+2. Click the **Settings** tab at the top.
+3. Fill in the camera **Address**, **Username** and **Password**.
+4. Under **Streams**, put in the RTSP address of each camera stream and tick
+   **record** next to the ones you want recorded. If you do not know the
+   addresses, the camera prober in the table above finds them for you.
+5. Under **Storage**, set the folder and how many GB the recordings may use.
+6. Press **Save**. It says `Saved.` in green.
+
+The console writes these into a file called `settings.json` next to the program,
+so they are still there next time. **You never open that file.** It exists so the
+settings survive a restart, and so the recording service — which is a separate
+program — reads exactly what you typed.
+
+If you type something impossible, Save refuses and says why, in words, next to
+the button. Nothing is written until it is valid.
 
 **One honest note about what you are looking at.** The console shows the real
 interface, but the live video layer is not built yet, so the picture in it is
