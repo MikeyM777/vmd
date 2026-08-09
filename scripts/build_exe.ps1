@@ -15,7 +15,13 @@ try {
 
     # A running console holds its own exe open, and Windows refuses to overwrite
     # it. Closing it first turns an obscure "Access is denied" into nothing at all.
-    $running = Get-Process VMD -ErrorAction SilentlyContinue
+    #
+    # Matched by full path, not by name. "VMD" is also the process name of
+    # Visual Molecular Dynamics and of anything else a user happens to have
+    # called VMD.exe; killing those by name would be someone else's bad day.
+    $target = Join-Path $root 'VMD.exe'
+    $running = Get-Process VMD -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $target }
     if ($running) {
         Write-Host "Closing the console that is already running." -ForegroundColor Gray
         $running | Stop-Process -Force

@@ -96,7 +96,33 @@ main.on { display: grid; grid-template-columns: 1fr 292px; }
 }
 .pane { position: relative; flex: 1 1 50%; min-width: 0; background: var(--well); }
 .pane + .pane { border-left: 1px solid var(--line-strong); }
-.pane canvas { display: block; width: 100%; height: 100%; }
+.pane canvas, .pane video { display: block; width: 100%; height: 100%; }
+/* object-fit: contain, never cover. Cropping a surveillance picture to fill a
+   panel hides the edges of the very frame the operator is searching. */
+.pane video { object-fit: contain; background: var(--well); }
+
+/* Live video and the drawn stand-in are stacked; exactly one is shown. The
+   stand-in exists so the console is never an empty black rectangle. */
+.pane video.live, .pane canvas.demo { position: absolute; inset: 0; }
+.pane video.live { display: none; }
+.pane.playing video.live { display: block; }
+.pane.playing canvas.demo { display: none; }
+
+.nosignal {
+  position: absolute; inset: 0; z-index: var(--z-overlay);
+  display: none; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; pointer-events: none; text-align: center; padding: 0 18px;
+}
+.pane.nostream .nosignal, .pane.reconnecting .nosignal { display: flex; }
+.nosignal b {
+  font-size: 12px; font-weight: 650; letter-spacing: 0.09em;
+  color: oklch(0.99 0 0); background: oklch(0.08 0 0 / 0.8); padding: 4px 11px;
+}
+.pane.reconnecting .nosignal b { background: color-mix(in oklch, var(--warn) 80%, black); }
+.nosignal span {
+  font-family: var(--mono); font-size: 11px; color: oklch(0.9 0 0);
+  background: oklch(0.08 0 0 / 0.72); padding: 3px 9px; max-width: 100%;
+}
 .pane.hidden { display: none; }
 .wall.solo .pane { flex: 1 1 100%; }
 
@@ -249,6 +275,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 .block > p.hint { margin: 0 0 12px; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .field label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.field input[type=checkbox] { width: auto; }
 .field input, .field select {
   width: 100%; padding: 6px 9px; background: var(--well);
   border: 1px solid var(--line); font-family: var(--mono); font-size: 12px;
@@ -279,6 +306,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 
 .actions { display: flex; gap: 8px; align-items: center; }
 .savemsg { font-size: 12px; color: var(--muted); }
+.notyet {
+  font-size: 10.5px; font-weight: 400; letter-spacing: 0; text-transform: none;
+  color: var(--warn); margin-left: 8px;
+}
 .savemsg.ok { color: var(--ok); }
 .savemsg.bad { color: var(--alarm); }
 .btn {
@@ -291,6 +322,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 /* Lives inside the footer rather than floating: a fixed badge covered the storage
    panel, which is exactly the kind of thing this design is supposed to avoid. */
 .mock { color: var(--warn); }
+.mock.live { color: var(--ok); }
 
 @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; } }
 </style>
@@ -306,7 +338,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
       <button aria-selected="false" data-tab="settings">Settings</button>
     </nav>
     <div class="right">
-      <span class="chip ok"><span class="g">●</span>Link <span class="v">68%</span></span>
+      <span class="chip ok" id="chip-link"><span class="g">●</span>Link <span class="v">68%</span></span>
       <span class="chip ok"><span class="g">●</span>Rec <span class="v">2</span></span>
       <span class="chip warn"><span class="g">▲</span>Disk <span class="v">11 d</span></span>
     </div>
@@ -317,13 +349,17 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
     <div class="stage alarm" id="stage">
       <div class="wall alarm" id="wall" tabindex="0" aria-label="Camera view. Arrow keys pan and tilt.">
         <div class="pane" id="pane-thermal">
-          <canvas id="cv-t"></canvas>
-          <div class="tag"><em>THERMAL</em> 640×512 · 8°</div>
+          <video id="vid-thermal" class="live" muted autoplay playsinline></video>
+          <canvas id="cv-t" class="demo"></canvas>
+          <div class="nosignal" id="ns-thermal"><b>NO SIGNAL</b><span>waiting</span></div>
+          <div class="tag"><em>THERMAL</em> <span id="tag-thermal">no stream</span></div>
           <div class="readout"><span><span class="k">person@700m</span> 13 px</span></div>
         </div>
         <div class="pane" id="pane-visible">
-          <canvas id="cv-v"></canvas>
-          <div class="tag"><em>VISIBLE</em> 1080p · zoom 31×</div>
+          <video id="vid-visible" class="live" muted autoplay playsinline></video>
+          <canvas id="cv-v" class="demo"></canvas>
+          <div class="nosignal" id="ns-visible"><b>NO SIGNAL</b><span>waiting</span></div>
+          <div class="tag"><em>VISIBLE</em> <span id="tag-visible">no stream</span></div>
           <div class="readout">
             <span><span class="k">fov</span> 2.15°</span>
             <span><span class="k">person@700m</span> 132 px</span>
@@ -459,7 +495,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
       <div class="form">
 
         <section class="block wide">
-          <h2>Alarm source</h2>
+          <h2>Alarm source <span class="notyet">not saved yet</span></h2>
           <p class="hint">Which system decides that something moved. Only one is active at a time; both write to the same event log, so playback and history look identical either way.</p>
           <div class="sourcepick">
             <div class="source" aria-pressed="true" onclick="pickSource(this)">
@@ -473,8 +509,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
           </div>
         </section>
 
-        <section class="block wide">
-          <h2>Detection</h2>
+        <section class="block wide" id="block-detection">
+          <h2>Detection <span class="notyet">not saved yet — the detector is not built</span></h2>
           <p class="hint">Alarm on anything that moves. Wind, rain, foliage and birds are suppressed by track filters, not by the AI — the AI only labels what it can, and never blocks an alarm it cannot explain.</p>
           <div class="streamrow">
             <span class="nm">thermal</span>
@@ -553,7 +589,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
     <span>oldest <b>27 Jul 04:10</b></span><span class="sep">│</span>
     <span>512 / 600 GB</span><span class="sep">│</span>
     <span>11 days</span>
-    <span class="sep">│</span><span class="mock">MOCKUP — nothing connected</span>
+    <span class="sep">│</span><span class="mock" id="feedstate">connecting</span>
     <span class="right">latency <b>0.4 s</b> · dropped <b>0</b> · <span id="clock">--:--:--</span></span>
   </footer>
 </div>
@@ -679,6 +715,10 @@ window.addEventListener('keydown', e => {
   // calling it unguarded threw and killed the whole handler.
   const t = e.target;
   if (t instanceof Element && t.matches('input, select, textarea')) return;
+  // Steering is a Live-tab control. Firing it from Settings moved the camera
+  // with the readout hidden on another tab, and swallowed the arrow keys that
+  // scroll the form.
+  if (!document.getElementById('tab-live').classList.contains('on')) return;
   if (KEYS.includes(e.key)) {
     e.preventDefault();
     held.add(e.key);
@@ -700,7 +740,7 @@ window.addEventListener('keyup', e => {
 });
 // Alt-Tab away mid-slew and the keyup never arrives, leaving the head "moving"
 // forever. Releasing everything on blur is the only correct answer.
-window.addEventListener('blur', () => { held.clear(); showKeySteer(false); });
+window.addEventListener('blur', () => { held.clear(); holding = false; clearEdge(); showKeySteer(false); });
 
 /* ---- alarm ---- */
 let alarmAt = Date.now() - 3000;
@@ -715,7 +755,7 @@ function ack() {
   document.getElementById('wall').classList.remove('alarm');
 }
 function dropLink() {
-  const chip = document.querySelector('.chip.ok');
+  const chip = document.getElementById('chip-link');
   const bad = chip.classList.toggle('bad'); chip.classList.toggle('ok', !bad);
   chip.querySelector('.v').textContent = bad ? 'down' : '68%';
   document.getElementById('l-sig').textContent = bad ? '— dBm' : '−63 dBm';
@@ -780,7 +820,7 @@ MARKS.forEach(([m, kind]) => {
 });
 const head = document.createElement('div'); head.className = 'play'; head.style.left = pct(1274);
 track.appendChild(head);
-track.onclick = e => { head.style.left = (e.offsetX / track.clientWidth * 100) + '%'; };
+track.onclick = e => { head.style.left = ((e.clientX - track.getBoundingClientRect().left) / track.clientWidth * 100) + '%'; };
 
 const ticks = document.getElementById('ticks');
 for (let h = 0; h <= 24; h += 3) {
@@ -930,8 +970,29 @@ async function loadSettings() {
   } catch (e) { say('No server: ' + e.message, true); }
 }
 
+function formProblem() {
+  const numeric = [
+    ['s-budget', 'Budget (GB)'], ['s-days', 'Also delete older than (days)'],
+    ['s-seg', 'Segment length (s)'], ['s-distance', 'Target distance (m)'],
+  ];
+  for (const [id, label] of numeric) {
+    const raw = el(id).value.trim();
+    if (raw !== '' && !Number.isFinite(Number(raw))) return `${label}: "${raw}" is not a number.`;
+  }
+  for (const [urlId, onId, label] of [
+    ['s-thermal-url', 's-thermal-on', 'Thermal'], ['s-visible-url', 's-visible-on', 'Visible'],
+  ]) {
+    if (el(onId).checked && !el(urlId).value.trim()) {
+      return `${label} is ticked to record but has no address.`;
+    }
+  }
+  return null;
+}
+
 async function saveSettings() {
   if (!LIVE) { say('Opened from a file — settings cannot be saved. Start the console instead.', true); return; }
+  const problem = formProblem();
+  if (problem) { say(problem, true); return; }
   say('Saving…');
   try {
     const r = await fetch('/api/settings', {
@@ -947,6 +1008,144 @@ async function saveSettings() {
 }
 
 loadSettings();
+
+/* ---- live video -------------------------------------------------------------
+   The camera speaks RTSP; go2rtc re-serves it as fragmented MP4 that a plain
+   <video> element plays. One connection to the camera feeds every panel, which
+   matters on a 5 Mb/s link that is also carrying the recording.
+
+   The rule that shapes all of this: the console never breaks. A stream that
+   dies is a labelled state on screen and a retry in the background, never a
+   blank panel, never an error dialog, and never a stopped page. */
+const LIVE_POLL_MS = 5000;      // how often we ask the server what exists
+const RETRY_MS = 3000;          // how soon a dead stream is tried again
+const STALL_MS = 6000;          // no new frame for this long counts as dead
+
+const panes = {
+  thermal: { pane: 'pane-thermal', video: 'vid-thermal', tag: 'tag-thermal', note: 'ns-thermal' },
+  visible: { pane: 'pane-visible', video: 'vid-visible', tag: 'tag-visible', note: 'ns-visible' },
+};
+const players = {};
+
+function noteOf(name, headline, detail) {
+  const note = el(panes[name].note);
+  if (!note) return;
+  note.querySelector('b').textContent = headline;
+  note.querySelector('span').textContent = detail;
+}
+
+function setPaneState(name, state, headline, detail) {
+  const pane = el(panes[name].pane);
+  if (!pane) return;
+  pane.classList.toggle('playing', state === 'playing');
+  pane.classList.toggle('reconnecting', state === 'reconnecting');
+  pane.classList.toggle('nostream', state === 'nostream');
+  if (state !== 'playing') noteOf(name, headline, detail);
+}
+
+function attach(name, base) {
+  const spec = panes[name];
+  const video = el(spec.video);
+  if (!video) return;
+
+  const player = players[name] || (players[name] = { lastTime: -1, lastMoved: 0, timer: null });
+  player.base = base;
+  if (player.timer) clearTimeout(player.timer);
+
+  const url = `${base}/api/stream.mp4?src=${encodeURIComponent(name)}`;
+  // A cache-buster on reconnect: without it a retry can be handed the dead
+  // response the browser already has, and the panel stays black forever.
+  video.src = url + '&t=' + performance.now().toFixed(0);
+  el(spec.tag).textContent = 'connecting';
+  setPaneState(name, 'reconnecting', 'CONNECTING', name);
+  player.lastTime = -1;
+  player.lastMoved = performance.now();
+  video.play().catch(() => { /* autoplay policy; the watchdog retries */ });
+}
+
+function retry(name) {
+  const player = players[name];
+  if (!player || !player.base) return;
+  if (player.timer) clearTimeout(player.timer);
+  player.timer = setTimeout(() => attach(name, player.base), RETRY_MS);
+}
+
+/* One watchdog for every panel. currentTime is the only honest signal here: a
+   <video> whose source has quietly stopped keeps readyState and fires no event,
+   and looks identical to a paused picture. If the clock is not moving, the
+   picture is not live, whatever the element claims. */
+setInterval(() => {
+  const now = performance.now();
+  for (const name of Object.keys(panes)) {
+    const player = players[name];
+    const video = el(panes[name].video);
+    if (!player || !player.base || !video) continue;
+
+    if (video.currentTime !== player.lastTime) {
+      player.lastTime = video.currentTime;
+      player.lastMoved = now;
+      if (video.videoWidth) {
+        setPaneState(name, 'playing');
+        el(panes[name].tag).textContent = `${video.videoWidth}×${video.videoHeight}`;
+      }
+      continue;
+    }
+    const stalledFor = now - player.lastMoved;
+    if (stalledFor > STALL_MS) {
+      const seconds = Math.round(stalledFor / 1000);
+      setPaneState(name, 'reconnecting', 'NO SIGNAL', `last frame ${seconds} s ago — retrying`);
+      el(panes[name].tag).textContent = 'no signal';
+      retry(name);
+      player.lastMoved = now;  // do not retry every tick while it reconnects
+    }
+  }
+}, 1000);
+
+for (const name of Object.keys(panes)) {
+  const video = el(panes[name].video);
+  if (video) video.addEventListener('error', () => retry(name));
+}
+
+async function pollStreams() {
+  if (!LIVE) return;  // opened from a file: the drawn stand-in is all there is
+  try {
+    const info = await (await fetch('/api/streams')).json();
+    let anyLive = false;
+    for (const name of Object.keys(panes)) {
+      const available = (info.streams || []).includes(name);
+      anyLive = anyLive || (available && info.running);
+      const player = players[name];
+      if (available && info.running) {
+        if (!player || player.base !== info.api_base) attach(name, info.api_base);
+      } else {
+        if (player) { player.base = null; if (player.timer) clearTimeout(player.timer); }
+        const video = el(panes[name].video);
+        if (video && video.src) { video.removeAttribute('src'); video.load(); }
+        setPaneState(name, 'nostream', 'NO STREAM', info.reason || 'not configured');
+        el(panes[name].tag).textContent = 'no stream';
+      }
+    }
+    setFeedState(anyLive ? 'LIVE — ' + info.streams.join(' + ') : info.reason, anyLive);
+  } catch (e) {
+    setFeedState('console server not responding', false);
+    // The console's own server is unreachable. Say so; do not touch the panels,
+    // because whatever they are showing is better than nothing.
+    for (const name of Object.keys(panes)) {
+      if (!players[name] || !players[name].base) {
+        setPaneState(name, 'nostream', 'NO STREAM', 'console server not responding');
+      }
+    }
+  }
+}
+function setFeedState(text, live) {
+  const f = el('feedstate');
+  if (!f) return;
+  f.textContent = text;
+  f.classList.toggle('live', live);
+}
+
+pollStreams();
+setInterval(pollStreams, LIVE_POLL_MS);
 </script>
 </body>
 </html>

@@ -3,31 +3,47 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
+import threading
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 class SettingsError(Exception):
     """Raised when a settings file exists but cannot be read or is invalid."""
 
 
-class StreamSettings(BaseModel):
+class Model(BaseModel):
+    """Base for every settings model.
+
+    `allow_inf_nan=False` is the whole point of it. JSON permits 1e400, which
+    pydantic accepts as float("inf"), which serialises back out as null, which
+    then fails to load - a value that validates on the way in and bricks the
+    console on the way out. Refusing it at the door is the only fix that keeps
+    "saved" and "loadable" the same thing.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class StreamSettings(Model):
     name: str
     url: str
     enabled: bool = True
 
 
-class CameraSettings(BaseModel):
+class CameraSettings(Model):
     host: str = ""
     username: str = ""
     password: str = ""
     streams: list[StreamSettings] = Field(default_factory=list)
 
 
-class RadioSettings(BaseModel):
+class RadioSettings(Model):
     """Ubiquiti airOS radio. Optional: bitrate control falls back to video statistics."""
 
     host: str = ""
@@ -36,7 +52,7 @@ class RadioSettings(BaseModel):
     enabled: bool = False
 
 
-class StorageSettings(BaseModel):
+class StorageSettings(Model):
     root: Path = Path("recordings")
     budget_gb: float = 100.0
     budget_enabled: bool = True
@@ -63,19 +79,24 @@ class StorageSettings(BaseModel):
         return int(self.budget_gb * 1024**3)
 
 
-class BitrateSettings(BaseModel):
+class BitrateSettings(Model):
     mode: Literal["auto", "manual"] = "auto"
     floor_kbps: int = 1000
     ceiling_kbps: int = 5000
     manual_kbps: int = 3000
 
 
-class Settings(BaseModel):
+class Settings(Model):
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     bitrate: BitrateSettings = Field(default_factory=BitrateSettings)
     target_distance_m: float = 700.0
+
+
+# Saves are serialised in-process. Two threads writing the same file is the
+# common case here: the console has one settings form but many request threads.
+_SAVE_LOCK = threading.Lock()
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -94,9 +115,34 @@ def load_settings(path: str | Path) -> Settings:
 
 
 def save_settings(settings: Settings, path: str | Path) -> None:
+    """Write settings so that the file on disk is never half-written.
+
+    A plain write truncates first, so a crash, a power cut or a second writer
+    mid-save leaves an empty or spliced file - and the operator loses the camera
+    address and password with no warning. Writing a temporary file, flushing it
+    to the platter and renaming it means the destination is only ever the old
+    complete file or the new complete file.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(settings.model_dump_json(indent=2), encoding="utf-8")
+    payload = settings.model_dump_json(indent=2)
+
+    with _SAVE_LOCK:
+        # Same directory as the destination: os.replace is only atomic within a
+        # filesystem, and the temp directory may be on another one.
+        handle, temp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+        )
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                file.write(payload)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_path, path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
 
 def detect_free_bytes(path: str | Path) -> int | None:

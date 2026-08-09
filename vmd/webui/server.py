@@ -20,23 +20,38 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from vmd.settings import Settings, SettingsError, detect_free_bytes, load_settings, save_settings
+from vmd.streaming.go2rtc import Go2rtcService
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+# A settings document is a few kilobytes. Anything approaching this is either a
+# mistake or an attempt to exhaust memory, and reading it in costs that memory.
+MAX_BODY_BYTES = 1_000_000
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8723
 
 
 class ConsoleServer(ThreadingHTTPServer):
-    """Holds the settings path so handlers can reach it without a global."""
+    """Holds the settings path and the streaming server so handlers can reach
+    them without a global."""
 
     daemon_threads = True
-    allow_reuse_address = True
+    # Deliberately off. On Windows SO_REUSEADDR lets a second console bind a
+    # port that is already listening: both processes "start", one silently
+    # serves nothing, and if the first dies the second takes over with a
+    # different settings file. Failing to bind is the honest outcome.
+    allow_reuse_address = False
 
-    def __init__(self, address: tuple[str, int], settings_path: Path) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        settings_path: Path,
+        streaming: Go2rtcService | None = None,
+    ) -> None:
         super().__init__(address, ConsoleHandler)
         self.settings_path = settings_path
+        self.streaming = streaming
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -68,6 +83,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     # ----------------------------------------------------------------- routes
 
+    def handle_one_request(self) -> None:
+        """Nothing a request can contain may kill the console.
+
+        The handlers below catch what they can name. This is the backstop for
+        what they cannot: a bad Content-Length, undecodable bytes, JSON nested
+        deep enough to exhaust the stack. Without it those escape into
+        socketserver, the client gets zero bytes and a traceback lands in the
+        operator's window - the opposite of degrading visibly.
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionError, TimeoutError):
+            pass  # the browser went away mid-response; nothing to report
+        except Exception:  # noqa: BLE001 - the console must survive any request
+            logger.exception("unhandled error serving %s", getattr(self, "path", "?"))
+            try:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "the console could not handle that request")
+            except Exception:  # noqa: BLE001 - the socket is probably gone too
+                pass
+            self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
@@ -76,6 +112,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_settings()
         elif path == "/api/status":
             self._get_status()
+        elif path == "/api/streams":
+            self._get_streams()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -112,12 +150,40 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, json.loads(settings.model_dump_json()))
 
     def _put_settings(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw_length = self.headers.get("Content-Length")
         try:
-            payload = json.loads(raw or b"{}")
+            length = int(raw_length) if raw_length is not None else -1
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, f"Content-Length is not a number: {raw_length!r}")
+            return
+        if length < 0:
+            # A negative length would make rfile.read(-1) block until the client
+            # gives up, and the request would then be saved anyway.
+            self._error(HTTPStatus.BAD_REQUEST, "a settings save needs a body and a Content-Length")
+            return
+        if length == 0:
+            # An empty body used to parse as {} and overwrite every setting with
+            # its default - camera address and password wiped, reported as success.
+            self._error(HTTPStatus.BAD_REQUEST, "empty request body: nothing to save")
+            return
+        if length > MAX_BODY_BYTES:
+            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "settings payload is implausibly large")
+            return
+
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            self._error(HTTPStatus.BAD_REQUEST, "body is not valid UTF-8")
+            return
+        except RecursionError:
+            self._error(HTTPStatus.BAD_REQUEST, "JSON is nested too deeply")
+            return
         except json.JSONDecodeError as exc:
             self._error(HTTPStatus.BAD_REQUEST, f"not valid JSON: {exc}")
+            return
+        if not isinstance(payload, dict):
+            self._error(HTTPStatus.BAD_REQUEST, "settings must be a JSON object")
             return
         try:
             settings = Settings.model_validate(payload)
@@ -126,9 +192,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
         try:
             save_settings(settings, self.server.settings_path)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write settings: {exc}")
             return
+
+        # New camera address or stream paths mean the streaming server is now
+        # pointed at the wrong thing. Restarting it here is what makes Save the
+        # only action an operator has to take to get a picture.
+        streaming = self.server.streaming
+        if streaming is not None:
+            try:
+                streaming.apply(settings)
+            except Exception:  # noqa: BLE001 - saving succeeded; streaming is secondary
+                logger.exception("could not restart streaming after a settings change")
+
         self._send_json(HTTPStatus.OK, json.loads(settings.model_dump_json()))
 
     def _get_status(self) -> None:
@@ -138,15 +215,45 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             settings = Settings()
         root = settings.storage.root
         streams = [s.name for s in settings.camera.streams if s.enabled]
+        # No root.exists() probe here: on a UNC path to a machine that is not
+        # answering, that call blocks for the better part of a minute, and this
+        # endpoint is polled. detect_free_bytes already returns None on failure.
+        free_bytes = detect_free_bytes(root)
         self._send_json(
             HTTPStatus.OK,
             {
                 "configured": bool(settings.camera.host and streams),
                 "streams": streams,
                 "storage_root": str(root),
-                "free_bytes": detect_free_bytes(root if root.exists() else Path.cwd()),
+                "free_bytes": free_bytes,
                 "settings_path": str(self.server.settings_path),
                 "recording": False,  # the recorder is a separate process; not wired yet
+            },
+        )
+
+
+    def _get_streams(self) -> None:
+        """Where the live video is, or why there is none. The page polls this."""
+        streaming = self.server.streaming
+        if streaming is None:
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "running": False,
+                    "reason": "live video is not enabled in this session",
+                    "api_base": "",
+                    "streams": [],
+                },
+            )
+            return
+        status = streaming.status()
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "running": status.running,
+                "reason": status.reason,
+                "api_base": status.api_base,
+                "streams": status.streams,
             },
         )
 
@@ -159,6 +266,9 @@ def _first_problem(exc: ValidationError) -> str:
 
 
 def make_server(
-    host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, settings_path: str | Path = "settings.json"
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    settings_path: str | Path = "settings.json",
+    streaming: Go2rtcService | None = None,
 ) -> ConsoleServer:
-    return ConsoleServer((host, port), Path(settings_path))
+    return ConsoleServer((host, port), Path(settings_path), streaming)
