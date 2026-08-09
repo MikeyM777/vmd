@@ -305,6 +305,26 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 .toggle input { accent-color: var(--accent); width: 14px; height: 14px; }
 
 .actions { display: flex; gap: 8px; align-items: center; }
+/* ---------------------------------------------------------- update */
+#btn-update { cursor: pointer; }
+#btn-update[disabled] { opacity: 0.55; cursor: default; }
+dialog#updatebox {
+  width: min(680px, 92vw); padding: 16px; border: 1px solid var(--line-strong);
+  background: var(--surface); color: var(--ink);
+}
+dialog#updatebox::backdrop { background: oklch(0 0 0 / 0.55); }
+dialog#updatebox h2 {
+  margin: 0 0 10px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.upout {
+  margin: 10px 0; padding: 8px 10px; max-height: 260px; overflow: auto;
+  background: var(--well); border: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--muted);
+}
+.upout:empty { display: none; }
+
 /* ---------------------------------------------------------- logs */
 .logs { display: flex; flex-direction: column; min-height: 0; padding: 10px; gap: 8px; }
 .logbar { display: flex; align-items: center; gap: 12px; }
@@ -359,6 +379,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
     <div class="right">
       <span class="chip" id="chip-link"><span class="g">●</span>Live <span class="v" id="chip-live-v">—</span></span>
       <span class="chip" id="chip-rec"><span class="g">●</span>Rec <span class="v" id="chip-rec-v">off</span></span>
+      <button class="chip" id="btn-update" onclick="openUpdate()" title="Pull the latest version">Update</button>
       <span class="chip warn"><span class="g">▲</span>Disk <span class="v">11 d</span></span>
     </div>
   </header>
@@ -609,6 +630,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
       </div>
     </div>
   </main>
+
+  <dialog id="updatebox">
+    <h2>Update</h2>
+    <div class="row"><span class="k">This copy</span><span class="v" id="up-version">—</span></div>
+    <p class="hint" id="up-note">Pulls the latest version. Your settings and recordings are not touched.</p>
+    <pre class="upout" id="up-output"></pre>
+    <div class="actions">
+      <button class="btn primary" id="up-go" onclick="runUpdate()">Update now</button>
+      <button class="btn" onclick="document.getElementById('updatebox').close()">Close</button>
+      <span class="savemsg" id="up-msg"></span>
+    </div>
+  </dialog>
 
   <footer class="foot">
     <span id="feedstate">starting</span>
@@ -1161,6 +1194,65 @@ function escapeHtml(text) {
 
 pollLogs();
 setInterval(pollLogs, 3000);
+
+/* ---- update ----------------------------------------------------------------
+   Pulling is done by the server, not the browser, and it reports what it ran
+   verbatim. An updater that hides the command it executed is impossible to
+   trust on a machine that has one job. */
+let updateTimer = null;
+
+function showUpdate(state) {
+  const current = state.current || {};
+  el('up-version').textContent = current.known ? current.version : 'unknown';
+  el('up-note').textContent = current.known
+    ? 'Pulls the latest version. Your settings and recordings are not touched.'
+    : current.reason || 'This copy cannot update itself.';
+  el('up-go').disabled = !current.can_update || state.running;
+  el('up-output').textContent = (state.output || []).join(String.fromCharCode(10));
+
+  if (state.running) {
+    say2(state.step || 'working…', false);
+  } else if (state.ok === true) {
+    say2(state.message, false, true);
+  } else if (state.ok === false) {
+    say2(state.message, true);
+  } else {
+    say2('');
+  }
+
+  if (!state.running && updateTimer) { clearInterval(updateTimer); updateTimer = null; }
+}
+
+function say2(text, bad, good) {
+  const m = el('up-msg');
+  m.textContent = text;
+  m.className = 'savemsg' + (bad ? ' bad' : good ? ' ok' : '');
+}
+
+async function refreshUpdate() {
+  try { showUpdate(await (await fetch('/api/update')).json()); }
+  catch (e) { say2('Cannot reach the console server.', true); }
+}
+
+function openUpdate() {
+  if (!LIVE) return;
+  el('updatebox').showModal();
+  refreshUpdate();
+}
+
+async function runUpdate() {
+  el('up-go').disabled = true;
+  say2('starting…');
+  try {
+    const response = await fetch('/api/update', { method: 'POST' });
+    const state = await response.json();
+    if (!response.ok) { say2(state.error || 'Could not start the update.', true); return; }
+    showUpdate(state);
+    if (!updateTimer) updateTimer = setInterval(refreshUpdate, 1500);
+  } catch (e) {
+    say2('Could not start the update: ' + e.message, true);
+  }
+}
 </script>
 </body>
 </html>

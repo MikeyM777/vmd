@@ -16,6 +16,7 @@ from pathlib import Path
 from vmd.settings import SettingsError, load_settings
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
 from vmd.webui.server import DEFAULT_HOST, DEFAULT_PORT, capture_logs, make_server
+from vmd.webui.updater import Updater
 
 logger = logging.getLogger("vmd.webui")
 
@@ -94,8 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     streaming = start_streaming(args)
+    # The project directory, not the settings directory: git and uv both act on
+    # the checkout, which is where this package lives.
+    updater = Updater(Path(__file__).resolve().parents[2])
     try:
-        server = make_server(args.host, args.port, args.settings, streaming)
+        server = make_server(args.host, args.port, args.settings, streaming, updater)
     except (OSError, OverflowError, ValueError) as exc:
         # Nearly always "port already in use", which means the console is
         # probably already running. Say that rather than printing a traceback.

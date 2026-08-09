@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from vmd.settings import Settings, SettingsError, detect_free_bytes, load_settings, save_settings
 from vmd.streaming.go2rtc import Go2rtcService
+from vmd.webui.updater import Updater
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,12 @@ class ConsoleServer(ThreadingHTTPServer):
         address: tuple[str, int],
         settings_path: Path,
         streaming: Go2rtcService | None = None,
+        updater: Updater | None = None,
     ) -> None:
         super().__init__(address, ConsoleHandler)
         self.settings_path = settings_path
         self.streaming = streaming
+        self.updater = updater
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -168,6 +171,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_streams()
         elif path == "/api/logs":
             self._get_logs()
+        elif path == "/api/update":
+            self._get_update()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -176,10 +181,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     do_HEAD = do_GET  # noqa: N815
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.split("?", 1)[0] != "/api/settings":
-            self._error(HTTPStatus.NOT_FOUND, f"no such path: {self.path}")
-            return
-        self._put_settings()
+        path = self.path.split("?", 1)[0]
+        if path == "/api/settings":
+            self._put_settings()
+        elif path == "/api/update":
+            self._post_update()
+        else:
+            self._error(HTTPStatus.NOT_FOUND, f"no such path: {path}")
 
     # --------------------------------------------------------------- handlers
 
@@ -312,6 +320,28 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         )
 
 
+    def _get_update(self) -> None:
+        updater = self.server.updater
+        if updater is None:
+            self._send_json(
+                HTTPStatus.OK,
+                {"running": False, "ok": None, "message": "", "output": [],
+                 "current": {"known": False, "reason": "updating is not available in this session"}},
+            )
+            return
+        self._send_json(HTTPStatus.OK, updater.snapshot())
+
+    def _post_update(self) -> None:
+        updater = self.server.updater
+        if updater is None:
+            self._error(HTTPStatus.CONFLICT, "updating is not available in this session")
+            return
+        started, why_not = updater.start()
+        if not started:
+            self._error(HTTPStatus.CONFLICT, why_not)
+            return
+        self._send_json(HTTPStatus.ACCEPTED, updater.snapshot())
+
     def _get_logs(self) -> None:
         """Everything the console has said about itself, newest last."""
         self._send_json(HTTPStatus.OK, {"lines": LOG_BUFFER.snapshot()})
@@ -329,5 +359,6 @@ def make_server(
     port: int = DEFAULT_PORT,
     settings_path: str | Path = "settings.json",
     streaming: Go2rtcService | None = None,
+    updater: Updater | None = None,
 ) -> ConsoleServer:
-    return ConsoleServer((host, port), Path(settings_path), streaming)
+    return ConsoleServer((host, port), Path(settings_path), streaming, updater)

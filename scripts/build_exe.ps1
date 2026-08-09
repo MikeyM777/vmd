@@ -2,10 +2,9 @@
 #  Builds VMD.exe in the project root - one file, double-clicked, starts
 #  the console.
 #
-#  Only the console goes in it: the web server, the settings model and the page.
-#  The detector is deliberately left out. Bundling torch would turn a 15 MB file
-#  into a 2 GB one to launch a web page, and the recorder and detector are run
-#  from the project directory anyway.
+#  The exe carries no application code at all - it is a launcher that runs the
+#  project it sits in. That is what makes the Update button work: pulling new
+#  code changes what the exe runs, with nothing to rebuild.
 # =============================================================================
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -28,24 +27,16 @@ try {
         Start-Sleep -Milliseconds 400
     }
 
-    # --add-data puts the console page inside the exe; PyInstaller unpacks it to
-    # a temporary folder at run time, which is why server.py locates it relative
-    # to its own file rather than the working directory.
-    #
-    # The source path must be absolute: --specpath makes relative paths resolve
-    # against the spec directory, not against here, which silently looks for the
-    # page inside build\ and fails.
-    $static = Join-Path $root 'vmd\webui\static'
-
+    # Nothing is bundled: no --add-data, no application imports. The launcher is
+    # stdlib only, which is also why this builds in seconds and stays small.
     uv run --with pyinstaller pyinstaller `
         --onefile `
         --name VMD `
         --distpath $root `
         --workpath build\pyinstaller `
         --specpath build `
-        --add-data "$static;vmd/webui/static" `
         --console `
-        (Join-Path $root 'vmd\webui\__main__.py')
+        (Join-Path $root 'vmd\launcher.py')
 
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
 
