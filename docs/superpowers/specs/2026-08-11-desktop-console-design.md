@@ -196,7 +196,41 @@ the browser console remains one `git checkout` away.
 
 | Risk | Response |
 |---|---|
-| Overlay flicker above VLC's native surface on Windows | Prove it in a throwaway window before anything is built on it. If it flickers, steering moves to a side strip — no redesign |
+| Overlay flicker above VLC's native surface on Windows | Verified on 2026-08-11: overlay composites cleanly over libVLC on this machine. Steering stays on the picture; the side-strip alternative is not needed. See the measurements below |
 | 4K decode cost on the laptop | Hardware decode enabled; the deployment is moving to a substream regardless |
 | A desktop app is harder to inspect remotely than a web page | The Logs tab stays; the diagnostic report becomes a file that can be saved and sent |
 | `python-vlc` version drift against installed VLC | Pin the dependency; the integration test fails loudly if the pairing breaks |
+
+### Overlay probe measurements (2026-08-11)
+
+`spike/overlay_probe.py` (python-vlc 3.0.21203, PySide6 6.11.1, VLC at
+`C:\Program Files\VideoLAN\VLC`, Windows 11) run against a synthetic
+640x512@30 H.264 RTSP source served by the bundled `go2rtc`:
+
+```
+uv run python spike/overlay_probe.py rtsp://127.0.0.1:8656/test --seconds 30 --grab grab.png
+t=2s  frames=7   paints=43  covered=True
+...
+t=19s frames=530 paints=392 covered=True
+```
+
+- **Video is live.** libVLC's `displayed_pictures` climbed 0 → 868 over 30 s
+  (~29-30/s), matching the source rate.
+- **The overlay is painting.** `paintEvent` calls climbed 0 → 392 while the
+  window was visible, a steady ~21/s. That is below the 33 ms timer's nominal
+  30/s because Qt coalesces `update()` calls, not because frames were dropped —
+  the rate never wavered.
+- **The overlay is over the picture.** `overlay.geometry() == surface.rect()`
+  and `overlay.isVisible()` held true on every one-second sample.
+- **The overlay pixels survive the composite.** `window.grab()` produced a
+  5,430-byte 960x600 PNG containing 1,195 pixels within 24/255 of `#EEBB58` —
+  the amber box and label, drawn on top. Byte-identical across two runs.
+
+Two honest limits on the above. `QWidget.grab()` reads back Qt's own painting,
+so the Direct3D11 video surface comes back black (553,041 near-black pixels);
+no pixel-level photograph of amber-over-video was obtainable, because
+`SetForegroundWindow` is refused under the harness's foreground lock and a
+desktop capture only ever caught the window behind. And when the window is
+*fully occluded*, `paints` freezes while `frames` keeps climbing — ordinary
+Windows repaint behaviour, not flicker, but worth knowing before anyone reads a
+frozen overlay in a background window as a bug.

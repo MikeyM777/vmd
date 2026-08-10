@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.6",
     "PyYAML>=6.0",
     "PySide6>=6.6",
+    "python-vlc>=3.0.21203",
 ]
 
 # The detector stack, declared rather than hand-installed. It was previously

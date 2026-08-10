@@ -1342,6 +1342,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-vlc"
+version = "3.0.21203"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/5b/f9ce6f0c9877b6fe5eafbade55e0dcb6b2b30f1c2c95837aef40e390d63b/python_vlc-3.0.21203.tar.gz", hash = "sha256:52d0544b276b11e58b6c0b748c3e0518f94f74b1b4cd328c83a59eacabead1ec", size = 162211 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/ee/7d76eb3b50ccb1397621f32ede0fb4d17aa55a9aa2251bc34e6b9929fdce/python_vlc-3.0.21203-py3-none-any.whl", hash = "sha256:1613451a31b692ec276296ceeae0c0ba82bfc2d094dabf9aceb70f58944a6320", size = 87651 },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1625,6 +1634,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pydantic" },
     { name = "pyside6" },
+    { name = "python-vlc" },
     { name = "pyyaml" },
 ]
 
@@ -1645,6 +1655,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.9" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pyside6", specifier = ">=6.6" },
+    { name = "python-vlc", specifier = ">=3.0.21203" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ultralytics", marker = "extra == 'detect'", specifier = ">=8.3" },
 ]
