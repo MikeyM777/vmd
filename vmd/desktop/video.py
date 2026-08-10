@@ -99,7 +99,6 @@ class VlcVideoPane(QWidget):
         self._instance = vlc.Instance(VLC_OPTIONS)
         self._player = self._instance.media_player_new()
         self._url: str | None = None
-        self._started_at = 0.0
         self._last_frame_at = 0.0
         self.frames_seen = 0
         self._last_count = -1
@@ -116,7 +115,6 @@ class VlcVideoPane(QWidget):
 
     def show(self, url: str) -> None:  # noqa: A003 - the protocol's name
         self._url = url
-        self._started_at = time.monotonic()
         self._last_frame_at = 0.0
         self._last_count = -1
         self.frames_seen = 0
