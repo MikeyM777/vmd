@@ -20,14 +20,17 @@ import logging
 from pathlib import Path
 
 from pydantic import ValidationError
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -93,8 +96,35 @@ class StreamRowWidget(QWidget):
         )
 
 
+class _ToolSignals(QObject):
+    """A background tool talking back to the window it cannot touch directly."""
+
+    progress = Signal(str)
+    done = Signal(list)
+
+
+class _ToolJob(QRunnable):
+    def __init__(self, work, signals: _ToolSignals) -> None:
+        super().__init__()
+        self._work = work
+        self._signals = signals
+
+    def run(self) -> None:
+        try:
+            lines = list(self._work())
+        except Exception as exc:  # noqa: BLE001 - a failed tool must not end the console
+            logger.exception("a camera tool failed")
+            lines = [f"That did not finish: {exc}"]
+        self._signals.done.emit(lines)
+
+
 class SettingsTab(QWidget):
-    def __init__(self, settings_path: str | Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings_path: str | Path,
+        tools: "CameraTools | None" = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.settings_path = Path(settings_path)
         self.message = ""
@@ -102,6 +132,13 @@ class SettingsTab(QWidget):
         # form's fields written over it, so nothing off-screen is lost.
         self._loaded = Settings()
         self._rows: list[StreamRowWidget] = []
+        self._tools = tools
+        # One at a time, and never on the UI thread: finding the right path
+        # probes two dozen addresses and takes up to a minute. A console that
+        # stops repainting for a minute is a console the operator restarts.
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(1)
+        self._running: list[_ToolSignals] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -149,6 +186,28 @@ class SettingsTab(QWidget):
         radio_form.addRow("Username", self._radio_user)
         radio_form.addRow("Password", self._radio_password)
         layout.addWidget(radio_box)
+
+        tools_box = QGroupBox("The camera")
+        tools_outer = QVBoxLayout(tools_box)
+        tools_buttons = QHBoxLayout()
+        self.test_button = QPushButton("Test the camera")
+        self.test_button.clicked.connect(self.test_camera)
+        self.find_button = QPushButton("Find the right path")
+        self.find_button.clicked.connect(self.find_paths)
+        self.fit_button = QPushButton("Fit the camera to the link")
+        self.fit_button.clicked.connect(self.fit_to_link)
+        self.report_button = QPushButton("Save a report")
+        self.report_button.clicked.connect(lambda: self.save_report())
+        for button in (self.test_button, self.find_button, self.fit_button, self.report_button):
+            tools_buttons.addWidget(button)
+        tools_buttons.addStretch(1)
+        tools_outer.addLayout(tools_buttons)
+
+        self._output = QPlainTextEdit()
+        self._output.setReadOnly(True)
+        self._output.setMinimumHeight(160)
+        tools_outer.addWidget(self._output)
+        layout.addWidget(tools_box)
 
         self._message = QLabel("")
         self._message.setWordWrap(True)
@@ -365,6 +424,151 @@ class SettingsTab(QWidget):
         self._message.setText(text)
         colour = PALETTE["muted"] if text in ("", "Saved.") else PALETTE["warn"]
         self._message.setStyleSheet(f"color: {colour};")
+
+    # ----------------------------------------------------------- camera tools
+
+    def output_text(self) -> str:
+        return self._output.toPlainText()
+
+    def test_camera(self) -> None:
+        self._start(self.test_button, "Testing the camera", lambda tools, s: tools.diagnose(s))
+
+    def find_paths(self) -> None:
+        self._start(
+            self.find_button,
+            "Trying the common paths. This takes up to a minute.",
+            lambda tools, s: tools.find_paths(s),
+        )
+
+    def fit_to_link(self) -> None:
+        self._start(
+            self.fit_button,
+            "Asking the camera to fit the link",
+            lambda tools, s: tools.fit_to_link(s),
+        )
+
+    def save_report(self, path: str | Path | None = None) -> None:
+        """Write everything about this installation to a file that can be sent on."""
+        if path is None:
+            chosen, _filter = QFileDialog.getSaveFileName(
+                self, "Save a report", "vmd-report.txt", "Text files (*.txt)"
+            )
+            if not chosen:
+                return
+            path = chosen
+        target = Path(path)
+
+        def work(tools: "CameraTools", settings: Settings) -> list[str]:
+            written = tools.write_report(settings, target, extra=_report_header(settings))
+            return [f"Report written to {written}"]
+
+        self._start(self.report_button, "Writing the report", work)
+
+    def _start(self, button: QPushButton, heading: str, work) -> None:
+        """Run one camera tool off the UI thread and print what it says.
+
+        The form is turned into settings first: there is nothing worth asking a
+        camera while the address on screen is not one the console could save.
+        """
+        settings = self.settings_from_form()
+        if settings is None:
+            self._output.setPlainText(f"Fix this first: {self.message}")
+            return
+
+        tools = self._camera_tools(settings)
+        signals = _ToolSignals()
+        signals.progress.connect(self._append_line)
+        signals.done.connect(lambda lines: self._tool_finished(button, signals, lines))
+        tools.on_progress = signals.progress.emit
+
+        self._running.append(signals)
+        button.setEnabled(False)
+        self._output.setPlainText(heading)
+        self._pool.start(_ToolJob(lambda: work(tools, settings), signals))
+
+    def _append_line(self, line: str) -> None:
+        self._output.appendPlainText(line)
+
+    def _tool_finished(self, button: QPushButton, signals: _ToolSignals, lines: list) -> None:
+        for line in lines:
+            self._output.appendPlainText(str(line))
+        button.setEnabled(True)
+        if signals in self._running:
+            self._running.remove(signals)
+
+    def _camera_tools(self, settings: Settings) -> "CameraTools":
+        if self._tools is not None:
+            return self._tools
+        # Imported here so that opening the console does not pay for the camera
+        # stack, and so this module stays testable with nothing installed.
+        from vmd.ptz.service import PtzService
+        from vmd.streaming.diagnose import diagnose, find_paths
+
+        return CameraTools(ptz=PtzService(settings), find_paths=find_paths, diagnose=diagnose)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Let a running tool finish before the widget it reports to disappears."""
+        self._pool.waitForDone(5000)
+        super().closeEvent(event)
+
+
+def _report_header(settings: Settings) -> list[str]:
+    """The context that a report is useless without."""
+    return [
+        f"camera        : {settings.camera.host or '(empty)'}",
+        f"folder        : {settings.storage.root}",
+        f"budget        : {settings.storage.budget_gb} GB",
+        f"delete after  : "
+        f"{settings.storage.retention_days if settings.storage.retention_days else 'never'}",
+        f"link ceiling  : {settings.bitrate.ceiling_kbps} kb/s",
+        f"video         : {settings.video_mode}, {settings.video_buffer_ms} ms buffer",
+    ]
+
+
+class CameraTools:
+    """The questions the field kept needing answered.
+
+    "Which path actually gives video" and "does this stream fit the link" are
+    both answered by asking the camera, and both were only reachable through the
+    browser. They are plain calls into existing code; this is the seam that lets
+    them be tested without a camera.
+    """
+
+    def __init__(self, ptz, find_paths, diagnose) -> None:
+        self._ptz = ptz
+        self._find_paths = find_paths
+        self._diagnose = diagnose
+        self.on_progress = lambda step: None
+
+    def find_paths(self, settings: Settings) -> list[str]:
+        return self._find_paths(settings, on_progress=self.on_progress)
+
+    def diagnose(self, settings: Settings) -> list[str]:
+        return self._diagnose(settings)
+
+    def fit_to_link(self, settings: Settings) -> list[str]:
+        result = self._ptz.fit_encoders_to_link(settings.bitrate.ceiling_kbps)
+        if not result.get("ok"):
+            return [result.get("error", "the camera refused")]
+        return list(result.get("changed", []))
+
+    def write_report(self, settings: Settings, path, extra: list[str]) -> Path:
+        """Everything about this installation, in one file that can be sent on.
+
+        Diagnosing a machine at the other end of a conversation fails on missing
+        context more than on hard problems. The password is never included: it
+        is the one thing in here that must not travel.
+        """
+        path = Path(path)
+        lines = ["VMD report", ""]
+        lines.extend(extra)
+        lines.append("")
+        lines.extend(self.diagnose(settings))
+        text = "\n".join(lines)
+        if settings.camera.password:
+            text = text.replace(settings.camera.password, "****")
+        path.write_text(text, encoding="utf-8")
+        return path
 
 
 def _first_problem(exc: Exception) -> str:
