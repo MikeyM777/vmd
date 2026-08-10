@@ -11,7 +11,9 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Callable
 
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
@@ -24,16 +26,44 @@ logger = logging.getLogger(__name__)
 # end it. It is already a forced kill, so this is only the time the kernel needs.
 TREE_STOP_SECONDS = 10.0
 
+# How a detector that will not stay up is recognised: more than this many
+# restarts inside this window and the console stops calling it detection. Two
+# minutes is long enough that a single restart plus a slow start does not trip
+# it, and short enough that the operator hears about it while it matters.
+DETECTION_FLAP_WINDOW = 120.0
+DETECTION_FLAP_LIMIT = 3
 
-class RecorderProcess:
-    """`python -m vmd.record_main`, shaped to fit the supervisor's protocol.
 
-    A PID file makes the process findable across window lifetimes. Recording is
-    meant to outlive the window, which means the next window must be able to
-    tell "already recording" from "not recording" - otherwise it starts a second
-    recorder on the same directory, and two of them fight over the same files
-    and the same index.
+def detection_enabled(settings: Settings) -> bool:
+    """Has anyone actually asked for detection?
+
+    The same rule as `vmd.detect_main.detected_streams`, spelled out again
+    rather than imported: importing the detector package here would pull cv2,
+    numpy and eventually the classifier's weights into the window's process,
+    which must open on a laptop where none of that is installed.
     """
+    if not settings.detection.enabled:
+        return False
+    return any(stream.enabled and stream.detect for stream in settings.camera.streams)
+
+
+class ChildProcess:
+    """One `python -m <module>` child, shaped to fit the supervisor's protocol.
+
+    A PID file makes the process findable across window lifetimes. These
+    children are meant to outlive the window, which means the next window must
+    be able to tell "already running" from "not running" - otherwise it starts a
+    second one on the same directory, and two of them fight over the same files
+    and the same database.
+
+    Subclasses say which module they run and what their PID file is called. The
+    two must never coincide: a shared PID file would have each child adopt the
+    other and neither would ever be started.
+    """
+
+    module = ""
+    pid_filename = ""
+    label = ""
 
     def __init__(
         self,
@@ -43,7 +73,9 @@ class RecorderProcess:
         kill_tree=None,
     ) -> None:
         self.settings_path = Path(settings_path)
-        self.pid_path = Path(pid_path) if pid_path else self.settings_path.parent / "recorder.pid"
+        self.pid_path = (
+            Path(pid_path) if pid_path else self.settings_path.parent / self.pid_filename
+        )
         self._spawn = spawn or _default_spawn
         self._kill_tree = kill_tree or _taskkill_tree
         self._process: subprocess.Popen | None = None
@@ -63,7 +95,7 @@ class RecorderProcess:
 
         adopted = self._read_pid()
         if adopted is not None and _pid_alive(adopted):
-            logger.info("a recorder is already running (pid %s); adopting it", adopted)
+            logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
             self._adopted_pid = adopted
             return
         self._adopted_pid = None
@@ -71,18 +103,18 @@ class RecorderProcess:
         command = [
             sys.executable,
             "-m",
-            "vmd.record_main",
+            self.module,
             "--settings",
             str(self.settings_path),
         ]
         try:
             self._process = self._spawn(command)
         except OSError:
-            logger.exception("could not start the recorder")
+            logger.exception("could not start the %s", self.label)
             self._process = None
             return
         self._write_pid()
-        logger.info("recorder started")
+        logger.info("%s started", self.label)
 
     def _read_pid(self) -> int | None:
         try:
@@ -101,7 +133,7 @@ class RecorderProcess:
             logger.warning("could not write %s", self.pid_path, exc_info=True)
 
     def stop(self) -> None:
-        """Stop a recorder this object started, and everything it started.
+        """Stop a child this object started, and everything it started.
 
         The whole tree, not just the process we spawned. The recorder starts an
         ffmpeg per stream, so those are our grandchildren: ending only our own
@@ -125,9 +157,9 @@ class RecorderProcess:
         cleanly anyway, and the only work skipped is a final indexing pass, which
         the next recorder redoes when it adopts the files left on disk.
 
-        An adopted recorder is left alone: it belongs to a window that is gone,
-        and stopping it here would stop recording because someone closed a
-        second window.
+        An adopted child is left alone: it belongs to a window that is gone, and
+        stopping it here would stop recording - or detection - because someone
+        closed a second window.
         """
         if self._process is None and self._adopted_pid is not None:
             self._adopted_pid = None
@@ -140,7 +172,7 @@ class RecorderProcess:
             try:
                 process.wait(timeout=TREE_STOP_SECONDS)
             except subprocess.TimeoutExpired:
-                logger.warning("the recorder outlived taskkill; forcing it")
+                logger.warning("the %s outlived taskkill; forcing it", self.label)
         if process.poll() is None:
             process.terminate()
             try:
@@ -151,10 +183,41 @@ class RecorderProcess:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     # Never forget a process that may still be writing: a second
-                    # recorder on the same directory would fight the first.
-                    logger.error("the recorder did not stop; leaving it tracked")
+                    # one on the same directory would fight the first.
+                    logger.error("the %s did not stop; leaving it tracked", self.label)
                     return
         self._process = None
+
+
+class RecorderProcess(ChildProcess):
+    """`python -m vmd.record_main`, kept alive across window lifetimes.
+
+    Recording is meant to outlive the window, so the next window must be able to
+    tell "already recording" from "not recording" - otherwise it starts a second
+    recorder on the same directory, and two of them fight over the same files
+    and the same index.
+    """
+
+    module = "vmd.record_main"
+    pid_filename = "recorder.pid"
+    label = "recorder"
+
+
+class DetectorProcess(ChildProcess):
+    """`python -m vmd.detect_main`, supervised exactly like the recorder.
+
+    Separate from the recorder on purpose, and adopted the same way. It writes
+    into events.db; two detectors on one file would each append the same
+    movement twice, and the operator would read one intruder as two.
+
+    Stopping it stops detection and nothing else. The two processes share
+    nothing but the local stream, which is the whole reason detection was built
+    as a process rather than a thread of the console.
+    """
+
+    module = "vmd.detect_main"
+    pid_filename = "detector.pid"
+    label = "detector"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -232,17 +295,35 @@ class ConsoleServices:
         settings_path: str | Path,
         streaming: Go2rtcService | None,
         recorder: RecorderProcess,
+        detector: DetectorProcess | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings
         self.settings_path = Path(settings_path)
         self.streaming = streaming
         self.recorder = recorder
+        self.detector = detector
         self.adopted_streaming = False
+        self._clock = clock
+
+        # Detection nobody asked for is not supervised at all. `vmd.detect_main`
+        # prints "nothing to detect" and exits 0 when no stream is ticked, so a
+        # supervisor holding it would respawn that exit every two seconds for
+        # the life of the console.
+        self.detecting = detector is not None and detection_enabled(settings)
 
         managed = [Managed(name="recorder", service=recorder)]
         if streaming is not None:
             managed.insert(0, Managed(name="streaming", service=streaming))
-        self.supervisor = Supervisor(managed)
+        if self.detecting:
+            managed.append(Managed(name="detector", service=detector))
+        self.supervisor = Supervisor(managed, clock=clock)
+
+        # When the detector was restarted, not just how often since the console
+        # opened. A detector that died twice in March and is up now is healthy;
+        # one that has died four times in the last two minutes is not running,
+        # whatever the count since boot says.
+        self._detector_restarts: list[float] = []
 
     def start(self) -> None:
         """Bring the children up, adopting any that are already running.
@@ -263,10 +344,27 @@ class ConsoleServices:
                 self.adopted_streaming = False
                 self.streaming.start()
         self.recorder.start()
+        if self.detecting and self.detector is not None:
+            self.detector.start()
 
     def tick(self) -> list[str]:
         """Restart whatever has died. Called on a timer by the window."""
-        return self.supervisor.tick()
+        started = self.supervisor.tick()
+        if "detector" in started:
+            # Every start the supervisor performs is a restart: `start()` above
+            # already started it once. The supervisor's own `restarts` counter
+            # misses that first one, and would call the first death a first
+            # start.
+            self._detector_restarts.append(self._clock())
+            # Pruned here as well as when read, so a console nobody looks at for
+            # months cannot accumulate a list of every restart it ever made.
+            self._recent_detector_restarts()
+        return started
+
+    def _recent_detector_restarts(self) -> int:
+        cutoff = self._clock() - DETECTION_FLAP_WINDOW
+        self._detector_restarts = [at for at in self._detector_restarts if at >= cutoff]
+        return len(self._detector_restarts)
 
     def stop(self) -> None:
         self.supervisor.stop_all()
@@ -283,5 +381,64 @@ class ConsoleServices:
         return {
             "recording": self.recorder.running,
             "streaming": streaming_state,
+            "detection": self.detection_state(),
             "restarts": dict(self.supervisor.restarts),
+        }
+
+    def detection_state(self) -> dict:
+        """What detection is doing, in the three states it can honestly be in.
+
+        Off, running, or not running - and off is not a failure. Detection is
+        opt-in per stream, so a console that reported "detection failed" on a
+        machine where nobody ticked the box would teach its operator to ignore
+        the line that one day says something true.
+
+        The third state is the one this exists for. A detector that cannot stay
+        up is restarted by the supervisor for as long as the console is open,
+        and without this the status line would read "detecting" between each
+        death while nothing watched the perimeter at all. More than a few
+        restarts inside a couple of minutes is reported as not running, and it
+        overrides `running`: catching the process during the half-second it is
+        alive is not detection.
+        """
+        enabled = detection_enabled(self.settings)
+        if self.detector is None:
+            return {
+                "enabled": enabled,
+                "running": False,
+                "restarts": 0,
+                "reason": "not started by this console",
+            }
+        if not enabled:
+            return {
+                "enabled": False,
+                "running": False,
+                "restarts": 0,
+                "reason": "off - no stream has detection enabled",
+            }
+
+        restarts = self._recent_detector_restarts()
+        minutes = DETECTION_FLAP_WINDOW / 60.0
+        if restarts > DETECTION_FLAP_LIMIT:
+            return {
+                "enabled": True,
+                "running": False,
+                "restarts": restarts,
+                "reason": (
+                    f"NOT running - restarted {restarts} times "
+                    f"in the last {minutes:.0f} minutes"
+                ),
+            }
+        if self.detector.running:
+            return {
+                "enabled": True,
+                "running": True,
+                "restarts": restarts,
+                "reason": "detecting",
+            }
+        return {
+            "enabled": True,
+            "running": False,
+            "restarts": restarts,
+            "reason": "NOT running - restarting it",
         }

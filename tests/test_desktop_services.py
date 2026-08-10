@@ -8,6 +8,7 @@ from pathlib import Path
 
 from vmd.desktop.services import (
     ConsoleServices,
+    DetectorProcess,
     RecorderProcess,
     _creation_flags,
     _taskkill_tree,
@@ -34,11 +35,15 @@ class FakeProcess:
         return 0
 
 
-def settings_for(tmp_path: Path) -> Settings:
+def settings_for(tmp_path: Path, detect: bool = False) -> Settings:
     return Settings(
         camera=CameraSettings(
             host="10.0.0.2",
-            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/t", enabled=True)],
+            streams=[
+                StreamSettings(
+                    name="thermal", url="rtsp://10.0.0.2/t", enabled=True, detect=detect
+                )
+            ],
         ),
         storage=StorageSettings(root=tmp_path / "rec"),
     )
@@ -255,3 +260,210 @@ def test_state_reports_what_the_operator_needs_to_know(tmp_path: Path) -> None:
     state = services.state()
     assert state["recording"] is True
     assert "streaming" in state
+
+
+# ------------------------------------------------------------- the detector
+#
+# Supervised exactly like the recorder, and for the same reason: the console
+# must not be able to stop detection, and detection must not be able to stop
+# the console.
+
+
+class Clock:
+    """A hand-wound monotonic clock. No test here waits for real seconds."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class DeadOnArrival:
+    """A child that is never alive - the detector that will not stay up."""
+
+    def __init__(self) -> None:
+        self.pid = 31337
+
+    def poll(self):
+        return 1
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    def wait(self, timeout=None):
+        return 1
+
+
+def console_with_detector(tmp_path: Path, detector_spawn, detect: bool = True, clock=None):
+    settings_path = tmp_path / "settings.json"
+    return ConsoleServices(
+        settings=settings_for(tmp_path, detect=detect),
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        detector=DetectorProcess(
+            settings_path, pid_path=tmp_path / "detector.pid", spawn=detector_spawn
+        ),
+        clock=clock or Clock(),
+    )
+
+
+def test_the_detector_is_started_as_its_own_process(tmp_path: Path) -> None:
+    spawned: list[list[str]] = []
+    detector = DetectorProcess(
+        settings_path=tmp_path / "settings.json",
+        spawn=lambda command: (spawned.append(command), FakeProcess())[1],
+    )
+    detector.start()
+    assert detector.running is True
+    assert any("vmd.detect_main" in part for part in spawned[0])
+    assert any(str(tmp_path / "settings.json") in part for part in spawned[0])
+
+
+def test_a_detector_left_running_is_adopted_not_duplicated(tmp_path: Path) -> None:
+    """It writes into events.db. Two of them would fight over the same file."""
+    pid_file = tmp_path / "detector.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+    spawned: list = []
+    detector = DetectorProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda command: (spawned.append(command), FakeProcess())[1],
+    )
+    detector.start()
+    assert detector.running is True
+    assert spawned == [], "the live detector should have been adopted"
+
+
+def test_the_detector_keeps_its_own_pid_file(tmp_path: Path) -> None:
+    """Sharing recorder.pid would make each adopt the other."""
+    detector = DetectorProcess(tmp_path / "settings.json")
+    recorder = RecorderProcess(tmp_path / "settings.json")
+    assert detector.pid_path != recorder.pid_path
+
+
+def test_detection_nobody_asked_for_reads_as_off_not_as_failure(tmp_path: Path) -> None:
+    """No stream ticked for detection is a choice, not a fault. An operator who
+    is told detection failed when they never turned it on learns to ignore the
+    line that will one day say something true."""
+    services = console_with_detector(tmp_path, lambda c: FakeProcess(), detect=False)
+    services.start()
+    detection = services.state()["detection"]
+
+    assert detection["enabled"] is False
+    assert "off" in detection["reason"].lower()
+    assert "fail" not in detection["reason"].lower()
+    assert "not running" not in detection["reason"].lower()
+
+
+def test_a_detector_nobody_asked_for_is_never_started(tmp_path: Path) -> None:
+    """`vmd.detect_main` prints "nothing to detect" and exits 0 when no stream
+    is ticked. Supervising that would respawn the same exit every two seconds
+    for as long as the console is open."""
+    spawned: list = []
+    services = console_with_detector(
+        tmp_path,
+        lambda command: (spawned.append(command), FakeProcess())[1],
+        detect=False,
+    )
+    services.start()
+    services.tick()
+    services.tick()
+    assert spawned == []
+
+
+def test_a_running_detector_says_it_is_detecting(tmp_path: Path) -> None:
+    services = console_with_detector(tmp_path, lambda c: FakeProcess())
+    services.start()
+    detection = services.state()["detection"]
+    assert detection["enabled"] is True
+    assert detection["running"] is True
+    assert "detecting" in detection["reason"].lower()
+
+
+def test_a_detector_that_will_not_stay_up_is_reported_not_hidden(tmp_path: Path) -> None:
+    """Restarting forever while the operator believes the perimeter is watched
+    is the failure this reports. The clock is hand-wound: no waiting, and the
+    test cannot hang however the restart policy is broken."""
+    clock = Clock()
+    services = console_with_detector(tmp_path, lambda c: DeadOnArrival(), clock=clock)
+    services.start()
+
+    for _ in range(6):
+        clock.advance(3.0)  # past the supervisor's restart delay
+        services.tick()
+
+    detection = services.state()["detection"]
+    assert detection["enabled"] is True
+    assert detection["running"] is False
+    assert detection["restarts"] >= 4
+    reason = detection["reason"].lower()
+    assert "not running" in reason
+    assert str(detection["restarts"]) in detection["reason"], "the restarts must be named"
+
+
+def test_a_detector_that_dies_once_is_just_restarted(tmp_path: Path) -> None:
+    """One death is not a failing detector; it is what a supervisor is for."""
+    clock = Clock()
+    processes: list[FakeProcess] = []
+
+    def spawn(command):
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    services = console_with_detector(tmp_path, spawn, clock=clock)
+    services.start()
+    processes[0].alive = False
+    clock.advance(3.0)
+    services.tick()
+
+    assert len(processes) == 2
+    detection = services.state()["detection"]
+    assert detection["running"] is True
+    assert "not running" not in detection["reason"].lower()
+
+
+def test_stopping_detection_does_not_stop_recording(tmp_path: Path) -> None:
+    """The oldest requirement in the system, from the detection side."""
+    services = console_with_detector(tmp_path, lambda c: FakeProcess())
+    services.start()
+    assert services.recorder.running is True
+    assert services.detector.running is True
+
+    services.detector.stop()
+
+    assert services.detector.running is False
+    assert services.recorder.running is True
+    assert services.state()["recording"] is True
+
+
+def test_stopping_the_recorder_does_not_stop_detection(tmp_path: Path) -> None:
+    services = console_with_detector(tmp_path, lambda c: FakeProcess())
+    services.start()
+    services.recorder.stop()
+
+    assert services.recorder.running is False
+    assert services.detector.running is True
+    assert services.state()["detection"]["running"] is True
+
+
+def test_a_console_with_no_detector_still_reports_a_state(tmp_path: Path) -> None:
+    """--no-services builds no detector. The status line still has to say something."""
+    services = ConsoleServices(
+        settings=settings_for(tmp_path, detect=True),
+        settings_path=tmp_path / "settings.json",
+        streaming=None,
+        recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+    )
+    detection = services.state()["detection"]
+    assert detection["running"] is False
+    assert detection["reason"]
