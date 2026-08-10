@@ -122,6 +122,7 @@ def apply_plan(
     plan: RetentionPlan,
     index: SegmentIndex,
     unlink: Callable[[str], None] = os.unlink,
+    events=None,
 ) -> list[Segment]:
     """Delete the planned segments from disk and from the index.
 
@@ -131,6 +132,13 @@ def apply_plan(
 
     A file that is already gone is not an error - the index row is still removed, so the
     catalogue converges on the truth rather than accumulating dead entries.
+
+    `events` is an optional event store (anything with `delete_before(cutoff,
+    stream=...)`). Given one, the movement events that point into the deleted
+    footage go with it, so the operator's list never offers to play a file that
+    has been reclaimed. It is a parameter rather than an import because
+    retention belongs to recording, and recording must work on a machine where
+    detection was never turned on.
     """
     removed: list[Segment] = []
     for segment in plan.delete:
@@ -155,4 +163,33 @@ def apply_plan(
             logger.warning("deleted %s but could not remove its index row: %s", segment.path, exc)
             continue
         removed.append(segment)
+    if events is not None and removed:
+        _reclaim_events(removed, events)
     return removed
+
+
+def _reclaim_events(removed: list[Segment], events) -> None:
+    """Drop the events whose footage has just gone, one stream at a time.
+
+    Per stream, because retention reclaims each stream's oldest footage
+    independently: the visible camera's recording of the same minutes may still
+    be on disk, and its events still point at it.
+
+    Keyed on what was *actually* removed rather than what was planned, so a
+    locked file keeps its events - the footage is still there.
+
+    A failure here is logged and swallowed. Freeing the disk is the job of this
+    function; if it needed a working events.db to finish, a locked events.db
+    would fill the disk and stop recording.
+    """
+    cutoffs: dict[str, float] = {}
+    for segment in removed:
+        cutoffs[segment.stream] = max(cutoffs.get(segment.stream, segment.end), segment.end)
+    for stream, cutoff in cutoffs.items():
+        try:
+            gone = events.delete_before(cutoff, stream=stream)
+        except Exception as exc:  # noqa: BLE001 - the footage is already gone
+            logger.warning("could not remove events for %s: %s", stream, exc)
+            continue
+        if gone:
+            logger.info("retention removed %d event(s) for %s", gone, stream)

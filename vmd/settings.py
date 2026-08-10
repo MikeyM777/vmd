@@ -30,10 +30,70 @@ class Model(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
 
+class IgnoreRegion(Model):
+    """A rectangle of the frame where movement is not news.
+
+    The only reliable answer to one specific swaying tree, a road, or a flag.
+    Rectangles rather than a painted bitmap because a bitmap does not belong in
+    a settings file the operator may have to read, and because a rectangle
+    survives the stream changing resolution: it is clipped, not corrupted.
+    """
+
+    x: int = 0
+    y: int = 0
+    w: int = 0
+    h: int = 0
+
+    @field_validator("x", "y")
+    @classmethod
+    def _not_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("an ignore region must start inside the frame")
+        return value
+
+    @field_validator("w", "h")
+    @classmethod
+    def _has_area(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("an ignore region must have a width and a height")
+        return value
+
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        return (self.x, self.y, self.w, self.h)
+
+
 class StreamSettings(Model):
     name: str
     url: str
     enabled: bool = True
+
+    # --- detection, per stream ---------------------------------------------
+    #
+    # Off by default, and deliberately so. A detector aimed at a treeline
+    # before anyone has painted an ignore mask or set the horizon alarms all
+    # day, and an operator who has learned to ignore the alarm strip is worse
+    # off than one who has none. Thermal and visible also fail differently, so
+    # this is a per-stream choice rather than one switch.
+    detect: bool = False
+
+    # One control, three positions, mapping to blob area and confirmation
+    # counts. See vmd/detect/pipeline.py: the alternative is five sliders and
+    # five ways to make the detector useless.
+    sensitivity: Literal["low", "normal", "high"] = "normal"
+
+    ignore_regions: list[IgnoreRegion] = Field(default_factory=list)
+
+    # Where the ground stops in this view, in frame pixels from the top. The
+    # bird rule needs it. None disables the rule, which is the right default:
+    # a wrong horizon silently deletes real detections.
+    horizon_y: int | None = None
+
+    @field_validator("horizon_y")
+    @classmethod
+    def _horizon_inside_the_frame(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("horizon_y must be 0 or more, or null to disable the rule")
+        return value
     # Which client reads this stream from the camera.
     #
     #   auto   - the streaming server's own RTSP client. Lowest overhead.
@@ -89,6 +149,36 @@ class StorageSettings(Model):
         return int(self.budget_gb * 1024**3)
 
 
+class DetectionSettings(Model):
+    """What detection is, everywhere. Per-stream choices live on StreamSettings.
+
+    `enabled` is the master switch for the detector process. Turning it off
+    stops detection and nothing else: recording is a separate process and shares
+    nothing with this but the local stream.
+    """
+
+    enabled: bool = True
+
+    # Run the classifier on each confirmed track. Off by default: at 700 m a
+    # person is about 13 pixels, and a model trained on photographs has nothing
+    # useful to say about that. It never gates an event either way - an
+    # unnamed track is still an event.
+    classify: bool = False
+
+    # How far a track must travel before it is believed, in pixels. None means
+    # "whatever the sensitivity preset says", which is the honest default: the
+    # presets were measured, and an operator who overrides this is overriding a
+    # measurement.
+    min_travel_px: float | None = None
+
+    @field_validator("min_travel_px")
+    @classmethod
+    def _travel_not_negative(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("min_travel_px must be 0 or more, or null to follow the preset")
+        return value
+
+
 class BitrateSettings(Model):
     mode: Literal["auto", "manual"] = "auto"
     floor_kbps: int = 1000
@@ -130,6 +220,7 @@ class Settings(Model):
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     bitrate: BitrateSettings = Field(default_factory=BitrateSettings)
+    detection: DetectionSettings = Field(default_factory=DetectionSettings)
     target_distance_m: float = 700.0
 
 
