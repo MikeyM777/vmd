@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import datetime
+import sqlite3
+
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 from vmd.desktop.live import LiveTab
+from vmd.desktop.style import PALETTE
 from vmd.desktop.video import FakeVideoPane
+from vmd.detect.events import Event
 from vmd.settings import CameraSettings, Settings, StreamSettings
 
 
@@ -43,7 +48,44 @@ def settings_with(*names: str) -> Settings:
     )
 
 
-def build(qtbot, *names: str):
+class FakeEvents:
+    """A reader with the EventStore's shape and none of its SQLite."""
+
+    def __init__(self, events: list[Event] | None = None) -> None:
+        self.events = list(events or [])
+        self.reads = 0
+
+    def recent(self, limit: int = 50) -> list[Event]:
+        self.reads += 1
+        newest = sorted(self.events, key=lambda e: (e.started, e.id), reverse=True)
+        return newest[:limit]
+
+
+class BrokenEvents:
+    def recent(self, limit: int = 50):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+
+def movement(
+    event_id: int,
+    stream: str = "thermal",
+    started: float = 1_770_000_000.0,
+    label: str = "",
+    confidence: float = 0.0,
+) -> Event:
+    return Event(
+        id=event_id,
+        stream=stream,
+        started=started,
+        ended=started + 3.0,
+        box=(10, 20, 13, 30),
+        travelled_px=44.0,
+        label=label,
+        confidence=confidence,
+    )
+
+
+def build(qtbot, *names: str, events=None):
     ptz = FakePtz()
     panes: dict[str, FakeVideoPane] = {}
 
@@ -51,7 +93,12 @@ def build(qtbot, *names: str):
         panes[name] = FakeVideoPane()
         return panes[name]
 
-    tab = LiveTab(ptz=ptz, make_pane=make_pane, local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}")
+    tab = LiveTab(
+        ptz=ptz,
+        make_pane=make_pane,
+        local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
+        events=events,
+    )
     qtbot.addWidget(tab)
     tab.apply(settings_with(*names))
     return tab, ptz, panes
@@ -257,3 +304,193 @@ def test_a_removed_stream_leaves_no_label_behind(qtbot) -> None:
     tab, _, _ = build(qtbot, "thermal", "visible")
     tab.apply(settings_with("thermal"))
     assert tab.stream_names() == ["thermal"]
+
+
+# ------------------------------------------------------------- what moved
+#
+# The alarm strip and the recent movement list. Every test here drives an
+# injected reader, so none of them opens a database, and none of them waits.
+
+
+def clock_text(started: float) -> str:
+    return datetime.datetime.fromtimestamp(started).strftime("%H:%M:%S")
+
+
+def test_a_new_event_raises_the_alarm_naming_the_stream_and_the_time(qtbot) -> None:
+    events = FakeEvents()
+    tab, _, _ = build(qtbot, "thermal", "visible", events=events)
+    tab.refresh()  # nothing has moved yet
+    assert tab.alarm_visible() is False
+
+    events.events.append(movement(1, stream="thermal", started=1_770_000_123.0))
+    tab.refresh()
+
+    assert tab.alarm_visible() is True
+    assert "thermal" in tab.alarm_text()
+    assert clock_text(1_770_000_123.0) in tab.alarm_text()
+    assert PALETTE["alarm"] in tab.alarm_style()
+
+
+def test_acknowledging_clears_the_alarm(qtbot) -> None:
+    events = FakeEvents()
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    events.events.append(movement(1))
+    tab.refresh()
+    assert tab.alarm_visible() is True
+
+    tab.acknowledge()
+
+    assert tab.alarm_visible() is False
+    # And it stays cleared: the same event must not raise it again on the next
+    # tick, two seconds later, forever.
+    tab.refresh()
+    assert tab.alarm_visible() is False
+
+
+def test_the_alarm_outlines_the_pane_the_movement_was_seen_on(qtbot) -> None:
+    events = FakeEvents()
+    tab, _, _ = build(qtbot, "thermal", "visible", events=events)
+    tab.refresh()
+    events.events.append(movement(1, stream="visible"))
+    tab.refresh()
+
+    assert tab.outlined_stream() == "visible"
+    assert PALETTE["alarm"] in tab.pane_outline_style("visible")
+    assert PALETTE["alarm"] not in tab.pane_outline_style("thermal")
+
+    tab.acknowledge()
+    assert tab.outlined_stream() is None
+    assert PALETTE["alarm"] not in tab.pane_outline_style("visible")
+
+
+def test_movement_the_console_missed_does_not_raise_a_stale_alarm(qtbot) -> None:
+    """The recorder and the detector outlive the window. Opening the console
+    days later must not blare about something that moved on Tuesday - but the
+    list still shows it, because it happened."""
+    events = FakeEvents([movement(1), movement(2)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    # Twice: the first read has to *remember* what was already there, not merely
+    # skip it, or the alarm arrives two seconds late instead of never.
+    tab.refresh()
+
+    assert tab.alarm_visible() is False
+    assert len(tab.recent_rows()) == 2
+
+
+def test_an_unidentified_event_leaves_the_confidence_blank(qtbot) -> None:
+    """This is the whole point. At 700 m a person is about 13 pixels: the
+    classifier cannot name it, and the operator still needs to know. "0%" or
+    "unknown" in that cell would read as "nothing was there"."""
+    events = FakeEvents([movement(1, stream="thermal", label="", confidence=0.0)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+
+    (row,) = tab.recent_rows()
+    time_text, stream, what, confidence = row
+    assert stream == "thermal"
+    assert time_text
+    assert what == "", f"an unnamed thing must be blank, not {what!r}"
+    assert confidence == "", f"an unnamed thing must be blank, not {confidence!r}"
+    for lie in ("0%", "0.0", "unknown", "none", "nothing"):
+        assert lie not in confidence.lower()
+        assert lie not in what.lower()
+
+
+def test_the_list_says_that_blank_means_unidentified_not_uncertain(qtbot) -> None:
+    tab, _, _ = build(qtbot, "thermal", events=FakeEvents())
+    note = tab.movement_note().lower()
+    assert "unidentified" in note
+    assert "uncertain" in note
+
+
+def test_a_named_event_shows_what_it_was_and_how_sure(qtbot) -> None:
+    events = FakeEvents([movement(1, label="person", confidence=0.82)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+
+    (row,) = tab.recent_rows()
+    assert row[2] == "person"
+    assert "82" in row[3]
+
+
+def test_the_newest_movement_is_at_the_top(qtbot) -> None:
+    events = FakeEvents(
+        [
+            movement(1, stream="thermal", started=1_770_000_000.0),
+            movement(2, stream="visible", started=1_770_000_500.0),
+        ]
+    )
+    tab, _, _ = build(qtbot, "thermal", "visible", events=events)
+    tab.refresh()
+    assert [row[1] for row in tab.recent_rows()] == ["visible", "thermal"]
+
+
+def test_the_list_is_not_rebuilt_when_nothing_has_moved(qtbot) -> None:
+    """refresh() runs every two seconds for months. Rebuilding a table nobody
+    changed is work done a million times a month for nothing."""
+    events = FakeEvents([movement(1)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    assert tab.rebuilds == 1
+
+    for _ in range(20):
+        tab.refresh()
+    assert tab.rebuilds == 1, "the list was rebuilt with nothing to show for it"
+
+    events.events.append(movement(2, started=1_770_000_600.0))
+    tab.refresh()
+    assert tab.rebuilds == 2
+
+
+def test_a_list_shortened_by_retention_is_redrawn(qtbot) -> None:
+    """Retention deletes the oldest events with the footage they point at. The
+    newest id does not change, so a signature made of it alone would leave rows
+    on screen pointing at files that are gone."""
+    events = FakeEvents([movement(1, started=1_770_000_000.0), movement(2, started=1_770_000_600.0)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    assert tab.rebuilds == 1
+
+    events.events = [e for e in events.events if e.id != 1]
+    tab.refresh()
+    assert tab.rebuilds == 2
+    assert len(tab.recent_rows()) == 1
+
+
+def test_an_event_store_that_cannot_be_read_does_not_stop_the_pictures(qtbot) -> None:
+    """Detection is the thing that fails here. The camera is not."""
+    tab, _, panes = build(qtbot, "thermal", events=BrokenEvents())
+    panes["thermal"].pretend_failed()
+    tab.refresh()
+    assert panes["thermal"].restarts == 1
+    assert tab.alarm_visible() is False
+
+
+def test_a_console_with_no_event_reader_still_shows_the_pictures(qtbot, caplog) -> None:
+    """--no-services, or a machine where detection was never installed.
+
+    Quietly, too. This runs every two seconds for months, and a console that
+    complained each time would fill the Logs tab with the news that nothing is
+    wrong."""
+    tab, _, panes = build(qtbot, "thermal")
+    panes["thermal"].pretend_failed()
+    with caplog.at_level("ERROR", logger="vmd.desktop.live"):
+        tab.refresh()
+        tab.refresh()
+    assert panes["thermal"].restarts == 1
+    assert tab.recent_rows() == []
+    assert caplog.records == [], "no reader is not a fault to report"
+
+
+def test_rebuilding_the_panes_keeps_the_movement_already_listed(qtbot) -> None:
+    """apply() replaces the panes when the streams change. The list of what
+    moved belongs to the detector, not to the panes."""
+    events = FakeEvents([movement(1)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    assert len(tab.recent_rows()) == 1
+
+    tab.apply(settings_with("thermal", "visible"))
+    assert len(tab.recent_rows()) == 1

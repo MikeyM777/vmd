@@ -15,16 +15,23 @@ the field:
 
 from __future__ import annotations
 
+import datetime
 import logging
 from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -65,6 +72,19 @@ ARROWS: dict[int, str] = {
 }
 ZOOM_IN_KEYS = {int(Qt.Key.Key_Plus), int(Qt.Key.Key_Equal)}
 ZOOM_OUT_KEYS = {int(Qt.Key.Key_Minus), int(Qt.Key.Key_Underscore)}
+
+# How many rows of movement the side column shows. The list is a glance, not an
+# archive - the archive is Playback, where the same events are marks on the day.
+RECENT_LIMIT = 20
+
+# Why the confidence column is sometimes empty, said where the operator can read
+# it. Without this line a blank cell reads as "the detector was not sure", which
+# is the opposite of the truth: the movement is confirmed, and only its name is
+# missing. At 700 m a person is about 13 pixels and no classifier will name it.
+UNIDENTIFIED_NOTE = (
+    "A blank means unidentified, not uncertain: something moved and was "
+    "confirmed, but was too small or too dark to name."
+)
 
 
 class SteeringOverlay(QWidget):
@@ -124,10 +144,16 @@ class SteeringOverlay(QWidget):
 
 
 class LiveTab(QWidget):
-    """Video wall plus steering.
+    """Video wall, steering, and what moved.
 
-    `make_pane` and `local_url` are injected so the whole tab can be tested with
-    fakes: one needs a display and a stream, the other needs a running server.
+    `make_pane`, `local_url` and `events` are injected so the whole tab can be
+    tested with fakes: one needs a display and a stream, one needs a running
+    server, and the third needs a database the detector process writes.
+
+    `events` is anything with `recent(limit)` - in the console it is an
+    `EventStore` over events.db. None means no detection is being read, which is
+    what a console started with --no-services has, and it must cost nothing but
+    the list.
     """
 
     def __init__(
@@ -135,15 +161,29 @@ class LiveTab(QWidget):
         ptz,
         make_pane: Callable[[str], VideoPane],
         local_url: Callable[[str], str | None],
+        events=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._ptz = ptz
         self._make_pane = make_pane
         self._local_url = local_url
+        self._events = events
         self._panes: dict[str, VideoPane] = {}
+        self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
         self._labels: dict[str, QLabel] = {}
+        self._alarm_stream: str | None = None
+        # None, not 0: the first read establishes what was already there rather
+        # than alarming about it. The detector outlives the window, so opening
+        # the console on a Thursday must not blare about Tuesday - and the list
+        # still shows Tuesday, because it happened.
+        self._seen_event_id: int | None = None
+        self._listed: tuple = ()
+        # How many times the table has actually been rebuilt. refresh() runs
+        # every two seconds for months; this is the number that says whether it
+        # is doing work for nothing.
+        self.rebuilds = 0
         self._held: set[str] = set()
         self._fine = False
         self._zoom = 0.0
@@ -153,9 +193,15 @@ class LiveTab(QWidget):
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+        outer.addWidget(self._build_alarm_strip())
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        outer.addLayout(layout, 1)
 
         # The splitter cannot hold the overlay: it turns every child widget into
         # a pane. So the wall lives in a plain container, and the overlay is a
@@ -172,7 +218,7 @@ class LiveTab(QWidget):
         layout.addWidget(self._wall_area, 1)
 
         side = QWidget()
-        side.setFixedWidth(292)
+        side.setFixedWidth(340)
         self._side_layout = QVBoxLayout(side)
         self._moving = QLabel("idle")
         self._ptz_note = QLabel("")
@@ -181,6 +227,7 @@ class LiveTab(QWidget):
         self._streams_box = QGroupBox("Streams")
         self._streams_layout = QVBoxLayout(self._streams_box)
         self._side_layout.addWidget(self._streams_box)
+        self._side_layout.addWidget(self._build_movement_box(), 1)
 
         steering_box = QGroupBox("Steering")
         steering_layout = QVBoxLayout(steering_box)
@@ -199,6 +246,152 @@ class LiveTab(QWidget):
             self.overlay.raise_()
         return super().eventFilter(watched, event)
 
+    # ------------------------------------------------------------ what moved
+
+    def _build_alarm_strip(self) -> QWidget:
+        """The strip across the top. Hidden until something moves.
+
+        Hidden rather than empty: a strip that is always there is furniture, and
+        furniture is not noticed. The operator is watching the pictures, not
+        this.
+        """
+        self._alarm = QFrame()
+        self._alarm.setStyleSheet(
+            f"background: {PALETTE['alarm']}; color: {PALETTE['bg']};"
+        )
+        row = QHBoxLayout(self._alarm)
+        row.setContentsMargins(12, 8, 12, 8)
+        self._alarm_label = QLabel("")
+        self._alarm_label.setWordWrap(True)
+        self._alarm_label.setStyleSheet(f"background: transparent; color: {PALETTE['bg']};")
+        row.addWidget(self._alarm_label, 1)
+        acknowledge = QPushButton("Acknowledge")
+        acknowledge.clicked.connect(self.acknowledge)
+        row.addWidget(acknowledge)
+        self._alarm.setVisible(False)
+        return self._alarm
+
+    def _build_movement_box(self) -> QWidget:
+        box = QGroupBox("Recent movement")
+        layout = QVBoxLayout(box)
+        self._movement = QTableWidget(0, 4)
+        self._movement.setHorizontalHeaderLabels(["Time", "Stream", "What", "Confidence"])
+        self._movement.verticalHeader().setVisible(False)
+        self._movement.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._movement.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._movement.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        layout.addWidget(self._movement, 1)
+        self._movement_note = QLabel(UNIDENTIFIED_NOTE)
+        self._movement_note.setWordWrap(True)
+        self._movement_note.setStyleSheet(f"color: {PALETTE['muted']};")
+        layout.addWidget(self._movement_note)
+        return box
+
+    def _refresh_events(self) -> None:
+        """Read the movement list, raise the alarm on anything new.
+
+        A store that cannot be read costs detection and nothing else: the
+        pictures, the steering and the panes are not downstream of it, and an
+        operator who loses the movement list must not lose the camera with it.
+        """
+        if self._events is None:
+            return
+        try:
+            events = list(self._events.recent(RECENT_LIMIT))
+        except Exception:  # noqa: BLE001 - the camera does not depend on this
+            logger.exception("the movement list could not be read")
+            return
+
+        newest = events[0] if events else None
+        if self._seen_event_id is None:
+            self._seen_event_id = newest.id if newest is not None else 0
+        elif newest is not None and newest.id > self._seen_event_id:
+            self._seen_event_id = newest.id
+            self._raise_alarm(newest)
+
+        # Only redraw when the list actually changed. This runs every two
+        # seconds for months; the id alone is not enough of a signature, because
+        # retention deletes from the *old* end and leaves the newest id exactly
+        # where it was.
+        signature = tuple((e.id, e.label, e.confidence) for e in events)
+        if signature == self._listed:
+            return
+        self._listed = signature
+        self._fill_movement(events)
+
+    def _fill_movement(self, events) -> None:
+        self.rebuilds += 1
+        self._movement.setRowCount(len(events))
+        for row, event in enumerate(events):
+            named = bool(event.label)
+            cells = [
+                datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S"),
+                event.stream,
+                # Blank, not "unknown" and never "0%". An unnamed event is a
+                # confirmed one: something moved. A number in this cell would
+                # read as "the detector saw nothing", which is a lie about the
+                # only thing this system exists to report.
+                event.label if named else "",
+                f"{event.confidence * 100:.0f}%" if named else "",
+            ]
+            for column, text in enumerate(cells):
+                self._movement.setItem(row, column, QTableWidgetItem(text))
+
+    def _raise_alarm(self, event) -> None:
+        clock = datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S")
+        self._alarm_label.setText(f"Movement on {event.stream} at {clock}")
+        self._alarm.setVisible(True)
+        self._outline(event.stream)
+
+    def acknowledge(self) -> None:
+        """The operator has seen it. Clear the strip and the outline."""
+        self._alarm.setVisible(False)
+        self._alarm_label.setText("")
+        self._outline(None)
+
+    def _outline(self, stream: str | None) -> None:
+        self._alarm_stream = stream
+        for name, frame in self._frames.items():
+            frame.setStyleSheet(
+                f"border: 3px solid {PALETTE['alarm']};" if name == stream else ""
+            )
+
+    # -- what the tests and the window read ---------------------------------
+
+    def alarm_visible(self) -> bool:
+        # isVisibleTo, not isVisible: a widget inside a window nobody has shown
+        # yet is not visible, and the strip's own state is what is being asked
+        # about.
+        return self._alarm.isVisibleTo(self)
+
+    def alarm_text(self) -> str:
+        return self._alarm_label.text()
+
+    def alarm_style(self) -> str:
+        return self._alarm.styleSheet()
+
+    def outlined_stream(self) -> str | None:
+        return self._alarm_stream
+
+    def pane_outline_style(self, name: str) -> str:
+        frame = self._frames.get(name)
+        return frame.styleSheet() if frame is not None else ""
+
+    def movement_note(self) -> str:
+        return self._movement_note.text()
+
+    def recent_rows(self) -> list[tuple[str, str, str, str]]:
+        rows: list[tuple[str, str, str, str]] = []
+        for row in range(self._movement.rowCount()):
+            cells = []
+            for column in range(self._movement.columnCount()):
+                item = self._movement.item(row, column)
+                cells.append(item.text() if item is not None else "")
+            rows.append(tuple(cells))  # type: ignore[arg-type]
+        return rows
+
     # ---------------------------------------------------------------- streams
 
     def apply(self, settings: Settings) -> None:
@@ -209,6 +402,9 @@ class LiveTab(QWidget):
                 pane.setParent(None)
         self._panes.clear()
         self._status.clear()
+        for frame in self._frames.values():
+            frame.setParent(None)
+        self._frames.clear()
         for label in self._labels.values():
             self._streams_layout.removeWidget(label)
             label.setParent(None)
@@ -219,8 +415,17 @@ class LiveTab(QWidget):
                 continue
             pane = self._make_pane(stream.name)
             self._panes[stream.name] = pane
+            # Each pane sits in a frame of its own so that an event can outline
+            # the stream it was seen on. The pane itself cannot carry the
+            # outline: a VideoPane is only required to show, stop and report a
+            # state, and libVLC draws over anything the widget paints anyway.
+            frame = QFrame()
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(3, 3, 3, 3)
             if isinstance(pane, QWidget):
-                self._wall.addWidget(pane)
+                frame_layout.addWidget(pane)
+            self._frames[stream.name] = frame
+            self._wall.addWidget(frame)
             label = QLabel()
             self._labels[stream.name] = label
             self._streams_layout.addWidget(label)
@@ -230,6 +435,8 @@ class LiveTab(QWidget):
                 self._set_status(stream.name, pane.state)
             else:
                 self._set_status(stream.name, "stopped")
+        # An alarm raised before the streams changed is still unacknowledged.
+        self._outline(self._alarm_stream)
         self.overlay.raise_()
 
     def refresh(self) -> None:
@@ -244,6 +451,7 @@ class LiveTab(QWidget):
                 if url:
                     logger.warning("%s failed; restarting it", name)
                     pane.show(url)
+        self._refresh_events()
 
     def stream_names(self) -> list[str]:
         return list(self._panes)
