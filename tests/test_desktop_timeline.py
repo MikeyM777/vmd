@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import datetime
 import random
 
-from vmd.desktop.timeline import DAY_SECONDS, coverage_bars, day_bounds, seek_target, time_at
+from vmd.desktop.timeline import coverage_bars, day_bounds, seek_target, time_at
 from vmd.storage.index import Segment
+
+# An ordinary (non-DST-transition) day, for tests that don't care about the
+# DST edge case.
+ORDINARY_DAY_SECONDS = 24 * 60 * 60
 
 
 def segment(start: float, end: float, path: str = "a.mp4") -> Segment:
@@ -15,12 +18,12 @@ def segment(start: float, end: float, path: str = "a.mp4") -> Segment:
 
 def test_a_day_is_midnight_to_midnight_local() -> None:
     start, end = day_bounds(2026, 8, 11)
-    assert end - start == DAY_SECONDS
+    assert end - start == ORDINARY_DAY_SECONDS
 
 
 def test_coverage_is_a_fraction_of_the_day() -> None:
-    start, _ = day_bounds(2026, 8, 11)
-    bars = coverage_bars([segment(start + 3600, start + 7200)], start)
+    start, end = day_bounds(2026, 8, 11)
+    bars = coverage_bars([segment(start + 3600, start + 7200)], start, end)
     assert len(bars) == 1
     left, width = bars[0]
     assert abs(left - 1 / 24) < 1e-6
@@ -28,23 +31,25 @@ def test_coverage_is_a_fraction_of_the_day() -> None:
 
 
 def test_segments_outside_the_day_are_not_drawn() -> None:
-    start, _ = day_bounds(2026, 8, 11)
-    bars = coverage_bars([segment(start - 10000, start - 9000)], start)
+    start, end = day_bounds(2026, 8, 11)
+    bars = coverage_bars([segment(start - 10000, start - 9000)], start, end)
     assert bars == []
 
 
 def test_a_segment_crossing_midnight_is_clipped_to_the_day() -> None:
-    start, _ = day_bounds(2026, 8, 11)
-    bars = coverage_bars([segment(start + DAY_SECONDS - 60, start + DAY_SECONDS + 600)], start)
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    bars = coverage_bars([segment(start + span - 60, start + span + 600)], start, end)
     left, width = bars[0]
     assert left + width <= 1.0 + 1e-9
 
 
 def test_a_click_maps_to_a_time_in_that_day() -> None:
-    start, _ = day_bounds(2026, 8, 11)
-    assert time_at(0.0, start) == start
-    assert time_at(0.5, start) == start + DAY_SECONDS / 2
-    assert time_at(1.0, start) == start + DAY_SECONDS
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    assert time_at(0.0, start, end) == start
+    assert time_at(0.5, start, end) == start + span / 2
+    assert time_at(1.0, start, end) == end
 
 
 def test_a_click_inside_a_segment_seeks_into_that_file() -> None:
@@ -65,52 +70,52 @@ def test_a_click_in_a_gap_finds_nothing() -> None:
 # --- Extra tests beyond the plan ---
 
 
-def test_dst_day_documents_actual_behaviour() -> None:
-    """day_bounds is midnight-to-midnight-plus-86400, not calendar-day-aware.
-
-    On a real DST transition the local day is 23 or 25 hours long, so
-    `start + DAY_SECONDS` does not land on the following midnight. This test
-    pins down what actually happens on a known local DST date so the gap is
-    visible rather than silently wrong. Israel (the deployment locale) moves
-    clocks back (DST end, "fall back") in late October: on that date the
-    local day is 25 hours long. If the machine's local zone has no DST, the
-    difference collapses to zero and the assertion still documents that.
+def test_dst_end_day_is_measured_at_25_hours() -> None:
+    """Israel's DST ends in late October, moving clocks back an hour; the
+    local calendar day that contains the change is 25 hours long. day_bounds
+    must measure this rather than assume a fixed 86400-second day.
     """
-    dst_end_date = datetime.date(2026, 10, 25)
-    day_after = dst_end_date + datetime.timedelta(days=1)
+    start, end = day_bounds(2026, 10, 25)
+    assert end - start == 25 * 3600
 
-    naive_start = datetime.datetime(
-        dst_end_date.year, dst_end_date.month, dst_end_date.day
-    ).timestamp()
-    naive_end = naive_start + DAY_SECONDS
 
-    real_next_midnight = datetime.datetime(
-        day_after.year, day_after.month, day_after.day
-    ).timestamp()
+def test_dst_start_day_is_measured_at_23_hours() -> None:
+    """Israel's DST starts in late March, moving clocks forward an hour; the
+    local calendar day that contains the change is 23 hours long.
+    """
+    start, end = day_bounds(2026, 3, 27)
+    assert end - start == 23 * 3600
 
-    # day_bounds() itself, for the same date:
-    start, end = day_bounds(dst_end_date.year, dst_end_date.month, dst_end_date.day)
-    assert start == naive_start
-    assert end == naive_end
 
-    # The documented discrepancy: on a machine observing DST with a fall-back
-    # on this date, end != real_next_midnight (off by one hour's worth of
-    # seconds). On a machine with no DST for this zone, they are equal - this
-    # assertion records whichever is true for the environment running the
-    # test, rather than asserting a specific offset.
-    discrepancy = real_next_midnight - end
-    assert discrepancy in (0.0, 3600.0, -3600.0)
+def test_segment_in_dst_extra_hour_appears_in_that_days_coverage() -> None:
+    """The operator-visible symptom of the old bug: a segment recorded during
+    the 25th hour of a DST-end day must still show up in that day's bar,
+    instead of silently falling off the end.
+    """
+    start, end = day_bounds(2026, 10, 25)
+    span = end - start
+    assert span == 25 * 3600
+
+    extra_hour_segment = segment(start + 24 * 3600 + 600, start + 24 * 3600 + 1200)
+    bars = coverage_bars([extra_hour_segment], start, end)
+
+    assert len(bars) == 1
+    left, width = bars[0]
+    assert left + width <= 1.0 + 1e-9
+    # Falls within the day's 25th hour, i.e. past the point a fixed-86400
+    # assumption would have clipped it at.
+    assert left > 24 / 25 - 1e-9
 
 
 def test_segments_not_assumed_sorted_coverage() -> None:
-    start, _ = day_bounds(2026, 8, 11)
+    start, end = day_bounds(2026, 8, 11)
     segs = [
         segment(start + 10000, start + 11000, "c.mp4"),
         segment(start + 100, start + 200, "a.mp4"),
         segment(start + 5000, start + 5500, "b.mp4"),
     ]
     random.Random(42).shuffle(segs)
-    bars = coverage_bars(segs, start)
+    bars = coverage_bars(segs, start, end)
     assert len(bars) == 3
 
 
@@ -128,19 +133,19 @@ def test_segments_not_assumed_sorted_seek() -> None:
 
 
 def test_overlapping_segments_do_not_produce_negative_width() -> None:
-    start, _ = day_bounds(2026, 8, 11)
+    start, end = day_bounds(2026, 8, 11)
     segs = [
         segment(start + 100, start + 500, "first.mp4"),
         segment(start + 300, start + 700, "second.mp4"),
     ]
-    bars = coverage_bars(segs, start)
+    bars = coverage_bars(segs, start, end)
     for _left, width in bars:
         assert width >= 0
 
 
 def test_zero_length_segment_produces_no_bar() -> None:
-    start, _ = day_bounds(2026, 8, 11)
-    bars = coverage_bars([segment(start + 100, start + 100)], start)
+    start, end = day_bounds(2026, 8, 11)
+    bars = coverage_bars([segment(start + 100, start + 100)], start, end)
     assert bars == []
 
 
