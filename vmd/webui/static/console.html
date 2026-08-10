@@ -1050,6 +1050,13 @@ const STALL_MS = 8000;          // a playing stream that goes quiet for this lon
 // the same camera played perfectly in VLC.
 const FIRST_FRAME_MS = 30000;
 
+// WebRTC can connect and still deliver nothing: the signalling succeeds over
+// loopback while the media, which travels over a separate UDP socket, is
+// dropped by a firewall. That state looks exactly like a slow camera, so it
+// used to retry WebRTC forever and never reach the fallback that would have
+// worked. Give it a short window to produce a frame, then take MP4 instead.
+const WEBRTC_FRAME_MS = 10000;
+
 /* Whatever the camera actually offers, under whatever names the operator gave
    it. The panes and the layout buttons are built from that list. */
 const panes = {};
@@ -1232,7 +1239,8 @@ function attach(name, base) {
   video.removeAttribute('src');
   video.srcObject = null;
 
-  if (window.RTCPeerConnection && !player.forceMp4) {
+  player.usingWebrtc = !!(window.RTCPeerConnection && !player.forceMp4);
+  if (player.usingWebrtc) {
     attachWebrtc(name, base, reason => {
       // One fallback, remembered, so a camera that cannot do WebRTC does not
       // pay the timeout on every retry for the rest of the shift.
@@ -1297,6 +1305,17 @@ setInterval(() => {
       const waitingFor = now - (player.startedAt || now);
       setPaneState(name, 'reconnecting', 'CONNECTING',
                    `waiting for the first frame — ${Math.round(waitingFor / 1000)} s`);
+
+      // Connected over WebRTC but nothing is arriving: stop waiting on it and
+      // use the transport that does not depend on a second socket getting
+      // through.
+      if (player.usingWebrtc && waitingFor > WEBRTC_FRAME_MS) {
+        logLine(`${name}: webrtc connected but sent no video; using MP4`);
+        player.forceMp4 = true;
+        player.attempts = 0;
+        attach(name, player.base);
+        continue;
+      }
       const camera = sources[name];
       if (camera && camera.connected === false) {
         setPaneState(name, 'reconnecting', 'NO SIGNAL',
