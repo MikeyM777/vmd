@@ -182,6 +182,7 @@ class Go2rtcService:
         settings: Settings,
         config_path: Path,
         binary: Path | None,
+        endpoint_path: Path | None = None,
         api_port: int = 1984,
         rtsp_port: int = 8554,
         webrtc_port: int = 8555,
@@ -189,6 +190,10 @@ class Go2rtcService:
     ) -> None:
         self.settings = settings
         self.config_path = Path(config_path)
+        # Where the ports it actually took are written down, so the recording
+        # service - a separate process - can pull from here instead of opening
+        # its own connection across the radio link.
+        self.endpoint_path = Path(endpoint_path) if endpoint_path else self.config_path.parent / "streaming.json"
         self.api_port = api_port
         self.rtsp_port = rtsp_port
         self.webrtc_port = webrtc_port
@@ -278,6 +283,7 @@ class Go2rtcService:
             self._launch(with_webrtc=False)
 
     def stop(self) -> None:
+        self._clear_endpoint()
         process = self._process
         if process is None:
             return
@@ -332,6 +338,7 @@ class Go2rtcService:
             )
             return False
 
+        self._write_endpoint()
         logger.info(
             "go2rtc started on %s for %s%s",
             self.api_base,
@@ -339,6 +346,31 @@ class Go2rtcService:
             "" if with_webrtc else " (WebRTC disabled)",
         )
         return True
+
+    def local_rtsp_url(self, name: str) -> str:
+        """Where this machine can get the stream without touching the camera."""
+        return f"rtsp://127.0.0.1:{self.rtsp_port}/{name}"
+
+    def _write_endpoint(self) -> None:
+        payload = {
+            "api_port": self.api_port,
+            "rtsp_port": self.rtsp_port,
+            "webrtc_port": self.webrtc_port,
+            "streams": {name: self.local_rtsp_url(name) for name in self.stream_names},
+        }
+        try:
+            self.endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            self.endpoint_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError:
+            # Not fatal: the recorder falls back to the camera, which costs
+            # bandwidth but still records.
+            logger.warning("could not write %s", self.endpoint_path, exc_info=True)
+
+    def _clear_endpoint(self) -> None:
+        try:
+            self.endpoint_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def sources(self) -> dict:
         """What go2rtc says about each stream: is the camera side connected?

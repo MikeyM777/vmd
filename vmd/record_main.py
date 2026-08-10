@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from vmd.settings import Settings, SettingsError, load_settings
+from vmd.streaming.endpoint import is_live, local_source, read_endpoint
 from vmd.storage.discovery import find_closed_segments, parse_segment_start
 from vmd.storage.index import SegmentIndex
 from vmd.storage.recorder import SegmentRecorder
@@ -16,6 +17,10 @@ from vmd.storage.retention import apply_plan, plan_retention
 from vmd.supervisor import Managed, Supervisor
 
 logger = logging.getLogger(__name__)
+
+# Written by the console when it starts the streaming server, beside the
+# settings it was started with.
+DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 
 
 class RecordingService:
@@ -27,8 +32,11 @@ class RecordingService:
         spawn: Callable | None = None,
         retention_interval: float = 60.0,
         settle_seconds: float = 5.0,
+        endpoint_path: str | Path | None = None,
     ) -> None:
         self.settings = settings
+        endpoint = read_endpoint(endpoint_path or DEFAULT_ENDPOINT_PATH)
+        self._endpoint = endpoint if endpoint and is_live(endpoint) else None
         # How long a file must sit untouched before it counts as finished. The
         # same window guards both discovery and orphan adoption; adoption used
         # to have none, which made it the weaker of the two paths.
@@ -41,7 +49,7 @@ class RecordingService:
             self.recorders = [
                 SegmentRecorder(
                     stream=stream.name,
-                    source_url=stream.url,
+                    source_url=self._source_for(stream),
                     output_dir=self.root / stream.name,
                     segment_seconds=settings.storage.segment_seconds,
                     **recorder_kwargs,
@@ -69,6 +77,24 @@ class RecordingService:
             # immediate retry fail with "database is locked".
             self.index.close()
             raise
+
+    def _source_for(self, stream) -> str:
+        """Prefer the local streaming server over the camera.
+
+        The console already holds one connection to the camera and re-serves it
+        on this machine. Recording from there means the stream crosses the radio
+        link once instead of twice - which on a five megabit link is the
+        difference between recording and losing the live picture as well.
+
+        If the streaming server is not running, the camera is used directly:
+        recording something is more important than recording it cheaply.
+        """
+        local = local_source(self._endpoint, stream.name)
+        if local:
+            logger.info("recording %s from the local streaming server", stream.name)
+            return local
+        logger.info("recording %s directly from the camera", stream.name)
+        return stream.url
 
     def run_once(self, now: float | None = None) -> None:
         """One pass: keep recorders alive, index finished segments, apply retention.
@@ -365,6 +391,12 @@ class RecordingService:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="vmd-record", description="VMD recording service")
     parser.add_argument("--settings", default="settings.json", help="path to settings.json")
+    parser.add_argument(
+        "--streaming",
+        default=None,
+        help="where the console wrote the streaming server's ports "
+        "(default: streaming.json beside the settings)",
+    )
     parser.add_argument("--once", action="store_true", help="run a single pass and exit")
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between passes")
     return parser.parse_args(argv)
@@ -373,6 +405,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args(argv)
+    endpoint_path = Path(args.streaming) if args.streaming else Path(args.settings).parent / "streaming.json"
     try:
         settings = load_settings(args.settings)
     except SettingsError as exc:
@@ -392,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     if not [s for s in settings.camera.streams if s.enabled]:
         print(f"no enabled streams in {args.settings}; nothing to record")
         return 1
-    service = RecordingService(settings)
+    service = RecordingService(settings, endpoint_path=endpoint_path)
     if args.once:
         try:
             service.run_once()

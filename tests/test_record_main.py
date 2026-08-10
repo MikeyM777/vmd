@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -355,3 +356,69 @@ def test_main_runs_a_single_pass_over_a_file_source(tmp_path):
 
     # A single pass must complete and clean up even though the source is unusable.
     assert main(["--settings", str(path), "--once"]) == 0
+
+
+# --------------------------------------------------------------------------
+# Where the recorder pulls from. Every stream that crosses the radio link twice
+# is a stream the link cannot carry once.
+# --------------------------------------------------------------------------
+
+
+def test_records_from_the_local_streaming_server_when_it_is_running(tmp_path, monkeypatch):
+    import socket
+
+    from vmd.settings import CameraSettings, Settings, StorageSettings, StreamSettings
+
+    # A listener standing in for the streaming server's RTSP port.
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    endpoint = tmp_path / "streaming.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "api_port": 1984,
+                "rtsp_port": port,
+                "streams": {"thermal": f"rtsp://127.0.0.1:{port}/thermal"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/thermal", enabled=True)],
+        ),
+        storage=StorageSettings(root=tmp_path / "rec"),
+    )
+    try:
+        service = RecordingService(settings, spawn=spawn_fake, endpoint_path=endpoint)
+        assert service.recorders[0].source_url == f"rtsp://127.0.0.1:{port}/thermal"
+    finally:
+        listener.close()
+
+
+def test_falls_back_to_the_camera_when_the_streaming_server_is_gone(tmp_path):
+    """Recording something matters more than recording it cheaply."""
+    from vmd.settings import CameraSettings, Settings, StorageSettings, StreamSettings
+
+    endpoint = tmp_path / "streaming.json"
+    endpoint.write_text(
+        json.dumps(
+            {"api_port": 1984, "rtsp_port": 59999, "streams": {"thermal": "rtsp://127.0.0.1:59999/thermal"}}
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/thermal", enabled=True)],
+        ),
+        storage=StorageSettings(root=tmp_path / "rec"),
+    )
+    service = RecordingService(settings, spawn=spawn_fake, endpoint_path=endpoint)
+    assert service.recorders[0].source_url == "rtsp://10.0.0.2/thermal"
