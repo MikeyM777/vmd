@@ -108,6 +108,24 @@ class Settings(Model):
     # better, and on a link that saturates when the camera pans, mp4 is.
     video_mode: Literal["auto", "webrtc", "mp4"] = "auto"
 
+    # How much jitter the live picture absorbs before it stutters, in
+    # milliseconds.
+    #
+    # WebRTC defaults to as little as it can get away with, which is right for a
+    # conversation and wrong for this: a keyframe every second arrives as a
+    # burst, and with nothing to absorb it the picture hitches once a second on
+    # a link under pressure. Half a second of buffer costs half a second of
+    # delay and removes the hitch - which is the trade VLC makes by default, and
+    # why VLC looks smooth here while this did not.
+    video_buffer_ms: int = 500
+
+    @field_validator("video_buffer_ms")
+    @classmethod
+    def _buffer_sane(cls, value: int) -> int:
+        if not 0 <= value <= 5000:
+            raise ValueError("video_buffer_ms must be between 0 and 5000")
+        return value
+
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)

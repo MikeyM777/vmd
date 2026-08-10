@@ -608,6 +608,7 @@ dialog#updatebox h2 {
           <p class="hint" id="checkmsg"></p>
           <p class="hint">If you do not know the paths, run <code>uv run python spike/probe_camera.py &lt;address&gt;</code> — it asks the camera and prints the ones that answer.</p>
           <div class="fields" style="margin-top:10px">
+            <div class="field"><label>Smoothing (ms)</label><input id="s-video-buffer" placeholder="500"></div>
             <div class="field"><label>Live video</label><select id="s-video-mode">
               <option value="auto">Automatic — low delay, falls back if it cannot deliver</option>
               <option value="webrtc">Low delay — best on a clean link</option>
@@ -949,6 +950,8 @@ function fill(s) {
     .forEach(stream => rows.appendChild(streamRow(stream)));
   const mode = el('s-video-mode');
   if (mode) mode.value = s.video_mode || 'auto';
+  const buffer = el('s-video-buffer');
+  if (buffer) buffer.value = s.video_buffer_ms == null ? 500 : s.video_buffer_ms;
   el('s-radio-host').value = s.radio.host || '';
   el('s-radio-user').value = s.radio.username || '';
   el('s-radio-pass').value = s.radio.password || '';
@@ -1002,6 +1005,7 @@ function collect() {
     },
     target_distance_m: num('s-distance', 700),
     video_mode: (el('s-video-mode') || {}).value || 'auto',
+    video_buffer_ms: num('s-video-buffer', 500),
   };
 }
 
@@ -1096,8 +1100,15 @@ const FIRST_FRAME_MS = 30000;
 // dropped by a firewall. That state looks exactly like a slow camera, so it
 // used to retry WebRTC forever and never reach the fallback that would have
 // worked. Give it a short window to produce a frame, then take MP4 instead.
-const WEBRTC_FRAME_MS = 10000;
-const LIVE_EDGE_SOFT_S = 1.5;   // beyond this, play slightly fast to catch up
+const WEBRTC_FRAME_MS = 12000;  // how long WebRTC gets to produce a frame
+// How far behind live the picture may sit before it is nudged forward. Derived
+// from the smoothing setting, because they are the same idea: a stream that is
+// allowed some slack rides out a burst, and one that is not stutters on every
+// keyframe. Chasing the live edge too eagerly is itself a source of judder -
+// the picture speeds up and slows down instead of running late and steady.
+function liveEdgeSoftSeconds() {
+  return Math.max(1.5, (videoBufferMs || 0) / 1000 + 1.5);
+}
 // Beyond this, reconnect - but generously. A pan on a full link puts the
 // picture seconds behind for a few seconds, and reconnecting for that is how a
 // momentary lag becomes a visible disconnection.
@@ -1111,6 +1122,7 @@ const players = {};
 let sources = {};
 // The operator's transport preference, refreshed with the rest of the settings.
 let videoMode = 'auto';
+let videoBufferMs = 500;
 
 function idsFor(name) {
   const key = name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1197,16 +1209,50 @@ function setPaneState(name, state, headline, detail) {
    signalling goes straight to it and the media never passes through this page's
    server at all. MP4 remains as the fallback, because a picture that is a
    second late beats no picture. */
-function attachWebrtc(name, base, onFail) {
+function attachWebrtc(name, base, onFail, token) {
   const spec = panes[name];
   const video = el(spec.video);
   const player = players[name];
   let settled = false;
 
+  // Every attempt carries the token of the attach that started it. Callbacks
+  // fire long after the attempt they belong to has been replaced - a track
+  // arriving after a fallback, a timeout firing after a reconnect - and each of
+  // them used to act on the element regardless. One comparison ends the whole
+  // class: an attempt that is no longer the current one does nothing at all.
+  const current = () => player.token === token;
+
   let socket, peer;
+  // Abandoning an attempt is not the same as it being over. The track can still
+  // arrive a moment later, and it used to set itself on the element on top of
+  // the MP4 stream that had already replaced it - leaving both a src and a
+  // srcObject, a picture nobody chose, and a peer connection still consuming
+  // the camera.
+  let abandoned = false;
+  // The WebSocket carries the offer and the answer and then has nothing left to
+  // do; go2rtc closes it, and the media keeps flowing over its own connection.
+  // Treating that close as a failure abandoned a session that was about to
+  // work, and then the arriving track was refused because the session had been
+  // abandoned - a loop that never produced a picture.
+  let negotiated = false;
+  // Candidates can arrive before the answer has been applied, and adding one
+  // then throws. They wait here instead of being dropped.
+  const pending = [];
+
+  const addCandidate = async value => {
+    // sdpMLineIndex, not sdpMid: the mid in the answer is whatever the server
+    // chose to call it, and a guessed name makes addIceCandidate throw. There
+    // is exactly one media line here, so the index is not a guess.
+    try {
+      await peer.addIceCandidate({ candidate: value, sdpMLineIndex: 0 });
+    } catch (e) {
+      logLine(`${name}: a candidate was refused: ${e.message}`);
+    }
+  };
   const giveUp = reason => {
-    if (settled) return;
+    if (settled || !current()) return;
     settled = true;
+    abandoned = true;
     try { if (peer) peer.close(); } catch (e) {}
     try { if (socket) socket.close(); } catch (e) {}
     player.webrtc = null;
@@ -1215,13 +1261,25 @@ function attachWebrtc(name, base, onFail) {
 
   try {
     const wsUrl = base.replace(/^http/, 'ws') + '/api/ws?src=' + encodeURIComponent(name);
-    socket = new WebSocket(wsUrl);
     peer = new RTCPeerConnection({ iceServers: [] });  // loopback: no STUN, no relay
+    socket = new WebSocket(wsUrl);
     player.webrtc = { socket, peer };
 
     peer.addTransceiver('video', { direction: 'recvonly' });
     peer.ontrack = event => {
+      if (abandoned || !current()) return;  // a replaced attempt does not get the element
       settled = true;
+      // Ask for a jitter buffer. WebRTC keeps this near zero by default, which
+      // is right for a conversation and wrong for a camera on a loaded radio
+      // link: the keyframe burst arrives late and the picture hitches. This is
+      // the same trade VLC makes - slightly behind, and smooth.
+      try {
+        const receiver = event.receiver;
+        if (receiver) {
+          if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = videoBufferMs;
+          if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = videoBufferMs / 1000;
+        }
+      } catch (e) { /* older browsers simply do not offer it */ }
       video.srcObject = event.streams[0];
       video.play().catch(() => {});
     };
@@ -1247,18 +1305,26 @@ function attachWebrtc(name, base, onFail) {
       try {
         if (message.type === 'webrtc/answer') {
           await peer.setRemoteDescription({ type: 'answer', sdp: message.value });
+          negotiated = true;
+          while (pending.length) await addCandidate(pending.shift());
         } else if (message.type === 'webrtc/candidate' && message.value) {
-          await peer.addIceCandidate({ candidate: message.value, sdpMid: '0' });
+          if (negotiated) await addCandidate(message.value);
+          else pending.push(message.value);
         } else if (message.type === 'error') {
           giveUp(message.value || 'the streaming server refused WebRTC');
         }
       } catch (e) { /* a late candidate is not fatal */ }
     };
     socket.onerror = () => giveUp('cannot reach the streaming server');
-    socket.onclose = () => { if (!settled) giveUp('the streaming server closed the connection'); };
+    socket.onclose = () => {
+      if (settled || negotiated) return;   // signalling is finished; the media is not
+      giveUp('the streaming server closed the connection');
+    };
 
     // If nothing is playing shortly, fall back rather than sit on a black panel.
-    setTimeout(() => { if (!video.srcObject) giveUp('webrtc produced no video'); }, 8000);
+    setTimeout(() => {
+      if (current() && !video.srcObject) giveUp('webrtc produced no video');
+    }, WEBRTC_FRAME_MS);
   } catch (e) {
     giveUp('webrtc unavailable: ' + e.message);
   }
@@ -1281,6 +1347,9 @@ function attach(name, base) {
     (players[name] = { lastTime: -1, lastMoved: 0, timer: null, attempts: 0, everPlayed: false });
   player.base = base;
   player.attempts = (player.attempts || 0) + 1;
+  // A new attempt from here on. Anything still running belongs to an older one.
+  player.token = (player.token || 0) + 1;
+  const token = player.token;
   if (player.timer) clearTimeout(player.timer);
 
   detachWebrtc(name);
@@ -1293,12 +1362,21 @@ function attach(name, base) {
   );
   if (player.usingWebrtc) {
     attachWebrtc(name, base, reason => {
-      // One fallback, remembered, so a camera that cannot do WebRTC does not
-      // pay the timeout on every retry for the rest of the shift.
+      if (player.token !== token) return;   // superseded while we were failing
+      if (videoMode === 'webrtc') {
+        // The operator asked for low delay specifically. Try again rather than
+        // quietly serving something else and leaving the setting looking like
+        // it did nothing.
+        logLine(`${name}: ${reason}; retrying (low delay was chosen)`);
+        retry(name);
+        return;
+      }
+      // Otherwise fall back once and remember it, so a camera that cannot do
+      // WebRTC does not pay the timeout on every retry for the rest of a shift.
       logLine(`${name}: ${reason}; falling back to MP4`);
       player.forceMp4 = true;
       attach(name, base);
-    });
+    }, token);
   } else {
     const url = `${base}/api/stream.mp4?src=${encodeURIComponent(name)}`;
     // A cache-buster on reconnect: without it a retry can be handed the dead
@@ -1357,8 +1435,8 @@ setInterval(() => {
           attach(name, player.base);
           continue;
         }
-      } else if (behind > LIVE_EDGE_SOFT_S) {
-        video.playbackRate = 1.15;   // close the gap without a visible jump
+      } else if (behind > liveEdgeSoftSeconds()) {
+        video.playbackRate = 1.08;   // close the gap slowly enough not to be seen
       } else if (video.playbackRate !== 1) {
         video.playbackRate = 1;
       }
@@ -1505,8 +1583,10 @@ async function pollStatus() {
     const st = await (await fetch('/api/status')).json();
     const settings = await (await fetch('/api/settings')).json();
     const previousMode = videoMode;
+    const previousBuffer = videoBufferMs;
     videoMode = settings.video_mode || 'auto';
-    if (videoMode !== previousMode) {
+    videoBufferMs = settings.video_buffer_ms == null ? 500 : settings.video_buffer_ms;
+    if (videoMode !== previousMode || videoBufferMs !== previousBuffer) {
       // A changed preference takes effect now, not at the next restart.
       for (const name of Object.keys(panes)) {
         const player = players[name];
