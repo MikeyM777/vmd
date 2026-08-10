@@ -208,3 +208,72 @@ def test_status_carries_the_position_when_the_camera_reports_one(camera: tuple[s
     status = service.status()
     assert status["available"] is True
     assert "zoom" not in status or status["zoom"] is None
+
+
+# --------------------------------------------------------------------------
+# Encoder settings: reading them, and capping them so a pan cannot flood the
+# link and knock the other stream out.
+# --------------------------------------------------------------------------
+
+ENCODERS = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>
+<GetVideoEncoderConfigurationsResponse xmlns="http://www.onvif.org/ver10/media/wsdl"
+ xmlns:tt="http://www.onvif.org/ver10/schema">
+<Configurations token="enc0"><tt:Name>visible</tt:Name><tt:UseCount>1</tt:UseCount>
+<tt:Encoding>H264</tt:Encoding>
+<tt:Resolution><tt:Width>3840</tt:Width><tt:Height>2160</tt:Height></tt:Resolution>
+<tt:Quality>4</tt:Quality>
+<tt:H264><tt:GovLength>30</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>
+<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit>
+<tt:BitrateLimit>16000</tt:BitrateLimit></tt:RateControl>
+</Configurations>
+<Configurations token="enc2"><tt:Name>thermal</tt:Name><tt:UseCount>1</tt:UseCount>
+<tt:Encoding>H264</tt:Encoding>
+<tt:Resolution><tt:Width>640</tt:Width><tt:Height>512</tt:Height></tt:Resolution>
+<tt:Quality>5</tt:Quality>
+<tt:H264><tt:GovLength>15</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>
+<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit>
+<tt:BitrateLimit>2000</tt:BitrateLimit></tt:RateControl>
+</Configurations>
+</GetVideoEncoderConfigurationsResponse></s:Body></s:Envelope>"""
+
+
+def test_encoder_settings_are_read_from_the_camera(camera: tuple[str, int]) -> None:
+    from vmd.ptz.encoder import parse_configurations
+
+    configs = parse_configurations(ENCODERS)
+    assert [c.token for c in configs] == ["enc0", "enc2"]
+    visible = configs[0]
+    assert (visible.width, visible.height) == (3840, 2160)
+    assert visible.bitrate_kbps == 16000
+    assert visible.fps == 30
+    assert visible.gov_length == 30
+    assert "3840x2160" in visible.label
+
+
+def test_fitting_to_the_link_keeps_the_total_under_it() -> None:
+    from vmd.ptz.encoder import fit_to_link, parse_configurations
+
+    configs = parse_configurations(ENCODERS)
+    targets = fit_to_link(configs, ceiling_kbps=5000)
+    assert sum(targets.values()) <= 5000, "the streams together must fit the link"
+    assert targets["enc0"] > targets["enc2"], "the larger picture gets the larger share"
+    assert min(targets.values()) >= 256, "no stream may be capped into uselessness"
+
+
+def test_capping_sends_every_field_back_not_just_the_bitrate(camera: tuple[str, int]) -> None:
+    """ONVIF's Set is a whole-object write. Omitting resolution does not mean
+    "leave it alone" - a camera that accepts it loses its resolution."""
+    from vmd.ptz.encoder import CameraEncoders, parse_configurations
+
+    ptz = connected(camera)
+    config = parse_configurations(ENCODERS)[0]
+    CameraEncoders(ptz).cap_bitrate(config, 2400)
+
+    body = last_body("SetVideoEncoderConfiguration")
+    assert 'token="enc0"' in body
+    assert "<tt:Width>3840</tt:Width>" in body
+    assert "<tt:Height>2160</tt:Height>" in body
+    assert 'BitrateLimit="2400"' in body
+    assert "<tt:GovLength>30</tt:GovLength>" in body
+    assert "H264" in body

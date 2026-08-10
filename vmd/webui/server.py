@@ -232,6 +232,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, DIAGNOSIS.snapshot())
         elif path == "/api/report":
             self._get_report()
+        elif path == "/api/encoders":
+            self._get_encoders()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -249,6 +251,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._post_ptz()
         elif path == "/api/diagnose":
             self._post_diagnose()
+        elif path == "/api/encoders":
+            self._post_encoders()
         else:
             self._error(HTTPStatus.NOT_FOUND, f"no such path: {path}")
 
@@ -414,6 +418,30 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.CONFLICT, why_not)
             return
         self._send_json(HTTPStatus.ACCEPTED, DIAGNOSIS.snapshot())
+
+    def _get_encoders(self) -> None:
+        ptz = self.server.ptz
+        if ptz is None:
+            self._error(HTTPStatus.CONFLICT, "the camera connection is not enabled")
+            return
+        self._send_json(HTTPStatus.OK, ptz.encoders())
+
+    def _post_encoders(self) -> None:
+        """Cap the camera's streams so their total fits the link.
+
+        The camera is the only place this can be done. By the time the data is
+        here it has already crossed the link that could not carry it.
+        """
+        ptz = self.server.ptz
+        if ptz is None:
+            self._error(HTTPStatus.CONFLICT, "the camera connection is not enabled")
+            return
+        try:
+            settings = load_settings(self.server.settings_path)
+        except SettingsError as exc:
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+        self._send_json(HTTPStatus.OK, ptz.fit_encoders_to_link(settings.bitrate.ceiling_kbps))
 
     def _get_report(self) -> None:
         """Everything about this installation, as one block of text to paste.

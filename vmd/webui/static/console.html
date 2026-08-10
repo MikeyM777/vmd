@@ -596,6 +596,8 @@ dialog#updatebox h2 {
             <button class="btn" type="button" onclick="runCheck('check')">Test the camera</button>
             <button class="btn" type="button" onclick="runCheck('paths')">Find the right path</button>
             <button class="btn" type="button" onclick="showReport()">Copy a report</button>
+            <button class="btn" type="button" onclick="showEncoders()">Camera bitrates</button>
+            <button class="btn primary" type="button" onclick="fitToLink()">Fit the camera to the link</button>
           </div>
           <pre class="upout" id="checkout"></pre>
           <p class="hint" id="checkmsg"></p>
@@ -1056,6 +1058,8 @@ const FIRST_FRAME_MS = 30000;
 // used to retry WebRTC forever and never reach the fallback that would have
 // worked. Give it a short window to produce a frame, then take MP4 instead.
 const WEBRTC_FRAME_MS = 10000;
+const LIVE_EDGE_SOFT_S = 1.5;   // beyond this, play slightly fast to catch up
+const LIVE_EDGE_HARD_S = 6;     // beyond this, reconnect - it will never catch up
 
 /* Whatever the camera actually offers, under whatever names the operator gave
    it. The panes and the layout buttons are built from that list. */
@@ -1284,6 +1288,34 @@ setInterval(() => {
     const player = players[name];
     const video = el(panes[name].video);
     if (!player || !player.base || !video) continue;
+
+    // A media element plays what it has, however old it is. When the source
+    // produces more than the link delivers the buffer grows and the picture
+    // falls behind without bound - forty seconds of "live" video.
+    //
+    // Seeking is not the answer: setting currentTime on a live progressive
+    // stream makes the browser abandon the request and re-fetch, which breaks
+    // the stream rather than catching it up. Playing slightly fast closes a
+    // small gap invisibly; only a large one is worth reconnecting for, since a
+    // reconnect starts again at live by definition.
+    if (!video.srcObject && video.buffered && video.buffered.length) {
+      const edge = video.buffered.end(video.buffered.length - 1);
+      const behind = edge - video.currentTime;
+      if (behind > LIVE_EDGE_HARD_S) {
+        const since = now - (player.lastResync || 0);
+        if (since > 30000) {
+          player.lastResync = now;
+          logLine(`${name}: ${behind.toFixed(1)} s behind live; reconnecting to catch up`);
+          player.attempts = 0;
+          attach(name, player.base);
+          continue;
+        }
+      } else if (behind > LIVE_EDGE_SOFT_S) {
+        video.playbackRate = 1.15;   // close the gap without a visible jump
+      } else if (video.playbackRate !== 1) {
+        video.playbackRate = 1;
+      }
+    }
 
     if (video.currentTime !== player.lastTime) {
       player.lastTime = video.currentTime;
@@ -1597,6 +1629,33 @@ function showCheck(state) {
     msg.textContent = '';
     if (checkTimer) { clearInterval(checkTimer); checkTimer = null; }
   }
+}
+
+async function showEncoders() {
+  const out = el('checkout'), msg = el('checkmsg');
+  msg.textContent = 'Asking the camera what it is encoding…';
+  msg.className = 'hint';
+  try {
+    const data = await (await fetch('/api/encoders')).json();
+    if (!data.ok) { msg.textContent = data.error || 'The camera would not say.';
+                    msg.className = 'hint warn'; out.textContent = ''; return; }
+    out.textContent = (data.labels || []).join(String.fromCharCode(10)) || '(none reported)';
+    msg.textContent = '';
+  } catch (e) { msg.textContent = 'Could not reach the console server.'; msg.className = 'hint warn'; }
+}
+
+async function fitToLink() {
+  const out = el('checkout'), msg = el('checkmsg');
+  msg.textContent = 'Setting the camera to fit the link…';
+  msg.className = 'hint';
+  try {
+    const response = await fetch('/api/encoders', { method: 'POST' });
+    const data = await response.json();
+    if (!data.ok) { msg.textContent = data.error || 'The camera refused.';
+                    msg.className = 'hint warn'; return; }
+    out.textContent = (data.changed || []).join(String.fromCharCode(10));
+    msg.textContent = 'Done. The camera keeps this until it is changed again.';
+  } catch (e) { msg.textContent = 'Could not reach the console server.'; msg.className = 'hint warn'; }
 }
 
 async function showReport() {
