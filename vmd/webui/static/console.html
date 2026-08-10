@@ -595,6 +595,7 @@ dialog#updatebox h2 {
             <button class="btn" type="button" onclick="addStreamRow()">Add a stream</button>
             <button class="btn" type="button" onclick="runCheck('check')">Test the camera</button>
             <button class="btn" type="button" onclick="runCheck('paths')">Find the right path</button>
+            <button class="btn" type="button" onclick="showReport()">Copy a report</button>
           </div>
           <pre class="upout" id="checkout"></pre>
           <p class="hint" id="checkmsg"></p>
@@ -1576,6 +1577,25 @@ function showCheck(state) {
   } else {
     msg.textContent = '';
     if (checkTimer) { clearInterval(checkTimer); checkTimer = null; }
+  }
+}
+
+async function showReport() {
+  const out = el('checkout'), msg = el('checkmsg');
+  msg.textContent = 'Gathering…';
+  msg.className = 'hint';
+  try {
+    const data = await (await fetch('/api/report')).json();
+    out.textContent = data.text || '(empty)';
+    try {
+      await navigator.clipboard.writeText(data.text);
+      msg.textContent = 'Copied to the clipboard. Paste it wherever you are asking for help.';
+    } catch (e) {
+      msg.textContent = 'Select the text above and copy it.';
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the console server.';
+    msg.className = 'hint warn';
   }
 }
 

@@ -230,6 +230,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_ptz()
         elif path == "/api/diagnose":
             self._send_json(HTTPStatus.OK, DIAGNOSIS.snapshot())
+        elif path == "/api/report":
+            self._get_report()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -412,6 +414,62 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.CONFLICT, why_not)
             return
         self._send_json(HTTPStatus.ACCEPTED, DIAGNOSIS.snapshot())
+
+    def _get_report(self) -> None:
+        """Everything about this installation, as one block of text to paste.
+
+        Diagnosing a machine on the other end of a phone call fails on missing
+        context more than on hard problems. This is every piece of state the
+        console can see, gathered in one place, with the passwords removed.
+        """
+        lines: list[str] = ["VMD report", ""]
+
+        try:
+            settings = load_settings(self.server.settings_path)
+        except SettingsError as exc:
+            lines.append(f"settings: UNREADABLE - {exc}")
+            self._send_json(HTTPStatus.OK, {"text": chr(10).join(lines)})
+            return
+
+        lines.append(f"settings file : {self.server.settings_path}")
+        lines.append(f"camera        : {settings.camera.host or '(empty)'}")
+        lines.append(f"username      : {settings.camera.username or '(empty)'}")
+        lines.append(f"password      : {'set' if settings.camera.password else '(empty)'}")
+        lines.append(f"link ceiling  : {settings.bitrate.ceiling_kbps} kb/s")
+        for stream in settings.camera.streams:
+            mark = "on " if stream.enabled else "off"
+            lines.append(f"stream [{mark}] {stream.name}: {stream.url}")
+
+        lines.append("")
+        streaming = self.server.streaming
+        if streaming is None:
+            lines.append("streaming: not enabled in this session")
+        else:
+            status = streaming.status()
+            lines.append(f"streaming     : running={status.running} at {status.api_base}")
+            lines.append(f"reason        : {status.reason}")
+            lines.append(f"binary        : {streaming.binary}")
+            lines.append(
+                f"ports         : api {streaming.api_port}, rtsp {streaming.rtsp_port}, "
+                f"webrtc {streaming.webrtc_port}"
+            )
+            lines.append(f"exit code     : {streaming._exit_code}")
+            sources = streaming.sources()
+            lines.append(f"sources       : {sources or '(none reported)'}")
+            lines.append("last output from the streaming server:")
+            for line in list(streaming._recent) or ["(nothing)"]:
+                lines.append(f"  {line}")
+
+        lines.append("")
+        ptz = self.server.ptz
+        lines.append(f"ptz           : {ptz.status() if ptz else 'not enabled'}")
+
+        lines.append("")
+        lines.append("recent log:")
+        for record in LOG_BUFFER.snapshot()[-40:]:
+            lines.append(f"  {record['level']:<7} {record['source']}: {record['text']}")
+
+        self._send_json(HTTPStatus.OK, {"text": chr(10).join(lines)})
 
     def _get_ptz(self) -> None:
         ptz = self.server.ptz
