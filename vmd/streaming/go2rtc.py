@@ -17,8 +17,10 @@ import logging
 import os
 import shutil
 import subprocess
+import socket
 import sys
 import threading
+import time
 import urllib.request
 from collections import deque
 from dataclasses import dataclass
@@ -51,6 +53,25 @@ def find_binary(project_root: Path | None = None) -> Path | None:
         if found:
             return Path(found)
     return None
+
+
+def free_port(preferred: int) -> int:
+    """The preferred port if it is free, otherwise one the OS picks.
+
+    Adding a listener to a program that was working is a good way to stop it
+    working: go2rtc exits if any port it was told to bind is taken, and it takes
+    the whole live picture with it. Nothing here is a fixed requirement - the
+    console tells the page which ports to use.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 def _project_root() -> Path:
@@ -120,7 +141,9 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port:
         "rtsp": {"listen": f"127.0.0.1:{rtsp_port}"},
         # WebRTC needs a listener to offer host candidates from. Loopback only:
         # the browser is on this machine and nothing else may reach the video.
-        "webrtc": {"listen": f"127.0.0.1:{webrtc_port}"},
+        # Port 0 means "do not offer WebRTC at all", which is the fallback when
+        # go2rtc will not start with it.
+        "webrtc": {"listen": f"127.0.0.1:{webrtc_port}" if webrtc_port else ""},
         "log": {"level": "warn"},
         "streams": streams,
     }
@@ -241,18 +264,18 @@ class Go2rtcService:
             logger.info("no enabled streams; not starting go2rtc")
             return
 
-        write_config(
-            build_config(self.settings, self.api_port, self.rtsp_port, self.webrtc_port),
-            self.config_path,
-        )
-        try:
-            self._process = self._spawn([str(self.binary), "-c", str(self.config_path)])
-            self._pump_output(self._process)
-        except OSError:
-            logger.exception("could not start go2rtc")
-            self._process = None
-            return
-        logger.info("go2rtc started on %s for %s", self.api_base, ", ".join(self.stream_names))
+        # Ports are checked rather than assumed. A leftover go2rtc from a previous
+        # run, or anything else on the machine, must not be able to leave the
+        # console with no video at all.
+        self.api_port = free_port(self.api_port)
+        self.rtsp_port = free_port(self.rtsp_port)
+        self.webrtc_port = free_port(self.webrtc_port)
+
+        if not self._launch(with_webrtc=True):
+            # WebRTC is the fast path, not the only one. If go2rtc will not come
+            # up with it, come up without it and serve MP4 rather than nothing.
+            logger.warning("go2rtc would not start with WebRTC enabled; retrying without it")
+            self._launch(with_webrtc=False)
 
     def stop(self) -> None:
         process = self._process
@@ -273,6 +296,49 @@ class Go2rtcService:
                     logger.error("go2rtc did not die; leaving it tracked")
                     return
         self._process = None
+
+    def _launch(self, with_webrtc: bool) -> bool:
+        """Spawn go2rtc and confirm it is still alive a moment later.
+
+        A process that exits immediately is the failure that matters here, and
+        Popen reports that as success. Waiting briefly turns "started" into
+        "running", which is what the console actually claims on screen.
+        """
+        write_config(
+            build_config(
+                self.settings,
+                self.api_port,
+                self.rtsp_port,
+                self.webrtc_port if with_webrtc else 0,
+            ),
+            self.config_path,
+        )
+        try:
+            process = self._spawn([str(self.binary), "-c", str(self.config_path)])
+        except OSError:
+            logger.exception("could not start go2rtc")
+            self._process = None
+            return False
+
+        self._process = process
+        self._pump_output(process)
+        time.sleep(0.8)
+        code = process.poll()
+        if code is not None:
+            self._exit_code = code
+            self._process = None
+            logger.error(
+                "go2rtc exited immediately (%s): %s", code, " | ".join(self._recent) or "no output"
+            )
+            return False
+
+        logger.info(
+            "go2rtc started on %s for %s%s",
+            self.api_base,
+            ", ".join(self.stream_names),
+            "" if with_webrtc else " (WebRTC disabled)",
+        )
+        return True
 
     def sources(self) -> dict:
         """What go2rtc says about each stream: is the camera side connected?

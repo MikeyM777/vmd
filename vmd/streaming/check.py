@@ -15,6 +15,7 @@ import argparse
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -133,7 +134,56 @@ def main(argv: list[str] | None = None) -> int:
                 print("        -> the address is right but the path is wrong.")
                 print("           Run: uv run python spike/probe_camera.py <ip> --user U --password P")
     print()
+    check_streaming_server(settings)
+    print()
     return 0
+
+
+def check_streaming_server(settings) -> None:
+    """Start the streaming server exactly as the console does, and report.
+
+    The console can only say that the server is not running. This says why, in
+    the server's own words, which is the difference between a bug report and a
+    fix.
+    """
+    from vmd.streaming.go2rtc import Go2rtcService
+
+    binary = find_binary()
+    if binary is None:
+        print("  Streaming server: not installed. Run install.bat.")
+        return
+
+    print("  Starting the streaming server the way the console does...")
+    service = Go2rtcService(
+        settings,
+        config_path=Path("go2rtc.check.json"),
+        binary=binary,
+        api_port=1984,
+        rtsp_port=8554,
+        webrtc_port=8555,
+    )
+    try:
+        service.start()
+        if not service.running:
+            print("   [x] It would not start. Its last output:")
+            for line in service._recent or ["(nothing)"]:
+                print(f"        {line}")
+            print(f"        exit code: {service._exit_code}")
+            return
+        print(f"   [ok] Running on {service.api_base}")
+        print(f"        api {service.api_port}, rtsp {service.rtsp_port}, webrtc {service.webrtc_port}")
+        time.sleep(4)
+        sources = service.sources()
+        if not sources:
+            print("   [x] It is running but reports no streams.")
+        for name, info in sources.items():
+            state = "connected to the camera" if info.get("connected") else "NOT connected"
+            print(f"        {name}: {state}")
+        for line in list(service._recent)[-5:]:
+            print(f"        said: {line}")
+    finally:
+        service.stop()
+        Path("go2rtc.check.json").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
