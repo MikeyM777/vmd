@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from vmd.settings import Settings, SettingsError, detect_free_bytes, load_settings, save_settings
 from vmd.streaming.go2rtc import Go2rtcService
+from vmd.ptz.service import PtzService
 from vmd.webui.updater import Updater
 
 logger = logging.getLogger(__name__)
@@ -102,11 +103,13 @@ class ConsoleServer(ThreadingHTTPServer):
         settings_path: Path,
         streaming: Go2rtcService | None = None,
         updater: Updater | None = None,
+        ptz: PtzService | None = None,
     ) -> None:
         super().__init__(address, ConsoleHandler)
         self.settings_path = settings_path
         self.streaming = streaming
         self.updater = updater
+        self.ptz = ptz
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -173,6 +176,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_logs()
         elif path == "/api/update":
             self._get_update()
+        elif path == "/api/ptz":
+            self._get_ptz()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -186,6 +191,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._put_settings()
         elif path == "/api/update":
             self._post_update()
+        elif path == "/api/ptz":
+            self._post_ptz()
         else:
             self._error(HTTPStatus.NOT_FOUND, f"no such path: {path}")
 
@@ -268,6 +275,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 - saving succeeded; streaming is secondary
                 logger.exception("could not restart streaming after a settings change")
 
+        if self.server.ptz is not None:
+            try:
+                self.server.ptz.apply(settings)
+            except Exception:  # noqa: BLE001 - same: the save itself succeeded
+                logger.exception("could not re-point PTZ after a settings change")
+
         self._send_json(HTTPStatus.OK, json.loads(settings.model_dump_json()))
 
     def _get_status(self) -> None:
@@ -320,6 +333,67 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         )
 
 
+    def _get_ptz(self) -> None:
+        ptz = self.server.ptz
+        if ptz is None:
+            self._send_json(HTTPStatus.OK, {"available": False, "reason": "PTZ is not enabled"})
+            return
+        self._send_json(HTTPStatus.OK, ptz.status())
+
+    def _post_ptz(self) -> None:
+        """One endpoint for the whole head: move, stop, home.
+
+        Deliberately not three. The browser sends these as keys go down and up,
+        and a single shape keeps the ordering obvious on both sides.
+        """
+        ptz = self.server.ptz
+        if ptz is None:
+            self._error(HTTPStatus.CONFLICT, "PTZ is not enabled")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        action = str(payload.get("action", "move"))
+        if action == "stop":
+            result = ptz.stop()
+        elif action == "home":
+            result = ptz.home()
+        elif action == "move":
+            try:
+                pan = float(payload.get("pan", 0))
+                tilt = float(payload.get("tilt", 0))
+                zoom = float(payload.get("zoom", 0))
+            except (TypeError, ValueError):
+                self._error(HTTPStatus.BAD_REQUEST, "pan, tilt and zoom must be numbers")
+                return
+            result = ptz.move(pan, tilt, zoom)
+        else:
+            self._error(HTTPStatus.BAD_REQUEST, f"unknown action: {action}")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _read_json(self) -> dict | None:
+        """A small JSON body, or None having already answered with the reason."""
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(raw_length) if raw_length is not None else 0
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, "Content-Length is not a number")
+            return None
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._error(HTTPStatus.BAD_REQUEST, "unusable Content-Length")
+            return None
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            self._error(HTTPStatus.BAD_REQUEST, f"not valid JSON: {exc}")
+            return None
+        if not isinstance(payload, dict):
+            self._error(HTTPStatus.BAD_REQUEST, "expected a JSON object")
+            return None
+        return payload
+
     def _get_update(self) -> None:
         updater = self.server.updater
         if updater is None:
@@ -360,5 +434,6 @@ def make_server(
     settings_path: str | Path = "settings.json",
     streaming: Go2rtcService | None = None,
     updater: Updater | None = None,
+    ptz: PtzService | None = None,
 ) -> ConsoleServer:
-    return ConsoleServer((host, port), Path(settings_path), streaming, updater)
+    return ConsoleServer((host, port), Path(settings_path), streaming, updater, ptz)

@@ -427,15 +427,18 @@ dialog#updatebox h2 {
         <p class="hint">Or move the pointer to the edge of the picture and hold. Speed rises the
           further into the edge you go. Clicking the middle centres the camera on that point.</p>
         <div class="row"><span class="k">Moving</span><span class="v" id="ptz-state">idle</span></div>
+        <p class="hint" id="ptz-note"></p>
       </div>
 
       <div class="group">
         <h2>Zoom</h2>
-        <input type="range" min="1" max="31" value="31" id="zoom">
-        <div class="row"><span class="k">Optical</span><span class="v" id="z-x">31×</span></div>
-        <div class="row"><span class="k">Field of view</span><span class="v" id="z-fov">2.15°</span></div>
-        <div class="row"><span class="k">Person at 700 m</span><span class="v ok" id="z-px">132 px</span></div>
-        <p class="hint" id="z-hint">Large enough to identify what moved.</p>
+        <div class="seg" id="zoomctl">
+          <button id="z-wide" type="button">− wide</button>
+          <button id="z-tele" type="button">+ tele</button>
+        </div>
+        <div class="row"><span class="k">Position</span><span class="v" id="z-pos">—</span></div>
+        <p class="hint">Hold a button, or the <kbd>+</kbd> and <kbd>−</kbd> keys. The camera
+          reports its own position; there is no zoom figure until it does.</p>
       </div>
 
       <div class="group">
@@ -662,21 +665,27 @@ function pickSource(el) {
   document.querySelectorAll('.source').forEach(s => s.setAttribute('aria-pressed', String(s === el)));
 }
 
-/* ---- zoom readout: real optics, 61.8° wide over 31x, 1080-row stream ---- */
-const zoom = document.getElementById('zoom');
-zoom.oninput = () => {
-  const fov = 61.8 / +zoom.value;
-  const px = Math.round(0.147 * (1920 / fov));
-  document.getElementById('z-x').textContent = zoom.value + '×';
-  document.getElementById('z-fov').textContent = fov.toFixed(2) + '°';
-  const pxEl = document.getElementById('z-px');
-  pxEl.textContent = px + ' px';
-  pxEl.className = 'v ' + (px >= 60 ? 'ok' : px >= 30 ? 'warn' : 'bad');
-  const h = document.getElementById('z-hint');
-  h.textContent = px >= 60 ? 'Large enough to identify what moved.'
-    : px >= 30 ? 'Movement detectable; identification unreliable.'
-    : 'Too small at 700 m to identify anything.';
-};
+/* ---- zoom -------------------------------------------------------------------
+   The slider that used to live here modelled a 31x lens with a 61.8° wide end,
+   which was a guess about a camera nobody had measured. It reported a field of
+   view and a person-sized pixel count derived from that guess. Both are gone:
+   the camera is told to zoom, and reports where it ended up. */
+const ZOOM_SPEED = 0.5;
+
+function zoomDrive(direction) {
+  const pan = 0, tilt = 0;
+  lastSent = { pan, tilt, zoom: direction * ZOOM_SPEED };
+  if (direction === 0) { ptzMoving = false; ptzSend({ action: 'stop' }); }
+  else { ptzMoving = true; ptzSend({ action: 'move', pan, tilt, zoom: direction * ZOOM_SPEED }); }
+}
+
+for (const [id, direction] of [['z-tele', 1], ['z-wide', -1]]) {
+  const button = document.getElementById(id);
+  if (!button) continue;
+  button.addEventListener('mousedown', () => zoomDrive(direction));
+  button.addEventListener('mouseup', () => zoomDrive(0));
+  button.addEventListener('mouseleave', () => zoomDrive(0));
+}
 
 /* ---- steering -------------------------------------------------------------
    Two ways in, both keeping the operator's eye on the picture: the frame edge
@@ -708,12 +717,20 @@ function showEdge(hit) {
   const { dir, depth } = hit;
   wall.classList.add('steering');
   const rate = Math.max(0.5, depth * MAX_RATE).toFixed(depth * MAX_RATE < 10 ? 1 : 0);
-  if (holding) stateEl.textContent = dir + ' ' + rate + '°/s';
+  if (holding) {
+    stateEl.textContent = dir + ' ' + rate + '°/s';
+    const pan = (dir.includes('W') ? -1 : dir.includes('E') ? 1 : 0) * depth;
+    const tilt = (dir.includes('N') ? 1 : dir.includes('S') ? -1 : 0) * depth;
+    ptzDrive(+pan.toFixed(2), +tilt.toFixed(2), 0);
+  }
 }
 
 function clearEdge() {
   wall.classList.remove('steering');
-  if (!holding) stateEl.textContent = 'idle';
+  if (!holding) {
+    stateEl.textContent = 'idle';
+    if (!keyDir()) ptzDrive(0, 0, 0);
+  }
 }
 
 wall.addEventListener('mousemove', e => {
@@ -730,7 +747,11 @@ wall.addEventListener('mousedown', e => {
     setTimeout(() => { stateEl.textContent = 'idle'; }, 700);
   }
 });
-window.addEventListener('mouseup', () => { holding = false; stateEl.textContent = 'idle'; });
+window.addEventListener('mouseup', () => {
+  holding = false;
+  stateEl.textContent = 'idle';
+  if (!keyDir()) ptzDrive(0, 0, 0);
+});
 
 /* Arrow keys drive pan and tilt on separate axes, so holding two at once slews
    diagonally rather than the last key winning. Opposing keys cancel, which is
@@ -751,6 +772,12 @@ function showKeySteer(shift) {
   const dir = keyDir();
   if (dir) stateEl.textContent = dir + (shift ? ' 2°/s' : ' 30°/s');
   else if (!holding) stateEl.textContent = 'idle';
+
+  // The same key state, as a speed the camera understands.
+  const speed = shift ? 0.08 : 0.5;
+  const pan = (held.has('ArrowLeft') ? -1 : 0) + (held.has('ArrowRight') ? 1 : 0);
+  const tilt = (held.has('ArrowDown') ? -1 : 0) + (held.has('ArrowUp') ? 1 : 0);
+  if (!holding) ptzDrive(pan * speed, tilt * speed, 0);
 }
 
 window.addEventListener('keydown', e => {
@@ -769,21 +796,28 @@ window.addEventListener('keydown', e => {
   } else if (e.key === 'Shift') {
     showKeySteer(true);
   } else if (e.key === '+' || e.key === '=') {
-    zoom.value = Math.min(31, +zoom.value + 1); zoom.oninput();
-  } else if (e.key === '-') {
-    zoom.value = Math.max(1, +zoom.value - 1); zoom.oninput();
+    e.preventDefault();
+    zoomDrive(1);
+  } else if (e.key === '-' || e.key === '_') {
+    e.preventDefault();
+    zoomDrive(-1);
   } else if (e.key === 'Home') {
     stateEl.textContent = 'returning home';
+    ptzHome();
     setTimeout(() => { stateEl.textContent = 'idle'; }, 900);
   }
 });
 window.addEventListener('keyup', e => {
   if (KEYS.includes(e.key)) { held.delete(e.key); showKeySteer(e.shiftKey); }
   else if (e.key === 'Shift') showKeySteer(false);
+  else if (['+', '=', '-', '_'].includes(e.key)) zoomDrive(0);
 });
 // Alt-Tab away mid-slew and the keyup never arrives, leaving the head "moving"
 // forever. Releasing everything on blur is the only correct answer.
-window.addEventListener('blur', () => { held.clear(); holding = false; clearEdge(); showKeySteer(false); });
+window.addEventListener('blur', () => {
+  held.clear(); holding = false; clearEdge(); showKeySteer(false);
+  ptzDrive(0, 0, 0);  // whatever was held, the head must not keep going
+});
 
 /* ---- alarm -----------------------------------------------------------------
    The alarm strip is real UI driven by a detector that does not exist yet, so
@@ -1256,6 +1290,79 @@ function escapeHtml(text) {
 
 pollLogs();
 setInterval(pollLogs, 3000);
+
+/* ---- moving the camera ------------------------------------------------------
+   Steering used to change a readout and nothing else. It now sends the head a
+   speed and, when the operator lets go, a stop.
+
+   Continuous movement, not steps: the camera keeps going while the key is held
+   and stops the moment it is released, which is what makes a held key and a
+   nudge the same control. A stop is always sent - a dropped stop leaves the
+   head slewing until it hits a limit. */
+let ptzAvailable = false;
+let ptzMoving = false;
+let lastSent = { pan: 0, tilt: 0, zoom: 0 };
+
+async function ptzStatus() {
+  if (!LIVE) return;
+  try {
+    const st = await (await fetch('/api/ptz')).json();
+    ptzAvailable = !!st.available;
+    const position = el('z-pos');
+    if (position) {
+      position.textContent = st.zoom == null ? '—' : (st.zoom * 100).toFixed(0) + '%';
+    }
+    const note = el('ptz-note');
+    if (note) {
+      note.textContent = st.available
+        ? '' : (st.reason || 'the camera is not answering PTZ commands');
+      note.className = 'hint' + (st.available ? '' : ' warn');
+    }
+  } catch (e) { ptzAvailable = false; }
+}
+ptzStatus();
+setInterval(ptzStatus, 15000);
+
+async function ptzSend(body) {
+  if (!LIVE) return null;
+  try {
+    const response = await fetch('/api/ptz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (result && result.ok === false) {
+      const note = el('ptz-note');
+      if (note) { note.textContent = result.error || 'the camera refused the command';
+                  note.className = 'hint warn'; }
+    }
+    return result;
+  } catch (e) { return null; }
+}
+
+/* Speeds are -1..1. The console's degrees-per-second readout is what the
+   operator reads; this is what the camera is actually told. */
+function ptzDrive(pan, tilt, zoom) {
+  const same = pan === lastSent.pan && tilt === lastSent.tilt && zoom === lastSent.zoom;
+  if (same) return;
+  lastSent = { pan, tilt, zoom };
+  if (!pan && !tilt && !zoom) {
+    ptzMoving = false;
+    ptzSend({ action: 'stop' });
+  } else {
+    ptzMoving = true;
+    ptzSend({ action: 'move', pan, tilt, zoom });
+  }
+}
+
+function ptzHome() { lastSent = { pan: 0, tilt: 0, zoom: 0 }; ptzSend({ action: 'home' }); }
+
+// A stop that never arrives leaves the head moving. Send one on the way out.
+window.addEventListener('pagehide', () => {
+  if (ptzMoving) navigator.sendBeacon('/api/ptz', new Blob(
+    [JSON.stringify({ action: 'stop' })], { type: 'application/json' }));
+});
 
 /* ---- update ----------------------------------------------------------------
    Pulling is done by the server, not the browser, and it reports what it ran

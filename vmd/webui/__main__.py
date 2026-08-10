@@ -14,6 +14,7 @@ import webbrowser
 from pathlib import Path
 
 from vmd.settings import SettingsError, load_settings
+from vmd.ptz.service import PtzService
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
 from vmd.webui.server import DEFAULT_HOST, DEFAULT_PORT, capture_logs, make_server
 from vmd.webui.updater import Updater
@@ -99,7 +100,11 @@ def main(argv: list[str] | None = None) -> int:
     # the checkout, which is where this package lives.
     updater = Updater(Path(__file__).resolve().parents[2])
     try:
-        server = make_server(args.host, args.port, args.settings, streaming, updater)
+        ptz = PtzService(load_settings(args.settings))
+    except SettingsError:
+        ptz = None
+    try:
+        server = make_server(args.host, args.port, args.settings, streaming, updater, ptz)
     except (OSError, OverflowError, ValueError) as exc:
         # Nearly always "port already in use", which means the console is
         # probably already running. Say that rather than printing a traceback.
