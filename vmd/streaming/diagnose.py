@@ -9,6 +9,7 @@ look identical from a panel that says "connecting".
 
 from __future__ import annotations
 
+import re
 import socket
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
@@ -32,12 +33,55 @@ COMMON_PATHS = [
 ]
 
 
+def _with_path(base_url: str, path: str) -> str:
+    parsed = urlsplit(base_url)
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/") + path
+
+
 def _reachable(host: str, port: int, timeout: float = 3.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
+
+
+def measure_bitrate(url: str, seconds: int = 4) -> float | None:
+    """How many megabits a second this stream really costs, measured.
+
+    Resolution alone does not answer the question that matters here - whether a
+    stream fits the radio link - and cameras rarely tell the truth about their
+    configured bitrate. Pulling it for a few seconds does.
+    """
+    try:
+        run = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-rtsp_transport", "tcp",
+                "-i", url, "-t", str(seconds), "-c", "copy", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, timeout=seconds + 20, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    # ffmpeg's summary line. Newer builds write KiB/MiB, older ones kB/MB, and
+    # matching only one of those silently returns "unmeasured" forever.
+    match = re.search(r"video:\s*(\d+(?:\.\d+)?)\s*([kKmMgG])i?B", run.stderr or "")
+    if not match:
+        return None
+    unit = match.group(2).lower()
+    scale = {"k": 1024, "m": 1024**2, "g": 1024**3}[unit]
+    size = float(match.group(1)) * scale
+    return round(size * 8 / seconds / 1_000_000, 2)
+
+
+def link_verdict(mbps: float | None, ceiling_mbps: float) -> str:
+    if mbps is None:
+        return ""
+    if mbps > ceiling_mbps:
+        return f"  -> {mbps} Mb/s does NOT fit a {ceiling_mbps:g} Mb/s link. Use a smaller stream."
+    if mbps > ceiling_mbps * 0.6:
+        return f"  -> {mbps} Mb/s leaves little room on a {ceiling_mbps:g} Mb/s link."
+    return f"  -> {mbps} Mb/s fits a {ceiling_mbps:g} Mb/s link."
 
 
 def try_path(base_url: str, path: str) -> tuple[bool, str]:
@@ -76,23 +120,31 @@ def find_paths(settings: Settings, on_progress=None) -> list[str]:
     if not parsed.hostname:
         return ["The configured address has no host in it."]
 
+    ceiling = settings.bitrate.ceiling_kbps / 1000
     lines = [f"Trying {len(COMMON_PATHS)} common paths on {parsed.hostname}:{parsed.port or 554}", ""]
-    working: list[str] = []
+    working: list[tuple[str, float | None]] = []
     for index, path in enumerate(COMMON_PATHS, 1):
         if on_progress:
             on_progress(f"trying {path} ({index}/{len(COMMON_PATHS)})")
         worked, detail = try_path(base, path)
         if worked:
-            working.append(path)
+            if on_progress:
+                on_progress(f"measuring {path}")
+            mbps = measure_bitrate(_with_path(base, path))
+            working.append((path, mbps))
             lines.append(f"  [ok] {path}   {detail}")
+            verdict = link_verdict(mbps, ceiling)
+            if verdict:
+                lines.append(f"      {verdict.strip()}")
     lines.append("")
     if working:
-        lines.append("Use one of these as the stream address:")
-        for path in working:
-            scheme, netloc = parsed.scheme, parsed.netloc
-            # Shown without the login: the console adds it from the Camera fields.
-            host = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
-            lines.append(f"  {scheme}://{host}{path}")
+        host = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
+        # Cheapest first: on a link this narrow the smallest stream that shows
+        # what is happening is the right one, not the best-looking one.
+        for path, mbps in sorted(working, key=lambda item: (item[1] is None, item[1] or 0)):
+            cost = f"{mbps} Mb/s" if mbps is not None else "unmeasured"
+            lines.append(f"  {parsed.scheme}://{host}{path}   ({cost})")
+        lines.insert(len(lines) - len(working), "Use one of these as the stream address:")
     else:
         lines.append("None of the common paths returned video.")
         lines.append("Check the username and password first - a camera that refuses the")
@@ -166,6 +218,10 @@ def diagnose(settings: Settings) -> list[str]:
             lines.append("  [ok] The camera is sending video:")
             for line in probe.stdout.strip().splitlines():
                 lines.append(f"       {line}")
+            mbps = measure_bitrate(url)
+            verdict = link_verdict(mbps, settings.bitrate.ceiling_kbps / 1000)
+            if verdict:
+                lines.append(f"     {verdict.strip()}")
             continue
 
         message = (probe.stderr or "").strip() or "no reason given"
