@@ -26,7 +26,7 @@ from vmd.streaming.diagnose import diagnose, find_paths
 from vmd.streaming.go2rtc import Go2rtcService
 from vmd.ptz.service import PtzService
 from vmd.radio.service import RadioService
-from vmd.webui.updater import Updater
+from vmd.updater import Updater
 
 logger = logging.getLogger(__name__)
 

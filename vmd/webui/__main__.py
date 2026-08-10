@@ -18,7 +18,7 @@ from vmd.ptz.service import PtzService
 from vmd.radio.service import RadioService
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
 from vmd.webui.server import DEFAULT_HOST, DEFAULT_PORT, capture_logs, make_server
-from vmd.webui.updater import Updater
+from vmd.updater import Updater
 
 logger = logging.getLogger("vmd.webui")
 

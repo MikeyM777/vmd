@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vmd.webui.updater import Updater
+from vmd.updater import Updater
 
 
 def git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
