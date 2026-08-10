@@ -20,6 +20,10 @@ from vmd.supervisor import Managed, Supervisor
 
 logger = logging.getLogger(__name__)
 
+# How long the recorder tree gets to disappear after taskkill has been told to
+# end it. It is already a forced kill, so this is only the time the kernel needs.
+TREE_STOP_SECONDS = 10.0
+
 
 class RecorderProcess:
     """`python -m vmd.record_main`, shaped to fit the supervisor's protocol.
@@ -36,10 +40,12 @@ class RecorderProcess:
         settings_path: str | Path,
         pid_path: str | Path | None = None,
         spawn=None,
+        kill_tree=None,
     ) -> None:
         self.settings_path = Path(settings_path)
         self.pid_path = Path(pid_path) if pid_path else self.settings_path.parent / "recorder.pid"
         self._spawn = spawn or _default_spawn
+        self._kill_tree = kill_tree or _taskkill_tree
         self._process: subprocess.Popen | None = None
         self._adopted_pid: int | None = None
 
@@ -95,11 +101,33 @@ class RecorderProcess:
             logger.warning("could not write %s", self.pid_path, exc_info=True)
 
     def stop(self) -> None:
-        """Stop a recorder this object started.
+        """Stop a recorder this object started, and everything it started.
 
-        An adopted one is left alone: it belongs to a window that is gone, and
-        killing it here would stop recording because someone closed a second
-        window.
+        The whole tree, not just the process we spawned. The recorder starts an
+        ffmpeg per stream, so those are our grandchildren: ending only our own
+        child leaves them running, still writing segments into the recording
+        directory, with nothing supervising them and no handle to stop them by.
+
+        That is worse than it sounds. The recorder's PID file is then stale, and
+        correctly so - the recorder really is gone - so the next window starts a
+        fresh one, which writes into the same directory and indexes it with the
+        same SQLite database that the orphans are still filling. That is the
+        exact collision the PID file and its adoption exist to prevent, reached
+        from the other side.
+
+        Terminating the recorder politely first was tried and does not work: on
+        Windows terminate() is TerminateProcess, so the `finally` in
+        run_forever that stops each ffmpeg never runs, and CTRL_BREAK_EVENT
+        cannot reach a child spawned with CREATE_NO_WINDOW because that gives it
+        a console of its own, while console control events only reach processes
+        sharing the sender's console. Little is lost by being blunt: the
+        recorder's own shutdown terminates ffmpeg rather than closing the segment
+        cleanly anyway, and the only work skipped is a final indexing pass, which
+        the next recorder redoes when it adopts the files left on disk.
+
+        An adopted recorder is left alone: it belongs to a window that is gone,
+        and stopping it here would stop recording because someone closed a
+        second window.
         """
         if self._process is None and self._adopted_pid is not None:
             self._adopted_pid = None
@@ -107,6 +135,12 @@ class RecorderProcess:
         process = self._process
         if process is None:
             return
+        pid = getattr(process, "pid", None)
+        if process.poll() is None and pid is not None and self._kill_tree(pid):
+            try:
+                process.wait(timeout=TREE_STOP_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("the recorder outlived taskkill; forcing it")
         if process.poll() is None:
             process.terminate()
             try:
@@ -140,16 +174,52 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _taskkill_tree(pid: int) -> bool:
+    """End a process and every process under it. True if the request was accepted.
+
+    Windows offers no way to ask a console process in another console to shut
+    down (see stop()), and no way to reach a grandchild by handle. taskkill /T
+    walks the tree itself, which is the only readily available way to be sure the
+    ffmpeg processes under the recorder go with it.
+
+    A failure is reported rather than raised: this is an improvement on
+    terminate(), not a replacement for it, and stop() falls back to it.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=TREE_STOP_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("taskkill could not be run for pid %s", pid, exc_info=True)
+        return False
+    if result.returncode != 0:
+        logger.warning(
+            "taskkill refused pid %s: %s", pid, (result.stderr or result.stdout).strip()
+        )
+        return False
+    return True
+
+
+def _creation_flags() -> int:
+    """No console window: this runs on an unattended machine the operator watches."""
+    if os.name != "nt":
+        return 0
+    return subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
+
 def _default_spawn(command: list[str]) -> subprocess.Popen:
-    creation_flags = 0
-    if os.name == "nt":
-        creation_flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
     return subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
-        creationflags=creation_flags,
+        creationflags=_creation_flags(),
     )
 
 
