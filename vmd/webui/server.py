@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from vmd.settings import Settings, SettingsError, detect_free_bytes, load_settings, save_settings
+from vmd.streaming.diagnose import diagnose, find_paths
 from vmd.streaming.go2rtc import Go2rtcService
 from vmd.ptz.service import PtzService
 from vmd.webui.updater import Updater
@@ -84,6 +85,55 @@ def capture_logs() -> LogBuffer:
         LOG_BUFFER.setLevel(logging.INFO)
         root.addHandler(LOG_BUFFER)
     return LOG_BUFFER
+
+
+class Diagnosis:
+    """One camera check at a time, with its progress readable while it runs."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.running = False
+        self.mode = ""
+        self.step = ""
+        self.lines: list[str] = []
+
+    def start(self, settings: Settings, mode: str) -> tuple[bool, str]:
+        with self._lock:
+            if self.running:
+                return False, "a check is already running"
+            self.running = True
+            self.mode = mode
+            self.step = "starting"
+            self.lines = []
+        threading.Thread(target=self._work, args=(settings, mode), daemon=True).start()
+        return True, ""
+
+    def _work(self, settings: Settings, mode: str) -> None:
+        try:
+            if mode == "paths":
+                lines = find_paths(settings, on_progress=self._progress)
+            else:
+                self._progress("asking the camera")
+                lines = diagnose(settings)
+        except Exception as exc:  # noqa: BLE001 - a failed check must not end the console
+            logger.exception("camera check failed")
+            lines = [f"The check itself failed: {exc}"]
+        with self._lock:
+            self.lines = lines
+            self.running = False
+            self.step = ""
+
+    def _progress(self, step: str) -> None:
+        with self._lock:
+            self.step = step
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"running": self.running, "mode": self.mode, "step": self.step,
+                    "lines": list(self.lines)}
+
+
+DIAGNOSIS = Diagnosis()
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -178,6 +228,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_update()
         elif path == "/api/ptz":
             self._get_ptz()
+        elif path == "/api/diagnose":
+            self._send_json(HTTPStatus.OK, DIAGNOSIS.snapshot())
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -193,6 +245,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._post_update()
         elif path == "/api/ptz":
             self._post_ptz()
+        elif path == "/api/diagnose":
+            self._post_diagnose()
         else:
             self._error(HTTPStatus.NOT_FOUND, f"no such path: {path}")
 
@@ -339,6 +393,25 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             },
         )
 
+
+    def _post_diagnose(self) -> None:
+        """Run the camera checks in the background and report progress.
+
+        In the background because probing every common path talks to the camera
+        two dozen times, and the console has to keep serving video while it does.
+        """
+        payload = self._read_json() or {}
+        mode = str(payload.get("mode", "check"))
+        try:
+            settings = load_settings(self.server.settings_path)
+        except SettingsError as exc:
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+        started, why_not = DIAGNOSIS.start(settings, mode)
+        if not started:
+            self._error(HTTPStatus.CONFLICT, why_not)
+            return
+        self._send_json(HTTPStatus.ACCEPTED, DIAGNOSIS.snapshot())
 
     def _get_ptz(self) -> None:
         ptz = self.server.ptz

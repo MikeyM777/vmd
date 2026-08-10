@@ -356,6 +356,7 @@ dialog#updatebox h2 {
 }
 .savemsg.ok { color: var(--ok); }
 .savemsg.bad { color: var(--alarm); }
+.hint.warn { color: var(--warn); }
 .btn {
   padding: 7px 15px; cursor: pointer; background: var(--raised);
   border: 1px solid var(--line); transition: border-color var(--tap);
@@ -590,7 +591,13 @@ dialog#updatebox h2 {
           <h2>Streams</h2>
           <p class="hint">The RTSP addresses the camera serves. Nothing is recorded until at least one is filled in and ticked.</p>
           <div id="streamrows"></div>
-          <button class="btn" type="button" onclick="addStreamRow()">Add a stream</button>
+          <div class="actions" style="margin-top:8px">
+            <button class="btn" type="button" onclick="addStreamRow()">Add a stream</button>
+            <button class="btn" type="button" onclick="runCheck('check')">Test the camera</button>
+            <button class="btn" type="button" onclick="runCheck('paths')">Find the right path</button>
+          </div>
+          <pre class="upout" id="checkout"></pre>
+          <p class="hint" id="checkmsg"></p>
           <p class="hint">If you do not know the paths, run <code>uv run python spike/probe_camera.py &lt;address&gt;</code> — it asks the camera and prints the ones that answer.</p>
         </section>
 
@@ -1529,6 +1536,53 @@ window.addEventListener('pagehide', () => {
   if (ptzMoving) navigator.sendBeacon('/api/ptz', new Blob(
     [JSON.stringify({ action: 'stop' })], { type: 'application/json' }));
 });
+
+/* ---- asking the camera ------------------------------------------------------
+   Save is not the only thing an operator needs from this tab. When the picture
+   will not come up, the camera's own answer is the diagnosis - and getting it
+   should not require a terminal. */
+let checkTimer = null;
+
+async function runCheck(mode) {
+  const out = el('checkout'), msg = el('checkmsg');
+  out.textContent = '';
+  msg.textContent = mode === 'paths'
+    ? 'Trying the paths cameras commonly use. This takes up to a minute.'
+    : 'Asking the camera…';
+  msg.className = 'hint';
+  try {
+    const response = await fetch('/api/diagnose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const state = await response.json();
+    if (!response.ok) { msg.textContent = state.error || 'Could not start the check.';
+                        msg.className = 'hint warn'; return; }
+    showCheck(state);
+    if (checkTimer) clearInterval(checkTimer);
+    checkTimer = setInterval(pollCheck, 1000);
+  } catch (e) {
+    msg.textContent = 'Could not reach the console server.';
+    msg.className = 'hint warn';
+  }
+}
+
+function showCheck(state) {
+  const out = el('checkout'), msg = el('checkmsg');
+  if (state.lines && state.lines.length) out.textContent = state.lines.join(String.fromCharCode(10));
+  if (state.running) {
+    msg.textContent = state.step || 'working…';
+  } else {
+    msg.textContent = '';
+    if (checkTimer) { clearInterval(checkTimer); checkTimer = null; }
+  }
+}
+
+async function pollCheck() {
+  try { showCheck(await (await fetch('/api/diagnose')).json()); }
+  catch (e) { if (checkTimer) { clearInterval(checkTimer); checkTimer = null; } }
+}
 
 /* ---- update ----------------------------------------------------------------
    Pulling is done by the server, not the browser, and it reports what it ran
