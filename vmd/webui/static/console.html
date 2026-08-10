@@ -607,6 +607,13 @@ dialog#updatebox h2 {
           <pre class="upout" id="checkout"></pre>
           <p class="hint" id="checkmsg"></p>
           <p class="hint">If you do not know the paths, run <code>uv run python spike/probe_camera.py &lt;address&gt;</code> — it asks the camera and prints the ones that answer.</p>
+          <div class="fields" style="margin-top:10px">
+            <div class="field"><label>Live video</label><select id="s-video-mode">
+              <option value="auto">Automatic — low delay, falls back if it cannot deliver</option>
+              <option value="webrtc">Low delay — best on a clean link</option>
+              <option value="mp4">Smooth — buffers, survives a link that stutters</option>
+            </select></div>
+          </div>
         </section>
 
         <section class="block">
@@ -935,6 +942,8 @@ function fill(s) {
   // a camera that has been configured gets exactly what it has.
   (streams.length ? streams : [{ name: 'thermal' }, { name: 'visible' }])
     .forEach(stream => rows.appendChild(streamRow(stream)));
+  const mode = el('s-video-mode');
+  if (mode) mode.value = s.video_mode || 'auto';
   el('s-radio-host').value = s.radio.host || '';
   el('s-radio-user').value = s.radio.username || '';
   el('s-radio-pass').value = s.radio.password || '';
@@ -980,6 +989,7 @@ function collect() {
       segment_seconds: num('s-seg', 300),
     },
     target_distance_m: num('s-distance', 700),
+    video_mode: (el('s-video-mode') || {}).value || 'auto',
   };
 }
 
@@ -1047,7 +1057,19 @@ loadSettings();
 const LIVE_POLL_MS = 5000;      // how often we ask the server what exists
 const RETRY_MS = 3000;          // first retry after a stream really dies
 const RETRY_MAX_MS = 20000;     // retries back off to here and stay there
-const STALL_MS = 8000;          // a playing stream that goes quiet for this long
+
+// How long a playing stream may go quiet before it is treated as dead.
+//
+// This was eight seconds, and it was wrong. VLC holds these same streams
+// through a pan without a flicker because it does nothing when frames are late
+// - it waits. A pan spends every bit the encoder is allowed, frames arrive in a
+// burst behind schedule, and a short timer reads that as a dead stream and
+// throws the connection away. The cure was causing the disease.
+//
+// Nothing is torn down now while the streaming server still has the camera:
+// if the picture is coming, waiting is always better than reconnecting.
+const STALL_MS = 15000;         // quiet this long, and the camera is gone too
+const STALL_HARD_MS = 40000;    // quiet this long, reconnect whatever anyone says
 
 // Getting the first frame out of a thermal stream is not the same as losing a
 // live one. Thermal is low frame rate with long gaps between keyframes, and a
@@ -1064,7 +1086,10 @@ const FIRST_FRAME_MS = 30000;
 // worked. Give it a short window to produce a frame, then take MP4 instead.
 const WEBRTC_FRAME_MS = 10000;
 const LIVE_EDGE_SOFT_S = 1.5;   // beyond this, play slightly fast to catch up
-const LIVE_EDGE_HARD_S = 6;     // beyond this, reconnect - it will never catch up
+// Beyond this, reconnect - but generously. A pan on a full link puts the
+// picture seconds behind for a few seconds, and reconnecting for that is how a
+// momentary lag becomes a visible disconnection.
+const LIVE_EDGE_HARD_S = 30;
 
 /* Whatever the camera actually offers, under whatever names the operator gave
    it. The panes and the layout buttons are built from that list. */
@@ -1072,6 +1097,8 @@ const panes = {};
 const players = {};
 // What the streaming server says about the camera side of each stream.
 let sources = {};
+// The operator's transport preference, refreshed with the rest of the settings.
+let videoMode = 'auto';
 
 function idsFor(name) {
   const key = name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1248,7 +1275,10 @@ function attach(name, base) {
   video.removeAttribute('src');
   video.srcObject = null;
 
-  player.usingWebrtc = !!(window.RTCPeerConnection && !player.forceMp4);
+  const wanted = videoMode || 'auto';
+  player.usingWebrtc = !!(
+    window.RTCPeerConnection && !player.forceMp4 && wanted !== 'mp4'
+  );
   if (player.usingWebrtc) {
     attachWebrtc(name, base, reason => {
       // One fallback, remembered, so a camera that cannot do WebRTC does not
@@ -1308,7 +1338,7 @@ setInterval(() => {
       const behind = edge - video.currentTime;
       if (behind > LIVE_EDGE_HARD_S) {
         const since = now - (player.lastResync || 0);
-        if (since > 30000) {
+        if (since > 60000) {
           player.lastResync = now;
           logLine(`${name}: ${behind.toFixed(1)} s behind live; reconnecting to catch up`);
           player.attempts = 0;
@@ -1346,7 +1376,7 @@ setInterval(() => {
       // Connected over WebRTC but nothing is arriving: stop waiting on it and
       // use the transport that does not depend on a second socket getting
       // through.
-      if (player.usingWebrtc && waitingFor > WEBRTC_FRAME_MS) {
+      if (player.usingWebrtc && videoMode !== 'webrtc' && waitingFor > WEBRTC_FRAME_MS) {
         logLine(`${name}: webrtc connected but sent no video; using MP4`);
         player.forceMp4 = true;
         player.attempts = 0;
@@ -1368,21 +1398,34 @@ setInterval(() => {
     }
 
     const stalledFor = now - player.lastMoved;
-    if (stalledFor > STALL_MS) {
-      const seconds = Math.round(stalledFor / 1000);
-      setPaneState(name, 'reconnecting', 'NO SIGNAL', `last frame ${seconds} s ago — retrying`);
-      el(panes[name].tag).textContent = 'no signal';
-      // A paused element looks exactly like a dead stream. Ask it to play once
-      // before throwing the connection away.
-      if (!player.nudged) {
-        player.nudged = true;
-        player.lastMoved = now;
-        video.play().catch(() => {});
-        continue;
-      }
-      retry(name);
-      player.lastMoved = now;  // do not retry every tick while it reconnects
+    if (stalledFor < STALL_MS) continue;
+
+    const seconds = Math.round(stalledFor / 1000);
+    const camera = sources[name];
+    const cameraStillThere = !camera || camera.connected !== false;
+
+    // A paused element looks exactly like a dead stream. Ask it to play once
+    // before considering anything more drastic.
+    if (!player.nudged) {
+      player.nudged = true;
+      player.lastMoved = now;
+      video.play().catch(() => {});
+      continue;
     }
+
+    if (cameraStillThere && stalledFor < STALL_HARD_MS) {
+      // The streaming server still has the camera, so the picture is coming.
+      // Say it is late; do not throw away a connection that is about to
+      // deliver. This is the difference between a hiccup and a disconnection.
+      setPaneState(name, 'reconnecting', 'LATE', `last frame ${seconds} s ago — waiting`);
+      el(panes[name].tag).textContent = 'late';
+      continue;
+    }
+
+    setPaneState(name, 'reconnecting', 'NO SIGNAL', `last frame ${seconds} s ago — retrying`);
+    el(panes[name].tag).textContent = 'no signal';
+    retry(name);
+    player.lastMoved = now;  // do not retry every tick while it reconnects
   }
 }, 1000);
 
@@ -1449,6 +1492,18 @@ async function pollStatus() {
   try {
     const st = await (await fetch('/api/status')).json();
     const settings = await (await fetch('/api/settings')).json();
+    const previousMode = videoMode;
+    videoMode = settings.video_mode || 'auto';
+    if (videoMode !== previousMode) {
+      // A changed preference takes effect now, not at the next restart.
+      for (const name of Object.keys(panes)) {
+        const player = players[name];
+        if (!player || !player.base) continue;
+        player.forceMp4 = false;
+        player.attempts = 0;
+        attach(name, player.base);
+      }
+    }
 
     el('site-name').textContent = settings.camera.host || 'VMD';
     el('site-sub').textContent = settings.camera.host

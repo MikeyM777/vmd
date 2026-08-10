@@ -87,6 +87,17 @@ class BitrateSettings(Model):
 
 
 class Settings(Model):
+    # How the live picture reaches the browser.
+    #
+    #   webrtc - lowest delay, smallest tolerance for a link that stutters
+    #   mp4    - buffers, so it survives a burst at the cost of a second or two
+    #   auto   - webrtc, falling back to mp4 when it cannot deliver
+    #
+    # It is a setting rather than a decision because the right answer depends on
+    # a link nobody can measure from here: on a clean link webrtc is plainly
+    # better, and on a link that saturates when the camera pans, mp4 is.
+    video_mode: Literal["auto", "webrtc", "mp4"] = "auto"
+
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
