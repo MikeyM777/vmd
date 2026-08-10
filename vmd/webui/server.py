@@ -436,6 +436,21 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if ptz is None:
             self._error(HTTPStatus.CONFLICT, "the camera connection is not enabled")
             return
+        payload = self._read_json() or {}
+        if payload.get("token"):
+            # One named encoder, changed deliberately, rather than the automatic
+            # share-out that "fit to link" performs.
+            self._send_json(
+                HTTPStatus.OK,
+                ptz.set_encoder(
+                    str(payload["token"]),
+                    width=payload.get("width"),
+                    height=payload.get("height"),
+                    kbps=payload.get("kbps"),
+                    fps=payload.get("fps"),
+                ),
+            )
+            return
         try:
             settings = load_settings(self.server.settings_path)
         except SettingsError as exc:

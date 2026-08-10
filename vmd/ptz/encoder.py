@@ -94,6 +94,21 @@ def parse_configurations(xml: str) -> list[EncoderConfig]:
     return configs
 
 
+def parse_options(xml: str) -> list[tuple[int, int]]:
+    """The resolutions this camera says it will accept, largest first.
+
+    Asked rather than assumed: a camera that is handed a resolution it does not
+    support may refuse, or may accept and produce something else entirely.
+    """
+    sizes: list[tuple[int, int]] = []
+    for block in re.findall(r"<[^>]*ResolutionsAvailable[^>]*>(.*?)</[^>]*ResolutionsAvailable>", xml, re.DOTALL):
+        width = _int(_first(r"<[^>]*Width>(.*?)</[^>]*Width>", block))
+        height = _int(_first(r"<[^>]*Height>(.*?)</[^>]*Height>", block))
+        if width and height and (width, height) not in sizes:
+            sizes.append((width, height))
+    return sorted(sizes, key=lambda size: size[0] * size[1], reverse=True)
+
+
 class CameraEncoders:
     """The camera's encoder settings, read and capped."""
 
@@ -106,6 +121,34 @@ class CameraEncoders:
         )
         return parse_configurations(xml)
 
+    def options(self, token: str) -> list[tuple[int, int]]:
+        xml = self.camera._post(
+            "/onvif/media_service",
+            f'<GetVideoEncoderConfigurationOptions xmlns="{MEDIA}">'
+            f"<ConfigurationToken>{_xml(token)}</ConfigurationToken>"
+            "</GetVideoEncoderConfigurationOptions>",
+        )
+        return parse_options(xml)
+
+    def apply(
+        self,
+        config: EncoderConfig,
+        *,
+        kbps: int | None = None,
+        size: tuple[int, int] | None = None,
+        fps: int | None = None,
+    ) -> EncoderConfig:
+        """Write one configuration back with only the named fields changed."""
+        wanted = EncoderConfig(**config.as_dict())
+        if kbps is not None:
+            wanted.bitrate_kbps = int(kbps)
+        if size is not None:
+            wanted.width, wanted.height = int(size[0]), int(size[1])
+        if fps is not None:
+            wanted.fps = int(fps)
+        self._write(wanted)
+        return wanted
+
     def cap_bitrate(self, config: EncoderConfig, kbps: int) -> EncoderConfig:
         """Set one configuration's bitrate limit, changing nothing else.
 
@@ -114,9 +157,13 @@ class CameraEncoders:
         does not mean "leave it alone", it means "set it to nothing", and a
         camera that accepts that will quietly lose its resolution or frame rate.
         """
+        return self.apply(config, kbps=kbps)
+
+    def _write(self, config: EncoderConfig) -> None:
         if not config.token:
             raise PtzError("this encoder configuration has no token")
 
+        kbps = config.bitrate_kbps or 2000
         rate_control = (
             f"<tt:RateControl FrameRateLimit=\"{config.fps or 25}\" "
             f'EncodingInterval="1" BitrateLimit="{int(kbps)}"/>'
@@ -147,7 +194,6 @@ class CameraEncoders:
             "</SetVideoEncoderConfiguration>"
         )
         self.camera._post("/onvif/media_service", body)
-        return EncoderConfig(**{**config.as_dict(), "bitrate_kbps": int(kbps)})
 
 
 def fit_to_link(configs: list[EncoderConfig], ceiling_kbps: int) -> dict[str, int]:

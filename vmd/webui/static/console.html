@@ -599,6 +599,7 @@ dialog#updatebox h2 {
             <button class="btn" type="button" onclick="showEncoders()">Camera bitrates</button>
             <button class="btn primary" type="button" onclick="fitToLink()">Fit the camera to the link</button>
           </div>
+          <div id="encoders"></div>
           <pre class="upout" id="checkout"></pre>
           <p class="hint" id="checkmsg"></p>
           <p class="hint">If you do not know the paths, run <code>uv run python spike/probe_camera.py &lt;address&gt;</code> — it asks the camera and prints the ones that answer.</p>
@@ -1632,16 +1633,86 @@ function showCheck(state) {
 }
 
 async function showEncoders() {
-  const out = el('checkout'), msg = el('checkmsg');
+  const out = el('checkout'), msg = el('checkmsg'), box = el('encoders');
   msg.textContent = 'Asking the camera what it is encoding…';
   msg.className = 'hint';
+  out.textContent = '';
+  box.innerHTML = '';
   try {
     const data = await (await fetch('/api/encoders')).json();
-    if (!data.ok) { msg.textContent = data.error || 'The camera would not say.';
-                    msg.className = 'hint warn'; out.textContent = ''; return; }
-    out.textContent = (data.labels || []).join(String.fromCharCode(10)) || '(none reported)';
+    if (!data.ok) {
+      msg.textContent = data.error || 'The camera would not say.';
+      msg.className = 'hint warn';
+      return;
+    }
     msg.textContent = '';
-  } catch (e) { msg.textContent = 'Could not reach the console server.'; msg.className = 'hint warn'; }
+    const configs = data.configs || [];
+    if (!configs.length) { out.textContent = '(the camera reported no encoders)'; return; }
+
+    // A row per encoder, with the sizes the camera itself says it accepts.
+    // Changing the size here is the only way to stop a 4K stream being 4K:
+    // by the time it reaches this machine the link has already carried it.
+    for (const config of configs) {
+      const sizes = (config.available_sizes || []).length
+        ? config.available_sizes : [[config.width, config.height]];
+      const row = document.createElement('div');
+      row.className = 'field streamrow-edit';
+
+      const label = document.createElement('label');
+      label.textContent = config.name || config.token;
+
+      const select = document.createElement('select');
+      select.className = 'enc-size';
+      for (const [w, h] of sizes) {
+        const option = document.createElement('option');
+        option.value = w + 'x' + h;
+        option.textContent = w + ' \u00d7 ' + h;
+        option.selected = (w === config.width && h === config.height);
+        select.appendChild(option);
+      }
+
+      const kbps = document.createElement('input');
+      kbps.className = 'enc-kbps';
+      kbps.placeholder = 'kb/s';
+      kbps.value = config.bitrate_kbps || '';
+
+      const apply = document.createElement('button');
+      apply.className = 'btn';
+      apply.type = 'button';
+      apply.textContent = 'Apply';
+      apply.onclick = () => applyEncoder(config.token, select.value, kbps.value);
+
+      row.append(label, select, kbps, apply);
+      box.appendChild(row);
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the console server.';
+    msg.className = 'hint warn';
+  }
+}
+
+async function applyEncoder(token, size, kbps) {
+  const msg = el('checkmsg');
+  const [width, height] = String(size).split('x');
+  msg.textContent = 'Setting the camera\u2026';
+  msg.className = 'hint';
+  try {
+    const response = await fetch('/api/encoders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, width, height, kbps: kbps.trim() || undefined }),
+    });
+    const data = await response.json();
+    if (!data.ok) {
+      msg.textContent = data.error || 'The camera refused.';
+      msg.className = 'hint warn';
+      return;
+    }
+    msg.textContent = data.label + ' \u2014 ' + (data.note || '');
+  } catch (e) {
+    msg.textContent = 'Could not reach the console server.';
+    msg.className = 'hint warn';
+  }
 }
 
 async function fitToLink() {

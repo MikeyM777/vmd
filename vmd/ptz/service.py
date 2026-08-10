@@ -73,8 +73,51 @@ class PtzService:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("could not read encoder settings")
                 return {"ok": False, "error": str(exc)}
-            return {"ok": True, "configs": [c.as_dict() for c in configs],
-                    "labels": [c.label for c in configs]}
+            payload = []
+            encoders = CameraEncoders(self.camera)
+            for config in configs:
+                try:
+                    sizes = encoders.options(config.token)
+                except Exception:  # noqa: BLE001 - options are a nicety, not the point
+                    sizes = []
+                entry = config.as_dict()
+                entry["available_sizes"] = [list(size) for size in sizes]
+                entry["label"] = config.label
+                payload.append(entry)
+            return {"ok": True, "configs": payload, "labels": [c.label for c in configs]}
+
+    def set_encoder(self, token, width=None, height=None, kbps=None, fps=None) -> dict:
+        """Change one encoder setting, sending every other field back unchanged.
+
+        This is how a 4K stream stops being 4K. Nothing downstream can do it:
+        the console shows what the camera sends, and the link has already been
+        paid for by the time it arrives.
+        """
+        with self._lock:
+            if self.camera is None:
+                return {"ok": False, "error": "no camera address set"}
+            try:
+                encoders = CameraEncoders(self.camera)
+                config = next((c for c in encoders.read() if c.token == token), None)
+                if config is None:
+                    return {"ok": False, "error": f"the camera has no encoder called {token}"}
+                size = (int(width), int(height)) if width and height else None
+                updated = encoders.apply(
+                    config,
+                    kbps=int(kbps) if kbps else None,
+                    size=size,
+                    fps=int(fps) if fps else None,
+                )
+                return {
+                    "ok": True,
+                    "label": updated.label,
+                    "note": "the camera keeps this; restart the console to pull the new size",
+                }
+            except PtzError as exc:
+                return {"ok": False, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - the console outlives the camera
+                logger.exception("could not change encoder settings")
+                return {"ok": False, "error": str(exc)}
 
     def fit_encoders_to_link(self, ceiling_kbps: int) -> dict:
         """Cap every stream so their total fits the link, and report what changed."""

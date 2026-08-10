@@ -65,6 +65,10 @@ class FakeCamera(BaseHTTPRequestHandler):
             self._reply(200, PROFILES)
         elif "GetNodes" in body:
             self._reply(200, NODES)
+        elif "GetVideoEncoderConfigurationOptions" in body:
+            self._reply(200, ENCODER_OPTIONS)
+        elif "GetVideoEncoderConfigurations" in body:
+            self._reply(200, ENCODERS)
         else:
             self._reply(200, OK)
 
@@ -277,3 +281,65 @@ def test_capping_sends_every_field_back_not_just_the_bitrate(camera: tuple[str, 
     assert 'BitrateLimit="2400"' in body
     assert "<tt:GovLength>30</tt:GovLength>" in body
     assert "H264" in body
+
+
+ENCODER_OPTIONS = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>
+<GetVideoEncoderConfigurationOptionsResponse xmlns="http://www.onvif.org/ver10/media/wsdl"
+ xmlns:tt="http://www.onvif.org/ver10/schema">
+<Options><tt:H264>
+<tt:ResolutionsAvailable><tt:Width>3840</tt:Width><tt:Height>2160</tt:Height></tt:ResolutionsAvailable>
+<tt:ResolutionsAvailable><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:ResolutionsAvailable>
+<tt:ResolutionsAvailable><tt:Width>1280</tt:Width><tt:Height>720</tt:Height></tt:ResolutionsAvailable>
+<tt:ResolutionsAvailable><tt:Width>704</tt:Width><tt:Height>576</tt:Height></tt:ResolutionsAvailable>
+</tt:H264></Options>
+</GetVideoEncoderConfigurationOptionsResponse></s:Body></s:Envelope>"""
+
+
+def test_the_camera_is_asked_which_resolutions_it_accepts(camera: tuple[str, int]) -> None:
+    """Assuming a resolution is how a camera ends up refusing, or quietly
+    producing something else."""
+    from vmd.ptz.encoder import CameraEncoders
+
+    sizes = CameraEncoders(connected(camera)).options("enc0")
+    assert sizes[0] == (3840, 2160), "largest first"
+    assert (1280, 720) in sizes
+    assert (704, 576) in sizes
+
+
+def test_dropping_a_stream_out_of_4k_keeps_everything_else(camera: tuple[str, int]) -> None:
+    from vmd.ptz.encoder import CameraEncoders, parse_configurations
+
+    config = parse_configurations(ENCODERS)[0]
+    assert (config.width, config.height) == (3840, 2160)
+
+    updated = CameraEncoders(connected(camera)).apply(config, size=(1280, 720))
+    assert (updated.width, updated.height) == (1280, 720)
+
+    body = last_body("SetVideoEncoderConfiguration")
+    assert "<tt:Width>1280</tt:Width>" in body
+    assert "<tt:Height>720</tt:Height>" in body
+    # everything the operator did not touch survives the write
+    assert 'BitrateLimit="16000"' in body
+    assert 'FrameRateLimit="30"' in body
+    assert "<tt:GovLength>30</tt:GovLength>" in body
+
+
+def test_the_service_changes_one_encoder_by_token(camera: tuple[str, int]) -> None:
+    host, port = camera
+    service = PtzService(
+        Settings(camera=CameraSettings(host=f"{host}:{port}", username=USER, password=PASSWORD))
+    )
+    result = service.set_encoder("enc0", width=1280, height=720)
+    assert result["ok"] is True, result.get("error")
+    assert "1280x720" in result["label"]
+
+
+def test_an_unknown_encoder_is_named_not_guessed(camera: tuple[str, int]) -> None:
+    host, port = camera
+    service = PtzService(
+        Settings(camera=CameraSettings(host=f"{host}:{port}", username=USER, password=PASSWORD))
+    )
+    result = service.set_encoder("does-not-exist", width=1280, height=720)
+    assert result["ok"] is False
+    assert "does-not-exist" in result["error"]
