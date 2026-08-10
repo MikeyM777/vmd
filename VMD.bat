@@ -2,8 +2,8 @@
 REM ============================================================
 REM  VMD - double-click this to start the console.
 REM
-REM  It starts the local server and opens the browser at it.
-REM  Leave the window that appears open; closing it stops the console.
+REM  It opens the console window. Leave the small black window that appears
+REM  open; closing it closes the console.
 REM ============================================================
 
 cd /d "%~dp0"
@@ -18,7 +18,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-uv run python -m vmd.webui %*
+uv run python -m vmd.desktop %*
 set RESULT=%ERRORLEVEL%
 
 if %RESULT% NEQ 0 (

@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = project_root()
 
-    if not (root / "vmd" / "webui").is_dir():
+    if not (root / "vmd" / "desktop").is_dir():
         return hold(
             f"\n  This does not look like the VMD folder:\n    {root}\n\n"
             "  Keep VMD.exe in the folder it was installed into."
@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
             "  Double-click install.bat once; it sets everything up."
         )
 
-    command = [uv, "run", "python", "-m", "vmd.webui", *args]
+    command = [uv, "run", "python", "-m", "vmd.desktop", *args]
     try:
         # Run in the project directory so settings.json, recordings and bin\
         # all resolve the way every other part of the system expects.
