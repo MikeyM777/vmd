@@ -12,8 +12,16 @@ what it was - at 700 m a person is about 13 pixels and no classifier will name
 it, and the operator needs to know anyway.
 """
 
+from vmd.detect.classify import (
+    BudgetedClassifier,
+    Classifier,
+    NullClassifier,
+    YoloClassifier,
+)
 from vmd.detect.config import (
     StreamDetectionConfig,
+    classifier_for,
+    classify_enabled,
     config_from_settings,
     mask_from_regions,
     regions_of,
@@ -32,17 +40,23 @@ from vmd.detect.tracking import Track, Tracker, confirmed
 
 __all__ = [
     "Box",
+    "BudgetedClassifier",
+    "Classifier",
     "Detection",
     "DetectionConfig",
     "DetectionPipeline",
     "Event",
     "EventStore",
     "MotionFinder",
+    "NullClassifier",
     "StreamDetectionConfig",
     "StreamDetector",
     "Track",
     "Tracker",
+    "YoloClassifier",
     "above_horizon",
+    "classifier_for",
+    "classify_enabled",
     "config_from_settings",
     "confirmed",
     "implausible_size",

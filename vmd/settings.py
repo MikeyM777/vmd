@@ -83,6 +83,27 @@ class StreamSettings(Model):
 
     ignore_regions: list[IgnoreRegion] = Field(default_factory=list)
 
+    # Is this the thermal head? Asked, rather than guessed.
+    #
+    # Nothing else in this file says which stream is which sensor, and the
+    # user's camera names its streams `ch1` and `ch2` - so guessing from the
+    # name would be wrong on the only camera this system has. The operator
+    # knows which head is which, and this is the one place the software can be
+    # told. It exists because of one consequence: the classifier is off by
+    # default on the thermal, where a 13-pixel blob is not a photograph.
+    #
+    # Defaulting to False means an unmarked stream is treated as visible, so
+    # the mistake an operator can make by not answering is a few wasted
+    # milliseconds and an occasional junk label - never a missing event.
+    thermal: bool = False
+
+    # Run the classifier on this stream. None means "follow the sensor": off
+    # for thermal, on for anything else. True or False is the operator
+    # overruling that, which is allowed - the conclusion drawn from `thermal`
+    # is a default, not a rule. Whichever way this lands, a confirmed track is
+    # still an event: the classifier has no veto.
+    classify: bool | None = None
+
     # Where the ground stops in this view, in frame pixels from the top. The
     # bird rule needs it. None disables the rule, which is the right default:
     # a wrong horizon silently deletes real detections.
@@ -159,10 +180,12 @@ class DetectionSettings(Model):
 
     enabled: bool = True
 
-    # Run the classifier on each confirmed track. Off by default: at 700 m a
-    # person is about 13 pixels, and a model trained on photographs has nothing
-    # useful to say about that. It never gates an event either way - an
-    # unnamed track is still an event.
+    # The master switch for the classifier. Off by default: at 700 m a person
+    # is about 13 pixels, and a model trained on photographs has nothing useful
+    # to say about that - and the weights are an optional install. With it on,
+    # each stream decides for itself (StreamSettings.classify, defaulting to
+    # off for the thermal). It never gates an event either way: an unnamed
+    # track is still an event.
     classify: bool = False
 
     # How far a track must travel before it is believed, in pixels. None means

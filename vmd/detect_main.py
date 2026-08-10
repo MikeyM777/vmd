@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from vmd.detect.config import config_from_settings, regions_of
+from vmd.detect.config import classifier_for, config_from_settings, regions_of
 from vmd.detect.events import EventStore
 from vmd.detect.pipeline import DetectionPipeline
 from vmd.detect.runner import StreamDetector, open_capture_cv2
@@ -88,6 +88,10 @@ class DetectionService:
                 open_capture=open_capture,
                 pipeline=self._pipeline_factory(config_from_settings(stream, settings.detection)),
                 ignore_regions=regions_of(stream),
+                # Loads nothing here: the YOLO import is deferred to the first
+                # crop worth naming, so this process starts on a machine with
+                # no torch and no weights. Off for the thermal by default.
+                classifier=classifier_for(stream, settings.detection),
             )
             for stream in detected_streams(settings)
         ]

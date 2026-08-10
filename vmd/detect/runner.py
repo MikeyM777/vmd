@@ -20,6 +20,7 @@ import time
 from collections import deque
 from typing import Callable, Sequence
 
+from vmd.detect.classify import UNNAMED, NullClassifier, named
 from vmd.detect.config import mask_from_regions
 from vmd.detect.events import EventStore
 from vmd.detect.pipeline import DetectionConfig, DetectionPipeline
@@ -80,6 +81,7 @@ class StreamDetector:
         open_capture: Callable = open_capture_cv2,
         pipeline=None,
         ignore_regions: Sequence[Sequence[int]] = (),
+        classifier=None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         max_read_failures: int = DEFAULT_MAX_READ_FAILURES,
@@ -93,6 +95,10 @@ class StreamDetector:
         self.store = store
         self.pipeline = pipeline or DetectionPipeline(self.config)
         self.ignore_regions = list(ignore_regions)
+        # Never None, so recording an event has one code path. The default
+        # names nothing, which on the thermal is the correct answer and not a
+        # placeholder.
+        self.classifier = classifier or NullClassifier()
 
         self._open_capture = open_capture
         self._clock = clock
@@ -198,7 +204,7 @@ class StreamDetector:
             return True
 
         for detection in detections:
-            self._record(detection, now)
+            self._record(detection, now, frame)
         return True
 
     def close(self) -> None:
@@ -284,13 +290,37 @@ class StreamDetector:
         while len(self._frame_order) > FRAME_TIME_HISTORY:
             self._frame_times.pop(self._frame_order.popleft(), None)
 
-    def _record(self, detection, now: float) -> None:
-        """Write one confirmed track, whether or not anything can name it."""
+    def _name(self, frame, box) -> tuple[str, float]:
+        """Ask the classifier what this was. Never raises, never blocks long.
+
+        The classifier is asked once per event and not once per frame, so the
+        frame budget is untouched on every frame that confirmed nothing; and it
+        is asked through a budget, so the one frame that did confirm something
+        cannot be held up by a model that has wedged. Whatever comes back -
+        including nothing - the caller writes the event.
+        """
+        try:
+            return named(self.classifier.classify(frame, box))
+        except Exception:  # noqa: BLE001 - a name is never worth an event
+            self.errors += 1
+            logger.exception("%s: classifying failed; the event is unnamed", self.stream)
+            return UNNAMED
+
+    def _record(self, detection, now: float, frame=None) -> None:
+        """Write one confirmed track, whether or not anything can name it.
+
+        The order here is the design: the row is written for every confirmed
+        track, and the label is decoration on it. The classifier has no veto -
+        there is no confidence below which this returns early, because at 700 m
+        the thing the operator most needs to hear about is exactly the thing
+        nothing can name.
+        """
         track = detection.track
         box = detection.box
         started = self._frame_times.get(track.first_frame, now)
         if self.store is None:
             return
+        label, confidence = self._name(frame, box)
         try:
             self.store.add(
                 stream=self.stream,
@@ -298,10 +328,8 @@ class StreamDetector:
                 ended=now,
                 box=(box.x, box.y, box.w, box.h),
                 travelled_px=track.travelled,
-                # The classifier is not attached yet, and even when it is it
-                # never decides whether this row exists.
-                label="",
-                confidence=0.0,
+                label=label,
+                confidence=confidence,
                 clip_path="",
             )
         except Exception:  # noqa: BLE001 - a locked database must not stop detection
@@ -310,11 +338,14 @@ class StreamDetector:
             return
         self.events += 1
         logger.info(
-            "%s: movement at (%d, %d) %dx%d, travelled %.0f px",
+            "%s: movement at (%d, %d) %dx%d, travelled %.0f px%s",
             self.stream,
             box.x,
             box.y,
             box.w,
             box.h,
             track.travelled,
+            # Blank means unidentified, not uncertain: most of what this system
+            # sees is too small to name and is reported anyway.
+            f" - looks like a {label} ({confidence:.0%})" if label else "",
         )
