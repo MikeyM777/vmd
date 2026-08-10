@@ -111,6 +111,22 @@ def with_credentials(url: str, username: str, password: str) -> str:
     return urlunsplit((parsed.scheme, f"{credentials}@{host}", parsed.path, parsed.query, parsed.fragment))
 
 
+def source_for(stream, username: str, password: str) -> str:
+    """The source string go2rtc is given for one stream.
+
+    With reader "ffmpeg" the stream is read by ffmpeg rather than by go2rtc's
+    own RTSP client - the same demuxer VLC is built on, which keeps reading
+    through errors that a stricter client treats as the end of the stream.
+    Copied, never re-encoded: the point is a more forgiving reader, not a
+    different picture, and transcoding a 4K stream would cost more than it
+    saves.
+    """
+    url = with_credentials(stream.url, username, password)
+    if getattr(stream, "reader", "auto") == "ffmpeg" and url.startswith(("rtsp://", "rtsps://")):
+        return f"ffmpeg:{url}#video=copy#audio=copy"
+    return url
+
+
 def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port: int = 8555) -> dict:
     """The go2rtc config for the streams the operator has enabled.
 
@@ -119,9 +135,7 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port:
     the network is not a feature here, it is a hole.
     """
     streams = {
-        stream.name: with_credentials(
-            stream.url, settings.camera.username, settings.camera.password
-        )
+        stream.name: source_for(stream, settings.camera.username, settings.camera.password)
         for stream in settings.camera.streams
         if stream.enabled and stream.url
     }

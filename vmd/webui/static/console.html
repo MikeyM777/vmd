@@ -277,7 +277,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 5px;
 .field label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
 .field input[type=checkbox] { width: auto; }
 .streamrow-edit {
-  display: grid; grid-template-columns: 150px 1fr auto auto; gap: 8px; align-items: center;
+  display: grid; grid-template-columns: 150px 1fr auto auto auto; gap: 8px; align-items: center;
 }
 .streamrow-edit + .streamrow-edit { margin-top: 6px; }
 .streamrow-edit label { margin: 0; display: flex; align-items: center; gap: 6px; }
@@ -916,10 +916,15 @@ function streamRow(stream) {
   row.innerHTML = `
     <label>Name <input class="s-name" placeholder="thermal"></label>
     <input class="s-url" placeholder="rtsp://192.168.1.64:554/stream1">
+    <select class="s-reader" title="Which client reads this stream from the camera">
+      <option value="auto">standard reader</option>
+      <option value="ffmpeg">tolerant reader (ffmpeg)</option>
+    </select>
     <label class="toggle"><input type="checkbox" class="s-on"> record</label>
     <button class="btn" type="button" title="Remove this stream">Remove</button>`;
   row.querySelector('.s-name').value = stream.name || '';
   row.querySelector('.s-url').value = stream.url || '';
+  row.querySelector('.s-reader').value = stream.reader || 'auto';
   row.querySelector('.s-on').checked = !!stream.enabled;
   row.querySelector('button').onclick = () => row.remove();
   return row;
@@ -966,7 +971,14 @@ function collect() {
   document.querySelectorAll('#streamrows .streamrow-edit').forEach(row => {
     const name = row.querySelector('.s-name').value.trim();
     const url = row.querySelector('.s-url').value.trim();
-    if (name && url) streams.push({ name, url, enabled: row.querySelector('.s-on').checked });
+    if (name && url) {
+      streams.push({
+        name,
+        url,
+        enabled: row.querySelector('.s-on').checked,
+        reader: row.querySelector('.s-reader').value,
+      });
+    }
   });
   return {
     camera: {

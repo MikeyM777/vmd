@@ -34,6 +34,16 @@ class StreamSettings(Model):
     name: str
     url: str
     enabled: bool = True
+    # Which client reads this stream from the camera.
+    #
+    #   auto   - the streaming server's own RTSP client. Lowest overhead.
+    #   ffmpeg - ffmpeg reads it instead. The same demuxer VLC is built on, and
+    #            it tolerates a stream that stutters where a stricter client
+    #            gives up. Costs a process per stream and a little more delay.
+    #
+    # Offered per stream because they do not fail together: a thermal head and a
+    # 4K head on one camera behave nothing alike on a link under pressure.
+    reader: Literal["auto", "ffmpeg"] = "auto"
 
 
 class CameraSettings(Model):
