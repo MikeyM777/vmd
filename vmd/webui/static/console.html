@@ -1121,6 +1121,94 @@ function setPaneState(name, state, headline, detail) {
   if (state !== 'playing') noteOf(name, headline, detail);
 }
 
+/* ---- how the picture actually gets here -------------------------------------
+   WebRTC first, fragmented MP4 second.
+
+   MP4 through a <video> element is simple and reliable, and it is also why the
+   picture ran seconds behind: the browser buffers a media file, and nothing in
+   that path is trying to stay near live. WebRTC is built for live and arrives
+   in a fraction of a second.
+
+   go2rtc speaks WebRTC over a WebSocket. The browser may open that socket
+   cross-origin without any cooperation from go2rtc, so no proxy is needed - the
+   signalling goes straight to it and the media never passes through this page's
+   server at all. MP4 remains as the fallback, because a picture that is a
+   second late beats no picture. */
+function attachWebrtc(name, base, onFail) {
+  const spec = panes[name];
+  const video = el(spec.video);
+  const player = players[name];
+  let settled = false;
+
+  let socket, peer;
+  const giveUp = reason => {
+    if (settled) return;
+    settled = true;
+    try { if (peer) peer.close(); } catch (e) {}
+    try { if (socket) socket.close(); } catch (e) {}
+    player.webrtc = null;
+    onFail(reason);
+  };
+
+  try {
+    const wsUrl = base.replace(/^http/, 'ws') + '/api/ws?src=' + encodeURIComponent(name);
+    socket = new WebSocket(wsUrl);
+    peer = new RTCPeerConnection({ iceServers: [] });  // loopback: no STUN, no relay
+    player.webrtc = { socket, peer };
+
+    peer.addTransceiver('video', { direction: 'recvonly' });
+    peer.ontrack = event => {
+      settled = true;
+      video.srcObject = event.streams[0];
+      video.play().catch(() => {});
+    };
+    peer.onicecandidate = event => {
+      if (event.candidate && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'webrtc/candidate', value: event.candidate.candidate }));
+      }
+    };
+    peer.onconnectionstatechange = () => {
+      if (['failed', 'closed'].includes(peer.connectionState)) giveUp('webrtc ' + peer.connectionState);
+    };
+
+    socket.onopen = async () => {
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        socket.send(JSON.stringify({ type: 'webrtc/offer', value: offer.sdp }));
+      } catch (e) { giveUp('webrtc offer failed'); }
+    };
+    socket.onmessage = async event => {
+      let message;
+      try { message = JSON.parse(event.data); } catch (e) { return; }
+      try {
+        if (message.type === 'webrtc/answer') {
+          await peer.setRemoteDescription({ type: 'answer', sdp: message.value });
+        } else if (message.type === 'webrtc/candidate' && message.value) {
+          await peer.addIceCandidate({ candidate: message.value, sdpMid: '0' });
+        } else if (message.type === 'error') {
+          giveUp(message.value || 'the streaming server refused WebRTC');
+        }
+      } catch (e) { /* a late candidate is not fatal */ }
+    };
+    socket.onerror = () => giveUp('cannot reach the streaming server');
+    socket.onclose = () => { if (!settled) giveUp('the streaming server closed the connection'); };
+
+    // If nothing is playing shortly, fall back rather than sit on a black panel.
+    setTimeout(() => { if (!video.srcObject) giveUp('webrtc produced no video'); }, 8000);
+  } catch (e) {
+    giveUp('webrtc unavailable: ' + e.message);
+  }
+}
+
+function detachWebrtc(name) {
+  const player = players[name];
+  if (!player || !player.webrtc) return;
+  try { player.webrtc.peer.close(); } catch (e) {}
+  try { player.webrtc.socket.close(); } catch (e) {}
+  player.webrtc = null;
+}
+
 function attach(name, base) {
   const spec = panes[name];
   const video = el(spec.video);
@@ -1132,10 +1220,24 @@ function attach(name, base) {
   player.attempts = (player.attempts || 0) + 1;
   if (player.timer) clearTimeout(player.timer);
 
-  const url = `${base}/api/stream.mp4?src=${encodeURIComponent(name)}`;
-  // A cache-buster on reconnect: without it a retry can be handed the dead
-  // response the browser already has, and the panel stays black forever.
-  video.src = url + '&t=' + performance.now().toFixed(0);
+  detachWebrtc(name);
+  video.removeAttribute('src');
+  video.srcObject = null;
+
+  if (window.RTCPeerConnection && !player.forceMp4) {
+    attachWebrtc(name, base, reason => {
+      // One fallback, remembered, so a camera that cannot do WebRTC does not
+      // pay the timeout on every retry for the rest of the shift.
+      logLine(`${name}: ${reason}; falling back to MP4`);
+      player.forceMp4 = true;
+      attach(name, base);
+    });
+  } else {
+    const url = `${base}/api/stream.mp4?src=${encodeURIComponent(name)}`;
+    // A cache-buster on reconnect: without it a retry can be handed the dead
+    // response the browser already has, and the panel stays black forever.
+    video.src = url + '&t=' + performance.now().toFixed(0);
+  }
   el(spec.tag).textContent = 'connecting';
   setPaneState(name, 'reconnecting', 'CONNECTING', 'waiting for the first frame');
   player.lastTime = -1;
@@ -1175,7 +1277,8 @@ setInterval(() => {
         player.attempts = 0;
         player.everPlayed = true;
         setPaneState(name, 'playing');
-        el(panes[name].tag).textContent = `${video.videoWidth}×${video.videoHeight}`;
+        const how = video.srcObject ? 'webrtc' : 'mp4';
+        el(panes[name].tag).textContent = `${video.videoWidth}×${video.videoHeight} · ${how}`;
       }
       continue;
     }
@@ -1234,8 +1337,12 @@ async function pollStreams() {
         if (!player || player.base !== info.api_base) attach(name, info.api_base);
       } else {
         if (player) { player.base = null; if (player.timer) clearTimeout(player.timer); }
+        detachWebrtc(name);
         const video = el(panes[name].video);
-        if (video && video.src) { video.removeAttribute('src'); video.load(); }
+        if (video) {
+          video.srcObject = null;
+          if (video.src) { video.removeAttribute('src'); video.load(); }
+        }
         setPaneState(name, 'nostream', 'NO STREAM', info.reason || 'not configured');
         el(panes[name].tag).textContent = 'no stream';
       }
@@ -1336,6 +1443,12 @@ async function pollLogs() {
   }
 }
 
+function logLine(text) {
+  // Client-side notes belong in the same place as everything else the operator
+  // reads about the system.
+  if (window.console) console.log('[vmd] ' + text);
+}
+
 function escapeHtml(text) {
   return String(text).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
@@ -1412,6 +1525,7 @@ function ptzHome() { lastSent = { pan: 0, tilt: 0, zoom: 0 }; ptzSend({ action: 
 
 // A stop that never arrives leaves the head moving. Send one on the way out.
 window.addEventListener('pagehide', () => {
+  for (const name of Object.keys(panes)) detachWebrtc(name);
   if (ptzMoving) navigator.sendBeacon('/api/ptz', new Blob(
     [JSON.stringify({ action: 'stop' })], { type: 'application/json' }));
 });

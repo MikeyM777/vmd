@@ -321,6 +321,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        # Restart it here rather than in a separate loop: this endpoint is
+        # already polled every few seconds by the page that needs the video.
+        try:
+            streaming.ensure_running()
+        except Exception:  # noqa: BLE001 - reporting must not depend on restarting
+            logger.exception("could not restart the streaming server")
         status = streaming.status()
         self._send_json(
             HTTPStatus.OK,

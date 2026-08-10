@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import urllib.request
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -89,7 +90,7 @@ def with_credentials(url: str, username: str, password: str) -> str:
     return urlunsplit((parsed.scheme, f"{credentials}@{host}", parsed.path, parsed.query, parsed.fragment))
 
 
-def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
+def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port: int = 8555) -> dict:
     """The go2rtc config for the streams the operator has enabled.
 
     Everything listens on loopback only. This machine is air-gapped and the
@@ -104,11 +105,22 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
         if stream.enabled and stream.url
     }
     return {
-        "api": {"listen": f"127.0.0.1:{api_port}"},
+        "api": {
+            "listen": f"127.0.0.1:{api_port}",
+            # The console runs on a different port, so its WebSocket to this
+            # server is cross-origin and go2rtc refuses it with a 403 unless
+            # told otherwise. That WebSocket is the WebRTC signalling channel -
+            # without it there is no low-latency video. Both ends are bound to
+            # loopback on an offline machine, so the only thing that can reach
+            # this is something already running on it.
+            "origin": "*",
+        },
         # The RTSP listener is not for anyone else to connect to; go2rtc uses it
         # internally when a source has to be re-published. Loopback, always.
         "rtsp": {"listen": f"127.0.0.1:{rtsp_port}"},
-        "webrtc": {"listen": ""},  # WebRTC over the API port; no separate UDP listener
+        # WebRTC needs a listener to offer host candidates from. Loopback only:
+        # the browser is on this machine and nothing else may reach the video.
+        "webrtc": {"listen": f"127.0.0.1:{webrtc_port}"},
         "log": {"level": "warn"},
         "streams": streams,
     }
@@ -149,15 +161,21 @@ class Go2rtcService:
         binary: Path | None,
         api_port: int = 1984,
         rtsp_port: int = 8554,
+        webrtc_port: int = 8555,
         spawn=None,
     ) -> None:
         self.settings = settings
         self.config_path = Path(config_path)
         self.api_port = api_port
         self.rtsp_port = rtsp_port
+        self.webrtc_port = webrtc_port
         self.binary = binary
         self._spawn = spawn or _default_spawn
         self._process: subprocess.Popen | None = None
+        # Why it died, in its own words. A status line saying only "not running"
+        # tells the operator nothing they can act on.
+        self._recent: deque[str] = deque(maxlen=8)
+        self._exit_code: int | None = None
 
     # ------------------------------------------------------------------ state
 
@@ -182,8 +200,31 @@ class Go2rtcService:
         elif not self.stream_names:
             reason = "no stream addresses set - enter them in Settings"
         else:
-            reason = "streaming server is not running"
+            last = next((line for line in reversed(self._recent) if line), "")
+            code = self._exit_code
+            reason = "the streaming server stopped"
+            if code is not None:
+                reason += f" (exit {code})"
+            if last:
+                reason += f": {last}"
         return StreamingStatus(self.running, reason, self.api_base, self.stream_names)
+
+    def ensure_running(self) -> None:
+        """Start it if it is not running. Called on every status poll.
+
+        go2rtc can exit for reasons that have nothing to do with us - a port it
+        wanted taken, a camera that hung up in a way it did not survive. Nothing
+        was restarting it, so one exit meant no video until someone restarted
+        the whole console.
+        """
+        if self.running or self.binary is None or not self.stream_names:
+            return
+        process = self._process
+        if process is not None:
+            self._exit_code = process.poll()
+            self._process = None
+            logger.warning("go2rtc exited with %s; restarting", self._exit_code)
+        self.start()
 
     # --------------------------------------------------------------- lifecycle
 
@@ -200,7 +241,10 @@ class Go2rtcService:
             logger.info("no enabled streams; not starting go2rtc")
             return
 
-        write_config(build_config(self.settings, self.api_port, self.rtsp_port), self.config_path)
+        write_config(
+            build_config(self.settings, self.api_port, self.rtsp_port, self.webrtc_port),
+            self.config_path,
+        )
         try:
             self._process = self._spawn([str(self.binary), "-c", str(self.config_path)])
             self._pump_output(self._process)
@@ -269,6 +313,7 @@ class Go2rtcService:
                     text = line.rstrip()
                     if not text:
                         continue
+                    self._recent.append(text)
                     lowered = text.lower()
                     if "err" in lowered or "unauthorized" in lowered or "401" in lowered:
                         stream_logger.warning("%s", text)

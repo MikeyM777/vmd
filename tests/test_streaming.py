@@ -313,3 +313,35 @@ def test_non_rtsp_sources_are_untouched() -> None:
         )
     )
     assert build_config(settings, 1984, 8554)["streams"]["t"] == "exec:ffmpeg -i thing {output}"
+
+
+def test_a_dead_server_is_restarted(tmp_path: Path) -> None:
+    """Nothing was restarting go2rtc, so one exit meant no video until the whole
+    console was restarted by hand."""
+    spawned: list = []
+    svc = service(settings_with(("thermal", "rtsp://cam/t", True)), tmp_path, spawned)
+    svc.start()
+    svc._process.alive = False  # it died on its own
+    assert not svc.running
+    svc.ensure_running()
+    assert svc.running
+    assert len(spawned) == 2
+
+
+def test_ensure_running_does_nothing_when_it_is_running(tmp_path: Path) -> None:
+    spawned: list = []
+    svc = service(settings_with(("thermal", "rtsp://cam/t", True)), tmp_path, spawned)
+    svc.start()
+    svc.ensure_running()
+    assert len(spawned) == 1
+
+
+def test_a_death_is_explained_with_the_exit_code(tmp_path: Path) -> None:
+    spawned: list = []
+    svc = service(settings_with(("thermal", "rtsp://cam/t", True)), tmp_path, spawned)
+    svc.start()
+    svc._process.alive = False
+    svc._exit_code = 1
+    svc._process = None
+    reason = svc.status().reason
+    assert "stopped" in reason and "exit 1" in reason
