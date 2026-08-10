@@ -325,6 +325,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.OK,
             {
+                "sources": streaming.sources(),
                 "running": status.running,
                 "reason": status.reason,
                 "api_base": status.api_base,

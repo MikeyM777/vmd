@@ -1030,13 +1030,24 @@ loadSettings();
    dies is a labelled state on screen and a retry in the background, never a
    blank panel, never an error dialog, and never a stopped page. */
 const LIVE_POLL_MS = 5000;      // how often we ask the server what exists
-const RETRY_MS = 3000;          // how soon a dead stream is tried again
-const STALL_MS = 6000;          // no new frame for this long counts as dead
+const RETRY_MS = 3000;          // first retry after a stream really dies
+const RETRY_MAX_MS = 20000;     // retries back off to here and stay there
+const STALL_MS = 8000;          // a playing stream that goes quiet for this long
+
+// Getting the first frame out of a thermal stream is not the same as losing a
+// live one. Thermal is low frame rate with long gaps between keyframes, and a
+// browser cannot show anything until a keyframe arrives - which can be many
+// seconds after the connection opens. Judging that by the mid-stream stall
+// timer tore the stream down before it had ever started, over and over, while
+// the same camera played perfectly in VLC.
+const FIRST_FRAME_MS = 30000;
 
 /* Whatever the camera actually offers, under whatever names the operator gave
    it. The panes and the layout buttons are built from that list. */
 const panes = {};
 const players = {};
+// What the streaming server says about the camera side of each stream.
+let sources = {};
 
 function idsFor(name) {
   const key = name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1115,8 +1126,10 @@ function attach(name, base) {
   const video = el(spec.video);
   if (!video) return;
 
-  const player = players[name] || (players[name] = { lastTime: -1, lastMoved: 0, timer: null });
+  const player = players[name] ||
+    (players[name] = { lastTime: -1, lastMoved: 0, timer: null, attempts: 0, everPlayed: false });
   player.base = base;
+  player.attempts = (player.attempts || 0) + 1;
   if (player.timer) clearTimeout(player.timer);
 
   const url = `${base}/api/stream.mp4?src=${encodeURIComponent(name)}`;
@@ -1124,9 +1137,11 @@ function attach(name, base) {
   // response the browser already has, and the panel stays black forever.
   video.src = url + '&t=' + performance.now().toFixed(0);
   el(spec.tag).textContent = 'connecting';
-  setPaneState(name, 'reconnecting', 'CONNECTING', name);
+  setPaneState(name, 'reconnecting', 'CONNECTING', 'waiting for the first frame');
   player.lastTime = -1;
+  player.startedAt = performance.now();
   player.lastMoved = performance.now();
+  player.nudged = false;
   video.play().catch(() => { /* autoplay policy; the watchdog retries */ });
 }
 
@@ -1134,7 +1149,11 @@ function retry(name) {
   const player = players[name];
   if (!player || !player.base) return;
   if (player.timer) clearTimeout(player.timer);
-  player.timer = setTimeout(() => attach(name, player.base), RETRY_MS);
+  // Back off. A stream that will not come back should be asked for less and
+  // less often, not hammered - every attempt makes go2rtc reopen the camera
+  // connection, and on a 15 km link that costs more than it recovers.
+  const wait = Math.min(RETRY_MS * Math.pow(2, Math.max(0, (player.attempts || 1) - 1)), RETRY_MAX_MS);
+  player.timer = setTimeout(() => attach(name, player.base), wait);
 }
 
 /* One watchdog for every panel. currentTime is the only honest signal here: a
@@ -1152,16 +1171,48 @@ setInterval(() => {
       player.lastTime = video.currentTime;
       player.lastMoved = now;
       if (video.videoWidth) {
+        // It is playing, so this attempt worked: forget the backoff.
+        player.attempts = 0;
+        player.everPlayed = true;
         setPaneState(name, 'playing');
         el(panes[name].tag).textContent = `${video.videoWidth}×${video.videoHeight}`;
       }
       continue;
     }
+
+    // Never started versus stopped after playing. They look identical to the
+    // element and need completely different patience.
+    if (!player.everPlayed || player.lastTime <= 0) {
+      const waitingFor = now - (player.startedAt || now);
+      setPaneState(name, 'reconnecting', 'CONNECTING',
+                   `waiting for the first frame — ${Math.round(waitingFor / 1000)} s`);
+      const camera = sources[name];
+      if (camera && camera.connected === false) {
+        setPaneState(name, 'reconnecting', 'NO SIGNAL',
+                     'the camera is not sending — see the Logs tab');
+      }
+      if (waitingFor > FIRST_FRAME_MS) {
+        setPaneState(name, 'reconnecting', 'NO SIGNAL', 'the stream sent nothing — retrying');
+        el(panes[name].tag).textContent = 'no signal';
+        retry(name);
+        player.startedAt = now;
+      }
+      continue;
+    }
+
     const stalledFor = now - player.lastMoved;
     if (stalledFor > STALL_MS) {
       const seconds = Math.round(stalledFor / 1000);
       setPaneState(name, 'reconnecting', 'NO SIGNAL', `last frame ${seconds} s ago — retrying`);
       el(panes[name].tag).textContent = 'no signal';
+      // A paused element looks exactly like a dead stream. Ask it to play once
+      // before throwing the connection away.
+      if (!player.nudged) {
+        player.nudged = true;
+        player.lastMoved = now;
+        video.play().catch(() => {});
+        continue;
+      }
       retry(name);
       player.lastMoved = now;  // do not retry every tick while it reconnects
     }
@@ -1173,6 +1224,7 @@ async function pollStreams() {
   try {
     const info = await (await fetch('/api/streams')).json();
     buildPanes(info.streams || []);
+    sources = info.sources || {};
     let anyLive = false;
     for (const name of Object.keys(panes)) {
       const available = (info.streams || []).includes(name);

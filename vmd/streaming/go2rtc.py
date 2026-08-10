@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -228,6 +229,29 @@ class Go2rtcService:
                     logger.error("go2rtc did not die; leaving it tracked")
                     return
         self._process = None
+
+    def sources(self) -> dict:
+        """What go2rtc says about each stream: is the camera side connected?
+
+        This separates two failures that look identical in the browser - the
+        camera having dropped us, and the browser having stalled on a stream
+        that is still arriving. Best effort: the console works without it.
+        """
+        if not self.running:
+            return {}
+        try:
+            with urllib.request.urlopen(f"{self.api_base}/api/streams", timeout=2) as response:
+                raw = json.loads(response.read().decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            return {}
+        summary: dict[str, dict] = {}
+        for name, entry in (raw or {}).items():
+            producers = (entry or {}).get("producers") or []
+            summary[name] = {
+                "connected": bool(producers),
+                "consumers": len((entry or {}).get("consumers") or []),
+            }
+        return summary
 
     def _pump_output(self, process: subprocess.Popen) -> None:
         """Forward go2rtc's own output into the console log, on a daemon thread.
