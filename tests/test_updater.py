@@ -113,3 +113,28 @@ def test_the_output_shows_the_commands_that_were_run(checkout: Path) -> None:
     updater.start()
     state = wait_for(updater)
     assert any("git pull" in line for line in state["output"])
+
+
+def test_a_real_new_commit_is_pulled_and_reported(checkout: Path) -> None:
+    """The case that matters: someone pushed, and this copy takes it."""
+    other = checkout.parent / "publisher"
+    git("clone", str(checkout.parent / "origin"), str(other), cwd=checkout.parent)
+    git("config", "user.email", "test@example.com", cwd=other)
+    git("config", "user.name", "Test", cwd=other)
+    (other / "file.txt").write_text("second version\n", encoding="utf-8")
+    (other / "added.txt").write_text("new file\n", encoding="utf-8")
+    git("add", "-A", cwd=other)
+    git("commit", "-m", "a change worth pulling", cwd=other)
+    git("push", "origin", "main", cwd=other)
+
+    before = Updater(checkout).version()["version"]
+
+    updater = Updater(checkout)
+    assert updater.start()[0]
+    state = wait_for(updater)
+
+    assert state["ok"] is True, state["message"]
+    assert "start vmd.exe again" in state["message"].lower()
+    assert (checkout / "file.txt").read_text(encoding="utf-8") == "second version\n"
+    assert (checkout / "added.txt").exists(), "a new file did not arrive"
+    assert updater.version()["version"] != before, "the reported version did not change"
