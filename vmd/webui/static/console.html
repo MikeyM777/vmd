@@ -451,7 +451,11 @@ dialog#updatebox h2 {
       <div class="group">
         <h2>Link</h2>
         <div class="row"><span class="k">Signal</span><span class="v" id="l-sig">—</span></div>
-        <div class="row"><span class="k">Capacity</span><span class="v">—</span></div>
+        <div class="row"><span class="k">Noise</span><span class="v" id="l-noise">—</span></div>
+        <div class="row"><span class="k">Quality</span><span class="v" id="l-ccq">—</span></div>
+        <div class="row"><span class="k">Capacity</span><span class="v" id="l-cap">—</span></div>
+        <div class="row"><span class="k">Carrying</span><span class="v" id="l-tp">—</span></div>
+        <p class="hint" id="l-note"></p>
         <div class="row"><span class="k">Bitrate</span><span class="v" id="l-rate">4.0 Mb/s</span></div>
         <div class="row"><span class="k">Mode</span><span class="v">auto</span></div>
       </div>
@@ -1464,6 +1468,46 @@ async function pollStatus() {
 }
 pollStatus();
 setInterval(pollStatus, 10000);
+
+/* ---- the radio ---------------------------------------------------------------
+   Every bandwidth problem this system has had was a link problem, and the panel
+   said nothing because nothing read the radio. What it reports is what the
+   radio reports - a field it does not send reads "—", never zero. */
+async function pollRadio() {
+  if (!LIVE) return;
+  const set = (id, text) => { const node = el(id); if (node) node.textContent = text; };
+  try {
+    const link = await (await fetch('/api/radio')).json();
+    const chip = el('chip-link');
+
+    if (!link.connected) {
+      set('l-sig', '—'); set('l-noise', '—'); set('l-ccq', '—');
+      set('l-cap', '—'); set('l-tp', '—');
+      set('l-note', link.reason || 'the radio is not answering');
+      if (chip) { chip.classList.remove('ok'); chip.classList.toggle('bad', !!link.reason); }
+      return;
+    }
+
+    const dbm = v => (v == null ? '—' : v + ' dBm');
+    const mbps = v => (v == null ? '—' : (+v).toFixed(1) + ' Mb/s');
+    set('l-sig', dbm(link.signal_dbm));
+    set('l-noise', dbm(link.noise_dbm));
+    set('l-ccq', link.ccq == null ? '—' : (link.ccq > 100 ? (link.ccq / 10).toFixed(0) : link.ccq.toFixed(0)) + '%');
+    set('l-cap', link.tx_capacity_mbps == null && link.rx_capacity_mbps == null
+      ? '—' : `${mbps(link.rx_capacity_mbps)} down`);
+    set('l-tp', link.rx_mbps == null ? '—' : `${mbps(link.rx_mbps)} in`);
+    set('l-note', link.device ? link.device : '');
+
+    if (chip) {
+      chip.classList.remove('bad');
+      chip.classList.add('ok');
+      const value = el('chip-live-v');
+      if (value && link.signal_dbm != null) value.textContent = link.signal_dbm + ' dBm';
+    }
+  } catch (e) { /* the footer already reports a dead console server */ }
+}
+pollRadio();
+setInterval(pollRadio, 5000);
 
 /* ---- logs ------------------------------------------------------------------
    The operator has a browser and a black window, and cannot be asked to open a

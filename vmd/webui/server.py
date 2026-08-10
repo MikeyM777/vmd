@@ -25,6 +25,7 @@ from vmd.settings import Settings, SettingsError, detect_free_bytes, load_settin
 from vmd.streaming.diagnose import diagnose, find_paths
 from vmd.streaming.go2rtc import Go2rtcService
 from vmd.ptz.service import PtzService
+from vmd.radio.service import RadioService
 from vmd.webui.updater import Updater
 
 logger = logging.getLogger(__name__)
@@ -154,12 +155,14 @@ class ConsoleServer(ThreadingHTTPServer):
         streaming: Go2rtcService | None = None,
         updater: Updater | None = None,
         ptz: PtzService | None = None,
+        radio: RadioService | None = None,
     ) -> None:
         super().__init__(address, ConsoleHandler)
         self.settings_path = settings_path
         self.streaming = streaming
         self.updater = updater
         self.ptz = ptz
+        self.radio = radio
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -234,6 +237,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._get_report()
         elif path == "/api/encoders":
             self._get_encoders()
+        elif path == "/api/radio":
+            self._get_radio()
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         else:
@@ -341,6 +346,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 - same: the save itself succeeded
                 logger.exception("could not re-point PTZ after a settings change")
 
+        if self.server.radio is not None:
+            try:
+                self.server.radio.apply(settings)
+            except Exception:  # noqa: BLE001 - same
+                logger.exception("could not re-point the radio after a settings change")
+
         self._send_json(HTTPStatus.OK, json.loads(settings.model_dump_json()))
 
     def _get_status(self) -> None:
@@ -418,6 +429,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.CONFLICT, why_not)
             return
         self._send_json(HTTPStatus.ACCEPTED, DIAGNOSIS.snapshot())
+
+    def _get_radio(self) -> None:
+        """What the radio says about the link, or why it cannot be read."""
+        radio = self.server.radio
+        if radio is None:
+            self._send_json(HTTPStatus.OK, {"connected": False, "reason": "the radio is not set up"})
+            return
+        self._send_json(HTTPStatus.OK, radio.status())
 
     def _get_encoders(self) -> None:
         ptz = self.server.ptz
@@ -616,5 +635,6 @@ def make_server(
     streaming: Go2rtcService | None = None,
     updater: Updater | None = None,
     ptz: PtzService | None = None,
+    radio: RadioService | None = None,
 ) -> ConsoleServer:
-    return ConsoleServer((host, port), Path(settings_path), streaming, updater, ptz)
+    return ConsoleServer((host, port), Path(settings_path), streaming, updater, ptz, radio)
