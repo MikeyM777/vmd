@@ -396,10 +396,23 @@ def _left(headroom: float, rate: float, estimated: bool) -> str:
 
 def _duration(seconds: float) -> str:
     if seconds < HOUR:
-        return f"{max(seconds / 60.0, 1):.0f} minutes"
+        return _plural(max(seconds / 60.0, 1), "minute")
     if seconds < 2 * DAY:
-        return f"{seconds / HOUR:.0f} hours"
-    return f"{seconds / DAY:.0f} days"
+        return _plural(seconds / HOUR, "hour")
+    return _plural(seconds / DAY, "day")
+
+
+def _plural(count: float, word: str) -> str:
+    """`1 minute`, `2 minutes`, and never `1 minutes`.
+
+    The count is rounded first and the word chosen from what was rounded to,
+    not from the unrounded figure: 1.4 minutes is drawn as `1` and so has to
+    read `1 minute`. This shows in the state the panel matters most in - the
+    last minute before a drive fills, and the last hour before it - which is
+    the one place a sentence that looks unfinished is worst.
+    """
+    whole = round(count)
+    return f"{whole:.0f} {word}" + ("" if whole == 1 else "s")
 
 
 def bytes_in_words(count: float) -> str:

@@ -1439,3 +1439,33 @@ def test_the_camera_views_are_side_by_side_rather_than_stacked(
     assert abs(thermal.width() - visible.width()) <= 2, (
         f"{thermal.width()} px against {visible.width()}"
     )
+
+
+def test_a_number_that_will_not_parse_is_refused_by_the_name_on_the_form(
+    qtbot, tmp_path: Path
+) -> None:
+    """`storage.retention_days: Input should be a valid integer, unable to parse
+    string as an integer` is a library's sentence with a Python attribute path in
+    front of it, shown to a man who has never seen either.
+
+    Two things are wrong with it and only one of them is the wording. The other
+    is that it names the offending field by a name that appears nowhere on the
+    screen - so on a form he has to scroll, the one sentence telling him what to
+    correct does not tell him where it is. Every field a number can be typed into
+    has a label a foot away from it; that label is what the message has to use.
+    """
+    for field, typed, label in (
+        ("retention_days", "two weeks", "Delete older than (days)"),
+        ("min_travel_px", "a lot", "Must travel at least (dots)"),
+    ):
+        tab, path = build(qtbot, tmp_path / field)
+        tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+        setattr(tab, field, typed)
+
+        assert tab.save() is False, f"{field}={typed!r} was accepted"
+        said = tab.message
+        assert label in said, said
+        assert "storage." not in said and "detection." not in said, said
+        assert "_" not in said, said
+        assert "parse" not in said.lower() and "input should be" not in said.lower(), said
+        assert typed in said, said

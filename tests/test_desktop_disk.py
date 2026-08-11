@@ -525,3 +525,40 @@ def test_a_file_a_moment_ahead_of_the_clock_is_still_footage(tmp_path: Path) -> 
     now = time.time()
     write_segment(tmp_path, "thermal", "2026-08-11_10-00-00.mp4", 4 * MB, now + 2.0)
     assert read_disk(settings_for(tmp_path), now=now).writing is True
+
+
+def test_the_last_hour_of_footage_is_not_reported_as_1_minutes(tmp_path: Path) -> None:
+    """The plural is wrong exactly once, and it is in the state that matters.
+
+    "Roughly 1 minutes left before the drive is full" is the sentence this panel
+    exists to produce, on the morning it produces it, and it is the one sentence
+    in it that reads as though nobody has ever seen it. The same arithmetic says
+    "1 hours" for the hour before that.
+    """
+    settings = settings_for(tmp_path, budget_gb=100.0)
+    # 30 MB left at 1 MB/s: half a minute, which the panel floors to one.
+    lines = storage_lines(
+        reading_with(
+            used_bytes=100 * GB - 30 * MB,
+            free_bytes=30 * MB,
+            bytes_per_second=float(MB),
+            rate_is_estimate=False,
+        ),
+        settings.storage,
+    )
+    said = " ".join(text for text, _colour in lines)
+    assert "1 minutes" not in said, said
+    assert "1 minute " in said or said.endswith("1 minute"), said
+
+    # And an hour and a bit of it, which takes the same road.
+    lines = storage_lines(
+        reading_with(
+            used_bytes=100 * GB - 4 * GB,
+            free_bytes=4 * GB,
+            bytes_per_second=4 * GB / 3900.0,
+            rate_is_estimate=False,
+        ),
+        settings.storage,
+    )
+    said = " ".join(text for text, _colour in lines)
+    assert "1 hours" not in said, said

@@ -2061,10 +2061,67 @@ def _adopted(settings: Settings) -> str:
     )
 
 
+# What each setting is called on the screen, keyed by where pydantic says the
+# trouble is. An index inside a list is written `*`, since one bad camera view
+# is described by the view, not by its position on the page.
+#
+# This exists because a refused save was naming the field by its Python
+# attribute path - `storage.retention_days` - to a man who has never seen the
+# source and cannot see the file. On a form he has to scroll, that leaves the
+# one sentence telling him what to correct unable to tell him where it is:
+# every box here has a label a finger's width from it, and the label is the
+# only name for it he has ever been shown.
+#
+# Anything not named here keeps its path, which is worse than a label and much
+# better than nothing. The rule for adding a field to the form is that its
+# label is added here at the same time.
+FIELD_LABELS = {
+    "camera.host": "Address, under Camera",
+    "camera.username": "Username, under Camera",
+    "camera.password": "Password, under Camera",
+    "camera.streams.*.name": "the name of a camera view",
+    "camera.streams.*.url": "the address of a camera view",
+    "detection.min_travel_px": "Must travel at least (dots)",
+    "storage.root": "Folder, under Storage",
+    "storage.budget_gb": "Budget (GB)",
+    "storage.retention_days": "Delete older than (days)",
+    "radio.host": "Address, under Radio",
+    "radio.username": "Username, under Radio",
+    "radio.password": "Password, under Radio",
+}
+
+# What a number that would not parse should be called, by the name pydantic
+# gives the failure. The library's own sentence - "Input should be a valid
+# integer, unable to parse string as an integer" - says the same thing twice
+# and says neither half in words anybody uses.
+WANTED_NUMBER = {
+    "int_parsing": "a whole number",
+    "int_type": "a whole number",
+    "float_parsing": "a number",
+    "float_type": "a number",
+}
+
+
 def _first_problem(exc: Exception) -> str:
-    """One readable sentence out of a validation error."""
-    if isinstance(exc, ValidationError):
-        first = exc.errors()[0]
-        where = ".".join(str(part) for part in first["loc"]) or "settings"
-        return f"{where}: {first['msg']}"
-    return str(exc)
+    """One readable sentence out of a validation error.
+
+    Readable means two things and they are separate: the field is named as the
+    screen names it, and the complaint is said in words rather than in the
+    validator's. Where either is unknown the raw form is kept - a sentence that
+    is technical is still a sentence, and one that has been dropped is not.
+    """
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    first = exc.errors()[0]
+    path = ".".join(
+        "*" if isinstance(part, int) else str(part) for part in first["loc"]
+    )
+    where = FIELD_LABELS.get(path) or path or "settings"
+    wanted = WANTED_NUMBER.get(str(first.get("type", "")))
+    typed = first.get("input")
+    if wanted is not None and isinstance(typed, str):
+        return f'{where}: "{typed}" is not {wanted}.'
+    # "Value error, " is pydantic announcing which of its own machinery raised;
+    # what follows it is the sentence this codebase wrote for the operator.
+    said = str(first["msg"]).removeprefix("Value error, ")
+    return f"{where}: {said}"
