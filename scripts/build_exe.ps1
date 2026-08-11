@@ -18,13 +18,29 @@ try {
     # Matched by full path, not by name. "VMD" is also the process name of
     # Visual Molecular Dynamics and of anything else a user happens to have
     # called VMD.exe; killing those by name would be someone else's bad day.
+    #
+    # taskkill /T rather than Stop-Process, because VMD.exe is a launcher: it
+    # starts uv, uv starts python, and python is the window the operator is
+    # looking at. Ending only the launcher used to leave that window open with
+    # nothing owning it, so "just run it again" produced a second console on the
+    # same directory - two consoles, two supervisors, one settings file and one
+    # recording index. Killing the tree ends the whole chain.
     $target = Join-Path $root 'VMD.exe'
     $running = Get-Process VMD -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $target }
     if ($running) {
         Write-Host "Closing the console that is already running." -ForegroundColor Gray
-        $running | Stop-Process -Force
+        foreach ($process in $running) {
+            & taskkill /F /T /PID $process.Id 2>&1 | Out-Null
+        }
         Start-Sleep -Milliseconds 400
+        # taskkill walks the tree Windows knows about. If anything survived it -
+        # a grandchild whose parent had already exited, which Windows no longer
+        # relates to anyone - end it directly rather than leaving it to fight
+        # the next console for the recording directory.
+        Get-Process VMD -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $target } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
     }
 
     # Nothing is bundled: no --add-data, no application imports. The launcher is
