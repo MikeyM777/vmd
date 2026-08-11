@@ -67,14 +67,19 @@ PID_FILENAME = "recorder.pid"
 # vmd\desktop\services.py, which names this constant.
 ALREADY_RECORDING_EXIT = 3
 
-# The claim file holds a bare integer and nothing else, because two other
-# programs already parse it that way - vmd\desktop\services.py does
-# int(text.strip()) and scripts\recorder_service.ps1 does [int]::TryParse over
-# the whole file. Anything richer would make both of them read "no recorder is
-# running" and start a second one, which is the exact accident this file exists
-# to prevent. Everything that will not fit in an integer goes in a companion
-# file beside it, and any reader that does not know about the companion is left
-# exactly as well off as it was.
+# The claim file holds a bare integer and nothing else, because another program
+# already parses it that way: vmd\desktop\services.py does int(text.strip()).
+# Anything richer would make it read "no recorder is running" and start a second
+# one, which is the exact accident this file exists to prevent. Everything that
+# will not fit in an integer goes in a companion file beside it, and any reader
+# that does not know about the companion is left exactly as well off as it was.
+#
+# scripts\recorder_service.ps1 used to be a second reader, and a second writer -
+# it recorded what Start-Process handed back, which on this venv is the
+# trampoline that launches the real interpreter rather than the recorder itself.
+# The recorder then found its own launcher in the file, stood down to it, and the
+# supervisor started another. It no longer touches this file at all: one writer,
+# and that writer is the process the claim is about.
 IDENTITY_SUFFIX = ".json"
 
 # What a live process must be running for the PID in the claim to be believed,
