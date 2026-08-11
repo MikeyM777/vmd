@@ -1125,8 +1125,21 @@ class ConsoleServices:
                     "go2rtc: adopted from an earlier run - it is serving video, but its "
                     "output goes to whatever started it and cannot be shown here"
                 )
-                self.streaming.api_port = int(endpoint.get("api_port", self.streaming.api_port))
-                self.streaming.rtsp_port = int(endpoint.get("rtsp_port", self.streaming.rtsp_port))
+                # `adopt`, not two port assignments: the ports were never the
+                # hard part. A server adopted without its PID could not be
+                # stopped when a save required it, so the console left it
+                # running and started a SECOND go2rtc on another port - a
+                # second connection across the radio link.
+                adopt = getattr(self.streaming, "adopt", None)
+                if adopt is not None:
+                    adopt(endpoint)
+                else:  # a streaming service handed in by a test, without a claim
+                    self.streaming.api_port = int(
+                        endpoint.get("api_port", self.streaming.api_port)
+                    )
+                    self.streaming.rtsp_port = int(
+                        endpoint.get("rtsp_port", self.streaming.rtsp_port)
+                    )
                 self.adopted_streaming = True
             else:
                 self.adopted_streaming = False
@@ -1217,8 +1230,17 @@ class ConsoleServices:
                         "the streaming server would not restart, so the live "
                         "picture is still on the old settings"
                     )
-                # Whatever is serving video now, this console restarted it.
-                self.adopted_streaming = False
+                # And whether it really is this console's server now. A go2rtc
+                # from an earlier run that would not stop - or one nothing on
+                # disk can name - is still what is serving the pictures, and
+                # saying otherwise would report settings as live that are not.
+                self.adopted_streaming = bool(getattr(self.streaming, "adopted", False))
+                if self.adopted_streaming:
+                    problems.append(
+                        "the streaming server from an earlier run could not be "
+                        "stopped, so the live picture is still on the settings "
+                        "it was started with"
+                    )
             else:
                 # Not a restart, but it must not be left holding the object the
                 # operator replaced: `stream_names` and the status line read it.

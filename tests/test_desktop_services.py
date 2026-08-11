@@ -2186,3 +2186,134 @@ def test_a_pid_that_cannot_be_asked_about_is_read_as_still_there(
 
     assert wait_until(asked_again)
     assert recorder.running is True
+
+
+# ------------------------------- a streaming server this console did not start
+#
+# `adopted_streaming` was set from streaming.json, which carries ports and no
+# PID, and Go2rtcService.stop() only ever stopped a process object it held. So
+# a settings change left the adopted go2rtc running and started a SECOND one on
+# another port - a second connection across the radio link, which is the one
+# cost this whole architecture exists to avoid.
+
+
+def live_endpoint(tmp_path: Path):
+    """A socket that answers, so `is_live` believes streaming.json."""
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    (tmp_path / "streaming.json").write_text(
+        json.dumps({"api_port": port, "rtsp_port": port, "streams": {}}), encoding="utf-8"
+    )
+    return listener, port
+
+
+def go2rtc_claim(tmp_path: Path, pid: int = 4242) -> None:
+    (tmp_path / "go2rtc.pid").write_text(str(pid), encoding="utf-8")
+    (tmp_path / "go2rtc.pid.json").write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "executable": str(tmp_path / "go2rtc.exe"),
+                "api_port": 1984,
+                "rtsp_port": 8554,
+                "written_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_an_adopted_streaming_server_is_stopped_when_the_settings_it_read_change(
+    tmp_path: Path,
+) -> None:
+    """The defect, end to end: one go2rtc before the save and one after it."""
+    from vmd.streaming.go2rtc import Go2rtcService
+
+    listener, port = live_endpoint(tmp_path)
+    go2rtc_claim(tmp_path)
+    killed: list[int] = []
+    living = {4242}
+    spawned: list = []
+
+    streaming = Go2rtcService(
+        settings_for(tmp_path),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        pid_path=tmp_path / "go2rtc.pid",
+        spawn=lambda command: (spawned.append(command), FakeProcess())[1],
+        image_of=lambda p: "go2rtc.exe" if p in living else None,
+        kill_tree=lambda p: (killed.append(p), living.discard(p), True)[2],
+        booted=lambda: None,
+    )
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=tmp_path / "settings.json",
+        streaming=streaming,
+        recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+    )
+    try:
+        services.start()
+        assert services.adopted_streaming is True
+        assert spawned == [], "a live streaming server must not be duplicated"
+
+        # And the tick that follows must not start one either.
+        services.tick()
+        assert spawned == []
+
+        changed = settings_for(tmp_path)
+        changed.camera.streams = [
+            StreamSettings(name="visible", url="rtsp://camera/visible", enabled=True)
+        ]
+        problems = services.apply(changed)
+    finally:
+        listener.close()
+
+    assert killed == [4242], "the adopted streaming server was left running"
+    assert len(spawned) == 1, "a second go2rtc was started beside the first"
+    assert services.adopted_streaming is False
+    assert problems == []
+
+
+def test_a_streaming_server_nobody_can_name_is_reported_rather_than_duplicated(
+    tmp_path: Path,
+) -> None:
+    """No claim on disk - a go2rtc left by a console older than this. It cannot
+    be stopped, and a second one on the same camera is worse than saying so."""
+    from vmd.streaming.go2rtc import Go2rtcService
+
+    listener, port = live_endpoint(tmp_path)
+    spawned: list = []
+    streaming = Go2rtcService(
+        settings_for(tmp_path),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        pid_path=tmp_path / "go2rtc.pid",
+        spawn=lambda command: (spawned.append(command), FakeProcess())[1],
+        image_of=lambda p: None,
+        kill_tree=lambda p: True,
+        booted=lambda: None,
+    )
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=tmp_path / "settings.json",
+        streaming=streaming,
+        recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+    )
+    try:
+        services.start()
+        changed = settings_for(tmp_path)
+        changed.camera.streams = [
+            StreamSettings(name="visible", url="rtsp://camera/visible", enabled=True)
+        ]
+        problems = services.apply(changed)
+    finally:
+        listener.close()
+
+    assert spawned == [], "a second go2rtc was started on top of a live one"
+    assert any("could not be stopped" in problem for problem in problems), problems

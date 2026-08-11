@@ -558,3 +558,226 @@ def test_one_enormous_go2rtc_line_is_cut_rather_than_kept_whole(tmp_path: Path, 
     assert wait_for_pump(lambda: any("yyy" in record.getMessage() for record in caplog.records))
     longest = max(len(r.getMessage()) for r in caplog.records if "yyy" in r.getMessage())
     assert longest < 5000, "one line held whole is the bug"
+
+
+# ------------------------------------------------------- whose process is that
+#
+# An adopted go2rtc could not be stopped at all. streaming.json carries the
+# ports and no PID, and stop() only ever stopped a process object this service
+# held - so a settings change left the adopted one running and started a SECOND
+# go2rtc on a different port. That is a second connection across the radio link,
+# which is the one cost this whole architecture exists to avoid.
+#
+# The claim is shaped after the recorder's, in vmd/record_main.py, and for the
+# same reason: the file holds a bare integer because several readers parse it
+# that way, and anything richer goes in a companion beside it.
+
+
+def claiming_service(
+    tmp_path: Path,
+    spawn=None,
+    image_of=None,
+    kill_tree=None,
+    booted=None,
+    pid: int = 4242,
+) -> Go2rtcService:
+    class Spawned:
+        def __init__(self) -> None:
+            self.pid = pid
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self) -> None:
+            self.alive = False
+
+        def kill(self) -> None:
+            self.alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+    return Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=spawn or (lambda command: Spawned()),
+        image_of=image_of or (lambda p: "go2rtc.exe"),
+        kill_tree=kill_tree,
+        booted=booted or (lambda: None),
+    )
+
+
+def test_a_running_go2rtc_says_which_process_it_is(tmp_path: Path) -> None:
+    svc = claiming_service(tmp_path)
+    svc.start()
+    claim = tmp_path / "go2rtc.pid"
+    assert int(claim.read_text(encoding="utf-8").strip()) == 4242
+
+
+def test_the_claim_file_holds_a_bare_integer_and_nothing_else(tmp_path: Path) -> None:
+    """Anything richer would make a reader that parses the whole file as a
+    number read "nothing is running", whose remedy is to start a second one."""
+    svc = claiming_service(tmp_path)
+    svc.start()
+    text = (tmp_path / "go2rtc.pid").read_text(encoding="utf-8")
+    assert text.strip().isdigit()
+    written = json.loads((tmp_path / "go2rtc.pid.json").read_text(encoding="utf-8"))
+    assert written["pid"] == 4242
+    assert written["rtsp_port"] == svc.rtsp_port
+
+
+def test_stopping_a_go2rtc_this_console_started_drops_the_claim(tmp_path: Path) -> None:
+    svc = claiming_service(tmp_path)
+    svc.start()
+    svc.stop()
+    assert not (tmp_path / "go2rtc.pid").exists()
+    assert not (tmp_path / "go2rtc.pid.json").exists()
+
+
+def adopting_service(tmp_path: Path, killed: list, **kwargs) -> Go2rtcService:
+    """A console that finds a live go2rtc from an earlier run and takes it on."""
+    (tmp_path / "go2rtc.pid").write_text("4242", encoding="utf-8")
+    (tmp_path / "go2rtc.pid.json").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "executable": str(tmp_path / "go2rtc.exe"),
+                "api_port": 1984,
+                "rtsp_port": 8554,
+                "written_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    living = {4242}
+
+    def kill_tree(pid: int) -> bool:
+        killed.append(pid)
+        living.discard(pid)
+        return True
+
+    kwargs.setdefault("kill_tree", kill_tree)
+    kwargs.setdefault("image_of", lambda p: "go2rtc.exe" if p in living else None)
+    return claiming_service(tmp_path, **kwargs)
+
+
+def test_an_adopted_go2rtc_is_running_so_nothing_starts_a_second_one(
+    tmp_path: Path,
+) -> None:
+    """The supervisor starts anything that is not running, every two seconds."""
+    spawned: list = []
+    svc = adopting_service(
+        tmp_path,
+        killed=[],
+        spawn=lambda command: pytest.fail("a live go2rtc must not be duplicated"),
+    )
+    assert svc.adopt({"api_port": 1984, "rtsp_port": 8554}) is True
+    assert svc.running is True
+    svc.start()  # what the supervisor does on every tick
+    assert spawned == []
+
+
+def test_an_adopted_go2rtc_can_be_stopped_and_replaced(tmp_path: Path) -> None:
+    """The defect: the adopted one was left running and a second one started."""
+    killed: list = []
+    spawned: list = []
+    svc = adopting_service(tmp_path, killed)
+    svc._spawn = lambda command: (spawned.append(command), _AliveProcess(7000))[1]
+    svc.adopt({"api_port": 1984, "rtsp_port": 8554})
+
+    svc.apply(settings_with(("visible", "rtsp://cam/v", True)))
+
+    assert killed == [4242], "the adopted streaming server was left running"
+    assert len(spawned) == 1, "a second go2rtc was started beside the first"
+    assert svc.running is True
+    assert svc.adopted is False
+
+
+def test_closing_the_console_leaves_an_adopted_go2rtc_alone(tmp_path: Path) -> None:
+    """It serves the recorder too, and the recorder outlives the window."""
+    killed: list = []
+    svc = adopting_service(tmp_path, killed)
+    svc.adopt({"api_port": 1984, "rtsp_port": 8554})
+    (tmp_path / "streaming.json").write_text("{\"rtsp_port\": 8554}", encoding="utf-8")
+    svc.stop()
+    assert killed == [], "closing a window is not a configuration change"
+    assert (tmp_path / "streaming.json").exists(), (
+        "the address of a server that is still serving was thrown away"
+    )
+    assert (tmp_path / "go2rtc.pid").exists(), "so was the claim naming it"
+
+
+def test_an_adopted_go2rtc_that_will_not_stop_is_reported_not_replaced(
+    tmp_path: Path, caplog
+) -> None:
+    """Two of them on one camera is worse than a setting that did not apply."""
+    spawned: list = []
+    svc = adopting_service(
+        tmp_path,
+        killed=[],
+        kill_tree=lambda pid: True,  # accepted, and nothing dies
+        image_of=lambda p: "go2rtc.exe",
+    )
+    svc._spawn = lambda command: (spawned.append(command), _AliveProcess(7000))[1]
+    svc.adopt({"api_port": 1984, "rtsp_port": 8554})
+
+    with caplog.at_level(logging.ERROR):
+        svc.apply(settings_with(("visible", "rtsp://cam/v", True)))
+
+    assert spawned == [], "a second go2rtc was started on top of a live one"
+    assert svc.adopted is True
+    assert any("NOT in effect" in r.getMessage() for r in caplog.records)
+
+
+def test_a_claim_naming_something_that_is_not_go2rtc_is_not_adopted(
+    tmp_path: Path,
+) -> None:
+    """Windows hands PIDs out again from a small pool, and this file survives a
+    power cut."""
+    svc = adopting_service(tmp_path, killed=[], image_of=lambda p: "notepad.exe")
+    svc.adopt({"api_port": 1984, "rtsp_port": 8554})
+    assert svc.claimed_pid() is None
+
+
+def test_a_claim_written_before_the_last_boot_is_not_believed(tmp_path: Path) -> None:
+    svc = adopting_service(
+        tmp_path, killed=[], booted=lambda: time.time() + 60.0  # booted after it was written
+    )
+    assert svc.claimed_pid() is None
+
+
+def test_an_adopted_go2rtc_nobody_can_name_is_still_not_duplicated(
+    tmp_path: Path, caplog
+) -> None:
+    """No claim file at all - a go2rtc started by a console older than this
+    change. Stopping it is impossible, and starting a second one is worse than
+    saying so."""
+    spawned: list = []
+    svc = claiming_service(tmp_path, spawn=lambda c: (spawned.append(c), _AliveProcess(1))[1])
+    with caplog.at_level(logging.WARNING):
+        assert svc.adopt({"api_port": 1984, "rtsp_port": 8554}) is True
+    assert svc.running is True
+    svc.start()
+    assert spawned == []
+    assert any("cannot stop it" in r.getMessage() for r in caplog.records)
+
+
+class _AliveProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.alive = True
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def terminate(self) -> None:
+        self.alive = False
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def wait(self, timeout=None):
+        return 0

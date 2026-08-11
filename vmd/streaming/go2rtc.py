@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from vmd.background import BackgroundValue
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,44 @@ MAX_LINE_CHARS = 2000
 # sleeping for it, on the thread that draws the window; now it is only the line
 # it writes when the next tick finds the process gone.
 SETTLE_SECONDS = 0.8
+
+# ---------------------------------------------------------------- the claim
+#
+# Which process is serving the video.
+#
+# streaming.json carries the ports and no PID, and stop() only ever stopped a
+# process object this service was holding - so a go2rtc adopted from an earlier
+# console could not be stopped at all. A settings change left it running and
+# started a SECOND go2rtc on a different port: a second connection across the
+# radio link, which is the one cost this whole arrangement exists to avoid.
+#
+# Shaped after the recorder's claim in vmd\record_main.py, and read that file
+# before changing this one. The difference is who writes it: the recorder writes
+# its own, and go2rtc is somebody else's binary that cannot, so the console
+# writes it on go2rtc's behalf and clears it when it stops one it started.
+#
+# The file holds a bare integer and nothing else. That is the recorder's rule
+# and it is here for the recorder's reason: several readers parse a claim file
+# as a whole number, and any of them failing to parse reads as "nothing is
+# running", whose remedy is to start a second one. Everything that will not fit
+# in an integer goes in a companion beside it, and a reader that does not know
+# about the companion is left exactly as well off as it was.
+PID_FILENAME = "go2rtc.pid"
+IDENTITY_SUFFIX = ".json"
+
+# How long a forced stop waits for an adopted server to disappear. Short,
+# because taskkill /F has already returned by the time it is checked at all, and
+# because it runs while the operator waits for a Save to finish.
+ADOPTED_STOP_SECONDS = 2.0
+
+# How often "is that adopted server still there?" is asked again. Asking costs a
+# `tasklist`; the answer is read on a thread of its own, and this is the most it
+# may be behind.
+LIVENESS_SECONDS = 2.0
+
+# What a live process must be running for the claim to be believed when the
+# companion does not say. go2rtc is one binary with one name.
+GO2RTC_IMAGES = ("go2rtc.exe", "go2rtc")
 
 
 def find_binary(project_root: Path | None = None) -> Path | None:
@@ -207,6 +246,133 @@ def write_config(config: dict, path: Path) -> Path:
     return path
 
 
+@dataclass(frozen=True)
+class StreamingClaim:
+    """Enough about the claiming process to tell it from a recycled PID."""
+
+    pid: int
+    executable: str = ""
+    api_port: int = 0
+    rtsp_port: int = 0
+    written_at: float = 0.0
+
+    def as_dict(self) -> dict:
+        return {
+            "pid": self.pid,
+            "executable": self.executable,
+            "api_port": self.api_port,
+            "rtsp_port": self.rtsp_port,
+            "written_at": self.written_at,
+        }
+
+
+def identity_path(pid_path: str | Path) -> Path:
+    return Path(str(pid_path) + IDENTITY_SUFFIX)
+
+
+def read_claim(pid_path: str | Path) -> int | None:
+    """The number in the claim file, or None if there is not one."""
+    try:
+        return int(Path(pid_path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_claim_details(pid_path: str | Path) -> StreamingClaim | None:
+    """What the console that wrote the claim said about it, if anything.
+
+    None whenever the companion is missing or unusable, which includes every
+    claim written by a console older than this. Callers treat that as "less is
+    known", never as "the claim is bad".
+    """
+    try:
+        payload = json.loads(identity_path(pid_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return StreamingClaim(
+            pid=int(payload["pid"]),
+            executable=str(payload.get("executable") or ""),
+            api_port=int(payload.get("api_port") or 0),
+            rtsp_port=int(payload.get("rtsp_port") or 0),
+            written_at=float(payload.get("written_at") or 0.0),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def boot_time() -> float | None:
+    """When this machine last started, in epoch seconds, or None if unknown.
+
+    A claim written before the last boot names a PID that cannot still be its
+    process, whatever is holding that number now - and an always-on laptop at
+    the end of a radio link will certainly see a power cut. Spelled out here
+    rather than imported from the recorder: this module has to be importable by
+    a console on a laptop where the recorder's stack is not installed.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        return time.time() - ctypes.windll.kernel32.GetTickCount64() / 1000.0
+    except Exception:  # noqa: BLE001 - an unknown boot time is not a failure
+        return None
+
+
+def process_image(pid: int) -> str | None:
+    """The executable name of a live process, None if there is none, "" if the
+    question could not be answered - which is not the same thing."""
+    if os.name != "nt":  # pragma: no cover - not the deployment platform
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return None
+        return "go2rtc"
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('"'):
+            return line.split('","')[0].strip('"')
+    return None  # "INFO: No tasks are running which match the specified criteria."
+
+
+def taskkill_tree(pid: int) -> bool:
+    """End a process and everything under it. True if the request was accepted."""
+    if os.name != "nt":  # pragma: no cover - not the deployment platform
+        return False
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("taskkill could not be run for pid %s", pid, exc_info=True)
+        return False
+    if result.returncode != 0:
+        logger.warning(
+            "taskkill refused pid %s: %s", pid, (result.stderr or result.stdout).strip()
+        )
+        return False
+    return True
+
+
 @dataclass
 class StreamingStatus:
     """What the console needs to know to show a picture, or to explain why not."""
@@ -235,6 +401,10 @@ class Go2rtcService:
         api_port: int = 1984,
         rtsp_port: int = 8554,
         spawn=None,
+        pid_path: Path | None = None,
+        image_of=None,
+        kill_tree=None,
+        booted=None,
     ) -> None:
         self.settings = settings
         self.config_path = Path(config_path)
@@ -254,12 +424,106 @@ class Go2rtcService:
         # When the process now held was spawned, so that a death found on a
         # later tick can still be told apart from one that never started.
         self._launched_at = 0.0
+        # Where this console writes down which process is serving the video.
+        self.pid_path = Path(pid_path) if pid_path else self.config_path.parent / PID_FILENAME
+        self._image_of = image_of or process_image
+        self._kill_tree = kill_tree or taskkill_tree
+        self._booted = booted or boot_time
+        # A server this console did not start. `_adopted_pid` is None while the
+        # process behind it could not be named, which is a state of its own:
+        # nothing may start a second one, and nothing can stop this one either.
+        self._adopted = False
+        self._adopted_pid: int | None = None
+        self._adopted_alive: BackgroundValue[bool] | None = None
 
     # ------------------------------------------------------------------ state
 
     @property
     def running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        """Whether video is being served, by us or by a server we adopted.
+
+        An adopted server counts. Without that the supervisor - which starts
+        anything that is not running, every two seconds - started a second
+        go2rtc on top of the live one on the very first tick, which is a second
+        connection to the camera across a link that barely carries one.
+
+        Never waits for the operating system: asking about a PID means shelling
+        out to `tasklist`, and this is read from the heartbeat.
+        """
+        if self._process is not None:
+            return self._process.poll() is None
+        if not self._adopted:
+            return False
+        watch = self._adopted_alive
+        if watch is None:
+            return True
+        reading = watch.get()
+        # An unanswerable question reads as "still there". Believing a live
+        # server is gone starts a second one beside it, which is the collision
+        # this whole claim exists to prevent.
+        return True if reading.value is None else bool(reading.value)
+
+    @property
+    def adopted(self) -> bool:
+        """Is what is serving video a server this console did not start?"""
+        return self._adopted
+
+    def claimed_pid(self) -> int | None:
+        """The pid of a go2rtc that really is running, or None.
+
+        "A process with that number exists" is a different claim from "go2rtc is
+        running". The claim file survives `taskkill /F` and it survives a power
+        cut, and Windows hands the same numbers out again - so a stale file plus
+        an unrelated program wearing the recycled number reads as a healthy
+        streaming server to anything that only asks whether the PID is alive.
+        """
+        pid = read_claim(self.pid_path)
+        if pid is None or pid <= 0:
+            return None
+        details = read_claim_details(self.pid_path)
+        machine_started = self._booted()
+        if details and details.written_at and machine_started:
+            if details.written_at < machine_started:
+                logger.info(
+                    "%s names pid %s but was written before this machine last "
+                    "started, so it is left over from an earlier boot",
+                    self.pid_path,
+                    pid,
+                )
+                return None
+        image = self._image_of(pid)
+        if image is None:
+            logger.info("%s names pid %s, which is not running", self.pid_path, pid)
+            return None
+        if image == "":
+            # The process list could not be read. Nothing is proven either way,
+            # and the safe reading is that go2rtc is up: one console not being
+            # able to restart it costs the settings change, and starting a
+            # second one costs the link.
+            return pid
+        expected = Path(details.executable).name if details and details.executable else ""
+        if not expected and self.binary is not None:
+            expected = Path(self.binary).name
+        if expected:
+            if image.lower() != expected.lower():
+                logger.info(
+                    "%s names pid %s, but that is %s and go2rtc is %s - the "
+                    "number has been given to something else",
+                    self.pid_path,
+                    pid,
+                    image,
+                    expected,
+                )
+                return None
+        elif image.lower() not in GO2RTC_IMAGES:
+            logger.info(
+                "%s names pid %s, which is %s and cannot be go2rtc",
+                self.pid_path,
+                pid,
+                image,
+            )
+            return None
+        return pid
 
     @property
     def stream_names(self) -> list[str]:
@@ -366,11 +630,110 @@ class Go2rtcService:
         # console's heartbeat failing the same way.
         self._launch()
 
-    def stop(self) -> None:
+    def adopt(self, endpoint: dict) -> bool:
+        """Take on the go2rtc that is already serving video, PID and all.
+
+        Adoption is why this console does not start a second streaming server
+        when one is already up. What it could not do until now is stop the one
+        it adopted, because streaming.json carries ports and no PID - so a
+        settings change left it running and started a second one on a different
+        port, which is a second connection across the radio link.
+
+        A server nobody can name is still adopted. Stopping it is impossible
+        either way, and starting a second one on top of it is worse: the honest
+        answer is to say so, keep serving its pictures, and tell the operator
+        that a save could not reach it.
+        """
+        self.api_port = int(endpoint.get("api_port", self.api_port))
+        self.rtsp_port = int(endpoint.get("rtsp_port", self.rtsp_port))
+        self._adopted = True
+        pid = self.claimed_pid()
+        self._adopted_pid = pid
+        self._forget_adopted_watch()
+        if pid is None:
+            logger.warning(
+                "a streaming server is already running, but nothing on disk says "
+                "which process it is, so this console cannot stop it: a settings "
+                "change will leave the live picture on the settings it was started "
+                "with. Close every console and start one again to clear this."
+            )
+            return True
+        self._adopted_alive = BackgroundValue(
+            read=lambda: self._image_of(pid) is not None,
+            stale_after=LIVENESS_SECONDS,
+            name="whether the adopted go2rtc is still running",
+            seed=True,
+        )
+        return True
+
+    def _forget_adopted_watch(self) -> None:
+        watch, self._adopted_alive = self._adopted_alive, None
+        if watch is not None:
+            watch.close()
+
+    def _stop_adopted(self) -> bool:
+        """End a server this console did not start. True once it is gone."""
+        pid = self._adopted_pid
+        if pid is None:
+            stream_logger.error(
+                "go2rtc: the streaming server from an earlier run cannot be "
+                "stopped, because nothing on disk says which process it is, so "
+                "the settings you saved are NOT in effect for the live picture"
+            )
+            return False
+        logger.warning(
+            "stopping the adopted go2rtc (pid %s), because the settings it was "
+            "started with have been replaced",
+            pid,
+        )
+        self._kill_tree(pid)
+        # Bounded, and short. taskkill /F has already returned by the time this
+        # runs; the loop is here because this decides whether a second go2rtc
+        # may be started on the same camera, and that must never be guessed.
+        deadline = time.monotonic() + ADOPTED_STOP_SECONDS
+        while self._image_of(pid) is not None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if self._image_of(pid) is not None:
+            # Deliberately stays adopted, so `running` stays True and nothing
+            # starts a second one on top of it. Two go2rtcs on one camera is
+            # worse than a setting that did not apply.
+            stream_logger.error(
+                "go2rtc: the streaming server from an earlier run (pid %s) would "
+                "not stop, so nothing was started in its place and the settings "
+                "you saved are NOT in effect for the live picture",
+                pid,
+            )
+            return False
+        self._forget_adopted_watch()
+        self._adopted = False
+        self._adopted_pid = None
+        self._clear_claim(pid)
         self._clear_endpoint()
+        return True
+
+    def stop(self, force: bool = False) -> None:
+        """Stop the streaming server this console started.
+
+        An adopted one is left alone unless `force` is given, exactly as an
+        adopted recorder is. It belongs to a console that is gone, and it is
+        feeding the recorder as well as this window - stopping it here would
+        stop the picture and the footage because somebody closed a second
+        window. `force` is what a settings change uses, and the distinction is
+        the point: a Save is an explicit instruction to change how the system
+        runs, and a server on settings the operator has just replaced is not
+        worth protecting.
+        """
+        if self._process is None and self._adopted:
+            if not force:
+                return
+            self._stop_adopted()
+            return
+
         process = self._process
         if process is None:
+            self._clear_endpoint()
             return
+        pid = getattr(process, "pid", None)
         if process.poll() is None:
             process.terminate()
             try:
@@ -386,6 +749,9 @@ class Go2rtcService:
                     logger.error("go2rtc did not die; leaving it tracked")
                     return
         self._process = None
+        self._clear_endpoint()
+        if pid is not None:
+            self._clear_claim(pid)
 
     def _launch(self) -> bool:
         """Spawn go2rtc and write down where it will be listening.
@@ -414,8 +780,12 @@ class Go2rtcService:
 
         self._process = process
         self._launched_at = time.monotonic()
+        self._adopted = False
+        self._adopted_pid = None
+        self._forget_adopted_watch()
         self._pump_output(process)
         self._write_endpoint()
+        self._write_claim(getattr(process, "pid", None))
         logger.info(
             "go2rtc started on %s for %s", self.api_base, ", ".join(self.stream_names)
         )
@@ -444,6 +814,53 @@ class Go2rtcService:
             self.endpoint_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    def _write_claim(self, pid: int | None) -> None:
+        """Say which process is serving the video, so the next console can stop it.
+
+        The bare number first and on its own, because that is what every reader
+        of a claim file needs; the companion is only what makes the check
+        sharper, and a companion that could not be written leaves the next
+        console exactly as well off as it was before this existed.
+        """
+        if pid is None:
+            return
+        claim = StreamingClaim(
+            pid=int(pid),
+            executable=str(self.binary or ""),
+            api_port=self.api_port,
+            rtsp_port=self.rtsp_port,
+            written_at=time.time(),
+        )
+        try:
+            self.pid_path.parent.mkdir(parents=True, exist_ok=True)
+            self.pid_path.write_text(str(claim.pid), encoding="utf-8")
+        except OSError:
+            logger.warning("could not write %s", self.pid_path, exc_info=True)
+            return
+        try:
+            identity_path(self.pid_path).write_text(
+                json.dumps(claim.as_dict(), indent=2), encoding="utf-8"
+            )
+        except OSError:
+            logger.warning(
+                "could not write %s", identity_path(self.pid_path), exc_info=True
+            )
+
+    def _clear_claim(self, pid: int) -> None:
+        """Drop the claim, but only while it still names that process.
+
+        Something else may have taken it over in the meantime - another console
+        starting its own go2rtc - and deleting that claim would let the next one
+        start a second server beside a live one.
+        """
+        if read_claim(self.pid_path) != pid:
+            return
+        for path in (identity_path(self.pid_path), self.pid_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:  # noqa: PERF203 - shutdown must always complete
+                logger.warning("could not remove %s", path, exc_info=True)
 
     def sources(self) -> dict:
         """What go2rtc says about each stream: is the camera side connected?
@@ -503,10 +920,20 @@ class Go2rtcService:
 
     def apply(self, settings: Settings) -> None:
         """Take new settings. go2rtc reads its config once, so changing streams
-        means restarting it - which is why this is one call and not two."""
+        means restarting it - which is why this is one call and not two.
+
+        A forced stop, because this is a Save. An adopted server is protected
+        from a window closing and not from its operator: one running the
+        settings that have just been replaced is exactly the server a Save
+        exists to replace. If it will not stop, nothing is started in its
+        place - two go2rtcs on one camera is worse than a setting that did not
+        apply - and `adopted` stays true so the console can say so.
+        """
         self.settings = settings
         was_running = self.running
-        self.stop()
+        self.stop(force=True)
+        if self.running:
+            return
         if was_running or self.stream_names:
             self.start()
 
