@@ -21,6 +21,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -162,6 +163,9 @@ class OnvifPtz:
         self.capability = PtzCapability()
         self._auth_opener: urllib.request.OpenerDirector | None = None
         self._use_wsse = False
+        # The longest this camera has taken to answer, so the log carries a
+        # measured figure rather than the two guesses TIMEOUT has been so far.
+        self._slowest = 0.0
 
     # ------------------------------------------------------------------ wire
 
@@ -219,8 +223,23 @@ class OnvifPtz:
                 headers={"Content-Type": "application/soap+xml; charset=utf-8"},
             )
             try:
+                began = time.monotonic()
                 with opener.open(request, timeout=TIMEOUT) as response:
                     text = response.read().decode("utf-8", "replace")
+                took = time.monotonic() - began
+                # How long this camera actually takes, said once and then only
+                # when it gets slower than it has been. TIMEOUT was picked twice
+                # from reasoning rather than measurement - 6 s from nothing, then
+                # 2 s from "one hop away is milliseconds", which cost the
+                # operator his steering for an evening. Nobody can choose that
+                # number without a figure from the link it runs on, and this is
+                # the only place that figure exists.
+                if took > self._slowest:
+                    self._slowest = took
+                    logger.info(
+                        "the camera answered %s in %.2f s (allowed %.0f s)",
+                        path.rsplit("/", 1)[-1] or path, took, TIMEOUT,
+                    )
                 # Checked before the login style is remembered: a body that is
                 # a fault or a web page is not evidence that this opener is the
                 # one that works.
