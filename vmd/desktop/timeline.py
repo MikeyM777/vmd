@@ -285,19 +285,19 @@ def explain_gap(
     """
     clock = _clock(when)
     if when > now:
-        return f"nothing at {clock} - that time has not happened yet"
+        return f"no recording at {clock} - that time has not happened yet"
     if archive is None:
-        return f"nothing at {clock} - nothing has ever been recorded on {stream}"
+        return f"no recording at {clock} - nothing has ever been recorded on {stream}"
 
     first, last = archive
     if when < first:
         return (
-            f"nothing at {clock} - the recordings kept for {stream} start at "
+            f"no recording at {clock} - the recordings kept for {stream} start at "
             f"{_moment(first)}, and there is nothing before that"
         )
     if when >= last:
         said = (
-            f"nothing at {clock} - the newest recording kept for {stream} "
+            f"no recording at {clock} - the newest recording kept for {stream} "
             f"ends at {_moment(last)}"
         )
         report = _stream_report(recorder, stream)
@@ -313,7 +313,7 @@ def explain_gap(
 
     edge_before, edge_after = gap_around(segments, when, first, last)
     return (
-        f"nothing at {clock} - nothing was recorded on {stream} between "
+        f"no recording at {clock} - nothing was recorded on {stream} between "
         f"{_clock(edge_before)} and {_clock(edge_after)}"
     )
 

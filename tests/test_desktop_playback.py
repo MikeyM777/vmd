@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 from pathlib import Path
 
@@ -10,9 +11,9 @@ import pytest
 from PySide6.QtCore import QDate, QPoint, Qt
 from PySide6.QtGui import QColor
 
-from vmd.desktop.playback import EVENT_LEAD_SECONDS, PlaybackTab
+from vmd.desktop.playback import BOTH, EVENT_LEAD_SECONDS, PlaybackTab
 from vmd.desktop.style import PALETTE
-from vmd.desktop.timeline import day_bounds
+from vmd.desktop.timeline import day_bounds, time_at
 from vmd.desktop.video import FakeVideoPane
 from vmd.detect.events import Event
 from vmd.storage.index import SegmentIndex
@@ -144,8 +145,11 @@ def test_the_bar_draws_recorded_time_and_leaves_gaps_empty(qtbot, tmp_path: Path
 
         tab.bar.resize(200, 24)
         image = tab.bar.grab().toImage()
-        assert image.pixelColor(50, 12) == QColor(PALETTE["ok"])
-        assert image.pixelColor(150, 12) == QColor(PALETTE["well"])
+        # Measured against the width the bar was actually painted at: it lives
+        # in a layout, which has the last word on how wide it is.
+        width = image.width()
+        assert image.pixelColor(round(width * 0.25), 12) == QColor(PALETTE["ok"])
+        assert image.pixelColor(round(width * 0.75), 12) == QColor(PALETTE["well"])
     finally:
         index.close()
 
@@ -238,7 +242,7 @@ def test_an_index_that_cannot_be_read_says_so_instead_of_crashing(qtbot) -> None
     assert tab.refresh_streams() == []
     tab.show_day(2026, 8, 11, stream="thermal")
     assert tab.coverage == []
-    assert "index" in tab.status_text.lower()
+    assert "recordings" in tab.status_text.lower(), tab.status_text
 
 
 # ----------------------------------------------------------------- the seeking
@@ -825,5 +829,863 @@ def test_showing_a_movement_the_index_cannot_answer_about_says_so(
         assert tab.show_event(moved_at(start + 3660)) is False
         assert pane.url is None
         assert tab.status_text, "nothing was said at all"
+    finally:
+        index.close()
+
+
+# =============================================================== the transport
+#
+# There was no way to pause. The controls row was Day, Stream and nothing else,
+# and re-watching the same ten seconds cost a fresh click on a bar where one
+# pixel is over a minute of the day.
+#
+# The requirement is the buttons: "i rather buttons, space and arrows are nice
+# but i need also buttons". Every test below presses something on the screen;
+# the keys are tested separately, as an addition.
+
+
+def a_recorded_day(qtbot, tmp_path: Path, minutes: int = 60):
+    """A day with five-minute recordings from 12:00, the way it comes off the
+    recorder, and the tab pointed at it."""
+    tab, pane, index = build(qtbot, tmp_path)
+    start, _end = day_bounds(2026, 8, 11)
+    noon = start + 12 * 3600
+    for offset in range(0, minutes * 60, 300):
+        index.add(
+            "thermal", str(tmp_path / f"{offset}.mp4"),
+            noon + offset, noon + offset + 300, 1000,
+        )
+    tab.show_day(2026, 8, 11, stream="thermal")
+    return tab, pane, index, noon
+
+
+def test_pressing_play_holds_the_picture_and_lets_it_go_again(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        assert pane.paused is False
+
+        qtbot.mouseClick(tab.transport.play_button, Qt.MouseButton.LeftButton)
+        assert pane.paused is True
+
+        qtbot.mouseClick(tab.transport.play_button, Qt.MouseButton.LeftButton)
+        assert pane.paused is False
+    finally:
+        index.close()
+
+
+def test_skipping_back_ten_seconds_moves_ten_seconds_back(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 120)
+        qtbot.mouseClick(tab.transport.back_ten, Qt.MouseButton.LeftButton)
+        assert tab.playhead_time == pytest.approx(noon + 110, abs=0.01)
+    finally:
+        index.close()
+
+
+def test_skipping_forward_a_minute_crosses_into_the_next_recording(
+    qtbot, tmp_path: Path
+) -> None:
+    """The recorder writes five-minute files. A skip that lands in the next one
+    has to open the next one, or the picture stays where it was while the clock
+    under it says otherwise."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 280)  # twenty seconds from the end of the first
+        assert pane.url.endswith("0.mp4")
+        qtbot.mouseClick(tab.transport.forward_minute, Qt.MouseButton.LeftButton)
+        assert tab.playhead_time == pytest.approx(noon + 340, abs=0.01)
+        assert pane.url.endswith("300.mp4")
+        assert tab.seek_offset == pytest.approx(40.0, abs=0.01)
+    finally:
+        index.close()
+
+
+def test_a_skip_within_the_same_file_does_not_open_it_again(
+    qtbot, tmp_path: Path
+) -> None:
+    """Reopening a file to move ten seconds is a black frame and a wait for
+    something the player can already do."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 120)
+        before = pane.restarts
+        qtbot.mouseClick(tab.transport.forward_ten, Qt.MouseButton.LeftButton)
+        assert pane.restarts == before
+        assert pane.position_seconds() == pytest.approx(130.0, abs=0.01)
+    finally:
+        index.close()
+
+
+def test_a_skip_into_a_gap_says_so_and_leaves_the_picture_alone(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=5)
+    try:
+        tab.play_at_time(noon + 280)
+        showing = pane.url
+        qtbot.mouseClick(tab.transport.forward_minute, Qt.MouseButton.LeftButton)
+        assert pane.url == showing, "a gap must not change the picture"
+        assert "no recording at" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_skip_before_the_first_recording_stops_at_the_day(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 5)
+        qtbot.mouseClick(tab.transport.back_minute, Qt.MouseButton.LeftButton)
+        assert tab.playhead_time >= tab.day_start
+    finally:
+        index.close()
+
+
+def test_choosing_a_speed_asks_the_player_for_it(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.transport import SPEEDS
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        tab.transport.speed_selector.setCurrentIndex(list(SPEEDS).index(4.0))
+        assert pane.rate == 4.0
+    finally:
+        index.close()
+
+
+def test_the_transport_is_off_while_there_is_nothing_to_play(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert not tab.transport.play_button.isEnabled()
+    finally:
+        index.close()
+
+
+# ------------------------------------------------------------------- the keys
+#
+# An addition, never a substitute. Each does exactly what the button beside it
+# does, through the same call.
+
+
+def test_the_space_bar_is_the_play_button(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.keyClick(tab, Qt.Key.Key_Space)
+        assert pane.paused is True
+        qtbot.keyClick(tab, Qt.Key.Key_Space)
+        assert pane.paused is False
+    finally:
+        index.close()
+
+
+def test_the_arrow_keys_are_the_ten_second_skips(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 120)
+        qtbot.keyClick(tab, Qt.Key.Key_Left)
+        assert tab.playhead_time == pytest.approx(noon + 110, abs=0.01)
+        qtbot.keyClick(tab, Qt.Key.Key_Right)
+        assert tab.playhead_time == pytest.approx(noon + 120, abs=0.01)
+    finally:
+        index.close()
+
+
+# ================================================================ day and time
+#
+# A real calendar, because that is what he asked for, and a readout big enough
+# to read from where he sits.
+
+
+def test_the_day_can_be_stepped_back_and_forward(qtbot, tmp_path: Path) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        tab.show_day(2026, 8, 11, stream="thermal")
+        qtbot.mouseClick(tab.previous_day, Qt.MouseButton.LeftButton)
+        assert tab.date_selector.date().toString("yyyy-MM-dd") == "2026-08-10"
+        qtbot.mouseClick(tab.next_day, Qt.MouseButton.LeftButton)
+        qtbot.mouseClick(tab.next_day, Qt.MouseButton.LeftButton)
+        assert tab.date_selector.date().toString("yyyy-MM-dd") == "2026-08-12"
+    finally:
+        index.close()
+
+
+def test_the_day_is_chosen_from_a_calendar(qtbot, tmp_path: Path) -> None:
+    """Not a spin box. He said calendar, and a month laid out is how anyone
+    finds last Tuesday."""
+    from PySide6.QtWidgets import QCalendarWidget
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        assert isinstance(tab.date_selector.calendar(), QCalendarWidget)
+        tab.date_selector.calendar().setSelectedDate(QDate(2026, 8, 9))
+        assert tab.date_selector.date().toString("yyyy-MM-dd") == "2026-08-09"
+    finally:
+        index.close()
+
+
+def test_a_day_with_footage_is_drawn_differently_from_an_empty_one(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "a.mp4"), start + 3600, start + 7200, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        recorded = tab.date_selector.calendar().dateTextFormat(QDate(2026, 8, 11))
+        empty = tab.date_selector.calendar().dateTextFormat(QDate(2026, 8, 12))
+        assert recorded != empty
+        assert QDate(2026, 8, 11) in tab.days_with_footage
+        assert QDate(2026, 8, 12) not in tab.days_with_footage
+    finally:
+        index.close()
+
+
+def test_the_moment_being_watched_is_written_out_in_full(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 125)
+        said = tab.readout_text
+        assert "12:02:05" in said, said
+        assert "2026" in said and "August" in said, said
+    finally:
+        index.close()
+
+
+def test_the_readout_is_bigger_than_the_body_text(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.style import SIZE_BODY
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        assert tab.readout.font().pixelSize() > SIZE_BODY
+    finally:
+        index.close()
+
+
+# ==================================================================== zooming
+#
+# At whole day one pixel is 72 seconds and there is no moment anybody can land
+# on. Buttons, because there must be buttons; the wheel as well, because it is
+# what a hand reaches for.
+
+
+def test_the_three_zooms_are_offered_as_buttons(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QAbstractButton
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        assert len(tab.zoom_buttons) == 3
+        for button in tab.zoom_buttons.values():
+            assert isinstance(button, QAbstractButton)
+            assert button.text().strip()
+    finally:
+        index.close()
+
+
+def test_zooming_in_narrows_the_window_to_the_hour(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.timeline import ONE_HOUR
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        assert tab.view_end - tab.view_start == pytest.approx(3600.0)
+    finally:
+        index.close()
+
+
+def test_the_playhead_is_still_on_the_same_moment_after_zooming(
+    qtbot, tmp_path: Path
+) -> None:
+    from vmd.desktop.timeline import ONE_HOUR, TEN_MINUTES
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 137)
+        for zoom in (ONE_HOUR, TEN_MINUTES):
+            qtbot.mouseClick(tab.zoom_buttons[zoom], Qt.MouseButton.LeftButton)
+            assert tab.playhead_time == pytest.approx(noon + 137, abs=0.01)
+            assert tab.view_start <= tab.playhead_time <= tab.view_end
+    finally:
+        index.close()
+
+
+def test_a_zoomed_bar_can_be_moved_along_the_day(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.timeline import ONE_HOUR
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        was = tab.view_start
+        qtbot.mouseClick(tab.pan_later, Qt.MouseButton.LeftButton)
+        assert tab.view_start > was
+        qtbot.mouseClick(tab.pan_earlier, Qt.MouseButton.LeftButton)
+        assert tab.view_start == pytest.approx(was)
+    finally:
+        index.close()
+
+
+def test_a_click_on_a_zoomed_bar_means_a_time_inside_the_window(
+    qtbot, tmp_path: Path
+) -> None:
+    """The whole point of zooming. Half way along an hour-wide bar is half an
+    hour into that hour, not half way through the day."""
+    from vmd.desktop.timeline import ONE_HOUR
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=120)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        tab.click_at(0.5, width=1000)
+        assert tab.playhead_time == pytest.approx(
+            (tab.view_start + tab.view_end) / 2, abs=1.0
+        )
+    finally:
+        index.close()
+
+
+def test_the_whole_day_button_puts_the_whole_day_back(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.timeline import ONE_HOUR, WHOLE_DAY
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        qtbot.mouseClick(tab.zoom_buttons[WHOLE_DAY], Qt.MouseButton.LeftButton)
+        assert (tab.view_start, tab.view_end) == (tab.day_start, tab.day_end)
+    finally:
+        index.close()
+
+
+def test_the_wheel_zooms_on_the_moment_under_the_pointer(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        was = tab.view_end - tab.view_start
+        tab.zoom_towards(0.5, closer=True)
+        assert tab.view_end - tab.view_start < was
+        tab.zoom_towards(0.5, closer=False)
+        assert tab.view_end - tab.view_start == pytest.approx(was)
+    finally:
+        index.close()
+
+
+# ================================================================ the dragging
+
+
+def test_dragging_the_playhead_shows_the_time_it_is_over(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=1440)
+    try:
+        tab.begin_drag(0.25)
+        assert tab.dragging is True
+        tab.drag_to(0.75)
+        moment = time_at(0.75, tab.view_start, tab.view_end)
+        clock = datetime.datetime.fromtimestamp(moment).strftime("%H:%M:%S")
+        assert clock in tab.hover_text, tab.hover_text
+    finally:
+        index.close()
+
+
+def test_letting_go_of_the_playhead_seeks_to_where_it_was_dropped(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=1440)
+    try:
+        tab.begin_drag(0.25)
+        tab.drag_to(0.6)
+        tab.end_drag(0.6)
+        assert tab.dragging is False
+        assert tab.playhead_time == pytest.approx(
+            time_at(0.6, tab.view_start, tab.view_end), abs=2.0
+        )
+    finally:
+        index.close()
+
+
+def test_dragging_does_not_reopen_a_file_for_every_pixel(qtbot, tmp_path: Path) -> None:
+    """A drag across an hour is hundreds of mouse moves. Seeking on each of
+    them is a player asked to open a file five hundred times."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=1440)
+    try:
+        tab.begin_drag(0.5)
+        before = pane.restarts
+        for step in range(50):
+            tab.drag_to(0.5 + step / 500.0)
+        assert pane.restarts == before
+    finally:
+        index.close()
+
+
+def test_moving_over_the_bar_without_pressing_says_the_time_under_the_pointer(
+    qtbot, tmp_path: Path
+) -> None:
+    """One pixel is over a minute at whole-day. He is aiming blind without it."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.hover_at(0.5)
+        assert tab.hover_text.strip(), "nothing said under the pointer"
+    finally:
+        index.close()
+
+
+def test_the_pointer_leaving_the_bar_takes_the_hovered_time_with_it(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.hover_at(0.5)
+        tab.hover_at(None)
+        assert tab.hover_text == ""
+    finally:
+        index.close()
+
+
+# ======================================================= thermal, visible, both
+#
+# "add the option to choose between thermal\vis\both". Both means the two
+# streams locked to one timeline at the same moment: thermal spots the thing and
+# visible identifies it, and they are worth nothing unless they are showing the
+# same second.
+
+
+def two_cameras(qtbot, tmp_path: Path, visible_seconds: int = 300):
+    tab, pane, index = build(qtbot, tmp_path)
+    start, _end = day_bounds(2026, 8, 11)
+    index.add("thermal", str(tmp_path / "t.mp4"), start, start + 600, 1000)
+    index.add("visible", str(tmp_path / "v.mp4"), start, start + visible_seconds, 1000)
+    tab.show_day(2026, 8, 11, stream=BOTH)
+    return tab, pane, index, start
+
+
+def test_both_cameras_can_be_chosen_when_there_are_two(qtbot, tmp_path: Path) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "t.mp4"), start, start + 300, 1000)
+        index.add("visible", str(tmp_path / "v.mp4"), start, start + 300, 1000)
+        tab.refresh_streams()
+        assert tab.stream_selector.findText(BOTH) >= 0
+        assert tab.stream_names() == ["thermal", "visible"]
+    finally:
+        index.close()
+
+
+def test_one_camera_alone_is_not_offered_as_both(qtbot, tmp_path: Path) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "t.mp4"), start, start + 300, 1000)
+        tab.refresh_streams()
+        assert tab.stream_selector.findText(BOTH) < 0
+    finally:
+        index.close()
+
+
+def test_both_cameras_are_opened_at_the_same_moment(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        assert pane.url.endswith("t.mp4")
+        assert tab.second_pane.url.endswith("v.mp4")
+        assert pane.at_seconds == pytest.approx(120.0)
+        assert tab.second_pane.at_seconds == pytest.approx(120.0)
+    finally:
+        index.close()
+
+
+def test_pausing_holds_both_pictures(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        qtbot.mouseClick(tab.transport.play_button, Qt.MouseButton.LeftButton)
+        assert pane.paused is True and tab.second_pane.paused is True
+    finally:
+        index.close()
+
+
+def test_the_speed_is_given_to_both(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.transport import SPEEDS
+
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        tab.transport.speed_selector.setCurrentIndex(list(SPEEDS).index(2.0))
+        assert pane.rate == 2.0 and tab.second_pane.rate == 2.0
+    finally:
+        index.close()
+
+
+def test_a_skip_moves_both(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        qtbot.mouseClick(tab.transport.forward_ten, Qt.MouseButton.LeftButton)
+        assert pane.position_seconds() == pytest.approx(130.0, abs=0.01)
+        assert tab.second_pane.position_seconds() == pytest.approx(130.0, abs=0.01)
+    finally:
+        index.close()
+
+
+def test_a_moment_only_one_camera_recorded_says_which_one_is_missing(
+    qtbot, tmp_path: Path
+) -> None:
+    """The honest case, and the one that matters: thermal has it, visible does
+    not. Leaving a still of the wrong minute beside a live picture would be the
+    console inventing footage."""
+    tab, pane, index, start = two_cameras(qtbot, tmp_path, visible_seconds=300)
+    try:
+        tab.play_at_time(start + 450)
+        assert pane.url.endswith("t.mp4")
+        assert tab.second_pane.url is None
+        assert "visible" in tab.status_text, tab.status_text
+        assert "nothing" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+def test_how_far_apart_the_two_pictures_are_can_be_read(qtbot, tmp_path: Path) -> None:
+    """Two players opened at the same moment do not stay locked to each other,
+    and this console does not pretend they do: the difference is measured and it
+    is on the screen."""
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        assert tab.drift_seconds() == pytest.approx(0.0, abs=0.01)
+
+        tab.second_pane.seek_seconds(123.5)
+        assert tab.drift_seconds() == pytest.approx(3.5, abs=0.01)
+    finally:
+        index.close()
+
+
+def test_one_camera_alone_has_no_drift_to_report(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        assert tab.drift_seconds() is None
+    finally:
+        index.close()
+
+
+def test_the_second_picture_is_put_away_when_one_camera_is_chosen(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        assert tab.second_pane.url is not None
+        tab.stream_selector.setCurrentText("thermal")
+        assert tab.second_pane.url is None
+    finally:
+        index.close()
+
+
+# =============================================================== why it is blank
+
+
+def test_a_gap_says_why_rather_than_showing_nothing(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon - 3600)
+        said = tab.status_text.lower()
+        assert "nothing" in said
+        assert "thermal" in said
+        for guess in ("disk was full", "out of space", "crashed"):
+            assert guess not in said, tab.status_text
+    finally:
+        index.close()
+
+
+def test_before_the_archive_starts_says_how_far_back_it_goes(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon - 7200)
+        assert "12:00" in tab.status_text, tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_hole_between_two_recordings_names_both_of_its_ends(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=5)
+    try:
+        index.add("thermal", str(tmp_path / "later.mp4"), noon + 3600, noon + 3900, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.play_at_time(noon + 1800)
+        assert "12:05" in tab.status_text and "13:00" in tab.status_text, tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_time_that_has_not_happened_yet_is_not_called_a_gap(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab._now = lambda: noon + 3600
+        tab.play_at_time(noon + 20 * 3600)
+        assert "has not happened" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+# ================================================================= saving a clip
+
+
+def test_marking_a_start_and_an_end_makes_a_range(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.mark_start, Qt.MouseButton.LeftButton)
+        tab.play_at_time(noon + 180)
+        qtbot.mouseClick(tab.mark_end, Qt.MouseButton.LeftButton)
+        assert tab.clip_from == pytest.approx(noon + 60)
+        assert tab.clip_to == pytest.approx(noon + 180)
+    finally:
+        index.close()
+
+
+def test_nothing_can_be_saved_before_a_range_is_marked(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        assert not tab.save_clip.isEnabled()
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.mark_start, Qt.MouseButton.LeftButton)
+        assert not tab.save_clip.isEnabled()
+        tab.play_at_time(noon + 180)
+        qtbot.mouseClick(tab.mark_end, Qt.MouseButton.LeftButton)
+        assert tab.save_clip.isEnabled()
+    finally:
+        index.close()
+
+
+def test_the_marks_can_be_cleared(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        qtbot.mouseClick(tab.mark_start, Qt.MouseButton.LeftButton)
+        qtbot.mouseClick(tab.clear_marks, Qt.MouseButton.LeftButton)
+        assert tab.clip_from is None and tab.clip_to is None
+    finally:
+        index.close()
+
+
+def test_saving_a_clip_asks_where_and_writes_there(qtbot, tmp_path: Path) -> None:
+    """He chooses the folder: "yeah its nice, although its on the laptop add
+    the option to save"."""
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        asked: list[str] = []
+
+        def choose() -> str:
+            asked.append("asked")
+            return str(folder)
+
+        tab.ask_for_folder = choose
+        tab.run_ffmpeg = _pretend_ffmpeg
+        tab.play_at_time(noon + 60)
+        tab.mark_start.click()
+        tab.play_at_time(noon + 180)
+        tab.mark_end.click()
+
+        outcome = tab.save_clip_now(wait=True)
+        assert asked == ["asked"]
+        assert outcome.ok, outcome.message
+        assert outcome.path.parent == folder
+        assert str(folder) in tab.status_text
+    finally:
+        index.close()
+
+
+def _pretend_ffmpeg(command, **kwargs):
+    """ffmpeg's part, without ffmpeg. The real run is the integration test."""
+    Path(command[-1]).write_bytes(b"a clip")
+
+    class Done:
+        returncode = 0
+        stderr = b""
+
+    return Done()
+
+
+def test_a_folder_he_does_not_choose_saves_nothing(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.ask_for_folder = lambda: ""
+        tab.run_ffmpeg = _pretend_ffmpeg
+        tab.play_at_time(noon + 60)
+        tab.mark_start.click()
+        tab.play_at_time(noon + 180)
+        tab.mark_end.click()
+        assert tab.save_clip_now(wait=True) is None
+    finally:
+        index.close()
+
+
+def test_a_range_with_no_footage_in_it_is_refused_in_words(
+    qtbot, tmp_path: Path
+) -> None:
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=5)
+    try:
+        tab.ask_for_folder = lambda: str(folder)
+        tab.run_ffmpeg = _pretend_ffmpeg
+        tab.clip_from = noon + 3600
+        tab.clip_to = noon + 3700
+        outcome = tab.save_clip_now(wait=True)
+        assert not outcome.ok
+        assert "no recording" in outcome.message.lower(), outcome.message
+        assert list(folder.iterdir()) == []
+    finally:
+        index.close()
+
+
+def test_a_range_crossing_a_gap_says_the_clip_is_shorter(qtbot, tmp_path: Path) -> None:
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=5)
+    try:
+        index.add("thermal", str(tmp_path / "later.mp4"), noon + 900, noon + 1200, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.ask_for_folder = lambda: str(folder)
+        tab.run_ffmpeg = _pretend_ffmpeg
+        tab.clip_from = noon + 100
+        tab.clip_to = noon + 1000
+        outcome = tab.save_clip_now(wait=True)
+        assert outcome.ok, outcome.message
+        assert "shorter" in outcome.message.lower(), outcome.message
+    finally:
+        index.close()
+
+
+def test_a_clip_spanning_several_recordings_carries_all_of_them(
+    qtbot, tmp_path: Path
+) -> None:
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        seen: list[list[str]] = []
+
+        def note(command, **kwargs):
+            listed = Path(command[command.index("-i") + 1]).read_text(encoding="utf-8")
+            seen.append([line for line in listed.splitlines() if line.startswith("file ")])
+            return _pretend_ffmpeg(command, **kwargs)
+
+        tab.ask_for_folder = lambda: str(folder)
+        tab.run_ffmpeg = note
+        tab.clip_from = noon + 100
+        tab.clip_to = noon + 800  # across three five-minute recordings
+        outcome = tab.save_clip_now(wait=True)
+        assert outcome.ok, outcome.message
+        assert len(seen[0]) == 3, seen
+    finally:
+        index.close()
+
+
+def test_a_folder_that_cannot_be_written_to_is_a_sentence(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.ask_for_folder = lambda: str(tmp_path / "gone")
+
+        def refuse(command, **kwargs):
+            raise OSError(28, "There is not enough space on the disk")
+
+        tab.run_ffmpeg = refuse
+        tab.clip_from = noon + 100
+        tab.clip_to = noon + 200
+        outcome = tab.save_clip_now(wait=True)
+        assert not outcome.ok
+        assert outcome.message.strip()
+        assert outcome.message in tab.status_text
+    finally:
+        index.close()
+
+
+def test_saving_a_clip_never_runs_on_the_thread_that_draws_the_window(
+    qtbot, tmp_path: Path
+) -> None:
+    """A clip of a night is minutes of copying on a laptop that is also
+    recording two streams. Run inline it is a frozen console."""
+    import threading
+
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        threads: list[int] = []
+
+        def note(command, **kwargs):
+            threads.append(threading.get_ident())
+            return _pretend_ffmpeg(command, **kwargs)
+
+        tab.run_ffmpeg = note
+        tab.ask_for_folder = lambda: str(folder)
+        tab.clip_from = noon + 60
+        tab.clip_to = noon + 120
+        tab.save_clip_now(wait=True)
+        assert threads and threads[0] != threading.get_ident()
+    finally:
+        index.close()
+
+
+def test_a_second_save_is_not_started_while_one_is_running(
+    qtbot, tmp_path: Path
+) -> None:
+    """He presses it twice because nothing happened yet. Two ffmpegs writing
+    the same name is a file that is neither of them."""
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.ask_for_folder = lambda: str(folder)
+        tab.run_ffmpeg = _pretend_ffmpeg
+        tab.clip_from = noon + 60
+        tab.clip_to = noon + 120
+        tab._saving = True
+        assert tab.save_clip_now(wait=True) is None
+        assert not tab.save_clip.isEnabled()
+    finally:
+        index.close()
+
+
+# ================================================================= the wording
+
+
+def test_nothing_on_this_tab_names_the_machinery(qtbot, tmp_path: Path) -> None:
+    """The same ban the Settings tab has been held to, on the surface the
+    review found leaking: he does not have a word for a segment and does not
+    need one."""
+    from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel
+
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 60)
+        said = [w.text() for w in tab.findChildren(QLabel) if w.text()]
+        said += [b.text() for b in tab.findChildren(QAbstractButton)]
+        said += [b.toolTip() for b in tab.findChildren(QAbstractButton)]
+        for box in tab.findChildren(QComboBox):
+            said += [box.itemText(i) for i in range(box.count())]
+        said.append(tab.status_text)
+        banned = (
+            "yolo", "cnn", "classifier", "inference", "model", "sensor",
+            "segment", "codec", "ffmpeg", "vlc", "rtsp", "sqlite", "index",
+        )
+        for text in said:
+            for word in banned:
+                assert word not in text.lower(), text
     finally:
         index.close()
