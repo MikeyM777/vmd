@@ -6,7 +6,18 @@ clips/
 *.mp4
 *.avi
 *.mov
+*.mkv
+*.ts
 *.wav
+
+# Frame grabs. Diagnosing a camera means saving a still, and the next still
+# saved in this folder will be of the perimeter this system watches rather than
+# an ffmpeg test pattern. There is no rule that makes that safe to publish, so
+# no image in the tree is committed by accident.
+*.jpg
+*.jpeg
+*.png
+*.bmp
 footage/
 .superpowers/
 yolo11n.pt
