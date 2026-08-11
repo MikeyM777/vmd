@@ -899,6 +899,82 @@ def a_recorded_day(qtbot, tmp_path: Path, minutes: int = 60):
     return tab, pane, index, noon
 
 
+# -------------------------------------------------------- following the picture
+#
+# The 250 ms timer that walks the line along under the picture. Nothing in this
+# suite had ever called it: `_follow_while_playing` refuses to start on a widget
+# nobody has shown, and `qtbot.addWidget` does not show one - so every branch of
+# it was reachable only in the field, on the tab the operator uses at the moment
+# something has already happened.
+
+
+def test_the_line_stops_following_once_the_footage_has_run_out(
+    qtbot, tmp_path: Path
+) -> None:
+    """The end of the newest recording, which is where watching normally ends.
+
+    The follow timer notices the file has finished and asks for the moment after
+    it. There is nothing there, so `_play_at` says so - and left the picture,
+    the playhead and the timer exactly as they were, so a quarter of a second
+    later the timer asked the same dead question again. Every one of those runs
+    a SQLite query for the sentence explaining the gap, redraws the readout and
+    repaints, on the thread that draws the window, four times a second, until
+    the operator clicks something else. On this console that thread is also the
+    one that would show the next alarm.
+    """
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=5)
+    try:
+        tab.play_at_time(noon + 10)
+        asked: list[str] = []
+        real = index.bounds
+
+        def counted(stream: str):
+            asked.append(stream)
+            return real(stream)
+
+        index.bounds = counted  # type: ignore[method-assign]
+        # The player has reached the last moment of the only recording there is.
+        pane.seek_seconds(299.99)
+
+        for _ in range(8):
+            tab._follow_the_picture()
+
+        assert len(asked) <= 1, f"the catalogue was asked {len(asked)} times for one gap"
+        # And the clock stays at the moment the footage ran out rather than
+        # being dragged back onto the file that has finished.
+        assert tab.playhead_time == pytest.approx(noon + 300.05, abs=0.1)
+    finally:
+        index.close()
+
+
+def test_a_click_into_a_gap_is_not_undone_a_quarter_of_a_second_later(
+    qtbot, tmp_path: Path
+) -> None:
+    """The readout and the sentence under it must not describe two different hours.
+
+    Clicking an empty part of the bar deliberately leaves the picture alone -
+    playing the nearest file instead would show footage from another moment
+    under a clock claiming otherwise. But the follow timer went on reading that
+    same untouched picture, so it put its file's moment back into the playhead:
+    the big readout said 12:01 while the line under it said there was no
+    recording at 14:00, and Mark start took the moment the operator was not
+    looking at.
+    """
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=60)
+    try:
+        tab.play_at_time(noon + 60)
+        gap = noon + 7200
+        tab.play_at_time(gap)
+        assert "no recording" in tab.status_text.lower()
+
+        tab._follow_the_picture()
+
+        assert tab.playhead_time == pytest.approx(gap)
+        assert "no recording" in tab.status_text.lower()
+    finally:
+        index.close()
+
+
 def test_pressing_play_holds_the_picture_and_lets_it_go_again(qtbot, tmp_path: Path) -> None:
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:

@@ -564,6 +564,17 @@ class PlaybackTab(QWidget):
         # rather than an expensive reopen.
         self._showing: str | None = None
         self._second_showing: str | None = None
+        # Whether the playhead is standing on footage the first picture is
+        # actually showing. Separate from `_showing`, and it has to be: a click
+        # into a gap deliberately leaves the picture where it was - playing the
+        # nearest file instead would show another hour under a clock claiming
+        # otherwise - so `_showing` still names a file while the clock is
+        # somewhere that file cannot describe. Only the follow timer needs to
+        # know the difference, and it is the one thing that must: following a
+        # picture the playhead has left drags the clock backwards under the
+        # operator, and at the end of the last recording it asks the catalogue
+        # the same dead question four times a second for ever.
+        self._on_footage = False
         self.clip_from: float | None = None
         self.clip_to: float | None = None
         self._saving = False
@@ -847,6 +858,10 @@ class PlaybackTab(QWidget):
         self.playhead_time = None
         self._stop_second_picture()
         self._showing = None
+        # A different day is a different set of files, so nothing is standing on
+        # footage until something is played again.
+        self._on_footage = False
+        self._follow.stop()
         self.forget_the_marks()
 
         shown = self.shown_streams()
@@ -1175,6 +1190,13 @@ class PlaybackTab(QWidget):
             # the movement was real, and there is nothing left to show.
             self.bar.set_playhead(None)
             self._stop_second_picture()
+            # The clock is somewhere the picture is not, so nothing follows the
+            # picture until it is put back on footage. Said here rather than
+            # left to the timer to work out, because the timer's own answer -
+            # "the file I have open covers this" - is about the file and not
+            # about where the operator has just asked to be.
+            self._on_footage = False
+            self._follow.stop()
             note = self._why_nothing(when)
             if event is not None:
                 note += f" The movement on {event.stream} there is no longer on disk."
@@ -1185,6 +1207,7 @@ class PlaybackTab(QWidget):
 
         self.bar.set_playhead(self._playhead_fraction())
         self.seek_offset = target.offset_seconds
+        self._on_footage = True
         self._point(self._pane, target.path, target.offset_seconds, first=True)
         logger.info("playing %s from %.1f s in", Path(target.path).name, target.offset_seconds)
 
@@ -1414,7 +1437,11 @@ class PlaybackTab(QWidget):
     # --------------------------------------------------- following the picture
 
     def _follow_while_playing(self) -> None:
-        running = self.playhead_time is not None and not bool(_ask(self._pane, "paused"))
+        running = (
+            self._on_footage
+            and self.playhead_time is not None
+            and not bool(_ask(self._pane, "paused"))
+        )
         if running and self.isVisible():
             if not self._follow.isActive():
                 self._follow.start()
@@ -1429,7 +1456,7 @@ class PlaybackTab(QWidget):
         five-minute files is not playable at all without that, and it is
         playback rather than recovery.
         """
-        if self._showing is None or self.playhead_time is None:
+        if not self._on_footage or self._showing is None or self.playhead_time is None:
             return
         position = _ask(self._pane, "position_seconds")
         if position is None:
