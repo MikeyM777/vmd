@@ -34,6 +34,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from vmd.background import BackgroundValue
 from vmd.settings import Settings
+from vmd.streaming.endpoint import is_live
 
 logger = logging.getLogger(__name__)
 # Its own name in the Logs tab, so the camera's answers are distinguishable from
@@ -89,6 +90,14 @@ LIVENESS_SECONDS = 2.0
 # What a live process must be running for the claim to be believed when the
 # companion does not say. go2rtc is one binary with one name.
 GO2RTC_IMAGES = ("go2rtc.exe", "go2rtc")
+
+# How long anything is given to answer the API on the loopback. Two seconds is
+# a long time for a local socket and is paid twice at most: once while the
+# console decides whether the server from the last run can be adopted, and
+# never on the heartbeat. A shorter wait on a laptop that is busy starting four
+# ffmpegs would read a slow answer as no answer, and the answer to that is to
+# stop a working streaming server and start another.
+API_TIMEOUT = 2.0
 
 
 def find_binary(project_root: Path | None = None) -> Path | None:
@@ -862,6 +871,111 @@ class Go2rtcService:
             except OSError:  # noqa: PERF203 - shutdown must always complete
                 logger.warning("could not remove %s", path, exc_info=True)
 
+    def api_streams(self, api_port: int | None = None, timeout: float = API_TIMEOUT) -> dict | None:
+        """What the server on that port says it is serving, or None if it did not say.
+
+        None and {} are different answers and the caller has to be able to tell
+        them apart: {} is a go2rtc serving nothing, None is nothing that answers
+        at all. Adoption turns on exactly that difference.
+
+        No `running` guard, deliberately. This is asked of a server this console
+        has not adopted yet and may never adopt, which is the whole point: the
+        question is what is on that port, not what this object believes.
+        """
+        port = self.api_port if api_port is None else api_port
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{int(port)}/api/streams", timeout=timeout
+            ) as response:
+                raw = json.loads(response.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, TypeError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    def unadoptable(self, endpoint: dict) -> str:
+        """Why the server that file names cannot be taken on, or "" if it can.
+
+        A port in a file is a claim, not an answer. The console adopted on the
+        strength of one and pointed every pane at rtsp://127.0.0.1:8554/thermal,
+        which answered "Failed to connect" - because the server the file named
+        had been gone since the last power cut, or because it was still running
+        the streams it was started with a fortnight ago and had never heard of
+        this one. Both leave the operator with no picture and no sentence
+        saying why, which is the worst state this console can be in.
+
+        So it is asked, twice: is anything listening where the recorder is being
+        told to look, and does the thing that answers serve the streams this
+        settings file asks for. go2rtc answers the second itself.
+        """
+        if not is_live(endpoint):
+            return (
+                f"nothing is listening on port {endpoint.get('rtsp_port')}, where "
+                "it says the video is"
+            )
+        try:
+            api_port = int(endpoint.get("api_port") or 0)
+        except (TypeError, ValueError):
+            api_port = 0
+        if api_port <= 0:
+            return "it does not say which port to ask what it is serving"
+        served = self.api_streams(api_port)
+        if served is None:
+            return f"nothing answered the streaming server's API on port {api_port}"
+        missing = [name for name in self.stream_names if name not in served]
+        if missing:
+            serving = ", ".join(sorted(served)) or "nothing"
+            return (
+                f"it is serving {serving}, not {', '.join(missing)} - it was "
+                "started before these streams were set up"
+            )
+        return ""
+
+    def replace(self, why: str) -> None:
+        """Stop the streaming server left over from an earlier run, and start ours.
+
+        Only reached when that server has been shown not to be serving what this
+        console needs, and the ordinary rule - never start a second go2rtc,
+        because a second connection across the radio link is the one cost this
+        arrangement exists to avoid - is not the rule here: what is on the port
+        is not serving the camera to anybody, so replacing it costs nothing and
+        keeping it costs the picture and the recording both.
+
+        The claim is what makes this possible at all: it names the process, so
+        the ghost is stopped rather than left holding the port. One that cannot
+        be named is left alone and a fresh server is started beside it, on
+        whatever port is free - no video at all is worse.
+        """
+        stream_logger.warning(
+            "go2rtc: the streaming server left running from an earlier run is "
+            "being replaced, because %s. There is no picture until the new one "
+            "is up, which takes a moment",
+            why,
+        )
+        pid = self.claimed_pid()
+        if pid is not None:
+            self._kill_tree(pid)
+            deadline = time.monotonic() + ADOPTED_STOP_SECONDS
+            while self._image_of(pid) is not None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if self._image_of(pid) is None:
+                self._clear_claim(pid)
+            else:
+                stream_logger.warning(
+                    "go2rtc: the one from the earlier run (pid %s) would not "
+                    "stop, so the new one is starting beside it on another port",
+                    pid,
+                )
+        else:
+            stream_logger.warning(
+                "go2rtc: nothing on disk says which process the earlier one is, "
+                "so it cannot be stopped; the new one starts on another port"
+            )
+        self._forget_adopted_watch()
+        self._adopted = False
+        self._adopted_pid = None
+        self._clear_endpoint()
+        self.start()
+
     def sources(self) -> dict:
         """What go2rtc says about each stream: is the camera side connected?
 
@@ -871,10 +985,8 @@ class Go2rtcService:
         """
         if not self.running:
             return {}
-        try:
-            with urllib.request.urlopen(f"{self.api_base}/api/streams", timeout=2) as response:
-                raw = json.loads(response.read().decode("utf-8", "replace"))
-        except (OSError, ValueError):
+        raw = self.api_streams()
+        if raw is None:
             return {}
         summary: dict[str, dict] = {}
         for name, entry in (raw or {}).items():

@@ -1301,7 +1301,16 @@ class ConsoleServices:
         """
         if self.streaming is not None:
             endpoint = read_endpoint(self.settings_path.parent / "streaming.json")
-            if endpoint and is_live(endpoint):
+            # Whether that file describes anything worth adopting is a question
+            # with a real answer, and it is asked before the panes are pointed
+            # at it rather than after. A port recorded in a file is a claim: the
+            # process behind it may have gone in a power cut, and one that is
+            # still there may have read its config a fortnight ago and never
+            # heard of the streams configured since. Both of those adopted
+            # cleanly and left the operator with no picture at all and nothing
+            # said about it. See `Go2rtcService.unadoptable`.
+            why = self._unadoptable(endpoint)
+            if endpoint and not why:
                 logger.info("a streaming server is already running; adopting it")
                 # Same as an adopted recorder: its output belongs to whoever
                 # started it. Saying so beats a Logs tab where the one line that
@@ -1329,7 +1338,19 @@ class ConsoleServices:
                 self.adopted_streaming = True
             else:
                 self.adopted_streaming = False
-                self.streaming.start()
+                if endpoint:
+                    # A stale streaming.json must never be able to leave this
+                    # machine with no video and no explanation, which is exactly
+                    # where it was. `replace` stops the server the claim names -
+                    # it is holding the port the new one wants - and starts one
+                    # on settings that are current.
+                    replace = getattr(self.streaming, "replace", None)
+                    if replace is not None:
+                        replace(why)
+                    else:  # a streaming service handed in by a test
+                        self.streaming.start()
+                else:
+                    self.streaming.start()
         if self.recording:
             self.recorder.start()
         else:
@@ -1339,6 +1360,25 @@ class ConsoleServices:
             )
         if self.detecting and self.detector is not None:
             self.detector.start()
+
+    def _unadoptable(self, endpoint: dict | None) -> str:
+        """Why the streaming server that file names cannot be taken on.
+
+        "" means it can, and so does having nothing to adopt - the caller checks
+        the file itself for that. A streaming service that cannot be asked the
+        question at all is not adopted: this is the console deciding on
+        evidence, and no evidence is not evidence.
+        """
+        if endpoint is None or self.streaming is None:
+            return ""
+        unadoptable = getattr(self.streaming, "unadoptable", None)
+        if unadoptable is None:
+            return "this console cannot ask it what it is serving"
+        try:
+            return unadoptable(endpoint)
+        except Exception:  # noqa: BLE001 - a question that could not be asked
+            logger.exception("could not ask the streaming server what it is serving")
+            return "asking it what it is serving failed"
 
     def tick(self) -> list[str]:
         """Restart whatever has died. Called on a timer by the window."""

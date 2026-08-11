@@ -781,3 +781,132 @@ class _AliveProcess:
 
     def wait(self, timeout=None):
         return 0
+
+
+# ------------------------------------ adopting a go2rtc on evidence, not a file
+#
+# From the operator's laptop, in this order and within two seconds:
+#
+#   a streaming server is already running; adopting it
+#   showing rtsp://127.0.0.1:8554/thermal
+#   live555 demux error: Failed to connect with rtsp://127.0.0.1:8554/thermal
+#
+# streaming.json records ports. It does not record a process, and a port is a
+# claim rather than an answer. Two ways that claim goes wrong, and both leave
+# the console with no picture at all and nothing said about it:
+#
+#   * the server it names is gone - the file outlived it, through a crash, a
+#     power cut or a taskkill - and something else has the port, or nothing has;
+#   * the server is alive but was started before these streams were configured.
+#     go2rtc reads its config once, so it is serving other names, or none, and
+#     every pane asks it for a stream it has never heard of.
+#
+# go2rtc answers both questions itself, on the loopback API this file already
+# talks to. Adoption is now on that answer.
+
+
+def api_server(streams: list[str]):
+    """A go2rtc that answers /api/streams with those names, and nothing else."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    body = json.dumps(
+        {name: {"producers": [{"type": "rtsp"}], "consumers": []} for name in streams}
+    ).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server's name
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:  # keep pytest's output readable
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def endpoint_of(server) -> dict:
+    port = server.server_address[1]
+    return {"api_port": port, "rtsp_port": port, "streams": {}}
+
+
+def test_a_server_that_is_serving_these_streams_can_be_adopted(tmp_path: Path) -> None:
+    """The half that must not break: adoption is why closing the console does
+    not stop recording."""
+    server = api_server(["thermal"])
+    try:
+        svc = claiming_service(tmp_path)
+        assert svc.unadoptable(endpoint_of(server)) == ""
+    finally:
+        server.shutdown()
+
+
+def test_a_server_serving_other_streams_is_not_adopted(tmp_path: Path) -> None:
+    """Alive, listening, and holding a config written before these streams
+    existed. Adopting it points every pane at a name it has never heard of."""
+    server = api_server(["door", "gate"])
+    try:
+        svc = claiming_service(tmp_path)
+        why = svc.unadoptable(endpoint_of(server))
+    finally:
+        server.shutdown()
+
+    assert why, "a server that does not serve thermal must not be adopted"
+    assert "thermal" in why, why
+
+
+def test_a_port_nothing_answers_on_is_not_adopted(tmp_path: Path) -> None:
+    """The file outlived the process. Nothing is listening, and the console
+    must find that out before it hands the panes an address."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    svc = claiming_service(tmp_path)
+
+    why = svc.unadoptable({"api_port": port, "rtsp_port": port, "streams": {}})
+
+    assert why, "a dead endpoint must not be adopted"
+    assert str(port) in why, why
+
+
+def test_replacing_a_ghost_stops_the_process_the_claim_names(
+    tmp_path: Path, caplog
+) -> None:
+    """It is holding the port the fresh one wants, and it is the only thing on
+    disk that can be stopped: the claim written when it was started."""
+    killed: list[int] = []
+    spawned: list = []
+    svc = adopting_service(tmp_path, killed)
+    svc._spawn = lambda command: (spawned.append(command), _AliveProcess(7000))[1]
+    (tmp_path / "streaming.json").write_text("{}", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        svc.replace("it is not serving thermal")
+
+    assert killed == [4242], "the ghost was left holding the camera and the port"
+    assert len(spawned) == 1, "the console must not be left with no video"
+    assert svc.adopted is False
+    assert svc.running is True
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "it is not serving thermal" in said, (
+        "the operator watches the picture disappear and come back; the Logs tab "
+        "is the only place that can say why: " + said
+    )
+
+
+def test_replacing_a_ghost_nobody_can_name_still_leaves_a_picture(tmp_path: Path) -> None:
+    """No claim on disk, so it cannot be stopped. Starting a fresh one anyway is
+    right here and only here: the alternative is a console with no video at all,
+    which is where this defect was found."""
+    spawned: list = []
+    svc = claiming_service(tmp_path, spawn=lambda c: (spawned.append(c), _AliveProcess(7000))[1])
+
+    svc.replace("nothing answered its API")
+
+    assert len(spawned) == 1
+    assert svc.running is True

@@ -788,6 +788,9 @@ def test_an_adopted_streaming_server_says_the_same(tmp_path: Path) -> None:
         api_port = 1984
         rtsp_port = 8554
 
+        def unadoptable(self, endpoint: dict) -> str:
+            return ""  # it answers, and it is serving what was asked for
+
         def start(self) -> None:
             raise AssertionError("a live server must not be duplicated")
 
@@ -2222,18 +2225,51 @@ def test_a_pid_that_cannot_be_asked_about_is_read_as_still_there(
 # cost this whole architecture exists to avoid.
 
 
-def live_endpoint(tmp_path: Path):
-    """A socket that answers, so `is_live` believes streaming.json."""
-    import socket
+class LiveGo2rtc:
+    """A streaming server that is listening and says what it is serving.
 
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
+    A bare socket is not enough any more, and that is the point of the change
+    this stands for: the console adopts on what the server answers, not on the
+    port being open. Bounded by nothing - it answers from memory - and shut down
+    by every caller in a finally.
+    """
+
+    def __init__(self, streams: list[str]) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        body = json.dumps({name: {"producers": [], "consumers": []} for name in streams})
+        payload = body.encode("utf-8")
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - http.server's name
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def live_endpoint(tmp_path: Path, streams: list[str] | None = None):
+    """A streaming server that answers, so streaming.json can be believed."""
+    server = LiveGo2rtc(["thermal"] if streams is None else streams)
     (tmp_path / "streaming.json").write_text(
-        json.dumps({"api_port": port, "rtsp_port": port, "streams": {}}), encoding="utf-8"
+        json.dumps(
+            {"api_port": server.port, "rtsp_port": server.port, "streams": {}}
+        ),
+        encoding="utf-8",
     )
-    return listener, port
+    return server, server.port
 
 
 def go2rtc_claim(tmp_path: Path, pid: int = 4242) -> None:
@@ -2538,3 +2574,102 @@ def test_a_recorder_that_is_healthy_is_still_started_after_a_quiet_spell(
     services.tick()
 
     assert len(spawned) > held, "it must be tried again once the flapping is history"
+
+
+# ------------------------------- a streaming server adopted without evidence
+#
+# The operator's Logs tab, in this order, inside two seconds:
+#
+#   a streaming server is already running; adopting it
+#   showing rtsp://127.0.0.1:8554/thermal
+#   live555 demux error: Failed to connect with rtsp://127.0.0.1:8554/thermal
+#
+# streaming.json records ports and no process, so adoption was trusting a file
+# a previous run left behind. Whether anything is listening, and whether what is
+# listening serves the streams this settings file asks for, are questions with
+# real answers - go2rtc has an API on the loopback - and adoption now waits for
+# them.
+
+
+class GhostStreaming:
+    """A go2rtc from an earlier run that cannot be shown to be serving anything."""
+
+    api_port = 1984
+    rtsp_port = 8554
+    adopted = False
+
+    def __init__(self, why: str = "") -> None:
+        self.why = why
+        self.replaced: list[str] = []
+        self.started = 0
+
+    def unadoptable(self, endpoint: dict) -> str:
+        return self.why
+
+    def adopt(self, endpoint: dict) -> bool:
+        self.adopted = True
+        return True
+
+    def replace(self, why: str) -> None:
+        self.replaced.append(why)
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> None: ...
+
+    @property
+    def running(self) -> bool:
+        return True
+
+
+def test_a_streaming_server_that_is_not_serving_these_streams_is_replaced(
+    tmp_path: Path,
+) -> None:
+    """No picture at all is the worst state this console can be in, and a file
+    left behind by a previous run must not be able to put it there silently."""
+    listener, _port = live_endpoint(tmp_path)
+    streaming = GhostStreaming(why="it is serving door, not thermal")
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=tmp_path / "settings.json",
+        streaming=streaming,
+        recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+    )
+    try:
+        with console_log_buffer() as buffer:
+            services.start()
+            told = " ".join(child_lines(buffer, "go2rtc")).lower()
+    finally:
+        listener.close()
+
+    assert streaming.adopted is False, "a server nothing can vouch for was adopted"
+    assert streaming.replaced == ["it is serving door, not thermal"], (
+        "the console must hand on the reason, so what the operator is told is "
+        "what was actually found: " + told
+    )
+    assert services.adopted_streaming is False
+
+
+def test_a_streaming_server_that_is_serving_these_streams_is_still_adopted(
+    tmp_path: Path,
+) -> None:
+    """The other half, and the reason adoption exists: closing the console must
+    not stop the recording that go2rtc is feeding."""
+    listener, _port = live_endpoint(tmp_path)
+    streaming = GhostStreaming(why="")
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=tmp_path / "settings.json",
+        streaming=streaming,
+        recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+    )
+    try:
+        services.start()
+    finally:
+        listener.close()
+
+    assert streaming.adopted is True
+    assert streaming.replaced == []
+    assert streaming.started == 0, "a live streaming server must not be duplicated"
+    assert services.adopted_streaming is True
