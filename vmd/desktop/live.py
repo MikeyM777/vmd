@@ -174,11 +174,21 @@ class LiveTab(QWidget):
         self._status: dict[str, str] = {}
         self._labels: dict[str, QLabel] = {}
         self._alarm_stream: str | None = None
-        # None, not 0: the first read establishes what was already there rather
-        # than alarming about it. The detector outlives the window, so opening
-        # the console on a Thursday must not blare about Tuesday - and the list
-        # still shows Tuesday, because it happened.
-        self._seen_event_id: int | None = None
+        # Which events have already been accounted for, rather than the highest
+        # id among them. None, not an empty set: the first read establishes what
+        # was already there rather than alarming about it. The detector outlives
+        # the window, so opening the console on a Thursday must not blare about
+        # Tuesday - and the list still shows Tuesday, because it happened.
+        #
+        # A set and not a high-water mark, because the ids do not arrive in
+        # order and do not always increase. `recent()` sorts by the time the
+        # movement happened, and the laptop's clock is set by hand: wind it back
+        # a minute and the next event is no longer the first row, so a
+        # high-water mark stops moving and no movement is ever announced again.
+        # Rebuild the database - a replaced disk, a repair after corruption -
+        # and the ids start at 1 again, which a high-water mark reads as
+        # nothing new for ever. Bounded by RECENT_LIMIT, so it cannot grow.
+        self._seen_ids: frozenset[int] | None = None
         self._listed: tuple = ()
         # How many times the table has actually been rebuilt. refresh() runs
         # every two seconds for months; this is the number that says whether it
@@ -304,12 +314,17 @@ class LiveTab(QWidget):
             logger.exception("the movement list could not be read")
             return
 
-        newest = events[0] if events else None
-        if self._seen_event_id is None:
-            self._seen_event_id = newest.id if newest is not None else 0
-        elif newest is not None and newest.id > self._seen_event_id:
-            self._seen_event_id = newest.id
-            self._raise_alarm(newest)
+        ids = frozenset(event.id for event in events)
+        if self._seen_ids is None:
+            self._seen_ids = ids
+        else:
+            # Anything in the list that was not in it last time. Retention
+            # deleting an event is not one of those, so footage being reclaimed
+            # cannot announce itself as movement.
+            fresh = [event for event in events if event.id not in self._seen_ids]
+            self._seen_ids = ids
+            if fresh:
+                self._raise_alarm(max(fresh, key=lambda event: event.id))
 
         # Only redraw when the list actually changed. This runs every two
         # seconds for months; the id alone is not enough of a signature, because

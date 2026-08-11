@@ -462,6 +462,60 @@ def test_the_newest_movement_is_at_the_top(qtbot) -> None:
     assert [row[1] for row in tab.recent_rows()] == ["visible", "thermal"]
 
 
+def test_movement_after_the_clock_was_set_back_still_raises_the_alarm(qtbot) -> None:
+    """The laptop's clock is set by hand, and gets set backwards.
+
+    `recent()` orders by the time the movement happened, so an event recorded
+    after the clock was wound back is no longer the first row - an older event
+    with a later timestamp is. An alarm that compares only that first row's id
+    against the highest id already seen never fires again until the clock has
+    caught up with itself, which is a missed alarm on a system that exists to
+    raise them.
+    """
+    events = FakeEvents([movement(1, stream="thermal", started=1_770_000_600.0)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()  # what was already there, established rather than alarmed about
+    assert tab.alarm_visible() is False
+
+    # The clock is corrected backwards by a minute; the next confirmed movement
+    # carries an earlier timestamp than the one before it.
+    events.events.append(movement(2, stream="thermal", started=1_770_000_540.0))
+    tab.refresh()
+
+    assert tab.alarm_visible() is True, "movement was recorded and nothing said so"
+    assert "thermal" in tab.alarm_text()
+
+
+def test_a_movement_database_that_started_again_still_raises_the_alarm(qtbot) -> None:
+    """A replaced disk, or a database rebuilt after corruption, starts its ids
+    at 1 again. A console left open across that must not go quiet for ever
+    because it once saw id 5000."""
+    events = FakeEvents([movement(5000, started=1_770_000_600.0)])
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    assert tab.alarm_visible() is False
+
+    events.events = [movement(1, started=1_770_000_900.0)]
+    tab.refresh()
+
+    assert tab.alarm_visible() is True
+
+
+def test_retention_taking_the_newest_event_does_not_invent_an_alarm(qtbot) -> None:
+    """Events are deleted with the footage they point at. Nothing new has
+    happened, so nothing may be announced."""
+    events = FakeEvents(
+        [movement(1, started=1_770_000_000.0), movement(2, started=1_770_000_600.0)]
+    )
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+
+    events.events = [e for e in events.events if e.id != 2]
+    tab.refresh()
+
+    assert tab.alarm_visible() is False
+
+
 def test_the_list_is_not_rebuilt_when_nothing_has_moved(qtbot) -> None:
     """refresh() runs every two seconds for months. Rebuilding a table nobody
     changed is work done a million times a month for nothing."""
