@@ -206,3 +206,19 @@ def test_a_settings_file_with_a_meaningless_number_says_which_one(tmp_path):
     with pytest.raises(SettingsError) as raised:
         load_settings(path)
     assert "warn_at_fraction" in str(raised.value)
+
+
+def test_a_stream_with_no_name_is_refused():
+    """The name is an identifier, not a caption.
+
+    It is the go2rtc stream id, the folder recordings are filed under, the
+    value events are attributed to and the one `wall_view` remembers. An empty
+    one is a stream nothing downstream can address, and every one of those
+    consumers would carry on without a word.
+    """
+    from vmd.settings import StreamSettings
+
+    with pytest.raises(ValidationError):
+        StreamSettings(name="", url="rtsp://10.0.0.2/ch1")
+    with pytest.raises(ValidationError):
+        StreamSettings(name="   ", url="rtsp://10.0.0.2/ch1")

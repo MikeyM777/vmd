@@ -75,13 +75,27 @@ class StreamSettings(Model):
     url: str
     enabled: bool = True
 
-    # A blank name is deliberately not refused here. It is an identifier - the
-    # go2rtc stream id, the folder segments are filed under, the value events
-    # are attributed to - and a stream with no name is one nothing downstream
-    # can address. But the settings window builds a StreamSettings for a row
-    # the operator has only just added and has not typed into yet, so refusing
-    # it at this level makes an empty row unconstructible; the window refuses a
-    # nameless stream on the way to being saved, which is the right seam.
+    @field_validator("name")
+    @classmethod
+    def _has_a_name(cls, value: str) -> str:
+        """A stream name is an identifier, not a caption.
+
+        It is the go2rtc stream id, the folder segments are filed under, the
+        value events are attributed to and the one thing `wall_view`
+        remembers. A stream with no name is one nothing downstream can address,
+        and every one of those consumers would carry on without a word.
+
+        The settings window builds a row before the operator has typed into it;
+        it does that with `model_construct`, because a row on screen is not a
+        setting yet. It becomes one at Save, which is where this fires and
+        where the window already has a sentence for it.
+        """
+        if not value.strip():
+            raise ValueError(
+                "every stream needs a name - it is how the recording, the events "
+                "and the live picture are told apart"
+            )
+        return value
 
     @field_validator("url")
     @classmethod
