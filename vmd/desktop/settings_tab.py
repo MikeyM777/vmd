@@ -1141,14 +1141,30 @@ class SettingsTab(QWidget):
             f"Press Save again to go ahead."
         )
 
+    def report_progress(self, text: str) -> None:
+        """What is being done to the running system, while it is being done.
+
+        The file is written the moment Save is pressed; putting it into effect
+        means restarting up to three child processes, which happens on a worker
+        and takes seconds. This says which one is being restarted, and holds the
+        button while it is - a button that can be pressed again mid-restart is
+        a second restart queued behind the first.
+
+        Drawn quiet, not amber: this is the console doing what it was told, and
+        amber on this line is reserved for something that did not happen.
+        """
+        self.save_button.setEnabled(False)
+        self._set_message(text, quiet=True)
+
     def report_after_save(self, text: str) -> None:
-        """Replace "Saved." with what the console could not make true.
+        """Replace what was being done with what actually took effect.
 
         The file was written; that is what "Saved." means and it is not a lie.
         But a child that would not restart is still running the settings the
         operator just replaced, and this line is the only place on this machine
         where that can be said to them.
         """
+        self.save_button.setEnabled(True)
         self._set_message(text)
 
     def settings_from_form(self) -> Settings | None:
@@ -1212,10 +1228,16 @@ class SettingsTab(QWidget):
                 seen.add(name)
         return ""
 
-    def _set_message(self, text: str) -> None:
+    def _set_message(self, text: str, quiet: bool = False) -> None:
+        """One line under the Save button, in the ink its news deserves.
+
+        Amber is for something the operator has to do something about. `quiet`
+        is for the console describing itself - "Saved.", and the steps of
+        putting a save into effect - which is news but not a problem.
+        """
         self.message = text
         self._message.setText(text)
-        colour = PALETTE["muted"] if text in ("", "Saved.") else PALETTE["warn"]
+        colour = PALETTE["muted"] if quiet or text in ("", "Saved.") else PALETTE["warn"]
         self._message.setStyleSheet(f"color: {colour};")
 
     # ----------------------------------------------------------- camera tools

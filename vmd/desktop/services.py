@@ -1300,6 +1300,17 @@ class ConsoleServices:
 
         self.supervisor = Supervisor(self._managed(), clock=clock)
 
+        # What is being done right now, for whoever is waiting on it.
+        #
+        # `apply` restarts up to three child processes with `taskkill` and
+        # process waits, which is tens of seconds in the worst case, and it runs
+        # on a worker because the Save button may not freeze the window. The
+        # operator has to be told something in the meantime, and "what it is
+        # doing now" beats a frozen page or a spinner. Same shape as
+        # `CameraTools.on_progress`, which the camera tools already use for the
+        # same reason. Set by whoever runs the apply; a no-op otherwise.
+        self.on_progress: Callable[[str], None] = lambda step: None
+
         # When each child was restarted, not just how often since the console
         # opened. A child that died twice in March and is up now is healthy; one
         # that has died four times in the last two minutes is not running,
@@ -1455,8 +1466,19 @@ class ConsoleServices:
         """
         self._restarted_at.pop(name, None)
 
+    def _say(self, step: str) -> None:
+        """Tell whoever is waiting what is being done. Never raises into a save."""
+        try:
+            self.on_progress(step)
+        except Exception:  # noqa: BLE001 - a save is not downstream of a caption
+            logger.exception("the save progress could not be reported")
+
     def apply(self, settings: Settings) -> list[str]:
         """Take settings the operator has just saved, and make them true.
+
+        Runs on a worker, not on the thread that draws the window - it kills and
+        waits for up to three child processes and that is tens of seconds in the
+        worst case. It says what it is doing as it goes, through `on_progress`.
 
         Returns the problems, as plain sentences, so that a Save which could not
         be applied says so rather than reporting the new settings as live. An
@@ -1492,6 +1514,7 @@ class ConsoleServices:
 
         if self.streaming is not None:
             if streaming_fingerprint(previous) != streaming_fingerprint(settings):
+                self._say("restarting the streaming server")
                 try:
                     self.streaming.apply(settings)
                 except Exception:  # noqa: BLE001 - the file is saved either way
@@ -1547,12 +1570,14 @@ class ConsoleServices:
                     self.recorder.stop(force=True)
                 return []
             if not self.recorder.running:
+                self._say("starting the recorder")
                 self.recorder.start()
                 if not self.recorder.running:
                     return ["the recorder did not start, so nothing is being recorded"]
                 return []
             if recorder_fingerprint(previous) == recorder_fingerprint(settings):
                 return []
+            self._say("restarting the recorder")
             if not self.recorder.restart("the recording settings changed"):
                 return [
                     "the recorder did not restart, so recording is still using "
@@ -1573,12 +1598,14 @@ class ConsoleServices:
                 self.detector.stop(force=True)
                 return []
             if not self.detector.running:
+                self._say("starting movement detection")
                 self.detector.start()
                 if not self.detector.running:
                     return ["the detector did not start, so nothing is being watched"]
                 return []
             if detector_fingerprint(previous) == detector_fingerprint(settings):
                 return []
+            self._say("restarting movement detection")
             if not self.detector.restart("the movement-detection settings changed"):
                 return [
                     "the detector did not restart, so movement detection is "

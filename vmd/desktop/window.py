@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -86,6 +86,14 @@ STREAMING_OFF = "not enabled"
 # dot has to survive: an operator looking over for two seconds must always catch
 # at least one transition, and at 900 ms they catch two.
 BLINK_MS = 900
+
+# How long a closing window waits for a save that is still being applied.
+#
+# Two seconds, and the number is the same one every other bounded wait in this
+# console uses. The work behind it is stopping and starting child processes, and
+# those outlive the window by design - so abandoning it costs nothing except the
+# line under the Save button, which is on a page that is closing anyway.
+SAVE_STOP_MS = 2000
 
 # What the dot dims to on the off beat, rather than going out. A dot that
 # vanishes is indistinguishable from no dot at all for as long as it is away,
@@ -176,6 +184,51 @@ def _link_state(link: dict) -> str:
     # warning; a chip calling it nothing would be the console arguing with
     # itself one line further down the screen.
     return "warn"
+
+
+# What `ConsoleServices.on_progress` is set back to once a save is done. A
+# function and not None, so that a stray late call from a worker cannot raise.
+def _SILENT(step: str) -> None:  # noqa: N802 - it is a constant, spelled as one
+    return None
+
+
+class _SaveSignals(QObject):
+    """A save happening on a worker, talking back to the window it cannot touch.
+
+    The only sanctioned way back to the GUI thread other than "leave a value for
+    the heartbeat to read" - and this one has to be a signal, because a save has
+    an end and the operator is standing there waiting for it.
+    """
+
+    progress = Signal(str)
+    done = Signal(list)
+
+
+class _SaveJob(QRunnable):
+    """`ConsoleServices.apply` off the thread that draws the window.
+
+    It kills and waits for up to three child processes; run inline, that is tens
+    of seconds in which nothing repaints, the supervisor does not tick and the
+    alarm strip cannot appear. What it must not lose in moving is the answer:
+    the operator has to be told what restarted, what did not, and whether the
+    settings are actually in effect, so `done` always fires and always carries
+    the problems - including the case where `apply` itself threw.
+    """
+
+    def __init__(self, apply, settings, signals: _SaveSignals) -> None:
+        super().__init__()
+        self._apply = apply
+        self._settings = settings
+        self._signals = signals
+
+    def run(self) -> None:
+        try:
+            answered = self._apply(self._settings)
+        except Exception:  # noqa: BLE001 - the file is saved either way
+            logger.exception("the child processes would not take the saved settings")
+            answered = ["the child processes would not take the saved settings"]
+        problems = list(answered) if isinstance(answered, list) else []
+        self._signals.done.emit(problems)
 
 
 class StatusChip(QFrame):
@@ -512,6 +565,12 @@ class ConsoleWindow(QMainWindow):
         column.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
 
+        # One at a time, and never on this thread: applying a save restarts up
+        # to three child processes. See `_SaveJob`.
+        self._save_pool = QThreadPool(self)
+        self._save_pool.setMaxThreadCount(1)
+        self._saving: list[_SaveSignals] = []
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.heartbeat)
         self._timer.start(HEARTBEAT_MS)
@@ -680,56 +739,112 @@ class ConsoleWindow(QMainWindow):
         operator has no terminal, no second machine, and a camera that has to
         come back.
 
-        Each part separately: a camera that will not take the change must not
-        cost the radio, and none of them may throw back into the Save button.
+        The children go to a worker. `ConsoleServices.apply` runs `taskkill` and
+        up to four process waits per child, tens of seconds in the bad case, and
+        it used to run inside this slot - so pressing Save froze the window at
+        the moment the operator is most likely to be standing in front of it
+        waiting for an answer. That is the fault the PTZ and the radio services
+        were both rewritten to remove; this was the last place it lived.
+
+        The camera and the radio are asked here, because both already answer
+        from a thread of their own and neither waits. Each separately: a camera
+        that will not take the change must not cost the radio, and none of them
+        may throw back into the Save button.
+
+        The pictures are pointed at the new settings when the children are done
+        rather than now, and that ordering is deliberate: the panes read their
+        URLs from the streaming server, and a wall rebuilt while that server is
+        halfway through a restart is a wall pointed at a port nothing is
+        listening on.
         """
-        problems: list[str] = []
-        for what, target in (
-            ("the streaming server", self._services),
-            ("the camera", self._ptz),
-            ("the radio", self._radio),
-            ("the pictures", self.live),
-        ):
+        for what, target in (("the camera", self._ptz), ("the radio", self._radio)):
             apply = getattr(target, "apply", None)
             if apply is None:
                 continue
             try:
-                answered = apply(settings)
+                apply(settings)
             except Exception:  # noqa: BLE001 - the file is saved either way
+                # Not reported back to the operator. The camera and the radio
+                # are at the far end of a radio link and answer when they feel
+                # like it; the save itself succeeded and the next heartbeat asks
+                # them again. A child that would not restart is different:
+                # nothing asks it again, and what is running is not what was
+                # saved.
                 logger.exception("%s would not take the saved settings", what)
-                # Only the children are reported back to the operator. The
-                # camera and the radio are at the far end of a radio link and
-                # answer when they feel like it; the save itself succeeded and
-                # the next heartbeat asks them again. A child that would not
-                # restart is different: nothing asks it again, and what is
-                # running is not what was saved.
-                if target is self._services:
-                    problems.append("the child processes would not take the saved settings")
-            else:
-                # The services answer with the plain sentences describing what
-                # could not be applied; the others answer with nothing.
-                if isinstance(answered, list):
-                    problems.extend(str(problem) for problem in answered)
-        self._report_save(problems)
+
+        apply = getattr(self._services, "apply", None)
+        if apply is None:
+            self._save_finished(settings, [])
+            return
+
+        signals = _SaveSignals()
+        signals.progress.connect(self._say_saving)
+        signals.done.connect(lambda found: self._save_finished(settings, found, signals))
+        self._saving.append(signals)
+        self._say_saving("putting it into effect")
+        # The same seam the camera tools use: whoever runs the work says where
+        # to report it.
+        try:
+            self._services.on_progress = signals.progress.emit
+        except Exception:  # noqa: BLE001 - a caption is not the save
+            logger.exception("the save progress could not be wired up")
+        self._save_pool.start(_SaveJob(apply, settings, signals))
+
+    def _say_saving(self, step: str) -> None:
+        """What is being done, under the button, with the button held.
+
+        A frozen window says nothing and a finished one says "Saved." The
+        seconds in between are the ones the operator is actually watching, and
+        this line is the only place on the machine where they can be described.
+        """
+        saying = getattr(self.settings_tab, "report_progress", None)
+        if saying is None:
+            return
+        try:
+            saying(f"Saved. {step[:1].upper()}{step[1:]}...")
+        except Exception:  # noqa: BLE001 - the save is running either way
+            logger.exception("the save progress could not be shown")
+
+    def _save_finished(self, settings, problems: list, signals=None) -> None:
+        """The children are done: point the pictures at the new settings, and
+        say what did and did not take effect."""
+        if signals is not None and signals in self._saving:
+            self._saving.remove(signals)
+        try:
+            self._services.on_progress = _SILENT
+        except Exception:  # noqa: BLE001 - the save is done either way
+            logger.exception("the save progress could not be unwired")
+
+        apply = getattr(self.live, "apply", None)
+        if apply is not None:
+            try:
+                apply(settings)
+            except Exception:  # noqa: BLE001 - the file is saved either way
+                logger.exception("the pictures would not take the saved settings")
+
+        self._report_save([str(problem) for problem in problems])
         state = self._ask_state()
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
 
     def _report_save(self, problems: list[str]) -> None:
-        """Say, under the button that was just pressed, what did not take effect.
+        """Say, under the button that was just pressed, what took effect.
 
         The file really was written, so "Saved." is not a lie - but on its own
         it is the wrong half of the truth when a child would not restart, and
         the operator has no terminal, walks away, and believes the system is
         running what they typed.
+
+        Said every time now rather than only when something went wrong, because
+        the line under the button no longer says "Saved." while the children are
+        being restarted - it says what is being done - and a page still
+        describing work that has finished is a page that has stopped being true.
         """
-        if not problems:
-            return
         report = getattr(self.settings_tab, "report_after_save", None)
         if report is None:
             return
         try:
-            report("Saved, but " + "; ".join(problems) + ".")
+            report("Saved." if not problems else "Saved, but " + "; ".join(problems) + ".")
         except Exception:  # noqa: BLE001 - the save is done either way
             logger.exception("the save result could not be shown")
 
@@ -894,6 +1009,12 @@ class ConsoleWindow(QMainWindow):
         outlives the interface, which is the point of running it separately."""
         self._timer.stop()
         self._blink.stop()
+        # A save that is still restarting a child is holding a reference to this
+        # window's signals. Bounded, because everything that waits here is: the
+        # children outlive the window on purpose, and one that will not stop may
+        # not hold the console open.
+        if not self._save_pool.waitForDone(SAVE_STOP_MS):
+            logger.warning("a save is still being applied; letting it finish alone")
         # The head first, and before anything slower. A window closed with an
         # arrow key down owes the camera a stop, and a stop that is not
         # delivered leaves it slewing towards its own end stop with nobody

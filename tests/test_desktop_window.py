@@ -49,6 +49,32 @@ def beating(window, ready, timeout: float = BEAT_TIMEOUT) -> bool:
     return False
 
 
+# Applying a save happens on a worker now - it restarts child processes, and the
+# window may not freeze while it does - so "the save reached the running system"
+# is a question with a moment's delay in it. Every assertion about it waits,
+# bounded, so that a save which never lands fails the test instead of hanging it.
+SAVE_TIMEOUT = 10.0
+
+
+def save_applied(window, timeout: float = SAVE_TIMEOUT) -> bool:
+    """Wait until the save has been put into effect, or give up and say so.
+
+    The Save button coming back is the console's own signal that it is done:
+    it is held for exactly as long as the children are being restarted.
+    """
+    import time as _time
+
+    from PySide6.QtWidgets import QApplication
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        QApplication.processEvents()
+        if window.settings_tab.save_button.isEnabled():
+            return True
+        _time.sleep(0.01)
+    return False
+
+
 class FakeServices:
     def __init__(self) -> None:
         self.ticks = 0
@@ -269,6 +295,7 @@ def test_saving_reaches_the_streaming_server_the_camera_and_the_radio(
     settings_tab.camera_host = "10.0.0.9"
 
     assert settings_tab.save() is True
+    assert save_applied(window), "the save never reached the running console"
 
     for applied in (services.applied, ptz.applied, radio.applied):
         assert [s.camera.host for s in applied] == ["10.0.0.9"]
@@ -282,6 +309,7 @@ def test_saving_a_new_stream_puts_it_on_the_wall(qtbot, tmp_path: Path) -> None:
 
     window.settings_tab.add_stream_row("visible", "rtsp://camera/visible")
     assert window.settings_tab.save() is True
+    assert save_applied(window), "the save never reached the running console"
 
     assert window.live.stream_names() == ["thermal", "visible"]
 
@@ -294,6 +322,7 @@ def test_saving_removes_the_pane_of_a_stream_that_is_gone(qtbot, tmp_path: Path)
     row.name_field.setText("infrared")
 
     assert window.settings_tab.save() is True
+    assert save_applied(window), "the save never reached the running console"
 
     assert window.live.stream_names() == ["infrared"]
 
@@ -305,6 +334,7 @@ def test_one_part_refusing_the_save_does_not_cost_the_others(qtbot, tmp_path: Pa
     window, services = build(qtbot, tmp_path, ptz=AngryPtz(), radio=radio)
 
     assert window.settings_tab.save() is True
+    assert save_applied(window), "the save never reached the running console"
     assert window.settings_tab.message == "Saved."
     assert len(services.applied) == 1
     assert len(radio.applied) == 1
@@ -576,6 +606,7 @@ def test_a_save_that_could_not_be_applied_says_so_where_it_was_pressed(
     window.settings_tab._set_message("Saved.")
 
     window.settings_saved(settings)
+    assert save_applied(window), "the save never reached the running console"
 
     assert services.applied == [settings]
     message = window.settings_tab.message
@@ -588,6 +619,7 @@ def test_a_save_that_worked_still_reads_as_saved(qtbot, tmp_path: Path) -> None:
     window, _ = build(qtbot, tmp_path, services=QuietServices())
     window.settings_tab._set_message("Saved.")
     window.settings_saved(load_settings(window._settings_path))
+    assert save_applied(window), "the save never reached the running console"
     assert window.settings_tab.message == "Saved."
 
 
@@ -1358,3 +1390,118 @@ def _settings_with_a_stream(tmp_path: Path, detect: bool = False) -> Path:
         path,
     )
     return path
+
+
+# --------------------------------------------------- Save, and the frozen window
+#
+# `ConsoleServices.apply` runs `taskkill` and up to four process waits per child,
+# and it ran inside the Save slot on the GUI thread. Tens of seconds in which
+# nothing repaints, the supervisor does not tick and the alarm strip cannot
+# appear - at the one moment the operator is most likely to be standing in front
+# of the machine watching it. It is the same fault the PTZ and the radio
+# services were both rewritten to remove.
+
+
+class SlowServices(FakeServices):
+    """Children that take as long to restart as `taskkill` and four waits do."""
+
+    def __init__(self, seconds: float = 3.0) -> None:
+        super().__init__()
+        import threading
+
+        self.started = threading.Event()
+        self.released = threading.Event()
+        self.seconds = seconds
+        self.on_progress = lambda step: None
+        self.thread = ""
+
+    def apply(self, settings) -> list[str]:
+        import threading
+
+        self.thread = threading.current_thread().name
+        self.started.set()
+        self.on_progress("restarting the streaming server")
+        self.released.wait(self.seconds)
+        self.on_progress("restarting the recorder")
+        self.applied.append(settings)
+        return []
+
+
+def test_save_does_not_freeze_the_window_while_the_children_restart(
+    qtbot, tmp_path: Path
+) -> None:
+    import time as _time
+
+    services = SlowServices()
+    window, _ = build(qtbot, tmp_path, services=services)
+    try:
+        started = _time.monotonic()
+        assert window.settings_tab.save() is True
+        pressed = _time.monotonic() - started
+        assert pressed < 1.0, f"Save held the window for {pressed:.1f} s"
+
+        assert services.started.wait(10.0), "the children were never restarted"
+        # And the heartbeat still runs while they are, which is what the alarm
+        # strip needs.
+        beats = window._services.ticks
+        window.heartbeat()
+        assert window._services.ticks == beats + 1
+    finally:
+        services.released.set()
+        assert save_applied(window)
+        window.close()
+
+
+def test_the_operator_is_told_what_is_being_done_while_it_is_being_done(
+    qtbot, tmp_path: Path
+) -> None:
+    """A frozen window says nothing and a finished one says "Saved." The seconds
+    in between are the ones he is actually watching."""
+    from PySide6.QtWidgets import QApplication
+
+    services = SlowServices()
+    window, _ = build(qtbot, tmp_path, services=services)
+    try:
+        assert window.settings_tab.save() is True
+        assert services.started.wait(10.0)
+
+        import time as _time
+
+        seen: set[str] = set()
+        deadline = _time.monotonic() + 10.0
+        while _time.monotonic() < deadline:
+            QApplication.processEvents()
+            seen.add(window.settings_tab.message)
+            if any("streaming server" in line.lower() for line in seen):
+                break
+            _time.sleep(0.01)
+
+        said = " | ".join(sorted(seen))
+        assert "Saved." in said, said
+        assert "streaming server" in said.lower(), said
+        # And the button is held while it is being done: a second press would
+        # queue a second restart behind the first.
+        assert window.settings_tab.save_button.isEnabled() is False
+    finally:
+        services.released.set()
+        assert save_applied(window)
+        assert window.settings_tab.message == "Saved."
+        assert window.settings_tab.save_button.isEnabled() is True
+        window.close()
+
+
+def test_a_save_that_threw_still_answers_the_operator(qtbot, tmp_path: Path) -> None:
+    """A save that silently returned before the work was done would be worse
+    than a slow one."""
+
+    class ThrowingServices(FakeServices):
+        def apply(self, settings):
+            raise RuntimeError("taskkill is not on this machine")
+
+    window, _ = build(qtbot, tmp_path, services=ThrowingServices())
+    window.settings_tab._set_message("Saved.")
+    window.settings_saved(load_settings(window._settings_path))
+    assert save_applied(window), "a save that threw never came back at all"
+    assert "Saved" in window.settings_tab.message
+    assert "would not take" in window.settings_tab.message
+    window.close()
