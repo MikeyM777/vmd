@@ -853,6 +853,16 @@ class PlaybackTab(QWidget):
         self._reload()
 
     def _reload(self) -> None:
+        # Which cameras exist is asked again here, and that is not tidiness.
+        # Segments enter the catalogue only when ffmpeg closes them, so a
+        # console opened on a machine that started recording five minutes ago
+        # has an empty list - correctly - and the list was then never asked
+        # again for the life of the process. The operator changed the day and
+        # was told "Nothing has been recorded yet" over an archive that had been
+        # filling up all afternoon, with no way to correct it but a restart. One
+        # DISTINCT out of SQLite, which is what `_names_on_disk` was made cheap
+        # for, and it is the same query the tab already runs when it opens.
+        self.refresh_streams()
         date = self.date_selector.date()
         self.day_start, self.day_end = day_bounds(date.year(), date.month(), date.day())
         self.playhead_time = None
@@ -1482,6 +1492,16 @@ class PlaybackTab(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
         super().showEvent(event)
+        # A tab that had nothing to offer asks again on the way in. This is the
+        # first morning: the recorder has been running for four minutes and has
+        # closed no segments yet, so the catalogue is genuinely empty and the
+        # console says so - and then the operator comes back at lunchtime and it
+        # is still saying so, because nothing had asked since. Only when there
+        # was nothing, so a tab already showing a day is never reloaded
+        # underneath the picture somebody is watching.
+        if not self.stream_names():
+            if self.refresh_streams():
+                self._reload()
         self._follow_while_playing()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming

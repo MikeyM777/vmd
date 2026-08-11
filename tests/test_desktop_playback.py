@@ -11,7 +11,7 @@ import pytest
 from PySide6.QtCore import QDate, QPoint, Qt
 from PySide6.QtGui import QColor
 
-from vmd.desktop.playback import BOTH, EVENT_LEAD_SECONDS, PlaybackTab
+from vmd.desktop.playback import BOTH, EVENT_LEAD_SECONDS, NOTHING_RECORDED, PlaybackTab
 from vmd.desktop.style import PALETTE
 from vmd.desktop.timeline import day_bounds, time_at
 from vmd.desktop.video import FakeVideoPane
@@ -897,6 +897,65 @@ def a_recorded_day(qtbot, tmp_path: Path, minutes: int = 60):
         )
     tab.show_day(2026, 8, 11, stream="thermal")
     return tab, pane, index, noon
+
+
+def test_a_camera_that_started_recording_after_the_tab_opened_is_offered(
+    qtbot, tmp_path: Path
+) -> None:
+    """The state every first morning is in, and the console could not leave it.
+
+    Segments only enter the catalogue when ffmpeg closes them, which is five
+    minutes after the recorder starts. An operator who installs VMD and opens
+    Playback inside those five minutes gets an empty camera list - correctly -
+    and then the list was never asked again for the life of the process.
+    Changing the day did not help, so the tab said "Nothing has been recorded
+    yet" over an archive that had been filling up all afternoon, and the only
+    cure was restarting the console.
+
+    The same rule covers a second camera added later: "Both together" was never
+    offered until somebody restarted something.
+    """
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        assert tab.stream_names() == []
+        assert tab.status_text == NOTHING_RECORDED
+
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "a.mp4"), start + 3600, start + 3900, 1000)
+
+        # The operator picks the day. Nothing else - no restart, no alarm.
+        tab.date_selector.setDate(QDate(2026, 8, 11))
+
+        assert tab.stream_names() == ["thermal"]
+        assert "nothing has been recorded" not in tab.status_text.lower()
+        assert len(tab.coverage) == 1
+    finally:
+        index.close()
+
+
+def test_coming_back_to_an_empty_playback_tab_asks_the_catalogue_again(
+    qtbot, tmp_path: Path
+) -> None:
+    """The same first morning, by the other route: he just opens the tab.
+
+    Switching to Playback is what he does, not changing the day - so the empty
+    list has to be re-asked on the way in as well. Only when it was empty: a tab
+    already showing a day must never be reloaded underneath the picture
+    somebody is watching.
+    """
+    from PySide6.QtGui import QShowEvent
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        assert tab.stream_names() == []
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "a.mp4"), start + 3600, start + 3900, 1000)
+
+        tab.showEvent(QShowEvent())
+
+        assert tab.stream_names() == ["thermal"]
+    finally:
+        index.close()
 
 
 # -------------------------------------------------------- following the picture
