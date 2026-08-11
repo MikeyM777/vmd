@@ -70,6 +70,22 @@ WRITE_STALE_FLOOR_SECONDS = 120.0
 
 SEGMENT_SUFFIX = ".mp4"
 
+# The smallest a file can be and still hold any video at all.
+#
+# This was `> 0`, and `> 0` was fitted to the one failure anybody had seen: a
+# recorder writing ZERO-byte files. An ffmpeg that opens a file, writes the
+# header and then dies writes a few hundred bytes, and every one of those sailed
+# through - so a folder filling with headers was counted as footage and the
+# console said "recording".
+#
+# An MP4 carrying an `ftyp` box and a `moov` describing one track, with not one
+# frame in it, is well under two kilobytes. Four kilobytes is comfortably past
+# that and far below anything real: a segment is `segment_seconds` long - five
+# minutes by default - and even a thermal head at the bottom of its bitrate
+# range puts hundreds of kilobytes into one. Nothing under this threshold could
+# contain video, whatever else it is.
+SMALLEST_SEGMENT_BYTES = 4096
+
 HOUR = 3600.0
 DAY = 86400.0
 
@@ -173,8 +189,8 @@ def _segment_files(root: Path) -> list[tuple[float, int]]:
                         stat = entry.stat()
                     except OSError:
                         continue  # deleted by retention between the listing and here
-                    if stat.st_size <= 0:
-                        continue
+                    if stat.st_size < SMALLEST_SEGMENT_BYTES:
+                        continue  # a header with no video in it is not footage
                     files.append((stat.st_mtime, int(stat.st_size)))
         except OSError:
             continue  # one unreadable stream folder must not lose the others
@@ -252,9 +268,24 @@ def _is_writing(
     if newest is None:
         return False, f"nothing has ever been written to {root}"
     limit = max(WRITE_STALE_FLOOR_SECONDS, 2.0 * settings.storage.segment_seconds)
-    # A file dated in the future is a clock that was set by hand, not footage
-    # from next week; treat it as recent rather than as a fault.
     silence = now - newest
+    if silence < -limit:
+        # The newest file is dated later than this machine thinks it is. That
+        # is not footage from next week, it is a date that was typed wrong -
+        # this laptop is offline and its clock is set by hand.
+        #
+        # It used to be treated as "recent", which is the worst answer
+        # available: a clock stepped back an hour, or a year, made every file
+        # on the disk look as though it had just been written, so a recorder
+        # that had been dead all day read as recording. The console cannot tell
+        # whether footage is arriving until the date is right, and saying so is
+        # the only honest answer. The same rule as the detector's report, which
+        # treats a timestamp from next week as a clock that moved.
+        return False, (
+            "the newest recording is dated later than this machine's clock, "
+            "so the date on this machine is wrong and whether anything is "
+            "being recorded cannot be told until it is put right"
+        )
     if silence <= limit:
         return True, None
     return False, f"nothing has been written for {_duration(silence)}"

@@ -1662,7 +1662,21 @@ class ConsoleServices:
             }
 
         reading = self.disk.reading
-        if reading is not None and not reading.writing:
+        if reading is None:
+            # Nobody has looked at the folder yet, so nothing here knows whether
+            # footage is arriving - and this is the reading the operator sees
+            # while he is standing there wondering whether the thing works. It
+            # used to skip the check entirely and answer "recording", which made
+            # the FIRST answer after startup the one that could not fail: a
+            # storage root of `Q:/never-existed` reported recording until the
+            # first poll came back. The dot may only follow a folder somebody
+            # has actually read.
+            return {
+                "running": False,
+                "restarts": restarts,
+                "reason": "NOT recording - the recordings folder has not been read yet",
+            }
+        if not reading.writing:
             return {
                 "running": False,
                 "restarts": restarts,

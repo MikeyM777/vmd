@@ -90,8 +90,17 @@ def recorded(root: Path, stream: str, age: float = 1.0) -> Path:
 
 
 def watching(settings: Settings) -> DiskWatcher:
-    """A disk watcher that reads when told to, so no test waits on a thread."""
-    return DiskWatcher(settings, executor=lambda work: work(), clock=Clock())
+    """A disk watcher that has read the folder, and reads again when told to.
+
+    Read once here, on the caller's thread, so that no test waits on one - and
+    so that "recording" in these tests means what it means in the console:
+    footage has been seen arriving in a folder somebody actually looked at. A
+    watcher handed over unread makes every `state()["recording"] is True` in
+    this file prove nothing but that a process object exists.
+    """
+    watcher = DiskWatcher(settings, executor=lambda work: work(), clock=Clock())
+    watcher.poll()
+    return watcher
 
 
 def test_the_recorder_is_started_as_its_own_process(tmp_path: Path) -> None:
@@ -295,11 +304,13 @@ def test_an_adopted_recorder_is_not_killed_by_stop(tmp_path: Path) -> None:
 
 
 def test_state_reports_what_the_operator_needs_to_know(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
     services = ConsoleServices(
-        settings=settings_for(tmp_path),
+        settings=settings,
         settings_path=tmp_path / "settings.json",
         streaming=None,
         recorder=RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess()),
+        disk=watching(settings),
     )
     services.start()
     state = services.state()
@@ -348,8 +359,9 @@ def console_with_detector(
     tmp_path: Path, detector_spawn, detect: bool = True, clock=None, now=None
 ):
     settings_path = tmp_path / "settings.json"
+    settings = settings_for(tmp_path, detect=detect)
     return ConsoleServices(
-        settings=settings_for(tmp_path, detect=detect),
+        settings=settings,
         settings_path=settings_path,
         streaming=None,
         recorder=RecorderProcess(
@@ -360,6 +372,7 @@ def console_with_detector(
         ),
         clock=clock or Clock(),
         now=now or (lambda: 1_000_000.0),
+        disk=watching(settings),
     )
 
 
@@ -2744,3 +2757,139 @@ def test_a_folder_of_empty_files_is_not_recording(tmp_path: Path) -> None:
     assert services.recorder.running is True, "the process is alive; that is the trap"
     assert state["recording"] is False
     assert "not recording" in state["recording_state"]["reason"].lower()
+
+
+# --------------------------------- "recording" against a folder that proves it
+#
+# `recording_state` skipped the footage check entirely when the disk had never
+# been polled, and answered "recording". So the FIRST reading after startup -
+# the one the operator sees while he is standing there wondering whether the
+# thing works - was the one that could not fail, against a storage root of
+# `Q:/never-existed`.
+#
+# It survived because thirteen `ConsoleServices(...)` sites in this file omitted
+# `disk=`, so every `assert state["recording"] is True` in the suite proved only
+# that a process object existed. These drive a real, polled DiskWatcher.
+
+
+def polled(settings: Settings, now: float | None = None) -> DiskWatcher:
+    """A watcher that has actually read the folder, at a stated moment."""
+    at = time.time() if now is None else now
+    watcher = DiskWatcher(
+        settings, executor=lambda work: work(), clock=Clock(), now=lambda: at
+    )
+    watcher.poll()
+    return watcher
+
+
+def recording_services(tmp_path: Path, settings: Settings, disk) -> ConsoleServices:
+    recorder = RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess())
+    recorder.start()
+    return ConsoleServices(
+        settings=settings,
+        settings_path=tmp_path / "settings.json",
+        streaming=None,
+        recorder=recorder,
+        disk=disk,
+    )
+
+
+def test_a_live_recorder_over_a_folder_that_cannot_prove_it_is_not_recording(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Four folders, one live recorder process, and not one of them is footage.
+
+    A process is not footage. Each of these has to say `running is False` and
+    has to name what is wrong, because the operator has this line and nothing
+    else.
+    """
+    now = time.time()
+
+    # 1. the date on this machine was typed wrong and stepped back an hour
+    stepped = settings_for(tmp_path / "stepped")
+    services = recording_services(tmp_path, stepped, polled(stepped, now=now - 3600.0))
+    state = services.recording_state()
+    assert state["running"] is False, state
+    assert "date on this machine is wrong" in state["reason"], state
+
+    # 2. a folder of files too small to hold any video
+    headers = tmp_path / "headers"
+    (headers / "thermal").mkdir(parents=True)
+    for n in range(10):
+        one = headers / "thermal" / f"2026-08-11_10-{n:02d}-00.mp4"
+        one.write_bytes(b"\0" * 900)
+        os.utime(one, (now - 5, now - 5))
+    small = _rooted(tmp_path / "headers-settings", headers)
+    services = recording_services(tmp_path, small, polled(small, now=now))
+    state = services.recording_state()
+    assert state["running"] is False, state
+    assert "nothing has ever been written" in state["reason"], state
+
+    # 3. a storage root that does not exist
+    missing = _rooted(tmp_path / "missing-settings", tmp_path / "never-existed")
+    services = recording_services(tmp_path, missing, polled(missing, now=now))
+    state = services.recording_state()
+    assert state["running"] is False, state
+    assert "not there" in state["reason"], state
+
+    # 4. a stream folder this machine may not read
+    refused = settings_for(tmp_path / "refused")
+    real_scandir = os.scandir
+
+    def scandir(path=".", *args, **kwargs):
+        if str(path).endswith("thermal"):
+            raise PermissionError(13, "Access is denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    services = recording_services(tmp_path, refused, polled(refused, now=now))
+    state = services.recording_state()
+    monkeypatch.undo()
+    assert state["running"] is False, state
+    assert "nothing has ever been written" in state["reason"], state
+
+
+def test_a_folder_nobody_has_read_yet_is_not_reported_as_recording(
+    tmp_path: Path
+) -> None:
+    """The first answer after startup, which is the one he is looking at."""
+    settings = _rooted(tmp_path / "unread", Path("Q:/never-existed"))
+    recorder = RecorderProcess(tmp_path / "settings.json", spawn=lambda c: FakeProcess())
+    recorder.start()
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=tmp_path / "settings.json",
+        streaming=None,
+        recorder=recorder,
+        disk=DiskWatcher(settings, executor=lambda work: work(), clock=Clock()),
+    )
+    state = services.recording_state()
+    assert state["running"] is False, state
+    assert "has not been read yet" in state["reason"], state
+    assert services.state()["recording"] is False
+
+
+def test_a_folder_that_really_is_filling_still_reads_as_recording(
+    tmp_path: Path
+) -> None:
+    """The other half. A guard that answered "not recording" to everything would
+    be exactly as useless as one that answered "recording"."""
+    settings = settings_for(tmp_path / "good")
+    services = recording_services(tmp_path, settings, polled(settings))
+    state = services.recording_state()
+    assert state["running"] is True, state
+    assert state["reason"] == "recording"
+
+
+def _rooted(where: Path, root: Path) -> Settings:
+    """Settings for a recorder that is configured, pointed at this folder."""
+    where.mkdir(parents=True, exist_ok=True)
+    return Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://10.0.0.2/t", enabled=True)
+            ],
+        ),
+        storage=StorageSettings(root=root),
+    )

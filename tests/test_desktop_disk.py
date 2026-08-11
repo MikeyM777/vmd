@@ -468,3 +468,60 @@ def test_no_sentence_is_cut_in_half_when_the_column_is_short_of_room(
     panel.setFixedHeight(panel.minimumSizeHint().height())
     QApplication.processEvents()
     assert panel.clipped() == [], "half a sentence is worse than none"
+
+
+# ------------------------------------------- what counts as footage, and when
+#
+# Both of these are the same failure as the one that started this review: the
+# guard was fitted to the one incident that had already happened rather than to
+# what a real recording looks like, and the state it lets through is the state
+# where the console says "recording" and nothing is being written.
+
+
+def test_a_file_with_a_header_and_no_video_in_it_is_not_footage(tmp_path: Path) -> None:
+    """The guard was `size > 0`, because the failure everybody had seen wrote
+    ZERO-byte files. An ffmpeg that writes the header and then dies writes a few
+    hundred bytes and went straight through."""
+    from vmd.desktop.disk import SMALLEST_SEGMENT_BYTES
+
+    now = time.time()
+    for n in range(20):
+        write_segment(
+            tmp_path, "thermal", f"2026-08-11_10-{n:02d}-00.mp4", 900, now - 10
+        )
+    reading = read_disk(settings_for(tmp_path), now=now)
+
+    assert reading.writing is False, "a folder of headers was reported as footage"
+    assert reading.used_bytes == 0
+    assert reading.newest_write is None
+    assert "nothing has ever been written" in (reading.write_problem or "")
+
+    # And a real segment is still a real segment.
+    write_segment(
+        tmp_path, "thermal", "2026-08-11_11-00-00.mp4", SMALLEST_SEGMENT_BYTES, now - 10
+    )
+    assert read_disk(settings_for(tmp_path), now=now).writing is True
+
+
+def test_a_clock_stepped_backwards_does_not_make_a_dead_recorder_look_alive(
+    tmp_path: Path
+) -> None:
+    """This laptop is offline and its date is typed by a person. A step back an
+    hour made every file on the disk look as though it had just been written."""
+    now = time.time()
+    write_segment(tmp_path, "thermal", "2026-08-11_10-00-00.mp4", 4 * MB, now)
+
+    for stepped_back in (3600.0, 86400.0, 365 * 86400.0):
+        reading = read_disk(settings_for(tmp_path), now=now - stepped_back)
+        assert reading.writing is False, (
+            f"a clock {stepped_back:.0f} s behind the newest file read as recording"
+        )
+        assert "date on this machine is wrong" in (reading.write_problem or "")
+
+
+def test_a_file_a_moment_ahead_of_the_clock_is_still_footage(tmp_path: Path) -> None:
+    """A file written while the folder was being read is a second or two ahead
+    of the moment the reading started. That is not a clock that moved."""
+    now = time.time()
+    write_segment(tmp_path, "thermal", "2026-08-11_10-00-00.mp4", 4 * MB, now + 2.0)
+    assert read_disk(settings_for(tmp_path), now=now).writing is True
