@@ -56,6 +56,13 @@ SETTLING_EVERY = 1.5
 # overshoots every time, and the operator ends up hunting.
 CREEP_SPEED = 0.35
 
+# The reason a lens has no answer yet, before anybody has asked. Named because
+# the screen has to tell it apart from every other reason there is no answer: it
+# is the only one that is not a fault, it lasts a heartbeat or two after every
+# start-up, and drawn as a fault it is one the operator sees each morning and
+# learns to ignore.
+NOT_ASKED = "the camera has not been asked yet"
+
 
 class Lenses:
     """Per-picture zoom, over one camera and one shared gimbal.
@@ -79,7 +86,7 @@ class Lenses:
         self._read_at: dict[str, float] = {}
         self._absolute = False
         self._found = False
-        self.reason = "the camera has not been asked yet"
+        self.reason = NOT_ASKED
 
     # ----------------------------------------------------------- discovery
 

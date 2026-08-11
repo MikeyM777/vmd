@@ -1464,12 +1464,12 @@ class LiveTab(QWidget):
         already said. It is called on the heartbeat, which is why that matters.
         """
         if self._zoom_source is None:
-            return {"ok": False, "absolute": False, "shared": False}
+            return {"ok": False, "checking": False, "absolute": False, "shared": False}
         ask = getattr(self._ptz, "zoom_ready", None)
         if ask is None:
             # Something was handed in and there is nothing to say otherwise.
             # This is the substituted case; the console's own camera answers.
-            return {"ok": True, "absolute": True, "shared": False}
+            return {"ok": True, "checking": False, "absolute": True, "shared": False}
         try:
             answer = ask()
         except Exception:  # noqa: BLE001 - the heartbeat draws either way
@@ -1478,10 +1478,11 @@ class LiveTab(QWidget):
                 logger.warning(
                     "the camera would not say what its zoom can do", exc_info=True
                 )
-            return {"ok": False, "absolute": False, "shared": False}
+            return {"ok": False, "checking": False, "absolute": False, "shared": False}
         self._zoom_unready = False
         return {
             "ok": bool(answer.get("ok")),
+            "checking": bool(answer.get("checking")),
             "absolute": bool(answer.get("absolute")),
             "shared": bool(answer.get("shared")),
         }
@@ -1518,6 +1519,12 @@ class LiveTab(QWidget):
         for name, bar in self._zoom_bars.items():
             bar.setEnabled(bool(ready["ok"]))
             bar.set_absolute(bool(ready["absolute"]))
+            # Lens discovery happens on the worker, so for the first heartbeat
+            # or two of every morning there is genuinely no answer yet. Drawn as
+            # "zoom not reported" that is a fault he sees every day before the
+            # console works, and a warning somebody has learned to ignore is
+            # worse than no warning at all.
+            bar.set_checking(bool(ready["checking"]))
             if self._zoom_source is None:
                 bar.set_position(None)
                 continue

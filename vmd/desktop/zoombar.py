@@ -72,6 +72,17 @@ WIDE_WORDS = "wide"
 TIGHT_WORDS = "tele"
 UNKNOWN_CAPTION = "zoom not reported"
 
+# What the bar says between the console starting and the camera answering.
+#
+# These two are not the same state and must not read as the same state. Lens
+# discovery happens on the worker thread, so for the first heartbeat or two of
+# every morning there is genuinely no answer yet - and a bar that spends those
+# two seconds saying "zoom not reported" has told the operator his camera is
+# broken, every single day, before it works. The distinction costs one string
+# and removes a fault he would have learned to ignore, which is worse than
+# either state on its own.
+CHECKING_CAPTION = "checking the lens"
+
 
 class ZoomBar(QWidget):
     """One camera's zoom: minus, a slider, plus, and where the lens actually is.
@@ -113,6 +124,11 @@ class ZoomBar(QWidget):
         self._slider.setStyleSheet(_SLIDER_STYLE)
         self._slider.valueChanged.connect(self._slid)
 
+        self._unknown = UNKNOWN_CAPTION
+        self._unknown_tip = (
+            "This camera does not report where its zoom is. The buttons still "
+            "work; the slider cannot show a position that was never sent."
+        )
         self._caption = QLabel(UNKNOWN_CAPTION)
         self._caption.setStyleSheet(
             f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
@@ -121,7 +137,10 @@ class ZoomBar(QWidget):
         # Wide enough for the longest thing it ever says, so the slider beside
         # it does not change length every time the lens moves.
         self._caption.setMinimumWidth(
-            self._caption.fontMetrics().horizontalAdvance(UNKNOWN_CAPTION)
+            max(
+                self._caption.fontMetrics().horizontalAdvance(words)
+                for words in (UNKNOWN_CAPTION, CHECKING_CAPTION)
+            )
         )
         self._caption.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -187,10 +206,11 @@ class ZoomBar(QWidget):
         finally:
             self._echoing = False
         if not known:
-            self._caption.setText(UNKNOWN_CAPTION)
-            self._caption.setToolTip(
-                "This camera does not report where its zoom is. The buttons still "
-                "work; the slider cannot show a position that was never sent."
+            self._caption.setText(self._unknown)
+            self._caption.setToolTip(self._unknown_tip)
+            self._caption.setStyleSheet(
+                f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+                f" font-family: {MONO};"
             )
             return
         percent = self._position * 100.0
@@ -201,6 +221,27 @@ class ZoomBar(QWidget):
             f"color: {PALETTE['ink'] if edge else PALETTE['muted']};"
             f" font-size: {SIZE_SMALL}px; font-family: {MONO};"
         )
+
+    def set_checking(self, checking: bool) -> None:
+        """Whether the camera has simply not answered yet.
+
+        Two states that look identical on a bar with no position in it, and are
+        not the same thing at all: nobody has asked the camera yet, and the
+        camera was asked and said it has no zoom to report. The first lasts a
+        heartbeat or two after every start-up and is not a fault; drawn as the
+        second, it is a fault the operator sees every morning and learns to
+        ignore - and a warning somebody has learned to ignore is worse than no
+        warning, because the day it is real it looks the same.
+        """
+        self._unknown = CHECKING_CAPTION if checking else UNKNOWN_CAPTION
+        self._unknown_tip = (
+            "Waiting for the camera to say what its zoom can do."
+            if checking
+            else "This camera does not report where its zoom is. The buttons still "
+            "work; the slider cannot show a position that was never sent."
+        )
+        if self._position is None:
+            self.set_position(None)
 
     def set_absolute(self, absolute: bool) -> None:
         """Whether this camera can be told to go to a zoom, or only to move."""

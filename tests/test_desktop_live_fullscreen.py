@@ -36,7 +36,7 @@ from PySide6.QtWidgets import QApplication, QSplitter, QWidget
 from vmd.desktop.live import LiveTab
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.window import ConsoleWindow
-from vmd.desktop.zoombar import CREEP, UNKNOWN_CAPTION
+from vmd.desktop.zoombar import CHECKING_CAPTION, CREEP, UNKNOWN_CAPTION
 from vmd.settings import CameraSettings, Settings, StreamSettings, save_settings
 
 # The same bounded wait every assertion about the camera in this suite uses: PTZ
@@ -647,6 +647,46 @@ def test_the_zoom_bars_are_under_the_pictures_in_fullscreen_too(
     for name in live.stream_names():
         bar = live.zoom_bar(name)
         assert bar is not None and bar.isVisible()
+
+
+def test_the_first_seconds_of_the_morning_do_not_read_as_a_broken_zoom(qtbot) -> None:
+    """Lens discovery happens on the worker thread, so for the first heartbeat
+    or two after every start-up the camera has genuinely not answered yet. Drawn
+    as "zoom not reported" - which is what a camera WITHOUT a zoom looks like -
+    that is a fault the operator meets every single morning before the console
+    is working, and a warning somebody has learned to ignore is worse than no
+    warning at all: the day it is real it looks exactly the same.
+    """
+    ptz = FakePtz()
+    ptz.ready = {"ok": False, "checking": True, "absolute": False, "shared": False,
+                 "reason": "the camera has not been asked yet"}
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", "visible", ptz=ptz)
+    tab.refresh()
+
+    for name in ("thermal", "visible"):
+        assert tab.zoom_bar(name).caption() == CHECKING_CAPTION, name
+
+    # And the moment it does answer, without waiting for anything else.
+    ptz.ready = {"ok": True, "checking": False, "absolute": True, "shared": False,
+                 "reason": "ready"}
+    ptz.where = {"thermal": None, "visible": None}
+    tab.refresh()
+    for name in ("thermal", "visible"):
+        assert tab.zoom_bar(name).caption() == UNKNOWN_CAPTION, name
+
+
+def test_a_camera_that_will_never_have_a_zoom_is_not_drawn_as_still_checking(
+    qtbot,
+) -> None:
+    """The other half of the same distinction. A console with no camera address
+    is not waiting for anything, and a bar that says so for ever is a promise
+    nothing is going to keep."""
+    ptz = FakePtz()
+    ptz.ready = {"ok": False, "checking": False, "absolute": False, "shared": False,
+                 "reason": "no camera address set"}
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", ptz=ptz)
+    tab.refresh()
+    assert tab.zoom_bar("thermal").caption() == UNKNOWN_CAPTION
 
 
 def test_each_bar_asks_for_its_own_lens_and_not_the_other(qtbot) -> None:

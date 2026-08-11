@@ -20,7 +20,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 
-from vmd.desktop.zoombar import CREEP, NUDGE, STEPS, UNKNOWN_CAPTION, ZoomBar
+from vmd.desktop.zoombar import (
+    CHECKING_CAPTION,
+    CREEP,
+    NUDGE,
+    STEPS,
+    UNKNOWN_CAPTION,
+    ZoomBar,
+)
 
 
 def commands(bar: ZoomBar) -> tuple[list, list]:
@@ -68,6 +75,54 @@ def test_the_buttons_still_work_when_the_position_is_unknown(qtbot) -> None:
     into.pressed.emit()
     into.released.emit()
     assert crept == [("thermal", CREEP), ("thermal", 0.0)]
+
+
+def test_not_asked_yet_does_not_read_as_a_camera_with_no_zoom(qtbot) -> None:
+    """Lens discovery happens on the worker, so for the first heartbeat or two
+    of every morning there is genuinely no answer yet. Drawn as "zoom not
+    reported" that is a fault he sees every single day before the console
+    works - and a warning somebody has learned to ignore is worse than no
+    warning, because the day it is real it looks exactly the same."""
+    bar = ZoomBar("thermal")
+    qtbot.addWidget(bar)
+    bar.set_checking(True)
+    bar.set_position(None)
+    assert bar.caption() == CHECKING_CAPTION
+    assert bar.caption() != UNKNOWN_CAPTION
+
+    bar.set_checking(False)
+    assert bar.caption() == UNKNOWN_CAPTION
+
+
+def test_the_camera_answering_replaces_the_waiting_words_at_once(qtbot) -> None:
+    """Without waiting for another heartbeat. The two states are a beat apart
+    and a stale caption between them is the confusion this removes."""
+    bar = ZoomBar("thermal")
+    qtbot.addWidget(bar)
+    bar.set_checking(True)
+    bar.set_position(None)
+    bar.set_checking(False)
+    assert bar.caption() == UNKNOWN_CAPTION
+
+
+def test_waiting_words_never_appear_over_a_position_the_camera_did_give(qtbot) -> None:
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    bar.set_position(0.5)
+    bar.set_checking(True)
+    assert "50" in bar.caption(), bar.caption()
+
+
+def test_the_caption_stays_the_same_width_whichever_of_the_two_it_says(qtbot) -> None:
+    """Both appear under a picture beside a slider. If one of them is wider the
+    slider changes length as the camera answers, which twitches the frame."""
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    bar.resize(400, 24)
+    bar.set_checking(True)
+    checking = bar.slider().width()
+    bar.set_checking(False)
+    assert bar.slider().width() == checking
 
 
 def test_the_ends_of_the_travel_are_named_and_not_only_numbered(qtbot) -> None:

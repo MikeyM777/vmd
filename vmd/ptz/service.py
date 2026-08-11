@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 
 from vmd.ptz.encoder import CameraEncoders, apply_budget
-from vmd.ptz.lenses import Lenses
+from vmd.ptz.lenses import NOT_ASKED, Lenses
 from vmd.ptz.onvif import OnvifPtz, PtzError
 from vmd.settings import Settings
 
@@ -261,10 +261,14 @@ class PtzService:
         """What the zoom controls should look like before anybody touches them."""
         lenses = self.lenses
         if lenses is None:
-            return {"ok": False, "absolute": False, "shared": False,
+            return {"ok": False, "checking": False, "absolute": False, "shared": False,
                     "reason": "no camera address set"}
         return {
             "ok": lenses.reason == "ready",
+            # Nobody has asked yet, which lasts a heartbeat or two after every
+            # start-up and is not a fault. Every other reason for having no
+            # answer is one, and the screen has to be able to tell them apart.
+            "checking": lenses.reason == NOT_ASKED,
             "absolute": lenses.absolute(),
             "shared": lenses.shared(),
             "reason": lenses.reason,
