@@ -53,6 +53,69 @@ MAX_LINE_CHARS = 2000
 # it writes when the next tick finds the process gone.
 SETTLE_SECONDS = 0.8
 
+# ------------------------------------------------------- when to stop trying
+#
+# This was the one supervised child in the codebase with no rule for giving up.
+# `Supervisor.tick` calls start() on anything that is not running, every two
+# seconds; a go2rtc that exits immediately - a half-copied binary, a config it
+# will not parse, a port collision it loses - was therefore spawned every two
+# seconds for months, and _reap wrote an ERROR on every one of those cycles.
+#
+# Thirty lines a minute into the console's 500-line ring empties the Logs tab of
+# everything else in about seventeen minutes. That is not merely noisy: every
+# other subsystem's careful reporting is written into that same buffer, and this
+# erases it. The line explaining a mistyped camera password was lost exactly
+# this way and it cost the owner hours.
+#
+# The same numbers as everything else here, deliberately: five starts inside two
+# minutes, which is RESTART_LIMIT / RESTART_WINDOW_SECONDS in
+# vmd\storage\recorder.py and SPAWN_LIMIT / FLAP_WINDOW in
+# vmd\desktop\services.py. One rule with three copies of the constants is
+# already the codebase's shape here; three different rules would be worse.
+#
+# Bounded by a window rather than latched, for the reason ffmpeg's is: giving up
+# must never be permanent on a machine nobody visits. A binary that is replaced,
+# a port that is freed, a config that is corrected - each comes back on its own
+# two minutes later, with no one doing anything.
+RESTART_WINDOW_SECONDS = 120.0
+RESTART_LIMIT = 5
+
+# How a line that keeps being written is kept without being repeated: said in
+# full the first few times, then rarely and with the count on it. Dropping the
+# repeats silently is the other way to lose the diagnosis - the operator reads
+# three lines and believes it happened three times - so the number is what is
+# said, and "this has now happened 60 times" is the diagnosis rather than sixty
+# copies of one sentence.
+SAID_IN_FULL = 3
+SAID_EVERY = 20
+
+
+class RepeatedLine:
+    """One line's worth of memory: what was last said, and how often since.
+
+    Owned by one thread. `_reap`'s lives on the service and is only touched from
+    the thread that ticks the supervisor; the log pump's is created per launch
+    and lives on that pump's own stack, so the two never share state and this
+    adds no lock to a class that already has a deque crossing threads.
+    """
+
+    def __init__(self, in_full: int = SAID_IN_FULL, then_every: int = SAID_EVERY) -> None:
+        self._text: str | None = None
+        self._count = 0
+        self._in_full = in_full
+        self._then_every = max(then_every, 1)
+
+    def seen(self, text: str) -> int | None:
+        """How many times this text has now been seen in a row, or None to keep quiet."""
+        if text != self._text:
+            self._text = text
+            self._count = 1
+            return 1
+        self._count += 1
+        if self._count <= self._in_full or self._count % self._then_every == 0:
+            return self._count
+        return None
+
 # ---------------------------------------------------------------- the claim
 #
 # Which process is serving the video.
@@ -397,6 +460,10 @@ class StreamingStatus:
     reason: str
     api_base: str
     streams: list[str]
+    # It is not running AND nothing is going to start it until the flapping
+    # quietens down. A default, so that nothing constructing one of these has to
+    # know about it; `reason` says the same thing in words.
+    held_back: bool = False
 
 
 class Go2rtcService:
@@ -421,8 +488,14 @@ class Go2rtcService:
         image_of=None,
         kill_tree=None,
         booted=None,
+        clock=None,
     ) -> None:
         self.settings = settings
+        # Only the flapping window and the settle check read this. The two
+        # bounded waits for an adopted process to die stay on the real clock:
+        # they sleep, and a clock a caller has frozen would turn a two-second
+        # wait into a loop that never ends.
+        self._clock = clock or time.monotonic
         self.config_path = Path(config_path)
         # Where the ports it actually took are written down, so the recording
         # service - a separate process - can pull from here instead of opening
@@ -440,6 +513,13 @@ class Go2rtcService:
         # When the process now held was spawned, so that a death found on a
         # later tick can still be told apart from one that never started.
         self._launched_at = 0.0
+        # Whether anything has seen the process now held actually running.
+        self._seen_running = False
+        # When each of those never-started launches happened; see `held_back`.
+        self._stillbirths: list[float] = []
+        self._said_held_back = False
+        # The last immediate-death line and how often it has been written.
+        self._said_about_dying = RepeatedLine()
         # Where this console writes down which process is serving the video.
         self.pid_path = Path(pid_path) if pid_path else self.config_path.parent / PID_FILENAME
         self._image_of = image_of or process_image
@@ -467,7 +547,15 @@ class Go2rtcService:
         out to `tasklist`, and this is read from the heartbeat.
         """
         if self._process is not None:
-            return self._process.poll() is None
+            alive = self._process.poll() is None
+            if alive:
+                # Somebody looked and it was there. That, and nothing else, is
+                # what tells a server which ran and stopped from one that was
+                # already gone the first time anyone asked - which is the
+                # difference `held_back` is measured on. Shaped after
+                # `SegmentRecorder._seen_running`, for the same reason.
+                self._seen_running = True
+            return alive
         if not self._adopted:
             return False
         watch = self._adopted_alive
@@ -478,6 +566,21 @@ class Go2rtcService:
         # server is gone starts a second one beside it, which is the collision
         # this whole claim exists to prevent.
         return True if reading.value is None else bool(reading.value)
+
+    @property
+    def held_back(self) -> bool:
+        """Has go2rtc died on arrival so often, so recently, that starting it
+        again is no longer worth doing? See RESTART_LIMIT.
+
+        Only launches that were gone before anyone looked count. A server that
+        streamed for an hour and then dropped is the ordinary life of this
+        machine and must be restarted every time; one that is dead every time it
+        is looked at has something wrong with it that another attempt will not
+        fix, and every one of those attempts costs the operator's log.
+        """
+        cutoff = self._clock() - RESTART_WINDOW_SECONDS
+        self._stillbirths = [at for at in self._stillbirths if at >= cutoff]
+        return len(self._stillbirths) >= RESTART_LIMIT
 
     @property
     def adopted(self) -> bool:
@@ -549,15 +652,31 @@ class Go2rtcService:
     def api_base(self) -> str:
         return f"http://127.0.0.1:{self.api_port}"
 
+    def _last_words(self) -> str:
+        """The last thing go2rtc said, or a stand-in. Never empty."""
+        return next((line for line in reversed(self._recent) if line), "") or "nothing"
+
     def status(self) -> StreamingStatus:
         """Why there is no picture, in words, rather than a blank panel."""
         self._reap()
+        held_back = self.held_back
         if self.running:
             reason = "streaming"
         elif self.binary is None:
             reason = "go2rtc is not installed - run install.bat"
         elif not self.stream_names:
             reason = "no stream addresses set - enter them in Settings"
+        elif held_back:
+            # Deliberately not "the streaming server stopped", which reads as
+            # something being done about it. Nothing is being done about it
+            # until the flapping quietens down, and saying so is the point.
+            reason = (
+                f"the streaming server is NOT running: it has exited immediately "
+                f"{len(self._stillbirths)} times in the last "
+                f"{RESTART_WINDOW_SECONDS / 60.0:.0f} minutes and is not being "
+                f"started again until that has quietened down. It said: "
+                f"{self._last_words()}"
+            )
         else:
             last = next((line for line in reversed(self._recent) if line), "")
             code = self._exit_code
@@ -566,7 +685,9 @@ class Go2rtcService:
                 reason += f" (exit {code})"
             if last:
                 reason += f": {last}"
-        return StreamingStatus(self.running, reason, self.api_base, self.stream_names)
+        return StreamingStatus(
+            self.running, reason, self.api_base, self.stream_names, held_back
+        )
 
     def ensure_running(self) -> None:
         """Start it if it is not running. Called on every status poll.
@@ -607,14 +728,31 @@ class Go2rtcService:
         self._exit_code = code
         self._process = None
         self._clear_endpoint()
-        if time.monotonic() - self._launched_at < SETTLE_SECONDS:
-            logger.error(
-                "go2rtc exited immediately (%s): %s",
-                code,
-                " | ".join(self._recent) or "no output",
-            )
-        else:
+        now = self._clock()
+        # Never seen alive, or gone before it could have served a frame. Asked
+        # both ways because neither is enough on its own: the supervisor's tick
+        # is two seconds and SETTLE_SECONDS is under one, so a launch whose
+        # death is only noticed on the next tick would look like a server that
+        # had run for a while - and it is the ones that were already gone the
+        # first time anybody looked that must stop being started.
+        never_started = not self._seen_running or (now - self._launched_at) < SETTLE_SECONDS
+        if not never_started:
             logger.warning("go2rtc exited with %s; restarting", code)
+            return
+        self._stillbirths.append(now)
+        # Said in full the first few times and then rarely, with the count, so
+        # that a go2rtc dying identically every two seconds cannot empty the
+        # Logs tab of everything that explains why. See RepeatedLine.
+        said = f"go2rtc exited immediately ({code}): " + (
+            " | ".join(self._recent) or "no output"
+        )
+        times = self._said_about_dying.seen(said)
+        if times is None:
+            return
+        if times == 1:
+            logger.error("%s", said)
+        else:
+            logger.error("%s - this has now happened %d times", said, times)
 
     # --------------------------------------------------------------- lifecycle
 
@@ -631,6 +769,24 @@ class Go2rtcService:
         if not self.stream_names:
             logger.info("no enabled streams; not starting go2rtc")
             return
+        if self.held_back:
+            # Said once per spell rather than once per tick: this is reached
+            # every two seconds for as long as it lasts, and a sentence repeated
+            # every two seconds is the same fault as the flood it is describing.
+            if not self._said_held_back:
+                self._said_held_back = True
+                stream_logger.error(
+                    "go2rtc: the streaming server has exited immediately %d times "
+                    "in the last %.0f minutes, so it is NOT running and is not "
+                    "being started again until that has quietened down. There is "
+                    "no live picture and no local copy of the streams for the "
+                    "recorder to read. It said: %s",
+                    len(self._stillbirths),
+                    RESTART_WINDOW_SECONDS / 60.0,
+                    self._last_words(),
+                )
+            return
+        self._said_held_back = False
 
         # Ports are checked rather than assumed. A leftover go2rtc from a previous
         # run, or anything else on the machine, must not be able to leave the
@@ -795,7 +951,8 @@ class Go2rtcService:
             return False
 
         self._process = process
-        self._launched_at = time.monotonic()
+        self._launched_at = self._clock()
+        self._seen_running = False
         self._adopted = False
         self._adopted_pid = None
         self._forget_adopted_watch()
@@ -1015,10 +1172,18 @@ class Go2rtcService:
         nowhere is a line the operator cannot act on. Lines are also cut to a
         length: go2rtc does not normally write a line a megabyte long, but the
         ring buffer's capacity is no defence against one that does.
+
+        A line it writes over and over - a camera refusing the login, which it
+        retries for ever - is counted rather than repeated. Two hundred copies
+        of one sentence in a five-hundred-line ring is the same loss as the
+        flood of restarts, and the sentence being repeated is usually the one
+        worth keeping. The memory of what was last said belongs to this pump and
+        no other thread touches it.
         """
         stream = getattr(process, "stdout", None)
         if stream is None:
             return
+        repeats = RepeatedLine()
 
         def pump() -> None:
             try:
@@ -1027,6 +1192,11 @@ class Go2rtcService:
                     if not text:
                         continue
                     self._recent.append(text)
+                    times = repeats.seen(text)
+                    if times is None:
+                        continue
+                    if times > 1:
+                        text = f"{text} - this has now happened {times} times"
                     lowered = text.lower()
                     if "err" in lowered or "unauthorized" in lowered or "401" in lowered:
                         stream_logger.warning("go2rtc: %s", text)

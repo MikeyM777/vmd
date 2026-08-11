@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from vmd.settings import CameraSettings, Settings, StreamSettings
+from vmd.streaming import go2rtc
 from vmd.streaming.go2rtc import (
     Go2rtcService,
     build_config,
@@ -935,3 +936,183 @@ def test_the_ffmpeg_reader_does_not_pull_audio_across_the_link(tmp_path: Path) -
     assert source.startswith("ffmpeg:")
     assert "#video=copy" in source
     assert "audio" not in source, source
+
+
+# ------------------------------------ the one supervised child with no give-up
+#
+# Every other restart loop in this codebase learned this and wrote it down:
+# SPAWN_LIMIT for the console's children, RESTART_LIMIT for ffmpeg,
+# RESTART_BACKOFF_MAX for the video panes. `Go2rtcService` had none, and the
+# supervisor calls start() on anything not running every two seconds. A go2rtc
+# that exits immediately - a half-copied binary, a config it will not parse, a
+# port collision it loses - was therefore spawned every two seconds for months,
+# with an ERROR written every time: thirty lines a minute into a 500-line ring.
+#
+# That is not merely noisy. It empties the Logs tab of everything else in about
+# seventeen minutes, and the Logs tab is the only thing on this machine the
+# operator can read. The line explaining a mistyped camera password was lost
+# exactly this way and it cost the owner hours.
+
+
+class FakeClock:
+    """A clock the test moves. Bounded by construction: nothing waits on it."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def flapping_service(tmp_path: Path, clock: FakeClock, spawned: list) -> Go2rtcService:
+    def spawn(command: list[str]) -> DeadOnArrival:
+        spawned.append(command)
+        return DeadOnArrival()
+
+    return Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=spawn,
+        clock=clock,
+    )
+
+
+def test_a_go2rtc_that_will_not_stay_up_stops_being_started(tmp_path: Path) -> None:
+    """Restarting something two dozen times while it fails identically every
+    time is not supervision."""
+    clock, spawned = FakeClock(), []
+    svc = flapping_service(tmp_path, clock, spawned)
+
+    for _ in range(30):  # a minute of the supervisor's heartbeat
+        svc.start()
+        clock.now += 2.0
+
+    assert len(spawned) <= go2rtc.RESTART_LIMIT, (
+        f"go2rtc was started {len(spawned)} times in a minute of failing identically"
+    )
+    assert svc.held_back is True
+    assert svc.running is False
+
+
+def test_it_says_it_is_not_running_rather_than_implying_it_will_come_back(
+    tmp_path: Path,
+) -> None:
+    """"the streaming server stopped" reads as something being done about it.
+    Nothing is being done about it, and saying so is the whole point."""
+    clock, spawned = FakeClock(), []
+    svc = flapping_service(tmp_path, clock, spawned)
+    for _ in range(30):
+        svc.start()
+        clock.now += 2.0
+
+    status = svc.status()
+    assert status.running is False
+    assert status.held_back is True
+    assert "not being started again" in status.reason, status.reason
+    # Shouted, the way the console shouts "NOT recording": this is the state an
+    # operator reading past it would take for a temporary one.
+    assert "not running" in status.reason.lower(), status.reason
+    assert "stopped" not in status.reason, status.reason
+
+
+def test_the_same_death_does_not_empty_the_log_buffer(tmp_path: Path, caplog) -> None:
+    """Thirty lines a minute into a 500-line ring is the fault destroying the
+    one diagnostic the operator has."""
+    clock, spawned = FakeClock(), []
+    svc = flapping_service(tmp_path, clock, spawned)
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(60):  # two minutes of heartbeats
+            svc.start()
+            clock.now += 2.0
+
+    said = [r for r in caplog.records if "exited" in r.getMessage()]
+    assert len(said) <= 4, (
+        f"{len(said)} lines about one death in two minutes; a 500-line ring is "
+        "empty of everything else inside seventeen minutes at that rate"
+    )
+    assert said, "going quiet about it is the other way to lose the diagnosis"
+
+
+def test_the_count_is_said_rather_than_the_line_repeated(tmp_path: Path, caplog) -> None:
+    """Dropping the repeats silently would leave the operator reading three
+    lines and believing it happened three times."""
+    clock, spawned = FakeClock(), []
+    svc = flapping_service(tmp_path, clock, spawned)
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(60):
+            svc.start()
+            clock.now += 2.0
+        clock.now += go2rtc.RESTART_WINDOW_SECONDS + 1.0
+        for _ in range(60):
+            svc.start()
+            clock.now += 2.0
+
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "has now happened" in said, said
+
+
+def test_giving_up_on_go2rtc_is_never_permanent(tmp_path: Path) -> None:
+    """A binary that is replaced, a port that is freed, a config that is fixed:
+    nobody visits this machine, so it has to come back on its own."""
+    clock, spawned = FakeClock(), []
+    svc = flapping_service(tmp_path, clock, spawned)
+    for _ in range(30):
+        svc.start()
+        clock.now += 2.0
+    assert svc.held_back is True
+    stopped_at = len(spawned)
+
+    clock.now += go2rtc.RESTART_WINDOW_SECONDS + 1.0
+    assert svc.held_back is False
+    svc.start()
+    assert len(spawned) == stopped_at + 1, "it never tried again"
+
+
+def test_a_go2rtc_that_ran_for_a_while_is_always_restarted(tmp_path: Path) -> None:
+    """A server that streamed for an hour and then dropped is the ordinary life
+    of this machine and must be restarted every time. Only the ones that were
+    dead the first time anybody looked count against it."""
+    clock, spawned = FakeClock(), []
+
+    def spawn(command: list[str]) -> FakeProcess:
+        spawned.append(command)
+        return FakeProcess()
+
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=spawn,
+        clock=clock,
+    )
+    for _ in range(20):
+        svc.start()
+        clock.now += 3600.0  # an hour of streaming
+        svc._process.alive = False
+        svc.ensure_running()
+        clock.now += 3600.0
+
+    assert svc.held_back is False, "an hour of service was counted as a stillbirth"
+    assert len(spawned) >= 20
+
+
+def test_repeated_identical_output_is_counted_rather_than_repeated(
+    tmp_path: Path, caplog
+) -> None:
+    """A go2rtc that is up and refusing the camera's login writes the same line
+    for ever. Keeping every copy is how the line that explains it is lost."""
+    caplog.set_level(logging.INFO, logger="go2rtc")
+    same = "[rtsp] 401 Unauthorized\n" * 200
+    svc = talking_service(tmp_path, TalkingProcess(same))
+    svc.start()
+
+    assert wait_for_pump(
+        lambda: any("has now happened" in r.getMessage() for r in caplog.records)
+    ), "two hundred copies of one line, or nothing said about the repeats"
+    written = [r for r in caplog.records if "401" in r.getMessage()]
+    assert len(written) < 30, f"{len(written)} copies of one line reached the log"
