@@ -40,10 +40,12 @@ def write_segment(directory, name, mtime):
 def test_orphaned_segments_on_disk_are_adopted(tmp_path):
     # A stream that was renamed or disabled leaves recordings behind. They must still
     # be counted and eventually deleted, or they occupy the budget forever.
-    # A second, newer file is required here: a lone file can never be proven closed
-    # (it could be a live writer left behind by an orphaned ffmpeg process from a
-    # previous run), so adoption only trusts a file once something newer exists after
-    # it - exactly the rule find_closed_segments already applies to owned streams.
+    # Every file here is adopted, the newest one included. This used to stop one
+    # short of the newest, on the grounds that a live writer left behind by an
+    # orphaned ffmpeg could be behind it - but nothing will ever write a newer
+    # file into a directory nobody records into, so that one segment was lost for
+    # good. Whether a file is still being written is now asked of the file
+    # itself; see record_main.held_open.
     settings = build_settings(tmp_path)
     root = tmp_path / "recordings"
     orphan_dir = root / "an_old_stream_name"
@@ -59,9 +61,10 @@ def test_orphaned_segments_on_disk_are_adopted(tmp_path):
 
     indexed = [s.path for s in service.index.all()]
     assert str(orphan) in indexed
-    # The newer file is still (possibly) being written and must not be adopted.
-    assert str(newer) not in indexed
-    assert service.index.total_bytes() == 4096
+    # Nothing has the newer file open either, so it is the renamed stream's last
+    # segment rather than a recording in progress, and it is counted too.
+    assert str(newer) in indexed
+    assert service.index.total_bytes() == 4096 + 2048
     service.stop()
 
 

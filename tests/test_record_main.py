@@ -1226,3 +1226,106 @@ def test_main_leaves_a_running_recorder_alone(tmp_path, monkeypatch):
     assert main(["--settings", str(path), "--once"]) == 0
     assert record_main_module.read_pid(pid_path) == 4242
     assert not (tmp_path / "recordings" / "segments.db").exists()
+
+
+# --------------------------------------------- the last segment of a dead stream
+#
+# A stream that is renamed or disabled leaves its directory unowned, and
+# _adopt_orphans is the only thing that ever looks at it again. It used to skip
+# the newest file there on the grounds that ffmpeg might still have it open -
+# which is right for a running stream, where a newer file arrives beside it a
+# minute later, and wrong here: no newer file is ever written, so that segment
+# occupied the drive while being invisible to the disk budget, to retention and
+# to Playback, for ever.
+
+
+def orphan_dir(tmp_path, name="an_old_name"):
+    directory = tmp_path / "recordings" / name
+    directory.mkdir(parents=True)
+    return directory
+
+
+def write_at(directory, name, mtime, size=2048):
+    path = directory / name
+    path.write_bytes(b"x" * size)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_the_last_segment_of_a_renamed_stream_is_adopted_not_lost(tmp_path):
+    """The exact shape of the bug: the console restarts the recorder when the
+    stream set changes, so the new service finds a directory nobody owns whose
+    newest file was written seconds ago and will never get a successor."""
+    settings = build_settings(tmp_path)
+    directory = orphan_dir(tmp_path)
+    now = time.time()
+    earlier = write_at(directory, "2026-08-11_10-00-00.mp4", now - 600, size=4096)
+    # What the killed ffmpeg had open. Nothing holds it now, and nothing newer
+    # will ever be written beside it.
+    last = write_at(directory, "2026-08-11_10-05-00.mp4", now, size=1024)
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    try:
+        indexed = {s.path for s in service.index.all()}
+        assert str(earlier) in indexed
+        assert str(last) in indexed, "the last segment of a dead stream is lost for ever"
+        assert service.index.total_bytes() == 4096 + 1024
+    finally:
+        service.stop()
+
+
+def test_a_lone_orphan_segment_is_adopted(tmp_path):
+    """A stream that recorded once and was then renamed leaves exactly one file.
+    Under the old rule it was always "the newest", so it was never indexed."""
+    settings = build_settings(tmp_path)
+    directory = orphan_dir(tmp_path)
+    only = write_at(directory, "2026-08-11_10-00-00.mp4", time.time() - 30, size=3072)
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    try:
+        assert [s.path for s in service.index.all()] == [str(only)]
+    finally:
+        service.stop()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the open-file probe is a Windows one")
+def test_a_segment_something_still_has_open_is_never_adopted(tmp_path):
+    """The guard the old rule was a blunt stand-in for. A segment indexed while
+    it is still being written carries a truncated duration and is exposed to
+    retention, which is worse than one indexed a minute late."""
+    settings = build_settings(tmp_path)
+    directory = orphan_dir(tmp_path)
+    now = time.time()
+    finished = write_at(directory, "2026-08-11_10-00-00.mp4", now - 600, size=4096)
+    open_now = write_at(directory, "2026-08-11_10-05-00.mp4", now - 300, size=1024)
+
+    with open_now.open("ab"):  # an ffmpeg left over from an earlier run
+        service = RecordingService(settings, spawn=spawn_fake)
+        try:
+            indexed = {s.path for s in service.index.all()}
+            assert str(finished) in indexed
+            assert str(open_now) not in indexed, "a file being written was indexed"
+        finally:
+            service.stop()
+
+    # Once it is closed, the next start picks it up rather than losing it.
+    again = RecordingService(settings, spawn=spawn_fake)
+    try:
+        assert str(open_now) in {s.path for s in again.index.all()}
+    finally:
+        again.stop()
+
+
+def test_an_orphan_directory_is_still_left_alone_while_a_recorder_owns_it(tmp_path):
+    """Unchanged, and the reason the sweep skips owned directories at all: the
+    live recorder's newest file is the one its ffmpeg has open."""
+    settings = build_settings(tmp_path)
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True)
+    write_at(directory, "2026-08-11_10-00-00.mp4", time.time() - 600)
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    try:
+        assert [s.path for s in service.index.all()] == []
+    finally:
+        service.stop()

@@ -137,6 +137,72 @@ def read_identity(pid_path: str | Path) -> RecorderIdentity | None:
         return None
 
 
+# Windows says ERROR_SHARING_VIOLATION when a file cannot be opened exclusively
+# because somebody else already has a handle to it. It is the one answer that
+# distinguishes a file still being written from a file that merely happens to be
+# the newest one in its directory.
+ERROR_SHARING_VIOLATION = 32
+ERROR_LOCK_VIOLATION = 33
+
+
+def held_open(path: str | Path) -> bool | None:
+    """Whether another process has this file open. None when it cannot be told.
+
+    Asked by opening the file with no sharing allowed and closing it again: if
+    anything else holds a handle, Windows refuses with ERROR_SHARING_VIOLATION
+    and nothing is opened. ffmpeg's output handle is an ordinary one, so a
+    segment it is still writing answers "yes" here.
+
+    This is asked instead of trusting the modification time, because on Windows
+    the modification time of an open file is not written back to the directory
+    entry until the handle is closed. A segment ffmpeg has been writing for ten
+    minutes can therefore look untouched for ten minutes, which is exactly what
+    a settle window would read as "finished".
+
+    None - "cannot be told" - covers a machine that is not Windows and every
+    refusal that is not a sharing violation, a missing file included. The caller
+    falls back to the settle window there, which is what this file did before.
+    """
+    if os.name != "nt":  # pragma: no cover - not the deployment platform
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        invalid = ctypes.c_void_p(-1).value
+        handle = kernel32.CreateFileW(
+            str(path),
+            0x80000000,  # GENERIC_READ
+            0,  # share with nobody: this is the whole question
+            None,
+            3,  # OPEN_EXISTING
+            0x80,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        if handle and ctypes.c_void_p(handle).value != invalid:
+            kernel32.CloseHandle(handle)
+            return False
+        error = ctypes.get_last_error()
+    except Exception:  # noqa: BLE001 - a probe that cannot run proves nothing
+        logger.debug("could not ask whether %s is open", path, exc_info=True)
+        return None
+    if error in (ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION):
+        return True
+    return None
+
+
 def boot_time() -> float | None:
     """When this machine last started, in epoch seconds, or None if unknown.
 
@@ -925,6 +991,19 @@ class RecordingService:
         find_closed_segments and therefore never touches the file ffmpeg still has
         open. Sweeping them here would index the in-progress segment and expose a live
         recording to retention.
+
+        Every file in an unowned directory is considered, the newest included.
+        Skipping the newest one is right for a running stream - the next file
+        written beside it proves it closed, and _index_new_segments picks it up
+        then - and wrong here, because in a directory nobody records into any
+        more no newer file will ever be written. That last segment used to hold
+        the drive while being invisible to the disk budget, to retention and to
+        the Playback timeline, for ever. Renaming or disabling a stream is the
+        ordinary way to reach that state, and the console restarts the recorder
+        precisely when the stream set changes, so it is reached on purpose.
+
+        What replaces "skip the newest" is the question it was standing in for:
+        does anything still have the file open. See `held_open`.
         """
         owned = {recorder.stream for recorder in self.recorders}
         for directory in sorted(p for p in self.root.iterdir() if p.is_dir()):
@@ -942,20 +1021,9 @@ class RecordingService:
             if not candidates:
                 continue
             candidates.sort()
-            # Skip the newest file, exactly as find_closed_segments does. If anything
-            # is still writing into this directory it is that file, and indexing it
-            # would expose a live recording to retention.
-            #
-            # "Newest" by mtime alone is not enough. A backwards clock step makes
-            # a file written before the step look newer than the one being
-            # written now, so the live file stops being last in this list. The
-            # settle window closes that: a file touched within it is treated as
-            # possibly still open, whatever the ordering says.
-            settle = max(self.settle_seconds, 0.0)
-            wall_now = time.time()
             starts = segment_starts(directory)
-            for mtime, path, stat in candidates[:-1]:
-                if wall_now - mtime < settle:
+            for mtime, path, stat in candidates:
+                if self._still_being_written(path, mtime):
                     continue
                 if str(path) in self._seen:
                     continue
@@ -973,6 +1041,22 @@ class RecordingService:
                 self._seen.add(str(path))
                 logger.info("adopted orphaned segment %s", path.name)
         self.index.commit()
+
+    def _still_being_written(self, path: Path, mtime: float) -> bool:
+        """Whether this file may still be growing, erring towards yes.
+
+        A segment indexed while it is being written carries a truncated
+        duration, and is offered to retention before it is finished - both worse
+        than one indexed a minute late, so anything unproven is left alone.
+
+        Asked of the handles first, which is a direct answer, and of the clock
+        only when there are no handles to ask about. A file left alone here is
+        not lost: the next time this service starts it is asked about again.
+        """
+        held = held_open(path)
+        if held is not None:
+            return held
+        return time.time() - mtime < max(self.settle_seconds, 0.0)
 
     def _apply_retention(self, now: float) -> None:
         # Retention reads the entire index, which is expensive once the catalogue is
