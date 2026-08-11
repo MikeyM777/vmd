@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vmd.desktop.link import link_trouble
 from vmd.desktop.live import LiveTab, WrappedNote
 from vmd.desktop.logs import LogBuffer, LogsTab, attach
 from vmd.desktop.playback import PlaybackTab
@@ -129,24 +130,45 @@ def _link_state(link: dict) -> str:
     The thresholds are that module's - it is where they are explained and where
     they were chosen - so the chip and the panel below it can never disagree
     about whether the same reading is healthy.
+
+    Three states have no signal figure at all, and they are not the same state -
+    which is what this used to get wrong. It fell through to `muted` whenever
+    `signal_dbm` was not a number, and a radio that has been asked and has
+    REFUSED is exactly that case, so the one failure at the far end of a 700 m
+    link was drawn in the same ink as one still being checked: no box, no
+    colour, nothing to glance at. A radio that has refused is a fault and now
+    reads as one.
     """
     from vmd.radio.panel import SIGNAL_HEALTHY_DBM, SIGNAL_MARGINAL_DBM
 
     if link.get("checking"):
         return "muted"
     signal = link.get("signal_dbm")
-    if not isinstance(signal, (int, float)) or isinstance(signal, bool):
+    if isinstance(signal, (int, float)) and not isinstance(signal, bool):
+        age = link.get("age_seconds")
+        stale = isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS
+        if signal < SIGNAL_MARGINAL_DBM:
+            return "alarm"
+        if signal < SIGNAL_HEALTHY_DBM:
+            return "warn"
+        # A reading nobody has taken for a while may not be drawn in the colour
+        # that means "the link is fine right now", which is the one thing it
+        # cannot say. The panel below applies the same rule to the same reading.
+        return "muted" if stale else "ok"
+
+    # No signal figure. Whether that is a fault turns on whether anybody has
+    # managed to ask: `RadioService.status` puts an age only on a reading it
+    # actually took, so no age means there is no radio configured or none has
+    # answered yet. Neither is a fault and neither is drawn as one, which is the
+    # rule `radio/panel.py:link_lines` applies to the same reading.
+    if not isinstance(link.get("age_seconds"), (int, float)):
         return "muted"
-    age = link.get("age_seconds")
-    stale = isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS
-    if signal < SIGNAL_MARGINAL_DBM:
+    if not link.get("connected"):
         return "alarm"
-    if signal < SIGNAL_HEALTHY_DBM:
-        return "warn"
-    # A reading nobody has taken for a while may not be drawn in the colour
-    # that means "the link is fine right now", which is the one thing it cannot
-    # say. The panel below applies the same rule to the same reading.
-    return "muted" if stale else "ok"
+    # Answered, and did not say how strong the link is. The panel calls that a
+    # warning; a chip calling it nothing would be the console arguing with
+    # itself one line further down the screen.
+    return "warn"
 
 
 class StatusChip(QFrame):
@@ -787,6 +809,12 @@ class ConsoleWindow(QMainWindow):
             return "link checking"
         signal = link.get("signal_dbm")
         if signal is None:
+            # `link -` is what this console says when the radio has nothing to
+            # report. A radio that has refused the login has something to
+            # report, and saying nothing about it is how a hard failure came to
+            # look exactly like one still being checked.
+            if _link_state(link) == "alarm":
+                return link_trouble(str(link.get("reason") or ""))[0]
             return "link -"
         age = link.get("age_seconds")
         if isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS:

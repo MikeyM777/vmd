@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from vmd.desktop.disk import StoragePanel
+from vmd.desktop.link import shortened
 from vmd.desktop.steering import edge_velocity, key_velocity
 from vmd.desktop.style import (
     MONO,
@@ -413,6 +414,47 @@ class SteeringOverlay(QWidget):
         super().leaveEvent(event)
 
 
+class _LinkInWordsHeCanUse:
+    """The radio service, with its refusals rewritten for the man at the screen.
+
+    `LinkPanel` draws whatever `status()` gives it, and the radio's own refusal
+    sentence is written for whoever has the source open: it carries the code, the
+    address, the login flows that were tried, and a program to run and send the
+    output of. Rendered in the side column that is fourteen wrapped grey lines
+    ending in an instruction the operator of this console cannot follow - he has
+    no terminal.
+
+    So the panel is handed the one line he can act on, and the paragraph behind
+    it goes to the Logs tab, which is where technical detail belongs and is one
+    click away. Nothing is deleted and nothing is invented: `vmd/desktop/link.py`
+    keeps the radio's own words wherever it has any.
+
+    It sits here rather than in `vmd/radio/` because it is a decision about what
+    this console shows, not about what an airOS radio means. The panel and the
+    status band are the two things that read it, and both are the desktop's.
+    """
+
+    def __init__(self, radio) -> None:
+        self._radio = radio
+        # The last paragraph put in the log. This is asked on the two-second
+        # heartbeat, and a console that wrote the same fourteen lines thirty
+        # times a minute would push everything that explains the fault out of
+        # the 500-line ring that is the only diagnostic on this machine.
+        self._logged = ""
+
+    def status(self) -> dict:
+        link = self._radio.status()
+        if not isinstance(link, dict):
+            return link
+        shorter, detail = shortened(link)
+        if detail and detail != self._logged:
+            self._logged = detail
+            logger.warning("the radio: %s", detail)
+        elif not detail:
+            self._logged = ""
+        return shorter
+
+
 class LiveTab(QWidget):
     """Video wall, view modes, steering, and what moved.
 
@@ -605,7 +647,9 @@ class LiveTab(QWidget):
         # own column; what they read is injected, because one touches the
         # filesystem and the other the radio, and neither may happen on this
         # thread.
-        self._link_panel = LinkPanel(radio) if radio is not None else None
+        self._link_panel = (
+            LinkPanel(_LinkInWordsHeCanUse(radio)) if radio is not None else None
+        )
         if self._link_panel is not None:
             self._side_layout.addWidget(self._link_panel)
         self._storage_panel = StoragePanel(storage) if storage is not None else None

@@ -1068,3 +1068,83 @@ def test_a_settings_file_that_cannot_be_written_still_changes_the_wall(
     window._settings_path = tmp_path / "no-such-folder" / "settings.json"
     window.live.show_view("thermal")
     assert window.live.chosen_view() == "thermal"
+
+
+# ------------------------------------------- a radio that refused the login
+#
+# The failure at the far end of a 700 m link was the one the band would not
+# report. `_link_state` fell through to `muted` whenever `signal_dbm` was not a
+# number - which is precisely the case where the radio has been asked and has
+# REFUSED - so a hard authentication failure was drawn exactly like one still
+# being checked: no box, no colour, `link -`. Meanwhile the panel one screen
+# below printed fourteen wrapped grey lines ending in a program to run, at a man
+# with no terminal. Both halves are the same defect: the glance says fine and
+# the reading says impossible.
+
+REFUSED_403 = (
+    "the radio answered HTTP 403 (Forbidden) to the login at "
+    "http://192.168.1.20/login.cgi. It is reachable and it refused the request, "
+    "which need not mean the password is wrong: airOS also answers 403 to a "
+    "login sent without the session cookie from its own login page, to one that "
+    "does not look like it came from that page, and after too many tries. All "
+    "login flows were tried. Run spike/probe_radio.py against this radio and "
+    "send what it prints."
+)
+
+REFUSED_SAID_SO = (
+    'the radio refused the login and said so: "Invalid credentials." '
+    "(HTTP 403 from http://192.168.1.20/login.cgi). Those are the radio's own "
+    "words - check the username and the password in Settings."
+)
+
+
+def refusal(reason: str = REFUSED_403) -> dict:
+    """What `RadioService.status()` leaves behind after a refused login."""
+    return {"connected": False, "reason": reason, "age_seconds": 2.0}
+
+
+def test_a_radio_that_refused_the_login_is_drawn_as_a_fault(qtbot) -> None:
+    """Asked and refused is not the same as still being asked."""
+    from vmd.desktop.window import _link_state
+
+    assert _link_state(refusal()) == "alarm"
+    assert _link_state(refusal(REFUSED_SAID_SO)) == "alarm"
+    assert (
+        _link_state({"connected": False, "reason": "cannot reach 192.168.1.20", "age_seconds": 9.0})
+        == "alarm"
+    )
+
+
+def test_a_radio_nobody_has_set_up_or_asked_yet_is_still_quiet() -> None:
+    """The other two states with no signal figure in them. Neither is a fault,
+    and drawing them as one would teach the operator to ignore the chip."""
+    from vmd.desktop.window import _link_state
+
+    assert _link_state({"connected": False, "reason": "the radio is not set up"}) == "muted"
+    assert _link_state({"connected": False, "checking": True, "reason": "checking"}) == "muted"
+
+
+def test_a_radio_that_answered_without_a_signal_figure_warns() -> None:
+    """The panel calls this a warning. A chip calling the same reading nothing
+    would be the console arguing with itself one line down the screen."""
+    from vmd.desktop.window import _link_state
+
+    assert _link_state({"connected": True, "signal_dbm": None, "age_seconds": 1.0}) == "warn"
+
+
+def test_the_band_says_what_a_refused_radio_did_rather_than_a_dash() -> None:
+    """`link -` is what this console says when the radio has nothing to report."""
+    words = ConsoleWindow._link_words(refusal())
+    assert words != "link -"
+    assert "link" in words
+    # Short enough to sit in a one-line band beside three other chips.
+    assert len(words) <= 60, words
+    for jargon in ("HTTP", "403", "cookie", ".py", "login.cgi", "airOS"):
+        assert jargon not in words, f"{jargon!r} is in the band: {words}"
+
+
+def test_a_radio_with_nothing_to_report_still_says_nothing() -> None:
+    assert ConsoleWindow._link_words({"connected": False, "reason": "the radio is not set up"}) == (
+        "link -"
+    )
+    assert ConsoleWindow._link_words({"checking": True}) == "link checking"

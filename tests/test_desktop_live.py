@@ -1324,3 +1324,80 @@ def test_each_picture_is_labelled_on_the_picture(qtbot) -> None:
     frame = tab._frames["thermal"]
     parent = label.parentWidget()
     assert parent is frame, "the label belongs to the picture it is about"
+
+
+# ------------------------------------- the radio's paragraph, cut to one line
+#
+# When the radio refuses the login the panel printed fourteen wrapped grey lines
+# - the code, the address, every login flow that was tried - ending "Run
+# spike/probe_radio.py against this radio and send what it prints". This
+# operator has no terminal. The detail is not deleted; it moves to the Logs tab,
+# where technical detail belongs and where it is one click away, and the panel
+# keeps the one line he can act on.
+
+REFUSED_403 = (
+    "the radio answered HTTP 403 (Forbidden) to the login at "
+    "http://192.168.1.20/login.cgi. It is reachable and it refused the request, "
+    "which need not mean the password is wrong: airOS also answers 403 to a "
+    "login sent without the session cookie from its own login page, to one that "
+    "does not look like it came from that page, and after too many tries. All "
+    "login flows were tried. Run spike/probe_radio.py against this radio and "
+    "send what it prints."
+)
+
+
+def link_tab(qtbot, radio):
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        radio=radio,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    return tab
+
+
+def test_a_refused_login_is_one_line_the_operator_can_act_on(qtbot) -> None:
+    radio = CachedRadio({"connected": False, "reason": REFUSED_403, "age_seconds": 2.0})
+    tab = link_tab(qtbot, radio)
+
+    lines = tab.link_lines()
+    assert lines, "the panel said nothing about a radio that refused the login"
+    first = lines[0][0]
+    assert "Settings" in first, first
+    # The whole point: it is a line, not a paragraph.
+    assert len(first) <= 200, first
+    for jargon in ("probe_radio", ".py", "cookie", "HTTP", "login.cgi", "airOS", "403"):
+        assert jargon not in first, f"{jargon!r} is still on the Live tab: {first}"
+
+
+def test_the_radio_s_own_words_survive_being_shortened(qtbot) -> None:
+    """"Invalid credentials." is the useful part of the whole paragraph, and the
+    console does not paraphrase it into something the radio did not say."""
+    said = (
+        'the radio refused the login and said so: "Invalid credentials." '
+        "(HTTP 403 from http://192.168.1.20/login.cgi). Those are the radio's "
+        "own words - check the username and the password in Settings."
+    )
+    tab = link_tab(qtbot, CachedRadio({"connected": False, "reason": said, "age_seconds": 2.0}))
+    first = tab.link_lines()[0][0]
+    assert "Invalid credentials." in first, first
+    assert "login.cgi" not in first
+
+
+def test_the_detail_goes_to_the_logs_once_and_not_every_heartbeat(qtbot, caplog) -> None:
+    """The Logs tab is a 500-line ring and it is the only diagnostic on this
+    machine. A paragraph repeated thirty times a minute destroys it."""
+    radio = CachedRadio({"connected": False, "reason": REFUSED_403, "age_seconds": 2.0})
+    with caplog.at_level("WARNING", logger="vmd.desktop.live"):
+        tab = link_tab(qtbot, radio)
+        for _ in range(5):
+            tab.refresh()
+    said = [r for r in caplog.records if "probe_radio" in r.getMessage()]
+    assert len(said) == 1, [r.getMessage() for r in said]
+
+
+def test_a_healthy_radio_is_not_rewritten(qtbot) -> None:
+    tab = link_tab(qtbot, CachedRadio())
+    assert any("-63 dBm" in text for text, _ in tab.link_lines()), tab.link_lines()
