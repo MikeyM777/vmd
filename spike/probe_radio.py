@@ -1,17 +1,27 @@
 """Point this at the real Ubiquiti radio, once, and the guesswork is over.
 
-`vmd/radio/airos.py` reads airOS's `status.cgi`. It was written from general
-knowledge of airOS and **has never been pointed at a real radio**. The payload
-the test suite serves was invented, not captured.
+`vmd/radio/airos.py` reads airOS's `status.cgi`. This is what points it at a real
+radio and prints everything that came back, so that a link panel showing dashes
+becomes a change in `airos.py` rather than three rounds of guessing.
 
-The radio in the field answers **403 to the login**, so the login is where the
-failure is and dumping `status.cgi` says nothing about it. airOS answers 403 for
-several reasons that are not the password - a POST that arrives without the
-session cookie it sets on its own login page, a POST that does not look like it
-came from that page, a lockout after repeated tries - and from this end they are
-indistinguishable. So this prints the exchange itself.
+It has now done that once, and it earned its keep on the first run: the radio
+answered the login with HTTP 200 and the words `Invalid credentials.` in the
+body, which the console had been reading as a successful login - so the failure
+surfaced later as an unexplained 403 from `status.cgi`. The session flow was
+proved right at the same time. Both are in `airos.py` now.
 
-    uv run python spike/probe_radio.py 10.0.0.9 --user ubnt
+Run it from anywhere, with whatever python is to hand:
+
+    python probe_radio.py 192.168.1.20 --user ubnt
+
+or, from the VMD folder:
+
+    uv run --offline --frozen --no-sync python spike\\probe_radio.py 192.168.1.20 --user ubnt
+
+Everything it needs is the standard library and the console's own parser, which
+it finds beside itself. If it cannot run at all it says which command to type
+instead, because the person running it is standing at a laptop with the link
+down.
 
 It asks for the password rather than taking it on the command line, because
 PowerShell writes every command that is typed into `ConsoleHost_history.txt` in
@@ -53,22 +63,86 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# So that `python spike/probe_radio.py` works as well as `uv run python ...`:
-# this reports on what the console's own parser does, and it must be the same
-# parser, not a copy of it that can drift.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# --------------------------------------------------------------- the bootstrap
+#
+# The operator runs this from wherever they are standing, with whatever `python`
+# is on their PATH - from inside `spike\`, by hand, on the day the link is down.
+# That is the only way it will ever be run, so it is the way it has to work.
+#
+# It can: everything this file and `vmd/radio/airos.py` import is the standard
+# library, so no environment is needed, and the line below puts the project root
+# on the path so that `import vmd.radio` finds the console's own parser rather
+# than failing. It must be the console's parser and not a copy of it: a probe
+# that reports on a copy reports on nothing.
+#
+# When that cannot work - too old an interpreter, or this file moved away from
+# the project - it says the whole command to type instead, rather than raising
+# the import error at somebody who has no terminal skills and a camera to get up.
+ROOT = Path(__file__).resolve().parent.parent
 
-from vmd.radio.airos import (  # noqa: E402
-    API_LOGIN_PATH,
-    LOGIN_FLOWS,
-    LOGIN_PATH,
-    REDACTED,
-    TELLING_HEADERS,
-    hidden_fields,
-    login_fields,
-    parse_status,
-    redact,
+# The example every message here uses, and the one in docs/FIRST-MORNING.md.
+# `--offline --frozen --no-sync` because the field laptop has no network and its
+# packages are already installed; anything that tried to resolve would hang.
+HOW_TO_RUN = (
+    "uv run --offline --frozen --no-sync python "
+    "spike\\probe_radio.py 192.168.1.20 --user ubnt"
 )
+
+# What runs this. Nothing here needs a new interpreter - it is all standard
+# library and the annotations are postponed - so the floor is low on purpose:
+# refusing a Python that would have worked would be sending someone to install
+# one on a laptop with no network, in the middle of a fault.
+MINIMUM_PYTHON = (3, 9)
+
+
+def cannot_run(problem: str) -> None:
+    """Say what is wrong and what to type instead, then stop. No traceback.
+
+    Whoever is reading this is standing at a laptop with the link down and no
+    terminal skills. An ImportError is not something they can act on; a line
+    they can copy is.
+    """
+    print()
+    print(f"  {problem}")
+    print()
+    print("  Open PowerShell in the VMD folder - the one with install.bat in it -")
+    print("  and run this instead, with your radio's address and username:")
+    print()
+    print(f"      {HOW_TO_RUN}")
+    print()
+    raise SystemExit(2)
+
+
+if sys.version_info < MINIMUM_PYTHON:
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    wanted = ".".join(str(part) for part in MINIMUM_PYTHON)
+    cannot_run(
+        f"This is Python {running}, and this tool needs {wanted} or newer. "
+        f"The one installed with VMD is new enough."
+    )
+
+sys.path.insert(0, str(ROOT))
+
+try:
+    from vmd.radio.airos import (  # noqa: E402
+        API_LOGIN_PATH,
+        LOGIN_FLOWS,
+        LOGIN_PATH,
+        REDACTED,
+        TELLING_HEADERS,
+        LoginRefused,
+        check_login,
+        hidden_fields,
+        login_fields,
+        parse_status,
+        redact,
+        refusal_words,
+    )
+except ImportError as exc:  # pragma: no cover - the copy-it-somewhere-else case
+    cannot_run(
+        f"This tool reads the console's own radio code, and it is not in {ROOT} "
+        f"({exc}). It has to sit in the spike folder of the VMD folder to work."
+    )
 
 TIMEOUT = 6.0
 
@@ -345,7 +419,21 @@ def _post(
         if isinstance(exc, urllib.error.HTTPError):
             body = exc.read().decode("utf-8", "replace")
         _record(exchange, flow, "POST", url, jar, error=exc, body=body)
+        # A refusal that names itself is worth more than the code it arrived in.
+        # /api/auth answers `{"error":"Invalid credentials."}` behind a 403, and
+        # "403, which need not mean the password is wrong" is the wrong summary
+        # of a radio that just said the password is wrong.
+        said = refusal_words(body)
+        if said:
+            raise LoginRefused(said) from exc
         raise
+    # The console's own check, imported rather than repeated: this radio answers
+    # a wrong password with HTTP 200 and says so only in the body, and a probe
+    # that called that a login would report the 403 from status.cgi as the
+    # mystery it is not. `_kept` joins repeated headers with " | " where the
+    # console's `_telling` uses ", ", which the check does not care about - it
+    # asks whether there is a Set-Cookie at all.
+    check_login(body, after)
     csrf = after.get("X-CSRF-ID") or headers.get("X-CSRF-ID")
     return {"X-CSRF-ID": csrf} if csrf else {}
 
@@ -371,6 +459,15 @@ def fetch_status(host: str, username: str, password: str, timeout: float = TIMEO
                 carried = _login(
                     flow, scheme, host, username, password, jar, opener, exchange, timeout
                 )
+            except LoginRefused as exc:
+                # The radio answered and refused in words. Kept as a note and the
+                # next flow is still tried - a build that wants a session refuses
+                # the cold POST in words too - but this is the sentence that ends
+                # the investigation, so it is quoted exactly.
+                notes.append(
+                    f'{scheme} {flow} login - the radio refused it and said: "{exc.said}"'
+                )
+                continue
             except (urllib.error.URLError, OSError) as exc:
                 notes.append(f"{scheme} {flow} login - {reason_for(exc)}")
                 if not isinstance(exc, urllib.error.HTTPError):
@@ -609,13 +706,62 @@ def verdict(payload: dict) -> list[str]:
 # ----------------------------------------------------------------------- main
 
 
+WHAT_THIS_IS = """
+Ask the Ubiquiti radio what it actually reports, and what the console makes of
+it. Point this at the radio when the link panel shows dashes, or when the
+console says it cannot log in. It only reads; it changes nothing.
+"""
+
+EXAMPLE = """
+Example - copy this line and change only the address and the username:
+
+    python probe_radio.py 192.168.1.20 --user ubnt
+
+The address is the radio's: the one you would type into a browser to reach it.
+The username is usually ubnt.
+
+It then asks for the password. Type it at the prompt - there is deliberately no
+way to put it on the command line, because PowerShell keeps every command that
+is typed, in plain text, for ever.
+
+From the VMD folder rather than from inside spike, the same run is:
+
+    {how_to_run}
+"""
+
+
+class Parser(argparse.ArgumentParser):
+    """An argument parser whose failure is the instructions.
+
+    argparse prints the usage line and the name of the missing argument, which
+    is correct and useless: it tells somebody that a word is missing, not what to
+    type. This tool exists precisely so that a fault can be diagnosed by a person
+    with no terminal skills, and their first contact with it was that message. So
+    the whole help - which carries a complete, copyable command - is what a
+    mistake prints.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        print()
+        print(f"  {message}")
+        print()
+        self.print_help()
+        raise SystemExit(2)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="probe_radio",
-        description="Ask the Ubiquiti radio what it actually reports, and what we make of it",
+    parser = Parser(
+        description=WHAT_THIS_IS,
+        epilog=EXAMPLE.format(how_to_run=HOW_TO_RUN),
+        # Raw, because argparse would otherwise reflow the example onto one line
+        # and it would stop being something anyone can copy. The prose above it
+        # is wrapped by hand for the same reason.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("host", help="the radio's address, e.g. 10.0.0.9")
-    parser.add_argument("--user", default="ubnt")
+    parser.add_argument("host", help="the radio's address, for example 192.168.1.20")
+    parser.add_argument(
+        "--user", default="ubnt", help="the radio's username (usually ubnt)"
+    )
     # There is deliberately no --password. PowerShell keeps every command that
     # is typed, in plain text, in ConsoleHost_history.txt, for ever.
     return parser.parse_args(argv)
@@ -623,7 +769,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None, ask=getpass.getpass, fetch=fetch_status) -> int:
     args = parse_args(argv)
-    password = ask(f"password for {args.user}@{args.host}: ")
+    try:
+        password = ask(f"password for {args.user}@{args.host}: ")
+    except (KeyboardInterrupt, EOFError):
+        # The owner typed the wrong address, reached this prompt, and pressed
+        # Ctrl-C - and got a KeyboardInterrupt traceback out of getpass. Nothing
+        # an operator does may come back as a stack trace.
+        print()
+        print("  Stopped. Nothing was sent to the radio.")
+        print()
+        return 1
 
     print()
     print(f"probing {args.host} as {args.user}")
@@ -631,6 +786,13 @@ def main(argv: list[str] | None = None, ask=getpass.getpass, fetch=fetch_status)
 
     try:
         answer = fetch(args.host, args.user, password, TIMEOUT)
+    except KeyboardInterrupt:
+        # A radio that is not answering takes about twelve seconds per flow, so
+        # this is a prompt somebody waits at and gives up on.
+        print()
+        print("  Stopped while waiting for the radio.")
+        print()
+        return 1
     except ProbeError as exc:
         # The exchange first and the verdict second: the login is where the
         # failure is, so printing only the sentence would throw away the report.
@@ -703,4 +865,10 @@ def main(argv: list[str] | None = None, ask=getpass.getpass, fetch=fetch_status)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        code = main()
+    except KeyboardInterrupt:  # pragma: no cover - the last catch, and quiet
+        print()
+        print("  Stopped.")
+        code = 1
+    raise SystemExit(code)

@@ -67,6 +67,82 @@ def run(argv, fetch, password: str = PASSWORD, capsys=None):
     return code, capsys.readouterr().out
 
 
+# --------------------------------------------------------- running the thing
+#
+# The operator ran this from inside the spike folder, with a bare `python`, and
+# got a stock argparse error telling them an argument was missing and not what
+# to type. This tool exists so that a fault can be diagnosed by somebody with no
+# terminal skills; its first contact with them may not be a puzzle.
+
+
+def test_getting_it_wrong_prints_a_command_you_can_copy(capsys) -> None:
+    """The failure output has to BE the instructions.
+
+    A usage line is correct and useless: it says an argument is missing, not
+    what to type. Whoever is reading this has no terminal skills and no second
+    machine, and this is the tool that was supposed to help them.
+    """
+    with pytest.raises(SystemExit):
+        probe_radio.parse_args([])
+    printed = capsys.readouterr()
+    said = printed.out + printed.err
+    assert "probe_radio.py" in said
+    # A whole line that can be copied, with an address that looks like an
+    # address rather than like a placeholder to be worked out.
+    assert "192.168.1.20" in said
+    assert "--user ubnt" in said
+    # And what happens next, since nothing on screen would say so.
+    assert "password" in said.lower()
+
+
+def test_ctrl_c_at_the_password_prompt_is_not_a_stack_trace(capsys) -> None:
+    """The owner did exactly this - typed the wrong address, hit the prompt, and
+    pressed Ctrl-C - and got a KeyboardInterrupt traceback out of getpass.
+    Nothing an operator does may surface as a stack trace."""
+
+    def interrupted(prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    code = probe_radio.main([HOST], ask=interrupted, fetch=fetch_returning(STATUS))
+    out = capsys.readouterr().out
+    assert code != 0
+    assert "Traceback" not in out
+    assert "KeyboardInterrupt" not in out
+    assert out.strip(), "it may be quiet, but not silent"
+
+
+def test_a_shut_stdin_is_the_same_thing() -> None:
+    """Running it where nothing can be typed - a double-click, a pipe - reaches
+    getpass and gets EOFError. Same treatment: a sentence, not a traceback."""
+
+    def shut(prompt: str) -> str:
+        raise EOFError
+
+    assert probe_radio.main([HOST], ask=shut, fetch=fetch_returning(STATUS)) != 0
+
+
+def test_it_finds_the_console_it_reports_on_from_wherever_it_is_run() -> None:
+    """It imports the console's own parser, so `python probe_radio.py` typed
+    inside the spike folder has to reach it. The point of this tool is that it
+    reports what THIS console does; a copy of the parser that could drift would
+    make it report about nothing."""
+    from pathlib import Path
+
+    root = Path(probe_radio.__file__).resolve().parent.parent
+    assert (root / "vmd" / "radio" / "airos.py").exists()
+    assert probe_radio.parse_status is not None
+
+
+def test_the_way_out_is_a_whole_command_and_not_advice() -> None:
+    """When the interpreter it was handed cannot run this, the sentence has to
+    contain the line to type instead - the folder to be in, and everything
+    after it."""
+    assert "uv run" in probe_radio.HOW_TO_RUN
+    assert "spike" in probe_radio.HOW_TO_RUN
+    assert "--user ubnt" in probe_radio.HOW_TO_RUN
+    assert "192.168.1.20" in probe_radio.HOW_TO_RUN
+
+
 # ------------------------------------------------------------- the password
 
 
