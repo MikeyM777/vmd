@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import time
 
 from vmd.record_main import RecordingService, main, parse_args
@@ -133,7 +134,13 @@ def test_index_persists_across_restarts(tmp_path):
     service.stop()
 
     restarted = RecordingService(settings, spawn=spawn_fake)
-    assert len(restarted.index.all()) == 1
+    # Both, not one. The pass while recording indexes the older file and leaves
+    # the newest alone - it is the one ffmpeg would have open - and stop() picks
+    # that one up once there is no ffmpeg left to have it open. This used to
+    # read 1, which recorded the fact that the last segment of every run was
+    # being dropped rather than the behaviour anyone wanted.
+    indexed = sorted(os.path.basename(s.path) for s in restarted.index.all())
+    assert indexed == ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4"]
     restarted.stop()
 
 
@@ -564,3 +571,69 @@ def test_an_unreadable_events_database_does_not_stop_retention(tmp_path):
     service.stop()
 
     assert not (directory / "2026-08-07_10-00-00.mp4").exists()
+
+
+def test_stop_indexes_the_segment_that_was_still_being_written(tmp_path):
+    """The one file discovery is built never to touch, once it is safe to touch.
+
+    While recording runs, the newest file in a directory is the one ffmpeg has
+    open, so find_closed_segments always leaves it alone and waits for it to
+    settle. After stop_all() there is no ffmpeg left to have it open - which is
+    exactly what stop() says it is indexing, and did not: the last segment of
+    every run stayed on disk invisible to the storage budget and missing from
+    the Playback timeline until some later run happened to write a newer file
+    beside it.
+    """
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once(now=100.0)
+
+    directory = tmp_path / "recordings" / "thermal"
+    last = directory / "2026-08-07_10-00-00.mp4"
+    last.write_bytes(b"x" * 2048)
+    now = time.time()
+    os.utime(last, (now, now))  # written a moment ago, as a live segment is
+
+    index_path = tmp_path / "recordings" / "segments.db"
+    service.stop()
+
+    reopened = SegmentIndex(index_path)
+    try:
+        indexed = [os.path.basename(s.path) for s in reopened.all()]
+    finally:
+        reopened.close()
+    assert indexed == ["2026-08-07_10-00-00.mp4"], indexed
+
+
+def test_stop_leaves_a_directory_alone_when_its_ffmpeg_would_not_die(tmp_path):
+    """A recorder that survived the kill may still have its file open.
+
+    SegmentRecorder keeps `running` True when it cannot confirm the process is
+    dead, precisely so that nothing treats the directory as finished. Indexing
+    the file it is still writing would expose a live recording to retention,
+    which is a worse failure than one unindexed segment.
+    """
+
+    class Immortal(FakeProcess):
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+
+        def kill(self):
+            pass
+
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=lambda command, log_path=None: Immortal())
+    service.run_once(now=100.0)
+
+    directory = tmp_path / "recordings" / "thermal"
+    (directory / "2026-08-07_10-00-00.mp4").write_bytes(b"x" * 2048)
+
+    index_path = tmp_path / "recordings" / "segments.db"
+    service.stop()
+    assert service.recorders[0].running is True, "the fake process was supposed to survive"
+
+    reopened = SegmentIndex(index_path)
+    try:
+        assert reopened.all() == []
+    finally:
+        reopened.close()

@@ -203,6 +203,7 @@ class RecordingService:
         # while being invisible to the budget.
         try:
             self._index_new_segments(time.time())
+            self._index_final_segments()
         except Exception:  # noqa: BLE001 - shutdown must always complete
             logger.exception("final indexing pass failed")
         if self._events is not None:
@@ -278,6 +279,62 @@ class RecordingService:
                 )
                 self._seen.add(str(path))
                 self._last_segment_at[recorder.stream] = now
+
+    def _index_final_segments(self) -> None:
+        """Index the file each recorder still had open, now that it has none.
+
+        `_index_new_segments` cannot do this and must not try. While recording
+        runs, the newest file in a directory is the one ffmpeg is writing, so
+        find_closed_segments always leaves it alone and waits for the settle
+        window - which is right, because indexing a live recording would expose
+        it to retention. Both of those guards are also why the last segment of
+        every run used to be left behind: it is by definition the newest file
+        and it was touched a moment ago, so it failed both tests, and stop()
+        claimed to have indexed it while doing nothing of the kind. It stayed on
+        disk invisible to the storage budget and missing from the Playback
+        timeline until some later run happened to write a newer file beside it -
+        and for a stream that is never recorded again, for ever.
+
+        Once stop_all() has returned, the question the guards exist to answer is
+        settled: `running` is False only when the process is confirmed dead, so
+        nothing in that directory is open and every file in it is finished. A
+        recorder that survived the kill keeps `running` True and is skipped, for
+        exactly the reason the guards existed.
+        """
+        for recorder in self.recorders:
+            if recorder.running:
+                logger.warning(
+                    "%s did not stop, so its directory is left unindexed until it does",
+                    recorder.stream,
+                )
+                continue
+            try:
+                paths = sorted(recorder.output_dir.glob("*.mp4"))
+            except OSError:
+                continue
+            for path in paths:
+                if str(path) in self._seen:
+                    continue
+                start = parse_segment_start(path.name)
+                if start is None:
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_size == 0:
+                    continue  # ffmpeg opened it and wrote nothing; there is no footage
+                self.index.add(
+                    stream=recorder.stream,
+                    path=str(path),
+                    start=start,
+                    end=max(stat.st_mtime, start),
+                    size_bytes=stat.st_size,
+                    commit=False,
+                )
+                self._seen.add(str(path))
+                logger.info("indexed the final segment %s", path.name)
+        self.index.commit()
 
     def stalled_streams(self, now: float | None = None) -> list[str]:
         """Streams whose process is alive but which have produced nothing recently.
