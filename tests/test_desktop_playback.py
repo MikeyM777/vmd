@@ -1461,6 +1461,45 @@ def test_how_far_apart_the_two_pictures_are_can_be_read(qtbot, tmp_path: Path) -
         index.close()
 
 
+def test_the_drift_is_measured_on_the_clock_and_not_inside_the_two_files(
+    qtbot, tmp_path: Path
+) -> None:
+    """The two pictures are two different files, and the files do not begin together.
+
+    Each recorder starts rotating its own five-minute segments when its own
+    stream connects, and nothing lines those boundaries up: after any restart of
+    one camera the two are offset by however many seconds separated the two
+    connections. `position_seconds` is a position INSIDE the open file, so
+    subtracting one from the other measures the distance between two arbitrary
+    file boundaries and calls it drift.
+
+    Here the visible camera's file began 137 s before the thermal one's. At the
+    same wall-clock instant the two players are 137 s apart inside their files
+    and 0 s apart on the clock, and it is the clock the operator is watching.
+    Reported wrongly, this is the console crying wolf - permanently, four times
+    a second - about the one property two cameras exist for.
+    """
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "t.mp4"), start + 3600, start + 4200, 1000)
+        index.add("visible", str(tmp_path / "v.mp4"), start + 3463, start + 4063, 1000)
+        tab.show_day(2026, 8, 11, stream=BOTH)
+
+        tab.play_at_time(start + 3700)
+        # The same instant, reached at two different offsets into two files.
+        assert pane.at_seconds == pytest.approx(100.0)
+        assert tab.second_pane.at_seconds == pytest.approx(237.0)
+        assert tab.drift_seconds() == pytest.approx(0.0, abs=0.01)
+
+        # And a real drift is still a real drift: two seconds behind on the
+        # clock is two seconds, whatever the files are doing.
+        tab.second_pane.seek_seconds(235.0)
+        assert tab.drift_seconds() == pytest.approx(2.0, abs=0.01)
+    finally:
+        index.close()
+
+
 def test_one_camera_alone_has_no_drift_to_report(qtbot, tmp_path: Path) -> None:
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:

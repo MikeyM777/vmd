@@ -1297,11 +1297,42 @@ class PlaybackTab(QWidget):
         shown = self.shown_streams()
         if len(shown) < 2 or self._second_pane is None:
             return None
-        here = _ask(self._pane, "position_seconds")
-        there = _ask(self._second_pane, "position_seconds")
+        here = self._moment_shown(self._pane, self._showing, self._segments)
+        there = self._moment_shown(
+            self._second_pane, self._second_showing, self._second_segments
+        )
         if here is None or there is None:
             return None
-        return abs(float(here) - float(there))
+        return abs(here - there)
+
+    @staticmethod
+    def _moment_shown(pane, showing: str | None, segments: list[Segment]) -> float | None:
+        """The wall-clock moment a picture is showing, or None if it cannot be told.
+
+        The arithmetic that makes `drift_seconds` mean anything, and the reason
+        it is not simply two `position_seconds` subtracted from each other.
+        `position_seconds` is a position INSIDE the file the player has open,
+        and the two players have two different files open with two different
+        start times: each recorder begins rotating its own five-minute segments
+        when its own stream connects, and nothing lines those boundaries up. So
+        two pictures showing the very same second are as far apart inside their
+        files as their files' starts are - which after any restart of one camera
+        is minutes - and subtracting the offsets reported that as drift. On this
+        tab that is the console crying wolf, permanently and four times a
+        second, about the one property two cameras exist for.
+
+        The file's own start is what turns an offset back into a moment, and it
+        is in the catalogue rather than in the player.
+        """
+        if showing is None:
+            return None
+        segment = next((s for s in segments if s.path == showing), None)
+        if segment is None:
+            return None
+        position = _ask(pane, "position_seconds")
+        if position is None:
+            return None
+        return segment.start + float(position)
 
     def _why_nothing(self, when: float) -> str:
         """The gap, explained out of what can actually be shown."""
