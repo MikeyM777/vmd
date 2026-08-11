@@ -1771,3 +1771,193 @@ def test_a_clock_that_moved_makes_the_index_check_what_is_really_on_disk(tmp_pat
         "the index still describes contents the file no longer has"
     )
     service.stop()
+
+
+# --------------------------------------------------------------------------
+# One sqlite error used to end indexing and retention for the life of the
+# process.
+#
+# The index is opened once and was never reopened. A drive that blips - a USB
+# reseat, a share that drops with the radio link - kills the connection for
+# good: ffmpeg goes on writing, the console goes on saying "recording" because
+# it reads the folder and not the catalogue, nothing is ever deleted again, and
+# the end state is a full disk on a machine that reported itself healthy the
+# whole way there.
+# --------------------------------------------------------------------------
+
+
+def _segment(directory, name, size=2048, mtime=100.0):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"x" * size)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_a_dead_index_connection_is_reopened_and_indexing_resumes(tmp_path):
+    """The connection is gone, not the database. Nothing reopened it."""
+    service = RecordingService(
+        build_settings(tmp_path), spawn=spawn_fake, retention_interval=0.0
+    )
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    _segment(directory, "2026-08-07_10-00-00.mp4", mtime=100.0)
+    _segment(directory, "2026-08-07_10-05-00.mp4", mtime=400.0)
+    service.run_once(now=1000.0)
+    assert len(service.index.all()) == 1, "nothing was indexed, so this proves nothing"
+
+    service.index._connection.close()  # the drive blipped
+    _segment(directory, "2026-08-07_10-10-00.mp4", mtime=700.0)
+    for step in range(8):
+        service.run_once(now=2000.0 + step)
+
+    indexed = sorted(os.path.basename(s.path) for s in service.index.all())
+    assert indexed == ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4"], (
+        "one sqlite error stopped indexing for the life of the process"
+    )
+    assert service.status(now=2100.0)["index_broken"] is None
+    service.stop()
+
+
+def test_reopening_the_index_neither_loses_nor_double_counts_what_was_indexed(tmp_path):
+    """A reopen that forgot what was already there would index every segment a
+    second time, and the storage budget is measured from those rows."""
+    service = RecordingService(
+        build_settings(tmp_path), spawn=spawn_fake, retention_interval=0.0
+    )
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    for offset, name in enumerate(THREE_SEGMENTS):
+        _segment(directory, name, mtime=100.0 + offset)
+    service.run_once(now=1000.0)
+    before = {s.path: (s.start, s.end, s.size_bytes) for s in service.index.all()}
+    assert len(before) == 2, "two of the three are closed; the newest is ffmpeg's"
+
+    # One of them is no longer on disk - moved by hand, or on a stream that has
+    # since been renamed. Its row is the only record that it was ever recorded,
+    # and a reopen that started from an empty catalogue would lose it silently.
+    (directory / THREE_SEGMENTS[0]).unlink()
+
+    service.index._connection.close()
+    for step in range(8):
+        service.run_once(now=2000.0 + step)
+
+    after = service.index.all()
+    assert len(after) == len({s.path for s in after}), "a segment was indexed twice"
+    assert len(after) == len(before), (
+        f"the catalogue held {len(before)} segments before the reopen and "
+        f"{len(after)} after it"
+    )
+    assert {s.path: (s.start, s.end, s.size_bytes) for s in after} == before, (
+        "segments indexed before the reopen were lost or rewritten"
+    )
+    assert service.status(now=2100.0)["used_bytes"] == sum(s.size_bytes for s in after)
+    service.stop()
+
+
+def test_a_reopen_starts_from_what_the_catalogue_actually_holds(tmp_path):
+    """The memo of what has been indexed is in memory; the rows are the record.
+
+    A database file that comes back without those rows - deleted, restored from
+    an older copy, replaced when a share reconnected - leaves every one of those
+    segments indexed nowhere for ever, because each later pass skips a path the
+    memo says it has already done.
+    """
+    service = RecordingService(
+        build_settings(tmp_path), spawn=spawn_fake, retention_interval=0.0
+    )
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    for offset, name in enumerate(THREE_SEGMENTS):
+        _segment(directory, name, mtime=100.0 + offset)
+    service.run_once(now=1000.0)
+    assert len(service.index.all()) == 2
+
+    service.index.close()
+    for suffix in ("", "-wal", "-shm"):
+        (tmp_path / "recordings" / f"segments.db{suffix}").unlink(missing_ok=True)
+    for step in range(8):
+        service.run_once(now=2000.0 + step)
+
+    indexed = sorted(os.path.basename(s.path) for s in service.index.all())
+    assert indexed == THREE_SEGMENTS[:2], (
+        "segments the catalogue no longer holds were never offered to it again"
+    )
+    service.stop()
+
+
+def test_an_index_that_is_genuinely_broken_is_given_up_on_and_says_so(tmp_path, monkeypatch, caplog):
+    """A corrupt file cannot be reopened, and trying every five seconds for
+    months is its own fault: it is the reopen that never works, plus a line
+    about it, once per pass, in a Logs tab that holds five hundred."""
+    service = RecordingService(
+        build_settings(tmp_path), spawn=spawn_fake, retention_interval=0.0
+    )
+    service.run_once(now=1000.0)
+    _segment(tmp_path / "recordings" / "thermal", "2026-08-07_10-00-00.mp4")
+    _segment(tmp_path / "recordings" / "thermal", "2026-08-07_10-05-00.mp4", mtime=400.0)
+
+    opened: list = []
+    real_index = record_main_module.SegmentIndex
+
+    def counted(path):
+        opened.append(str(path))
+        return real_index(path)
+
+    monkeypatch.setattr(record_main_module, "SegmentIndex", counted)
+    service.index.close()
+    (tmp_path / "recordings" / "segments.db").write_bytes(b"this is not a database")
+
+    with caplog.at_level(logging.ERROR):
+        for step in range(60):
+            service.run_once(now=2000.0 + step)
+
+    status = service.status(now=3000.0)
+    assert status["index_broken"], "the console is not told the catalogue is gone"
+    assert status["healthy"] is False
+    assert status["used_bytes"] is None, "an unreadable catalogue must not read as empty"
+    assert len(opened) <= record_main_module.INDEX_REOPEN_LIMIT, (
+        f"a broken database was reopened {len(opened)} times in 60 passes"
+    )
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "catalogue" in said or "index" in said, said
+    service.stop()
+
+
+def test_recording_continues_while_the_index_is_unusable(tmp_path):
+    """Footage on disk with no index row can be recovered later. Footage that
+    was never written cannot.
+
+    Including the hole a broken catalogue used to cut in the footage every two
+    segment lengths: the stall check reads the clock that indexing stamps, so a
+    catalogue that would not take a row made every stream look as though ffmpeg
+    had stopped producing, and it was killed and restarted for ever.
+    """
+    spawns: list = []
+
+    def counting_spawn(command, log_path=None):
+        spawns.append(command)
+        return FakeProcess()
+
+    service = RecordingService(
+        build_settings(tmp_path), spawn=counting_spawn, retention_interval=0.0
+    )
+    service.run_once(now=1000.0)
+    _segment(tmp_path / "recordings" / "thermal", "2026-08-07_10-00-00.mp4")
+    _segment(tmp_path / "recordings" / "thermal", "2026-08-07_10-05-00.mp4", mtime=400.0)
+    service.index.close()
+    (tmp_path / "recordings" / "segments.db").write_bytes(b"this is not a database")
+    started_with = len(spawns)
+
+    for step in range(40):
+        service.run_once(now=2000.0 + step)
+
+    status = service.status(now=3000.0)
+    assert status["index_broken"], "this proves nothing unless the index really broke"
+    assert status["streams"][0]["running"] is True, "recording stopped with the index"
+    assert len(spawns) == started_with, (
+        "ffmpeg was restarted while it was recording perfectly well; a broken "
+        "catalogue must not cut the footage"
+    )
+    assert service.status(now=3000.0)["stall_restarts"] == 0
+    service.stop()

@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -78,6 +79,51 @@ EVENTS_FILENAME = "events.db"
 # ClockWatch: this machine is offline, its date is typed in by a person, and
 # nothing else on it would notice that the year had changed.
 CLOCK_FILENAME = "retention-clock.json"
+
+# ------------------------------------------------ when the catalogue breaks
+#
+# The index was opened once, in __init__, and replaced nowhere but a change of
+# recording folder. A sqlite connection that has taken a `disk I/O error` is
+# dead for good, and the recordings folder is one the operator may point at an
+# external or network drive - so a USB reseat, or a share that drops with the
+# radio link, ended indexing AND retention for the life of the process. ffmpeg
+# does not use the database, so recording carried on; the console reads the
+# folder rather than the catalogue, so it went on saying "recording"; nothing
+# was ever deleted again, so the budget stopped being enforced. A full disk on
+# a machine reporting itself healthy is the shape this system least affords.
+#
+# How many sqlite failures out of the indexing and retention stages before the
+# connection is thrown away and opened again. Three, for the reason FLAPPING_AFTER
+# is three in vmd\supervisor.py and the reason everything here is loud three
+# times and rare afterwards: one failure is a blip, two is a drive settling,
+# three is a connection that is not coming back on its own. The counter is
+# cleared the moment the index is proven to work - after a successful read in
+# retention, after a successful insert in indexing - so these are consecutive in
+# the only sense that matters, and a reopen costs one connect and a re-read of
+# the paths already indexed.
+INDEX_FAILURES_BEFORE_REOPEN = 3
+
+# How many reopens that did not work before this stops trying on the five-second
+# loop. A database that is genuinely broken - the file corrupted, the folder
+# read-only, the drive simply gone - cannot be fixed by opening it again, and
+# reopening it every few seconds for months is the same fault as restarting an
+# ffmpeg that will never start: it is the log flood that destroys the one
+# diagnostic surface the operator has.
+INDEX_REOPEN_LIMIT = 3
+
+# ...and how long it is left alone after that. Bounded rather than latched, for
+# the reason RESTART_WINDOW_SECONDS is bounded in vmd\storage\recorder.py:
+# giving up must never be permanent on a machine nobody visits. A drive plugged
+# back in at three in the morning has to be picked up without anyone doing
+# anything, and one connect attempt every five minutes is not a flood by any
+# measure. Measured on the monotonic clock, because the wall clock here is typed
+# in by a person and can move by a year.
+INDEX_REOPEN_QUIET_SECONDS = 300.0
+
+# The two stages whose failures are worth reopening the index for. The others
+# fail for their own reasons - a directory that cannot be listed, a settings
+# file half-written - and none of those is answered by a new connection.
+INDEX_STAGES = ("indexing", "retention")
 
 # ---------------------------------------------------------------- the claim
 #
@@ -471,8 +517,13 @@ class RecordingService:
         settings_path: str | Path | None = None,
         source_check_interval: float = SOURCE_CHECK_SECONDS,
         source_settle_seconds: float = SOURCE_SETTLE_SECONDS,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.settings = settings
+        # A clock that cannot be set by hand, for the one decision here that
+        # must not be moved by an operator correcting the date: how long a
+        # catalogue that will not open is left alone before it is tried again.
+        self._monotonic = monotonic or time.monotonic
         # Where the operator's choices are written down, so that saving the
         # Settings tab can reach a process the console cannot restart. None
         # means "these settings and no others", which is what every caller that
@@ -503,6 +554,15 @@ class RecordingService:
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
+        # What the catalogue has done lately. See INDEX_FAILURES_BEFORE_REOPEN:
+        # sqlite failures out of the two stages that use it, reopens that have
+        # not worked, and - when it has been given up on - the sentence saying
+        # so, which is what reaches status() and from there the console.
+        self._index_failures = 0
+        self._index_reopens = 0
+        self._index_broken: str | None = None
+        self._index_gave_up_at: float | None = None
+        self._said_index_broken = False
         self._clock = ClockWatch(self.root / CLOCK_FILENAME)
         self._clock_verdict = None
         self._last_clock_look = 0.0
@@ -904,13 +964,109 @@ class RecordingService:
     def _stage(self, name: str, work, *args) -> None:
         try:
             work(*args)
-        except Exception:  # noqa: BLE001 - one broken stage must not skip the rest
+        except Exception as exc:  # noqa: BLE001 - one broken stage must not skip the rest
             self._stage_failures[name] = self._stage_failures.get(name, 0) + 1
             count = self._stage_failures[name]
             # Loud the first few times, then rare: a fault that lasts for days
             # must stay visible in the log without burying everything else.
             if count <= 3 or count % 100 == 0:
                 logger.exception("%s failed (%d times); continuing", name, count)
+            if isinstance(exc, sqlite3.Error) and name in INDEX_STAGES:
+                # Only sqlite's own errors. A directory that cannot be listed
+                # and a settings file that will not parse both surface here as
+                # well, and neither of them is answered by a new connection.
+                self._index_failures += 1
+                if self._index_failures >= INDEX_FAILURES_BEFORE_REOPEN:
+                    self._reopen_index()
+
+    # ------------------------------------------------- keeping the catalogue
+
+    def _index_worked(self) -> None:
+        """Called where the index has just demonstrably answered.
+
+        This is what makes the failure count consecutive. A connection that
+        reads and writes is not a connection that needs replacing, whatever it
+        did an hour ago, and a catalogue that was given up on and has since
+        started working is not broken any more - the drive came back.
+        """
+        self._index_failures = 0
+        if self._index_broken is not None:
+            logger.warning("the segment catalogue is answering again")
+        self._index_broken = None
+        self._index_gave_up_at = None
+        self._said_index_broken = False
+        self._index_reopens = 0
+
+    def _reopen_index(self) -> None:
+        """Throw the connection away and open the catalogue again.
+
+        The database file is almost never the casualty - the connection is. So
+        the new one is opened and proven with a read *before* the old one is let
+        go, and what has already been indexed is re-derived from the rows that
+        are actually there rather than carried across in memory. That is what
+        makes this safe to do at any moment: nothing is lost, because the rows
+        are the record; and nothing is counted twice, because `SegmentIndex.add`
+        is keyed on the path and corrects a row rather than adding a second one.
+
+        A reopen that does not work is counted, and after INDEX_REOPEN_LIMIT of
+        them this stops trying at the loop's cadence and says, in status() and
+        once in the log, that the catalogue is unusable. It is tried again after
+        INDEX_REOPEN_QUIET_SECONDS, because nobody visits this machine and a
+        drive that comes back at three in the morning has to be picked up on its
+        own.
+        """
+        now = self._monotonic()
+        if self._index_broken is not None:
+            waited = now - (self._index_gave_up_at if self._index_gave_up_at is not None else now)
+            if 0 <= waited < INDEX_REOPEN_QUIET_SECONDS:
+                return
+        self._index_failures = 0
+        try:
+            fresh = SegmentIndex(self.root / "segments.db")
+            indexed = {segment.path for segment in fresh.all()}
+        except Exception as exc:  # noqa: BLE001 - the reason belongs to the operator
+            self._index_reopens += 1
+            if self._index_reopens >= INDEX_REOPEN_LIMIT:
+                self._give_up_on_the_index(exc, now)
+            else:
+                logger.warning(
+                    "the segment catalogue could not be reopened (attempt %d): %s",
+                    self._index_reopens,
+                    exc,
+                )
+            return
+
+        stale, self.index = self.index, fresh
+        self._seen = indexed
+        logger.warning(
+            "the segment catalogue stopped answering and has been opened again; "
+            "%d segments are in it, and recording never stopped",
+            len(indexed),
+        )
+        self._index_worked()
+        try:
+            stale.close()
+        except Exception:  # noqa: BLE001 - a dead connection may refuse to close
+            logger.debug("the old catalogue connection would not close", exc_info=True)
+
+    def _give_up_on_the_index(self, exc: Exception, now: float) -> None:
+        """Stop reopening, and say what the operator has actually got.
+
+        Said once rather than every pass, for the reason everything else here is
+        said once: the Logs tab holds five hundred lines and a sentence repeated
+        every five seconds destroys it. status() carries it for as long as it
+        lasts, which is the channel that does not scroll.
+        """
+        self._index_gave_up_at = now
+        self._index_broken = (
+            f"the recordings catalogue could not be opened on "
+            f"{self._index_reopens} attempts ({exc}). Recording is still running "
+            f"and footage is still being written, but nothing is being indexed, "
+            f"nothing is being deleted, and the disk will fill"
+        )
+        if not self._said_index_broken:
+            self._said_index_broken = True
+            logger.error("%s", self._index_broken)
 
     def run_forever(self, interval: float = 5.0) -> None:
         """Run until interrupted. A failed pass must never end the process.
@@ -948,8 +1104,17 @@ class RecordingService:
     def status(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
         stalled = set(self.stalled_streams(now))
-        segments = self.index.all()
-        used = sum(s.size_bytes for s in segments)
+        # Asked for, not assumed. This is published every pass now, so a
+        # catalogue that has stopped answering must produce a report saying so
+        # rather than an exception that takes the report with it - and it must
+        # not produce a report saying the archive is empty, which is the same
+        # lie in the other direction. `None` is "not known"; 0 is "none".
+        try:
+            segments = self.index.all()
+        except Exception:  # noqa: BLE001 - the catalogue is the thing being reported on
+            logger.debug("the catalogue could not be read for status", exc_info=True)
+            segments = None
+        used = sum(s.size_bytes for s in segments) if segments is not None else None
         oldest = segments[0].start if segments else None
         streams = [
             {
@@ -985,8 +1150,12 @@ class RecordingService:
                 )
                 and not self._stuck_deletions
                 and not self._empty_segments
+                # Recording without a catalogue is recording that nothing can
+                # find, on a disk nothing will ever reclaim.
+                and self._index_broken is None
+                and segments is not None
             ),
-            "segments": len(segments),
+            "segments": len(segments) if segments is not None else None,
             "used_bytes": used,
             "budget_bytes": self.settings.storage.budget_bytes,
             "oldest": oldest,
@@ -1003,6 +1172,15 @@ class RecordingService:
             # did not. None is the ordinary answer.
             "retention_declined": self._retention_declined,
             "clock_jumps": self._clock_jumps,
+            # Why there is no catalogue, if there is none. None is the ordinary
+            # answer; a sentence here means footage is being written and
+            # nothing is indexing it or deleting anything.
+            "index_broken": self._index_broken,
+            "index_reopens": self._index_reopens,
+            # How often each stage of the pass has failed since this process
+            # started. Nothing read these before, which is why a stage failing
+            # every pass for a week was a whisper. See _stage.
+            "stage_failures": dict(self._stage_failures),
         }
 
     def _index_new_segments(self, now: float) -> None:
@@ -1026,6 +1204,14 @@ class RecordingService:
                 # what makes a dropout visible in the coverage timeline instead of
                 # being papered over.
                 end = self._end_of(start, stat.st_mtime, next_segment_start(starts, start))
+                # Noted before the row is written, not after. This is the clock
+                # the stall check reads, and what it is asking is whether ffmpeg
+                # is producing files - which it can be doing perfectly while the
+                # catalogue is refusing to record the fact. Updating it after
+                # the insert meant a dead index made every stream look stalled,
+                # so ffmpeg was killed and restarted every two segment lengths:
+                # a fault in the catalogue putting holes in the footage.
+                self._last_segment_at[recorder.stream] = now
                 self.index.add(
                     stream=recorder.stream,
                     path=str(path),
@@ -1034,7 +1220,9 @@ class RecordingService:
                     size_bytes=stat.st_size,
                 )
                 self._seen.add(str(path))
-                self._last_segment_at[recorder.stream] = now
+                # A row written is the sharpest proof there is that the
+                # catalogue works. See _index_worked.
+                self._index_worked()
 
     # ------------------------------------------------------ following the tab
 
@@ -1175,6 +1363,14 @@ class RecordingService:
         self.root = Path(new_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
+        # A fresh catalogue in a fresh folder. Whatever the last one had done
+        # is not this one's record: carrying the failure count across would
+        # have the first blip here counted as the fourth.
+        self._index_failures = 0
+        self._index_reopens = 0
+        self._index_broken = None
+        self._index_gave_up_at = None
+        self._said_index_broken = False
         # The clock witness belongs to the archive it protects, so a folder that
         # has never been managed from here starts its own record rather than
         # inheriting the last one's.
@@ -1202,7 +1398,10 @@ class RecordingService:
             except Exception:  # noqa: BLE001 - closing must not fail a close
                 logger.exception("the movement events would not close")
             self._events = None
-        self.index.close()
+        try:
+            self.index.close()
+        except Exception:  # noqa: BLE001 - a dead connection must not fail a close
+            logger.debug("the catalogue connection would not close", exc_info=True)
 
     def _index_final_segments(self) -> None:
         """Index the file each recorder still had open, now that it has none.
@@ -1438,6 +1637,8 @@ class RecordingService:
 
         storage = self.settings.storage
         segments = self.index.all()
+        # The whole catalogue has just been read. See _index_worked.
+        self._index_worked()
         plan = plan_retention(
             segments,
             now=now,
