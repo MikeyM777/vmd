@@ -74,6 +74,26 @@ def test_adding_the_same_path_twice_is_ignored(tmp_path):
     index.close()
 
 
+def test_a_path_offered_again_with_different_content_corrects_the_row(tmp_path):
+    """A row that no longer describes its file is worse than no row at all.
+
+    A clock set backwards makes ffmpeg reopen a name it has already used and
+    truncate it. The old behaviour - INSERT OR IGNORE - kept the first row's
+    start, end and size, so Playback offered a file whose contents were from a
+    different hour, retention deleted it by the wrong timestamp, and the
+    coverage bar drew hours that were no longer there.
+    """
+    index = build(tmp_path)
+    first = index.add("thermal", "/rec/a.mp4", 100.0, 400.0, 10)
+    again = index.add("thermal", "/rec/a.mp4", 100.0, 250.0, 6000)
+    segments = index.all()
+    assert again == first, "it is still the same row"
+    assert len(segments) == 1
+    assert segments[0].size_bytes == 6000
+    assert segments[0].end == 250.0
+    index.close()
+
+
 def test_gaps_between_segments(tmp_path):
     index = build(tmp_path)
     index.add("thermal", "/rec/a.mp4", 0.0, 300.0, 10)

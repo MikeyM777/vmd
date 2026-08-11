@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS segments (
@@ -58,27 +61,53 @@ class SegmentIndex:
         self, stream: str, path: str, start: float, end: float, size_bytes: int,
         commit: bool = True,
     ) -> int:
-        """Register a segment. Adding the same path twice is a no-op.
+        """Register a segment. Offering the same path again with the same
+        contents is a no-op; offering it with different contents corrects it.
+
+        It used to be INSERT OR IGNORE, which kept the first row whatever the
+        file had since become - and a file can become something else. ffmpeg
+        names segments from the wall clock and its segment muxer truncates a
+        name it is given again, so a clock set backwards on a machine with no
+        NTP overwrites footage that is already indexed. The row then described
+        contents the file no longer had: Playback offered an hour of different
+        footage, retention judged it by the wrong timestamp, and the coverage
+        bar drew hours that were no longer there. A row that no longer describes
+        its file is worse than no row at all.
 
         `commit=False` defers the commit so a caller inserting many rows can pay for
         one fsync instead of one per row; it must call commit() afterwards.
         """
-        cursor = self._connection.execute(
-            "INSERT OR IGNORE INTO segments (stream, path, start, end, size_bytes) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (stream, path, start, end, size_bytes),
-        )
-        if commit:
-            self._connection.commit()
-        # rowcount, not lastrowid: an INSERT OR IGNORE that ignored leaves
-        # lastrowid holding the *previous* successful insert's id, which is
-        # truthy, so the lookup below was never reached and the caller was
-        # handed a different segment's id.
-        if cursor.rowcount:
-            return int(cursor.lastrowid)
         existing = self._connection.execute(
-            "SELECT id FROM segments WHERE path = ?", (path,)
+            'SELECT id, start, "end" AS finish, size_bytes FROM segments WHERE path = ?',
+            (path,),
         ).fetchone()
+        if existing is None:
+            cursor = self._connection.execute(
+                "INSERT INTO segments (stream, path, start, end, size_bytes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (stream, path, start, end, size_bytes),
+            )
+            if commit:
+                self._connection.commit()
+            return int(cursor.lastrowid)
+
+        if (
+            float(existing["start"]),
+            float(existing["finish"]),
+            int(existing["size_bytes"]),
+        ) != (start, end, size_bytes):
+            self._connection.execute(
+                'UPDATE segments SET stream = ?, start = ?, "end" = ?, size_bytes = ? '
+                "WHERE id = ?",
+                (stream, start, end, size_bytes, int(existing["id"])),
+            )
+            logger.warning(
+                "%s is no longer the recording the catalogue had under that "
+                "name, so the row has been corrected to what is on disk now",
+                path,
+            )
+            if commit:
+                self._connection.commit()
         return int(existing["id"])
 
     def commit(self) -> None:

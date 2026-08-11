@@ -70,6 +70,19 @@ def test_parse_segment_start_returns_none_for_junk():
     assert parse_segment_start("recording.mp4") is None
 
 
+def test_parse_segment_start_reads_a_name_carrying_a_run_number():
+    """Segment names carry which ffmpeg run wrote them, so that two runs can
+    never be handed the same filename by a clock that moved between them. The
+    time in the name is unchanged, and archives written before this still read."""
+    plain = parse_segment_start("2026-08-07_14-35-00.mp4")
+    assert parse_segment_start("2026-08-07_14-35-00_7.mp4") == plain
+    assert parse_segment_start("2026-08-07_14-35-00_142.mp4") == plain
+
+
+def test_a_run_number_is_not_confused_with_the_time():
+    assert parse_segment_start("2026-08-07_14-35-00_notanumber.mp4") is None
+
+
 def test_parse_segment_start_is_utc_epoch(tmp_path):
     # Segment filenames are written by ffmpeg under TZ=UTC, so they must be read back
     # as UTC. Reading them as local time would shift every timestamp by the UTC offset

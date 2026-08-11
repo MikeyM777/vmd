@@ -23,7 +23,7 @@ from vmd.storage.discovery import (
 )
 from vmd.storage.index import SegmentIndex
 from vmd.storage.recorder import SegmentRecorder
-from vmd.storage.retention import apply_plan, plan_retention
+from vmd.storage.retention import ClockWatch, apply_plan, plan_retention
 from vmd.supervisor import Managed, Supervisor
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,11 @@ _NO_PENDING = object()
 # The detector's database, beside this service's own. Opened only if it is
 # already there; see _event_store.
 EVENTS_FILENAME = "events.db"
+
+# The last time retention believed, beside the catalogue it belongs to. See
+# ClockWatch: this machine is offline, its date is typed in by a person, and
+# nothing else on it would notice that the year had changed.
+CLOCK_FILENAME = "retention-clock.json"
 
 # ---------------------------------------------------------------- the claim
 #
@@ -498,6 +503,12 @@ class RecordingService:
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
+        self._clock = ClockWatch(self.root / CLOCK_FILENAME)
+        self._clock_verdict = None
+        self._last_clock_look = 0.0
+        self._retention_declined: str | None = None
+        self._declined_said = 0
+        self._clock_jumps = 0
         # Opened on demand rather than here; see _event_store.
         self.events_path = self.root / EVENTS_FILENAME
         self._events = None
@@ -809,6 +820,10 @@ class RecordingService:
             self._started_at.setdefault(recorder.stream, now)
         self._stage("supervisor", self.supervisor.tick)
         self._stage("ffmpeg's own words", self._repeat_what_ffmpeg_said)
+        # Before anything reads a timestamp or writes a row: what the clock has
+        # done changes what indexing has to do, and what retention is allowed to
+        # do. See ClockWatch.
+        self._stage("the clock", self._watch_the_clock, now)
         self._stage("empty segments", self._notice_empty_segments)
         self._stage("indexing", self._index_new_segments, now)
         self._stage("stall check", self._restart_stalled, now)
@@ -984,6 +999,10 @@ class RecordingService:
             # while go2rtc is holding it as well. Empty is the healthy answer.
             "link_doubled": self.link_doubled(),
             "source_switches": self._source_switches,
+            # Why retention did not delete everything it was asked to, if it
+            # did not. None is the ordinary answer.
+            "retention_declined": self._retention_declined,
+            "clock_jumps": self._clock_jumps,
         }
 
     def _index_new_segments(self, now: float) -> None:
@@ -1156,6 +1175,14 @@ class RecordingService:
         self.root = Path(new_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
+        # The clock witness belongs to the archive it protects, so a folder that
+        # has never been managed from here starts its own record rather than
+        # inheriting the last one's.
+        self._clock = ClockWatch(self.root / CLOCK_FILENAME)
+        self._clock_verdict = None
+        self._last_clock_look = 0.0
+        self._retention_declined = None
+        self._declined_said = 0
         self.events_path = self.root / EVENTS_FILENAME
         self._events = None
         self._seen = {s.path for s in self.index.all()}
@@ -1419,8 +1446,24 @@ class RecordingService:
             retention_days=storage.retention_days,
             warn_at_fraction=storage.warn_at_fraction,
             bytes_per_second=self._write_rate(segments),
+            clock_reason=self._clock_verdict.reason if self._clock_verdict else "",
         )
-        self._last_warning = plan.warning
+        # Declining to delete has to be as visible as deleting would have been.
+        # Silence here reads exactly like a rule that ran and found nothing to
+        # do, and this one runs every minute for months, so it is said the first
+        # few times and rarely after that - the Logs tab holds five hundred
+        # lines and a sentence repeated every minute destroys it.
+        self._retention_declined = plan.declined
+        if plan.declined:
+            self._declined_said += 1
+            if self._declined_said <= 3 or self._declined_said % 100 == 0:
+                logger.error("%s", plan.declined)
+        else:
+            self._declined_said = 0
+        # `warning` is the operator-facing line, and there is no point having
+        # one channel say the disk is filling while another, unread, says the
+        # reason nothing is being reclaimed from it.
+        self._last_warning = plan.warning or plan.declined
         if plan.warning:
             logger.warning(plan.warning)
         # The events go with the footage they point at, or the movement list
@@ -1440,6 +1483,62 @@ class RecordingService:
                 "%d segment(s) could not be deleted; storage budget cannot be met",
                 self._stuck_deletions,
             )
+
+    def _watch_the_clock(self, now: float) -> None:
+        """Hold the wall clock against one that cannot be set by hand.
+
+        Run before indexing and before retention, because both of them act
+        irreversibly on timestamps: retention deletes footage by age, and the
+        index records what a file is from the moment it was written. On the same
+        cadence as retention, and not the five-second one, because it writes a
+        witness to disk - and because two passes agreeing about the time has to
+        mean a couple of minutes, not ten seconds, if it is to outlast somebody
+        mistyping a date and correcting it.
+        """
+        elapsed = now - self._last_clock_look
+        if self._last_clock_look and 0 <= elapsed < self.retention_interval:
+            return
+        self._last_clock_look = now
+        verdict = self._clock.observe(now)
+        self._clock_verdict = verdict
+        # Enough to have put ffmpeg back over names it has already used. A
+        # smaller step cannot: consecutive names are a segment apart.
+        if verdict.jumped < -max(60.0, float(self.settings.storage.segment_seconds)):
+            self._recheck_what_is_on_disk(verdict)
+
+    def _recheck_what_is_on_disk(self, verdict) -> None:
+        """After the clock moved backwards, stop believing the catalogue.
+
+        Two runs can no longer be given the same filename - each carries its own
+        run number; see `split_run`. Within one run they still can: ffmpeg
+        builds each name as it opens the file, from a clock that has just been
+        set back, and it truncates whatever is already there. Nothing would
+        notice, because a path already indexed is skipped by every later pass by
+        design - that is what makes the ordinary pass cheap.
+
+        So the memo of what has been indexed is dropped. Every closed file in
+        every directory is offered to the index again, once, and `SegmentIndex.add`
+        corrects any row that no longer describes its file. It is a directory
+        walk per stream, which is why it is done when the clock has moved rather
+        than on the five-second pass.
+
+        The count of empty segments goes with it. `_notice_empty_segments` sorts
+        by modification time and exempts only the newest file; a clock that
+        moved backwards can put the file ffmpeg is holding somewhere other than
+        last, where its zero size reads as a broken segment - one permanent
+        false error, and an unhealthy status for the life of the process.
+        """
+        self._clock_jumps += 1
+        logger.error(
+            "the clock has gone backwards by %.1f days. Recordings written "
+            "either side of that carry the same names, so what is on disk is "
+            "being checked against the catalogue again, and anything that no "
+            "longer matches is corrected",
+            -verdict.jumped / 86400.0,
+        )
+        self._seen = set()
+        self._empty_seen = set()
+        self._empty_segments = 0
 
     @staticmethod
     def _write_rate(segments) -> float:

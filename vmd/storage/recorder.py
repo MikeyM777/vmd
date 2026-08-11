@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from vmd.storage.discovery import SEGMENT_FORMAT
+from vmd.storage.discovery import SEGMENT_FORMAT, highest_run
 
 RTSP_SCHEMES = ("rtsp://", "rtsps://")
 
@@ -135,6 +135,32 @@ class SegmentRecorder:
         # How much of ffmpeg's stderr has already been passed on; see
         # `new_log_lines`.
         self._log_offset = 0
+        # Which ffmpeg run this is, as far as this directory is concerned. None
+        # until the directory has been read once; see `_claim_a_run`.
+        self._run: int | None = None
+
+    def _claim_a_run(self) -> int:
+        """A number no run that wrote into this directory has used before.
+
+        ffmpeg names segments from the wall clock, and its segment muxer opens
+        whatever name that produces for writing - which truncates a file that is
+        already there. On this machine the date is typed in by a person and
+        there is no NTP to contradict them, so a clock set back an hour makes
+        ffmpeg reopen an hour of names it has already used and overwrite an hour
+        of footage without a word. Giving each run its own space of names makes
+        that impossible between runs.
+
+        Seeded from the directory the first time and counted in memory
+        afterwards: the seed has to survive this process being restarted, and
+        re-reading a directory of a thousand files on every ffmpeg restart is
+        the sort of cost this service cannot afford on the pass that must not
+        stall.
+        """
+        if self._run is None:
+            self._run = highest_run(self.output_dir) + 1
+        else:
+            self._run += 1
+        return self._run
 
     def build_command(self) -> list[str]:
         command = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -179,7 +205,10 @@ class SegmentRecorder:
             "-segment_format", "mp4",
             "-reset_timestamps", "1",
             "-strftime", "1",
-            str(self.output_dir / f"{SEGMENT_FORMAT}.mp4"),
+            # The run number goes after the time, so that the time is still the
+            # first thing in the name and sorting a directory still sorts it by
+            # when it was recorded. See `split_run`.
+            str(self.output_dir / f"{SEGMENT_FORMAT}_{self._run or 1}.mp4"),
         ]
         return command
 
@@ -260,6 +289,7 @@ class SegmentRecorder:
             return
         self._said_held_back = False
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._claim_a_run()
         self._seen_running = False
         self._started_at = self._clock()
         self._process = self._spawn(self.build_command(), self.log_path)

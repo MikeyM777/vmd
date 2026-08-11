@@ -1682,3 +1682,92 @@ def test_status_says_where_each_stream_is_being_read_from(tmp_path, monkeypatch)
     assert status["streams"][0]["local_source"] is True
     assert status["link_doubled"] == []
     service.stop()
+
+
+# --------------------------------------------------------------------------
+# The clock, which is typed in by a person on a machine with no NTP.
+#
+# Deleting footage is irreversible and this system exists to keep it, so every
+# judgement here is biased towards keeping too much rather than too little.
+# --------------------------------------------------------------------------
+
+
+def _archive(tmp_path, names, size=2000):
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    written = []
+    for offset, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * size)
+        os.utime(path, (100.0 + offset, 100.0 + offset))
+        written.append(path)
+    return directory, written
+
+
+THREE_SEGMENTS = [
+    "2026-08-07_10-00-00.mp4",
+    "2026-08-07_10-05-00.mp4",
+    "2026-08-07_10-10-00.mp4",
+]
+YEAR = 365 * 86400.0
+
+
+def test_a_date_set_a_year_forward_does_not_delete_the_archive(tmp_path, caplog):
+    """The operator asked for thirty days and then typed the year wrong. There
+    is no undo, no confirmation, and no NTP to contradict them."""
+    settings = build_settings(tmp_path, retention_days=30)
+    settings.storage.budget_enabled = False
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    base = _segment_epoch(THREE_SEGMENTS[0])
+    _directory, files = _archive(tmp_path, THREE_SEGMENTS)
+    for step in range(4):  # a few honest passes, so the clock comes to be believed
+        service.run_once(now=base + 10 + step)
+    assert service.index.all(), "nothing was indexed, so this would prove nothing"
+
+    with caplog.at_level(logging.WARNING):
+        service.run_once(now=base + 10 + YEAR)
+
+    assert [p for p in files if p.exists()] == files, (
+        "a mistyped year deleted every recording on the machine"
+    )
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "clock" in said, said
+    assert service.status()["retention_declined"], "nothing said retention had declined"
+    service.stop()
+
+
+def test_the_disk_budget_is_reclaimed_whatever_the_clock_says(tmp_path):
+    """The budget rule is separate from the age rule and must keep working: a
+    full disk still has to be reclaimed, and keeping everything until the disk
+    fills is its own failure."""
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3, retention_days=30)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    base = _segment_epoch(THREE_SEGMENTS[0])
+    _directory, files = _archive(tmp_path, THREE_SEGMENTS)
+    service.run_once(now=base + 10)
+    service.run_once(now=base + 10 - 400 * 86400.0)  # the clock has gone mad
+    assert not files[0].exists(), "the budget was not enforced"
+    service.stop()
+
+
+def test_a_clock_that_moved_makes_the_index_check_what_is_really_on_disk(tmp_path):
+    """A backwards jump is how ffmpeg comes to reopen a name it already used.
+    Whatever it truncated, the catalogue must stop describing the old contents."""
+    settings = build_settings(tmp_path)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    base = _segment_epoch(THREE_SEGMENTS[0])
+    _directory, files = _archive(tmp_path, THREE_SEGMENTS[:2])
+    service.run_once(now=base + 10)
+    indexed = {os.path.basename(s.path): s for s in service.index.all()}
+    assert indexed[THREE_SEGMENTS[0]].size_bytes == 2000
+
+    # ffmpeg reopened the name and wrote something else into it.
+    files[0].write_bytes(b"y" * 99)
+    os.utime(files[0], (100.0, 100.0))
+    service.run_once(now=base + 10 - 400 * 86400.0)
+
+    corrected = {os.path.basename(s.path): s for s in service.index.all()}
+    assert corrected[THREE_SEGMENTS[0]].size_bytes == 99, (
+        "the index still describes contents the file no longer has"
+    )
+    service.stop()

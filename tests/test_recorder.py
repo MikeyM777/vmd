@@ -66,7 +66,55 @@ def test_command_sets_segment_duration_and_naming(tmp_path):
     command = recorder.build_command()
     assert command[command.index("-segment_time") + 1] == "300"
     assert command[command.index("-f") + 1] == "segment"
-    assert command[-1].endswith("%Y-%m-%d_%H-%M-%S.mp4")
+    assert "%Y-%m-%d_%H-%M-%S" in command[-1]
+    assert command[-1].endswith(".mp4")
+
+
+# ---------------------------------------------------- one name, one recording
+#
+# ffmpeg names its output with -strftime, from the wall clock, and the segment
+# muxer opens whatever name comes out for writing - which truncates a file that
+# is already there. A clock set back an hour on a machine with no NTP therefore
+# produces an hour of names that already exist, and an hour of footage is
+# overwritten with no error anywhere. The index keeps the old row, so it then
+# points at a file whose contents are from a different time.
+
+
+def _wrote(tmp_path, pattern, when="2026-08-07_10-00-00"):
+    """The file the run whose output pattern is `pattern` would have written."""
+    from pathlib import Path
+
+    name = Path(pattern).name.replace("%Y-%m-%d_%H-%M-%S", when)
+    path = tmp_path / "thermal" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 16)
+    return path
+
+
+def test_a_second_run_cannot_write_over_the_first_run_s_segments(tmp_path):
+    """Two runs never share a filename, whatever the clock does between them."""
+    recorder, spawned = build(tmp_path)
+    recorder.start()
+    first = spawned[-1][-1]
+    _wrote(tmp_path, first)
+
+    recorder.stop()
+    recorder.start()
+    assert spawned[-1][-1] != first
+
+
+def test_a_restarted_process_does_not_reuse_a_name_already_on_disk(tmp_path):
+    """The recorder is restarted by the logon task, by the console and by
+    itself. A run number kept only in memory would start again at the same
+    value every time and collide with what the last process wrote."""
+    recorder, spawned = build(tmp_path)
+    recorder.start()
+    pattern = spawned[-1][-1]
+    _wrote(tmp_path, pattern)
+
+    restarted, restarted_spawned = build(tmp_path)
+    restarted.start()
+    assert restarted_spawned[-1][-1] != pattern
 
 
 def test_start_creates_output_directory(tmp_path):
