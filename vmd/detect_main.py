@@ -32,14 +32,20 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from vmd.detect.config import classifier_for, config_from_settings, regions_of
+# Deliberately light. Importing this module must cost sqlite3 and pydantic and
+# nothing else: the console reads two facts out of it - where the status file
+# is and which streams are detected - and the console has to open on a laptop
+# where the vision stack is missing or will not load. Everything that needs
+# numpy or cv2 - the config, the pipeline, the runner - is imported inside the
+# one class that builds detectors, which is the only thing here that decodes.
 from vmd.detect.events import EventStore
-from vmd.detect.pipeline import DetectionPipeline
-from vmd.detect.runner import StreamDetector, open_capture_cv2
 from vmd.settings import Settings, SettingsError, load_settings
 from vmd.streaming.endpoint import is_live, local_source, read_endpoint
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only; `from __future__` defers them
+    from vmd.detect.runner import StreamDetector
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +56,22 @@ DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 EVENTS_FILENAME = "events.db"
 
 # Where the per-stream state is published for the console, beside events.db.
-# `vmd.desktop.services` repeats this name rather than importing it: importing
-# this module would pull cv2 and numpy into the window's process.
+# Importable: this module no longer drags the detector's stack behind it, so
+# the console can read this name from here rather than repeating the string.
 STATUS_FILENAME = "detection.json"
+
+# How often `streaming.json`, and the port it names, are asked about again.
+#
+# It used to be read exactly once, in __init__. go2rtc is started on a free
+# port, so a restart can bring it back somewhere else - and a detector that had
+# fallen back to the camera would then go on offering to return to an address
+# nothing has answered on since, for ever, while a perfectly good server ran on
+# the next port up. The recorder learned the same thing at the same time and
+# uses the same interval; see SOURCE_CHECK_SECONDS in vmd\record_main.py.
+#
+# Fifteen seconds. The check is a small file read and one connection to
+# 127.0.0.1, and the thing it is racing is an operator opening the console.
+SOURCE_CHECK_SECONDS = 15.0
 
 # How long an open stream may go without delivering a frame before it is called
 # out. The camera can legitimately be slow - a re-encoded thermal at a few
@@ -130,13 +149,22 @@ class DetectionService:
         self,
         settings: Settings,
         endpoint_path: str | Path | None = None,
-        open_capture: Callable = open_capture_cv2,
+        # None rather than the real thing, so that naming this class does not
+        # import OpenCV before anybody has decided to build a detector. The
+        # defaults are resolved below, where the decoding actually starts.
+        open_capture: Callable | None = None,
         pipeline_factory: Callable | None = None,
         store_factory: Callable[[Path], EventStore] = EventStore,
     ) -> None:
+        from vmd.detect.pipeline import DetectionPipeline
+        from vmd.detect.runner import open_capture_cv2
+
         self.settings = settings
-        endpoint = read_endpoint(endpoint_path or DEFAULT_ENDPOINT_PATH)
+        # Kept, not just read: the answer in it expires. See _recheck_sources.
+        self.endpoint_path = Path(endpoint_path or DEFAULT_ENDPOINT_PATH)
+        endpoint = read_endpoint(self.endpoint_path)
         self._endpoint = endpoint if endpoint and is_live(endpoint) else None
+        self._last_source_check: float | None = None
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         # Beside segments.db, because the two are reclaimed together: an event
@@ -151,11 +179,12 @@ class DetectionService:
         self._stop = threading.Event()
         self.threads: list[threading.Thread] = []
 
+        self.streams = detected_streams(settings)
         self.detectors = [
-            self._detector_for(stream, open_capture) for stream in detected_streams(settings)
+            self._detector_for(stream, open_capture or open_capture_cv2) for stream in self.streams
         ]
 
-    def _detector_for(self, stream, open_capture) -> StreamDetector:
+    def _detector_for(self, stream, open_capture):
         """One stream's detector, built around **one** config object.
 
         The single object matters. The ignore mask cannot be built until a
@@ -164,7 +193,14 @@ class DetectionService:
         it. Building the config twice, once for each, gave the runner one
         object to paint and the pipeline another to read, and the operator's
         answer to a specific swaying tree silently did nothing at all.
+
+        The imports are here rather than at the top of the file for the reason
+        given there: this is where the vision stack starts being needed, and
+        the console imports this module for two constants.
         """
+        from vmd.detect.config import classifier_for, config_from_settings, regions_of
+        from vmd.detect.runner import StreamDetector
+
         config = config_from_settings(stream, self.settings.detection)
         source = self._source_for(stream)
         return StreamDetector(
@@ -188,6 +224,10 @@ class DetectionService:
             # off this stream permanently, and the status file blamed the
             # camera.
             fallback_url=stream.url if source != stream.url else "",
+            # Which of the two `source` is, in the operator's words. The runner
+            # cannot tell from an address, and the console has to be able to
+            # say which streams are crossing the radio link twice.
+            primary_source="local" if source != stream.url else "camera",
         )
 
     # -- where the frames come from ---------------------------------------
@@ -205,6 +245,50 @@ class DetectionService:
             return local
         logger.info("detecting on %s directly from the camera", stream.name)
         return stream.url
+
+    def _recheck_sources(self, now: float | None = None) -> None:
+        """Ask `streaming.json` again where the local streaming server is.
+
+        It was read exactly once, in `__init__`, and that answer expires. The
+        console starts go2rtc on a free port, so a restart can bring it back
+        somewhere else - and a detector that had fallen back to the camera
+        would then keep offering to come back to an address nothing has
+        answered on since, for ever, while a perfectly good server ran on the
+        next port up. That is the same fault as the one this whole file is
+        about, one level down, and it is what would have made the fix look like
+        it worked and quietly not.
+
+        The recorder does exactly this and says why at
+        `SOURCE_CHECK_SECONDS` in vmd\\record_main.py. The two processes are
+        deliberately the same shape here: how often is asked, what happens next
+        is not, because moving a recorder means cutting the footage and moving
+        a detector means a probe and a swap.
+
+        Nothing here touches a capture. Each detector is handed a string and
+        acts on it itself, on its own thread.
+        """
+        now = time.monotonic() if now is None else now
+        if self._last_source_check is not None and 0 <= now - self._last_source_check < (
+            SOURCE_CHECK_SECONDS
+        ):
+            return
+        self._last_source_check = now
+        try:
+            endpoint = read_endpoint(self.endpoint_path)
+            live = bool(endpoint) and is_live(endpoint)
+        except Exception:  # noqa: BLE001 - housekeeping never ends the watch
+            logger.exception("could not re-read %s; continuing", self.endpoint_path)
+            return
+        if not live:
+            # No streaming server to be found. Detectors on the camera stay
+            # there and keep asking; the address they ask about is the last one
+            # that was real, which is the best guess available.
+            return
+        self._endpoint = endpoint
+        for stream, detector in zip(self.streams, self.detectors):
+            local = local_source(endpoint, stream.name)
+            if local:
+                detector.point_at_local(local)
 
     # -- running ------------------------------------------------------------
 
@@ -257,6 +341,10 @@ class DetectionService:
         self.write_status(interval)
         try:
             while not self._stop.wait(interval):
+                # Asked here rather than on a detector's thread: it reads a
+                # file and opens a socket, and the detector threads are for
+                # decoding. Throttled to its own interval inside.
+                self._recheck_sources()
                 self._log_state_changes()
                 self.write_status(interval)
         except KeyboardInterrupt:
@@ -307,6 +395,22 @@ class DetectionService:
             # anything. See NEVER_NAMED_AFTER: unlike everything else here this
             # is a note about an install, not about the perimeter.
             "never_named": sum(1 for s in streams if _never_named(s)),
+            # Streams being read straight from the camera rather than through
+            # the local streaming server. Each one is a second full-rate copy
+            # of that stream on a >15 km, ~5 Mb/s radio link that barely
+            # carries one - which the console spec calls "the difference
+            # between recording and losing the live picture as well". Published
+            # because the console is another process: a detector quietly
+            # costing double the link is exactly the invisible fault this
+            # project keeps repeating, and it used to be one warning line in a
+            # ring of five hundred.
+            #
+            # A count, not a flag, for the same reason as `detecting`: one
+            # stream on the camera while the other is local is a real state.
+            # It does not say the fallback is wrong - a stream with no local
+            # server is read from the camera on purpose - only that the link is
+            # paying for it.
+            "on_camera": sum(1 for s in streams if s.get("source") == "camera"),
             "configured": len(streams),
             "events": sum(s["events"] for s in streams),
             # Movement that was seen and confirmed but never reached the
@@ -373,7 +477,20 @@ class DetectionService:
             slow = _too_slow(state)
             blind = bool(state.get("blind"))
             frozen = _frozen(state)
-            key = (state["opened"], state["reason"], stalled, blind, frozen, slow)
+            # The source is part of what has changed, so that a stream which
+            # moved onto the camera - or came back off it - produces a line
+            # even when everything else about it reads the same. That change
+            # is the one that costs the radio link a second copy of the
+            # stream, and it used to be sayable only from the runner's own log.
+            key = (
+                state["opened"],
+                state["reason"],
+                stalled,
+                blind,
+                frozen,
+                slow,
+                state.get("source"),
+            )
             if getattr(detector, "_last_logged", None) == key:
                 continue
             detector._last_logged = key
@@ -420,7 +537,7 @@ class DetectionService:
                     state["fps"],
                 )
             else:
-                logger.info("%s: detecting", state["stream"])
+                logger.info("%s: detecting, %s", state["stream"], _where_from(state))
 
     def _say_if_never_named(self, detector, state: dict) -> None:
         """Once per stream, and separate from its health.
@@ -442,6 +559,21 @@ class DetectionService:
             state["stream"],
             state.get("named_asked", 0),
         )
+
+
+def _where_from(state: dict) -> str:
+    """Which way to the picture this stream is being read through, in words.
+
+    Said on every line that reports a healthy stream, because "detecting" was
+    true both of a stream costing the radio link nothing and of one costing it
+    a second full-rate copy, and the operator could not tell them apart.
+    """
+    if state.get("source") == "camera":
+        return (
+            "straight from the camera - that is a second copy of this stream "
+            "across the radio link"
+        )
+    return "from the local streaming server"
 
 
 def _stalled(state: dict) -> bool:

@@ -75,12 +75,58 @@ BLANK_SPREAD = 2
 # up for an instant; ten in a row is a stream with nothing in it.
 BLANK_FRAMES_BEFORE_BLIND = 10
 
-# How many opens of one address must fail in a row before the other address is
-# tried. Three, because one failure is a streaming server that has not finished
-# coming up and is not a wrong address - and going to the camera directly costs
-# the radio link a second copy of the stream, which is the whole thing the local
-# server exists to avoid.
+# How many attempts on one address must produce no frame before the other
+# address is tried. Three, because one failure is a streaming server that has
+# not finished coming up and is not a wrong address - and going to the camera
+# directly costs the radio link a second copy of the stream, which is the whole
+# thing the local server exists to avoid.
+#
+# An attempt that produced no frame is either an open that failed or an open
+# that succeeded and then delivered nothing until the read-failure rule dropped
+# it. Both are the same fact about the address - there is no picture down it -
+# and counting only the first meant a server that accepted every connection and
+# served nothing was never given up on.
 OPEN_FAILURES_BEFORE_FALLBACK = 3
+
+# How long the detector reads the camera directly before asking whether the
+# local streaming server is back.
+#
+# The fallback used to be one-way: it rotated on failure and never on success,
+# so a single go2rtc restart - which the console performs on every material
+# settings change - left detection pulling the camera across a >15 km, ~5 Mb/s
+# radio link for the life of the process, beside go2rtc's own pull. The link
+# barely carries one copy. Losing the live picture is the failure this whole
+# system exists not to have.
+#
+# Two minutes: long enough that a go2rtc which is still coming up is not handed
+# detection and asked to drop it again, short enough that the doubled link cost
+# is measured in minutes rather than months.
+DEFAULT_RETURN_AFTER = 120.0
+
+# The longest that wait may grow to when going back keeps not working. Ten
+# minutes, which is far shorter than a backoff would normally climb to: every
+# minute spent on the camera is a minute the link is carrying the stream twice,
+# so the cost of asking too often is one refused connection on 127.0.0.1 and
+# the cost of asking too rarely is the thing being fixed.
+DEFAULT_MAX_RETURN_DELAY = 600.0
+
+# How long a return to the local server has to last, delivering frames, before
+# it counts as having worked - the settled period, the same shape as the
+# supervisor's `stable_after` and the live panes' "forgiven after five good
+# readings". A return that ended sooner than this was not a recovery, it was a
+# flap, and the next attempt waits twice as long.
+#
+# Five minutes, because giving up on an address is itself slow: the read-failure
+# rule wants forty silent reads and the reopen ladder climbs to half a minute,
+# so a couple of minutes on an address proves nothing either way.
+DEFAULT_SETTLED_AFTER = 300.0
+
+# How many failed attempts to go back are spelled out, and how often they are
+# mentioned after that. This process runs for months, and at one attempt every
+# two minutes an unthrottled line would own the 500-line ring the operator
+# reads within a day. The same shape as the console's own restart throttle.
+RETURN_TRIES_SPELLED_OUT = 1
+RETURN_TRIES_BETWEEN_REMINDERS = 30
 
 
 # A password inside a URL. The same expression as `vmd.desktop.logs`, copied
@@ -162,13 +208,57 @@ class StreamDetector:
         # was never tried again. Detection off, permanently, with a reason in
         # the status file that names the wrong thing.
         fallback_url: str = "",
+        # What `url` is, in the operator's words: the local streaming server,
+        # or the camera itself. Only needed when there is no `fallback_url` to
+        # name the camera - a stream read straight from the camera because no
+        # streaming server was found is on the camera from its first frame, and
+        # costs the radio link exactly what one that fell back to it costs. The
+        # console has to be able to say so: a detector silently costing double
+        # the link is the invisible fault this project keeps repeating.
+        primary_source: str = "local",
+        # When the camera is being pulled directly, how long before the local
+        # server is asked whether it is back, how far that wait may grow when
+        # going back keeps not working, and how long a return has to last
+        # before it counts as one. See the constants.
+        return_after: float = DEFAULT_RETURN_AFTER,
+        max_return_delay: float = DEFAULT_MAX_RETURN_DELAY,
+        settled_after: float = DEFAULT_SETTLED_AFTER,
     ) -> None:
         self.url = url
-        # In order, best first. Rotated through only after an address has
-        # really failed, because pulling the camera directly puts a second copy
-        # of the stream on the radio link.
-        self.sources = [url] + ([fallback_url] if fallback_url and fallback_url != url else [])
+        # The address to prefer - the local streaming server whenever there is
+        # one - and the camera's own address. Both are kept apart from
+        # `sources`, which is the rotation order and moves: "which way to the
+        # picture is this" has to survive the rotation, or the detector cannot
+        # tell going back from going away, which is exactly what it could not
+        # tell before. `sources` is still tried best first, and still rotated
+        # only after an address has really failed, because pulling the camera
+        # directly puts a second copy of the stream on the radio link.
+        self.preferred_url = url
+        self.camera_url = fallback_url or (url if primary_source == "camera" else "")
+        self._order_sources(url)
         self._failed_opens = 0
+        # The way back. `_return_at` is meaningful only while the fallback is
+        # in use; `_local_since` is when the preferred address was last taken
+        # up, and is None while it is not the one in use.
+        self.initial_return_delay = return_after
+        self.max_return_delay = max_return_delay
+        self.settled_after = settled_after
+        self._return_delay = return_after
+        self._return_at = 0.0
+        self._local_since: float | None = None
+        self._frames_when_taken = 0
+        self._return_tries = 0
+        # A new address for the local streaming server, put here by another
+        # thread and acted on by this detector's own. Never a capture and never
+        # a release: a `VideoCapture` released while the thread that owns it is
+        # inside `read()` is a crash in C, not an exception, so nothing outside
+        # this loop is allowed to touch one. The house rule for coming back the
+        # other way, and this is it: store a value, let the loop read it.
+        self._moved_to: str | None = None
+        # How many times the picture has been taken from somewhere else. It is
+        # published, because the number that says nothing has changed is the
+        # number that says the link cost has not changed either.
+        self.source_changes = 0
         self.stream = stream_name
         self.config = config or DetectionConfig()
         self.store = store
@@ -262,6 +352,22 @@ class StreamDetector:
         return self._stop.is_set()
 
     @property
+    def on_fallback(self) -> bool:
+        """True while the picture is coming from anywhere but the first choice."""
+        return self.url != self.preferred_url
+
+    @property
+    def source(self) -> str:
+        """Which way to the picture is in use: "local" or "camera".
+
+        Answered from the camera's own address rather than from which way this
+        detector last rotated, because a stream that never had a local server
+        is on the camera from its first frame and costs the link exactly as
+        much as one that fell back to it.
+        """
+        return "camera" if self.camera_url and self.url == self.camera_url else "local"
+
+    @property
     def blind(self) -> bool:
         """True when frames are arriving and there is no picture in them."""
         return self.blank_frames >= BLANK_FRAMES_BEFORE_BLIND
@@ -300,6 +406,18 @@ class StreamDetector:
         return {
             "stream": self.stream,
             "opened": self.opened,
+            # Which way to the picture this stream is being read through, and
+            # which address that is. Published because the console is another
+            # process and cannot ask - and because a detector that has fallen
+            # back to the camera is putting a second full-rate copy of the
+            # stream on a link that barely carries one, which used to be
+            # visible as a single warning line in a ring of five hundred.
+            #
+            # The address has its password taken out of it: this is read off a
+            # screen on a hill, and photographed.
+            "source": self.source,
+            "source_url": without_credentials(self.url),
+            "source_changes": self.source_changes,
             "frames": self.frames,
             "events": self.events,
             "unrecorded": self.unrecorded,
@@ -367,6 +485,11 @@ class StreamDetector:
 
     def step(self) -> bool:
         """One frame. Returns True when a frame was actually read and fed."""
+        # Both asked before the read. The first takes up a local streaming
+        # server that has moved; the second is the one thing in this loop whose
+        # job is to end a direct pull of the camera.
+        self._take_up_a_moved_local_server()
+        self._go_back_if_the_local_server_is_back()
         if self._capture is None and not self._try_open():
             return False
 
@@ -381,6 +504,11 @@ class StreamDetector:
             return False
 
         self._read_failures = 0
+        # A frame arrived, so this address works, whatever it did before it.
+        # This and not a successful open is what clears the count that decides
+        # to try the other address: an open that succeeds and then delivers
+        # nothing is the failure that count exists to catch.
+        self._failed_opens = 0
         # Cleared before the frame is looked at, not after: a frame that
         # arrives is news the moment it arrives, and `_inspect_picture` puts
         # its own sentence back if there is nothing in that frame.
@@ -435,7 +563,10 @@ class StreamDetector:
             self._try_the_other_address()
             return False
         self._capture = capture
-        self._failed_opens = 0
+        # `_failed_opens` is deliberately not cleared here. Opening is not the
+        # same as delivering, and clearing it on an open meant a server that
+        # accepted every connection and served no frames was reopened for ever
+        # and the other address was never tried.
         self._read_failures = 0
         # The silence is timed from here, not from the first frame. A capture
         # can wedge on its first read as easily as on its thousandth, and "no
@@ -445,6 +576,20 @@ class StreamDetector:
         self.reason = ""
         logger.info("%s: reading %s", self.stream, without_credentials(self.url))
         return True
+
+    def _order_sources(self, first: str) -> None:
+        """The addresses to try, `first` first, then whatever else is known.
+
+        Rebuilt rather than edited, because there are only ever two of them and
+        both can change underneath this object: the local streaming server
+        moves when go2rtc is restarted on another port, and the camera's own
+        address is the one thing here that never does.
+        """
+        ordered = [first]
+        for other in (self.preferred_url, self.camera_url):
+            if other and other not in ordered:
+                ordered.append(other)
+        self.sources = ordered
 
     def _try_the_other_address(self) -> None:
         """After enough failures on one address, try the other one.
@@ -460,18 +605,256 @@ class StreamDetector:
         Rotated rather than switched, so a camera that is genuinely down does
         not leave the detector stuck on whichever address it happened to be
         trying when the camera came back.
+
+        This half - going away - was never the problem. It rotated on failure
+        and never on success, so the *first* time it fired, detection moved
+        onto its own crossing of the radio link and stayed there for the life
+        of the process. The other half is `_go_back_if_the_local_server_is_back`,
+        and this method's job here is to plan it: from the moment the camera is
+        being pulled directly, something has to be counting the minutes until
+        the local server is asked again.
         """
         if len(self.sources) < 2 or self._failed_opens < OPEN_FAILURES_BEFORE_FALLBACK:
             return
         self._failed_opens = 0
         self.sources.append(self.sources.pop(0))
         self.url = self.sources[0]
+        self.source_changes += 1
+        now = self._monotonic()
+        if self.on_fallback:
+            # Detection has just moved onto the camera, which is a second
+            # crossing of the radio link. From here the only thing that ends
+            # that is going back, so the way back is planned now.
+            self._plan_the_way_back(now)
+            logger.warning(
+                "%s: that address has produced no frames %d times running; reading %s "
+                "instead. The camera is now being pulled a second time across the "
+                "radio link; the local streaming server will be tried again in "
+                "%.0f seconds.",
+                self.stream,
+                OPEN_FAILURES_BEFORE_FALLBACK,
+                without_credentials(self.url),
+                self._return_delay,
+            )
+            return
+        self._took_the_local_server(now)
         logger.warning(
-            "%s: that address has not opened %d times running; trying %s instead",
+            "%s: that address has produced no frames %d times running; trying %s instead",
             self.stream,
             OPEN_FAILURES_BEFORE_FALLBACK,
             without_credentials(self.url),
         )
+
+    # -- the way back to the local server ----------------------------------
+
+    def point_at_local(self, url: str) -> None:
+        """The local streaming server is at `url` now. Safe to call from anywhere.
+
+        go2rtc is started on a free port, so a restart can bring it back
+        somewhere else - and this process reads that file once, at start-up.
+        Without this, "try the local server again" would for ever try an
+        address that nothing has answered on since the restart, and detection
+        would sit on the camera exactly as it did before, having asked politely
+        every two minutes.
+
+        Only a string is stored. What to do about it is decided by the thread
+        that owns the capture, on its next pass.
+        """
+        if url and url != self.preferred_url:
+            self._moved_to = url
+
+    def _take_up_a_moved_local_server(self) -> None:
+        """Act on `point_at_local`, on this detector's own thread.
+
+        If the camera is being pulled, nothing is dropped: the way back simply
+        now leads to the new address, on the schedule already planned. If the
+        old local address is the one being read, it is let go - whatever is
+        behind that port, it is not the streaming server this stream belongs
+        to any more - and the new one is opened on the next pass.
+        """
+        url = self._moved_to
+        if url is None:
+            return
+        self._moved_to = None
+        if url == self.preferred_url:
+            return
+        was_reading_it = self.url == self.preferred_url
+        self.preferred_url = url
+        self._order_sources(url if was_reading_it else self.url)
+        logger.info(
+            "%s: the local streaming server is now at %s",
+            self.stream,
+            without_credentials(url),
+        )
+        if not was_reading_it:
+            return
+        self.url = url
+        self._release()
+        self._retry_at = 0.0
+        self.reopen_delay = self.initial_reopen_delay
+        self._failed_opens = 0
+        self._read_failures = 0
+        self._took_the_local_server(self._monotonic())
+        self.reason = "the local streaming server moved; opening it at its new address"
+
+    def _go_back_if_the_local_server_is_back(self) -> None:
+        """While the camera is being pulled directly, ask whether it still has to be.
+
+        The fallback used to be one-way. It rotated on failure and never on
+        success, so the first go2rtc restart moved detection onto its own
+        crossing of the radio link and left it there for the life of the
+        process - one warning line, in a ring of five hundred, for a stream
+        that "barely carries one" copy.
+
+        Three rules, and each of them is what stops this being worse than the
+        bug:
+
+        * **Not before the settled period.** Rotating on every hiccup is worse
+          than staying put, so nothing is asked for the first `return_after`
+          seconds on the camera, and a return that did not last doubles that.
+        * **Nothing is let go until the replacement is proved.** The local
+          server is opened *and read from* while the camera is still open and
+          still being read. The camera is released afterwards, so the gap in
+          watching the perimeter is one pass of this loop rather than a reopen.
+        * **A failure changes nothing.** If the local server is genuinely gone,
+          the camera keeps being read. Detecting from the wrong place beats not
+          detecting.
+
+        Asked on this thread, and that is safe only because the address being
+        probed is on 127.0.0.1: nothing listening there is a refused connection
+        in microseconds, and a go2rtc that is up answers at once. Probing an
+        address across the radio link this way would hold up the read loop for
+        as long as that link took to say no, which is the thing this file is
+        most careful never to do.
+        """
+        if self._capture is None or not self.on_fallback:
+            return
+        now = self._monotonic()
+        if now < self._return_at:
+            return
+        capture = self._open_and_prove(self.preferred_url)
+        if capture is None:
+            self._return_tries += 1
+            self._return_at = now + self._return_delay
+            self._say_it_is_still_not_there()
+            return
+        self._take(capture, self.preferred_url, now)
+
+    def _open_and_prove(self, url: str):
+        """Open an address and get a frame out of it, or return None.
+
+        Opening is not enough. go2rtc answering on 127.0.0.1 proves something
+        is listening and nothing at all about whether it serves this stream -
+        which is the same mistake as deciding the source once from a port
+        answering, made again in the other direction. A probe that opened and
+        was believed would hand detection to a server with no picture behind
+        it and take it off a camera that was working.
+
+        The frame it reads is thrown away. It belongs to a stream that is about
+        to have its background model rebuilt anyway.
+        """
+        try:
+            capture = self._open_capture(url)
+        except Exception as exc:  # noqa: BLE001 - a server that is not there is not an error
+            logger.debug("%s: %s", self.stream, without_credentials(str(exc)))
+            return None
+        if capture is None:
+            return None
+        try:
+            ok, frame = capture.read()
+        except Exception:  # noqa: BLE001 - a capture that raises is a capture that failed
+            logger.debug("%s: the probe capture could not be read", self.stream, exc_info=True)
+            ok, frame = False, None
+        if ok and frame is not None:
+            return capture
+        self._let_go(capture)
+        return None
+
+    def _take(self, capture, url: str, now: float) -> None:
+        """Read from `capture` from now on, and let go of whatever was open.
+
+        In this order on purpose: the new capture is already open and has
+        already delivered a frame before the old one is released, so there is
+        no moment at which this detector has nothing to watch the perimeter
+        with. What it does cost is the background model, which is reset for the
+        same reason a reopen resets it - the picture may not be the size or the
+        latency the model was built from - and which is rebuilt in a few
+        frames.
+        """
+        self._release()
+        self._capture = capture
+        self.url = url
+        # Best first again, so a later failure rotates the way it always did.
+        self._order_sources(url)
+        self.source_changes += 1
+        self._read_failures = 0
+        self._failed_opens = 0
+        self._retry_at = 0.0
+        self.reopen_delay = self.initial_reopen_delay
+        self._last_frame_at = now
+        self.reason = ""
+        self._took_the_local_server(now)
+        try:
+            self.pipeline.reset()
+        except Exception:  # noqa: BLE001 - a model that would not reset is not a reason to stop
+            logger.exception("%s: could not reset the pipeline", self.stream)
+        logger.info(
+            "%s: the local streaming server is answering again; reading %s. The camera "
+            "is no longer being pulled a second time across the radio link.",
+            self.stream,
+            without_credentials(url),
+        )
+
+    def _took_the_local_server(self, now: float) -> None:
+        """Start the clock on whether this return sticks."""
+        self._local_since = now
+        self._frames_when_taken = self.frames
+        self._return_tries = 0
+
+    def _plan_the_way_back(self, now: float) -> None:
+        """Decide when the local server is next asked, and say why it is that long.
+
+        The settled period, the same rule the supervisor applies to a child
+        that keeps dying: a stay that was shorter than `settled_after`, or one
+        that delivered no frames at all, was not a recovery - it was a flap,
+        and flapping between two addresses costs a reset background model each
+        time. So it doubles, to a cap that is deliberately low because every
+        minute on the camera is a minute the link carries the stream twice.
+
+        A first fallback has nothing to judge and gets the plain wait.
+        """
+        if self._local_since is None:
+            self._return_delay = self.initial_return_delay
+        elif now - self._local_since < self.settled_after or self.frames <= self._frames_when_taken:
+            self._return_delay = min(self._return_delay * 2, self.max_return_delay)
+        else:
+            # It worked for long enough to count. Whatever has just happened is
+            # a fresh fault, not the last one continuing.
+            self._return_delay = self.initial_return_delay
+        self._local_since = None
+        self._return_tries = 0
+        self._return_at = now + self._return_delay
+
+    def _say_it_is_still_not_there(self) -> None:
+        """Report that the link is still carrying two copies, without saying it
+        every two minutes for months.
+
+        Spelled out the first time and then rarely: this process runs for
+        months, and the ring the operator reads holds five hundred lines. The
+        console reads the same fact out of `detection.json` on every heartbeat,
+        which is where an operator looking for it will find it.
+        """
+        if (
+            self._return_tries <= RETURN_TRIES_SPELLED_OUT
+            or self._return_tries % RETURN_TRIES_BETWEEN_REMINDERS == 0
+        ):
+            logger.warning(
+                "%s: the local streaming server is still not serving this stream "
+                "(%d attempts); still reading the camera directly, which costs the "
+                "radio link a second copy of it.",
+                self.stream,
+                self._return_tries,
+            )
 
     def _schedule_retry(self, now: float) -> None:
         self._retry_at = now + self.reopen_delay
@@ -491,6 +874,11 @@ class StreamDetector:
         self._release()
         self.reopens += 1
         self._read_failures = 0
+        # An address that opens and then delivers nothing has failed as
+        # completely as one that would not open, and until this was counted the
+        # other address was never tried against it.
+        self._failed_opens += 1
+        self._try_the_other_address()
         self._schedule_retry(self._monotonic())
         # The camera may have been moved while it was unreachable, so the
         # background model is about to be a model of a view that no longer
@@ -500,13 +888,21 @@ class StreamDetector:
         except Exception:  # noqa: BLE001
             logger.exception("%s: could not reset the pipeline", self.stream)
 
+    def _let_go(self, capture) -> None:
+        """Release one capture, whether or not it is the one being read.
+
+        Best-effort: a capture that will not release is a leaked handle in a
+        process that is going to go on watching the perimeter either way.
+        """
+        try:
+            capture.release()
+        except Exception:  # noqa: BLE001 - releasing is best-effort
+            logger.debug("%s: releasing the capture failed", self.stream, exc_info=True)
+
     def _release(self) -> None:
         if self._capture is None:
             return
-        try:
-            self._capture.release()
-        except Exception:  # noqa: BLE001 - releasing is best-effort
-            logger.debug("%s: releasing the capture failed", self.stream, exc_info=True)
+        self._let_go(self._capture)
         self._capture = None
         # There is nothing open to have gone silent, and a number left over
         # from the capture before this one would be read as one that had. The

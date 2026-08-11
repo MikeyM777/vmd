@@ -799,6 +799,166 @@ def test_a_stream_read_straight_from_the_camera_has_no_second_address(tmp_path):
         service.stop()
 
 
+def test_the_status_file_says_which_streams_are_crossing_the_link_twice(tmp_path):
+    """The console is another process and cannot ask.
+
+    A detector reading the camera directly puts a second full-rate copy of the
+    stream on a link that barely carries one, and until this was published the
+    only trace of it was a single warning line in a ring of five hundred.
+    """
+    service = service_for(tmp_path)  # no streaming.json, so it is the camera
+    try:
+        service.detectors[0].step()
+        status = service.status()
+        assert status["streams"][0]["source"] == "camera"
+        assert status["on_camera"] == 1
+        assert "10.0.0.2" in status["streams"][0]["source_url"]
+    finally:
+        service.stop()
+
+
+def test_a_stream_read_through_the_local_server_is_not_counted_against_the_link(tmp_path):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    endpoint = tmp_path / "streaming.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "rtsp_port": port,
+                "streams": {"thermal": f"rtsp://127.0.0.1:{port}/thermal"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        service = service_for(tmp_path, endpoint_path=endpoint)
+        try:
+            service.detectors[0].step()
+            status = service.status()
+            assert status["streams"][0]["source"] == "local"
+            assert status["on_camera"] == 0
+        finally:
+            service.stop()
+    finally:
+        listener.close()
+
+
+def test_a_streaming_server_that_came_back_on_another_port_is_found(tmp_path):
+    """`streaming.json` was read once, in __init__, and that answer expires.
+
+    go2rtc is started on a free port, so a restart can bring it back somewhere
+    else. A detector that had fallen back to the camera would otherwise keep
+    offering to return to an address nothing has answered on since - which
+    would leave the link carrying two copies while looking fixed. The recorder
+    re-reads this file for the same reason and on the same interval.
+    """
+    first = socket.socket()
+    first.bind(("127.0.0.1", 0))
+    # Room in the queue for every probe: nothing here ever accepts, and a
+    # refused connection would read as a streaming server that is not there.
+    first.listen(16)
+    second = socket.socket()
+    second.bind(("127.0.0.1", 0))
+    second.listen(16)
+    endpoint = tmp_path / "streaming.json"
+
+    def write(port):
+        endpoint.write_text(
+            json.dumps(
+                {
+                    "rtsp_port": port,
+                    "streams": {"thermal": f"rtsp://127.0.0.1:{port}/thermal"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    try:
+        write(first.getsockname()[1])
+        service = service_for(tmp_path, endpoint_path=endpoint)
+        try:
+            detector = service.detectors[0]
+            assert detector.preferred_url == f"rtsp://127.0.0.1:{first.getsockname()[1]}/thermal"
+
+            write(second.getsockname()[1])
+            service._recheck_sources(now=1000.0)
+            detector.step()  # the detector's own thread takes it up
+            assert detector.preferred_url == f"rtsp://127.0.0.1:{second.getsockname()[1]}/thermal"
+            assert detector.url == detector.preferred_url
+            assert "rtsp://10.0.0.2/thermal" in detector.sources, "the camera is still the way back"
+        finally:
+            service.stop()
+    finally:
+        first.close()
+        second.close()
+
+
+def test_the_streaming_file_is_not_read_on_every_pass(tmp_path):
+    """The status loop runs every few seconds for months; this costs a socket."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    port = listener.getsockname()[1]
+    endpoint = tmp_path / "streaming.json"
+    endpoint.write_text(
+        json.dumps({"rtsp_port": port, "streams": {"thermal": f"rtsp://127.0.0.1:{port}/x"}}),
+        encoding="utf-8",
+    )
+    try:
+        service = service_for(tmp_path, endpoint_path=endpoint)
+        try:
+            service._recheck_sources(now=1000.0)
+            endpoint.write_text(
+                json.dumps(
+                    {"rtsp_port": port, "streams": {"thermal": f"rtsp://127.0.0.1:{port}/moved"}}
+                ),
+                encoding="utf-8",
+            )
+            service._recheck_sources(now=1005.0)
+            service.detectors[0].step()
+            assert service.detectors[0].preferred_url.endswith("/x")
+            service._recheck_sources(now=1030.0)
+            service.detectors[0].step()
+            assert service.detectors[0].preferred_url.endswith("/moved")
+        finally:
+            service.stop()
+    finally:
+        listener.close()
+
+
+def test_moving_onto_the_camera_and_back_is_said_out_loud(tmp_path, caplog):
+    """The Logs tab is where the detector reaches the operator.
+
+    "detecting" was true of a stream costing the link nothing and of one
+    costing it a second copy, and nothing in this file could tell them apart.
+    """
+    service = service_for(tmp_path)
+    try:
+        detector = service.detectors[0]
+        detector.preferred_url = "rtsp://127.0.0.1:8554/thermal"
+        detector.primary_source = "local"
+        detector.url = detector.preferred_url
+        detector.step()
+
+        with caplog.at_level("INFO", logger="vmd.detect_main"):
+            service._log_state_changes()
+            assert "local streaming server" in caplog.records[-1].getMessage()
+
+            # Nothing has changed, so nothing is said again.
+            before = len(caplog.records)
+            service._log_state_changes()
+            assert len(caplog.records) == before
+
+            detector.url = "rtsp://10.0.0.2/thermal"
+            service._log_state_changes()
+            said = caplog.records[-1].getMessage()
+            assert "camera" in said and "radio link" in said, said
+    finally:
+        service.stop()
+
+
 def test_a_classifier_that_has_named_nothing_at_all_is_said_once(tmp_path, caplog):
     """It is the one failure whose symptom is the correct answer.
 

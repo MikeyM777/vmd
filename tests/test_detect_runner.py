@@ -1087,6 +1087,386 @@ def test_a_stream_with_no_fallback_keeps_trying_the_one_address_it_has(tmp_path)
 
 
 # --------------------------------------------------------------------------
+# ...and going back to it, which is the half that was missing
+# --------------------------------------------------------------------------
+#
+# Falling back to the camera was one-way. It rotated on failure and never on
+# success, so a single go2rtc restart - which the console performs on every
+# material settings change - moved detection onto a second crossing of a
+# >15 km, ~5 Mb/s radio link, permanently, for one warning line in a ring of
+# five hundred. The link "barely carries one" copy of the stream; losing the
+# live picture is the failure this system exists not to have.
+
+LOCAL = "rtsp://127.0.0.1:8554/thermal"
+CAMERA = "rtsp://admin:hunter2@10.0.0.2/thermal"
+
+
+class Addresses:
+    """Two ways to the same picture, each switchable on and off by the test.
+
+    Every open attempt is recorded in order, because that is the question that
+    matters here: which address is this detector pulling from, and did it ever
+    ask the local server whether it had come back?
+    """
+
+    def __init__(self, up, frames=None):
+        self.up = dict(up)
+        self.frames = dict(frames or {})
+        self.opened = []
+        # For each open, which addresses had already been let go at that
+        # moment. A switch that releases the working stream before the new one
+        # is known good is a gap in watching the perimeter.
+        self.let_go_by_then = []
+        self.captures = {}
+
+    def __call__(self, url):
+        self.opened.append(url)
+        self.let_go_by_then.append(
+            sorted(where for where, capture in self.captures.items() if capture.released)
+        )
+        if not self.up.get(url):
+            return None
+        capture = FakeCapture(frames=self.frames.get(url, 1_000_000))
+        self.captures[url] = capture
+        return capture
+
+    def tries(self, url):
+        return self.opened.count(url)
+
+
+def on_the_camera(tmp_path, addresses, clock, **kwargs):
+    """A detector that has already fallen back to the camera and is reading it.
+
+    This is the state a go2rtc restart leaves behind, and it is the state the
+    process used to stay in until somebody noticed.
+    """
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=addresses,
+        url=LOCAL,
+        fallback_url=CAMERA,
+        **kwargs,
+    )
+    for _ in range(4):
+        detector.step()
+        # Past whatever the reopen backoff has climbed to (1, 2, 4 seconds),
+        # and deliberately far short of the wait before going back, which is
+        # what the tests below measure.
+        clock.now += 5.0
+    assert detector.url == CAMERA, detector.url
+    assert detector.opened is True
+    return detector, store
+
+
+def test_the_detector_goes_back_to_the_local_server_when_it_comes_back(tmp_path):
+    """The bug, in one test: rotating on failure and never on success.
+
+    go2rtc restarts, the detector fails over to the camera, go2rtc comes back
+    ten seconds later - and nothing ever looks. Two copies of the stream cross
+    the radio link for the life of the process.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        addresses.up[LOCAL] = True  # go2rtc is back
+        addresses.opened.clear()
+        clock.now += 121.0
+        assert detector.step() is True, "the pass that switched still fed a frame"
+        assert detector.url == LOCAL
+        assert detector.state()["source"] == "local"
+        assert addresses.opened == [LOCAL], addresses.opened
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_it_does_not_go_back_the_moment_the_local_server_answers(tmp_path):
+    """Rotating on every hiccup is worse than staying put.
+
+    A settled period, the same shape as the supervisor's: the detector reads
+    the camera for a couple of minutes before it asks whether the local server
+    is back, so a go2rtc that is restarting - or one that answers its port
+    while it is still coming up - does not get detection handed back and
+    dropped again.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        addresses.up[LOCAL] = True
+        addresses.opened.clear()
+        for _ in range(10):
+            clock.now += 10.0  # a hundred seconds, short of the two minutes
+            detector.step()
+        assert addresses.opened == [], addresses.opened
+        assert detector.url == CAMERA
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_camera_is_let_go_only_once_the_local_server_is_known_good(tmp_path):
+    """A gap in watching the perimeter is the cost this system exists to avoid.
+
+    So the local server is opened, and read from, while the camera is still
+    open and being read. Only then is the camera released - and it is
+    released, because a detector holding both is the very cost this is fixing.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        camera_capture = addresses.captures[CAMERA]
+        addresses.up[LOCAL] = True
+        addresses.opened.clear()
+        addresses.let_go_by_then.clear()
+        clock.now += 121.0
+        assert detector.step() is True
+        assert detector.opened is True, "something was open at every point"
+        assert addresses.let_go_by_then == [[]], "the camera was dropped before the swap"
+        assert camera_capture.released is True, "the link is still carrying two copies"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_local_server_that_answers_with_nothing_does_not_get_detection_back(tmp_path):
+    """Answering the port is not serving the stream.
+
+    go2rtc listening on 127.0.0.1 proves something is listening; it proves
+    nothing about this stream. So the way back is not "it opened" but "it
+    opened and handed over a frame", checked before the camera is let go.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True}, frames={LOCAL: 0})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        addresses.up[LOCAL] = True  # it opens, and has no picture behind it
+        clock.now += 121.0
+        detector.step()
+        assert detector.url == CAMERA
+        assert detector.state()["source"] == "camera"
+        assert detector.opened is True, "detection carried on from the camera"
+        assert addresses.captures[LOCAL].released is True, "the probe was let go"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_return_that_did_not_last_is_tried_less_often(tmp_path):
+    """The flap guard: a return that did not stick doubles the wait.
+
+    A go2rtc that opens, hands over a frame and then goes quiet would
+    otherwise have the detector crossing back and forth for months, each
+    crossing costing a reset background model and a few seconds of nothing
+    being watched.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True}, frames={LOCAL: 1})
+    detector, store = on_the_camera(
+        tmp_path,
+        addresses,
+        clock,
+        return_after=120.0,
+        settled_after=300.0,
+        max_read_failures=1,
+    )
+    try:
+        addresses.up[LOCAL] = True  # a picture, and then nothing behind it
+        clock.now += 121.0
+        detector.step()
+        assert detector.url == LOCAL, "the probe found a picture and took it"
+
+        # It delivers nothing more, so the detector gives up on it and goes
+        # back to the camera the way it always did.
+        addresses.up[LOCAL] = False
+        for _ in range(6):
+            detector.step()
+            clock.now += 5.0
+        assert detector.url == CAMERA, "detection is back on the camera"
+
+        # That return lasted seconds, not the five minutes it has to. So the
+        # next one is not two minutes away, it is four.
+        addresses.opened.clear()
+        clock.now += 130.0
+        detector.step()
+        assert addresses.tries(LOCAL) == 0, "it went straight back into the flap"
+        clock.now += 130.0
+        detector.step()
+        assert addresses.tries(LOCAL) == 1, "and it never asked again"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_go2rtc_that_is_really_gone_leaves_detection_on_the_camera(tmp_path):
+    """Detecting from the wrong place beats not detecting.
+
+    Every probe fails, and every one of them costs a refused connection on
+    127.0.0.1. What must not happen is the detector dropping the camera to go
+    and look.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        before = detector.frames
+        for _ in range(20):
+            clock.now += 121.0
+            assert detector.step() is True
+        assert detector.url == CAMERA
+        assert detector.state()["source"] == "camera"
+        assert detector.frames > before, "frames kept arriving throughout"
+        assert addresses.tries(LOCAL) >= 2, "and it kept asking"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_way_back_follows_a_local_server_that_moved(tmp_path):
+    """go2rtc is started on a free port, so a restart can move it.
+
+    Without this the detector would offer to come back to an address nothing
+    has answered on since the restart, every two minutes, for ever - which is
+    the fault this whole section is about, one level down, and it would have
+    made the fix look like it worked.
+    """
+    moved = "rtsp://127.0.0.1:8555/thermal"
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True, moved: True})
+    detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+    try:
+        detector.point_at_local(moved)
+        addresses.opened.clear()
+        clock.now += 121.0
+        assert detector.step() is True
+        assert detector.url == moved
+        assert detector.state()["source"] == "local"
+        assert addresses.tries(LOCAL) == 0, "it went back to the old port"
+        # And the camera is still the address to fall back to.
+        assert CAMERA in detector.sources
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_local_server_that_moved_underneath_an_open_stream_is_taken_up(tmp_path):
+    """The address being read has just been declared the wrong one.
+
+    Acted on by the detector's own thread and nowhere else: a capture released
+    while the thread that owns it is inside `read()` is a crash in C, not an
+    exception.
+    """
+    moved = "rtsp://127.0.0.1:8555/thermal"
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: True, CAMERA: True, moved: True})
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=addresses,
+        url=LOCAL,
+        fallback_url=CAMERA,
+    )
+    try:
+        detector.step()
+        was_open = addresses.captures[LOCAL]
+        detector.point_at_local(moved)
+        assert was_open.released is False, "another thread let go of a live capture"
+        detector.step()
+        assert detector.url == moved
+        assert was_open.released is True
+        assert detector.state()["source"] == "local"
+        assert detector.sources == [moved, CAMERA], detector.sources
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_state_says_which_way_to_the_picture_is_in_use(tmp_path):
+    """A detector silently costing double the link is the invisible fault.
+
+    The console is another process and cannot ask, so this goes in the state
+    it publishes - with the password taken out of it, because that state is
+    read on screen and photographed.
+    """
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: True, CAMERA: True})
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=addresses,
+        url=LOCAL,
+        fallback_url=CAMERA,
+        max_read_failures=1,
+    )
+    try:
+        detector.step()
+        state = detector.state()
+        assert state["source"] == "local"
+        assert state["source_url"] == LOCAL
+
+        # go2rtc goes away underneath an open capture, which is what a restart
+        # looks like from here.
+        addresses.up[LOCAL] = False
+        addresses.captures[LOCAL].remaining = 0
+        for _ in range(6):
+            detector.step()
+            clock.now += 5.0
+        state = detector.state()
+        assert state["source"] == "camera"
+        assert "hunter2" not in state["source_url"]
+        assert "10.0.0.2" in state["source_url"]
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_stream_read_straight_from_the_camera_says_so(tmp_path):
+    """No local server was ever chosen for this stream, so nothing is being
+    doubled - but the operator is still told where the picture comes from."""
+    clock = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=Addresses({CAMERA: True}),
+        url=CAMERA,
+        primary_source="camera",
+    )
+    try:
+        detector.step()
+        assert detector.state()["source"] == "camera"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_both_directions_are_said_out_loud(tmp_path, caplog):
+    """The detector's output is the Logs tab. A source change is news in both
+    directions: one of them is the link cost doubling, the other is it ending."""
+    clock = Clock(start=0.0, step=0.0)
+    addresses = Addresses({LOCAL: False, CAMERA: True})
+    with caplog.at_level("INFO", logger="vmd.detect.runner"):
+        detector, store = on_the_camera(tmp_path, addresses, clock, return_after=120.0)
+        try:
+            said = " | ".join(r.getMessage() for r in caplog.records)
+            assert "camera" in said.lower()
+            assert "hunter2" not in said
+
+            caplog.clear()
+            addresses.up[LOCAL] = True
+            clock.now += 121.0
+            detector.step()
+            said = " | ".join(r.getMessage() for r in caplog.records)
+            assert LOCAL in said, said
+            assert "local streaming server" in said, said
+        finally:
+            detector.close()
+            store.close()
+
+
+# --------------------------------------------------------------------------
 # A classifier that is on and has never answered
 # --------------------------------------------------------------------------
 

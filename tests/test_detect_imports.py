@@ -134,6 +134,34 @@ def test_the_package_itself_imports_without_the_vision_stack():
     assert "cv2 imported: False" in result.stdout
 
 
+def test_the_detector_service_module_imports_without_the_vision_stack():
+    """The console reads two facts out of `vmd.detect_main`.
+
+    Where the detector publishes its state, and which streams are detected.
+    Both were copied into `vmd/desktop/services.py` instead of imported,
+    because importing this module used to pull cv2 and numpy into the window's
+    process. The copies can only be deleted if this stays true, so it is
+    pinned here rather than left as an intention.
+    """
+    result = run_child(
+        """
+        import sys
+
+        from vmd.detect_main import STATUS_FILENAME, detected_streams
+
+        print("status file:", STATUS_FILENAME)
+        print("rule:", callable(detected_streams))
+        print("cv2 imported:", "cv2" in sys.modules)
+        print("numpy imported:", "numpy" in sys.modules)
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "status file: detection.json" in result.stdout
+    assert "rule: True" in result.stdout
+    assert "cv2 imported: False" in result.stdout
+    assert "numpy imported: False" in result.stdout
+
+
 def test_the_names_the_package_publishes_still_arrive():
     """Lazy must not mean gone. Anything that genuinely wants the pipeline
     still gets it from the package's own namespace, and gets the real class."""
