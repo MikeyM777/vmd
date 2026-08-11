@@ -50,6 +50,35 @@ class VideoPane(Protocol):
     @property
     def state(self) -> PaneState: ...
 
+    # -- the transport ----------------------------------------------------
+    #
+    # Playback had no pause at all. Re-watching the same ten seconds is the
+    # single most common thing anyone does with security footage, and here it
+    # cost a fresh click on a bar where one pixel is over a minute of the day.
+    #
+    # Every one of these is a request handed to the player. Nothing here
+    # retries, nothing here restarts, and nothing here has a timer: the pane
+    # watches and does not intervene, and every disconnection reported from the
+    # field traced back to code in this class firing on its own.
+    #
+    # A live stream is not seekable and cannot be paused meaningfully. The Live
+    # tab never calls any of this, and libVLC's answer to a request a live
+    # stream cannot honour is to ignore it.
+
+    @property
+    def paused(self) -> bool: ...
+
+    def set_paused(self, paused: bool) -> None: ...
+
+    @property
+    def rate(self) -> float: ...
+
+    def set_rate(self, rate: float) -> None: ...
+
+    def position_seconds(self) -> float | None: ...
+
+    def seek_seconds(self, seconds: float) -> bool: ...
+
 
 class FakeVideoPane:
     """A pane with no video in it, for testing everything that uses one."""
@@ -64,6 +93,9 @@ class FakeVideoPane:
         # arithmetic, which is the part a unit test can actually settle.
         self.at_seconds = 0.0
         self._state: PaneState = "stopped"
+        self._paused = False
+        self._rate = 1.0
+        self._position: float | None = None
 
     @property
     def state(self) -> PaneState:
@@ -74,11 +106,47 @@ class FakeVideoPane:
             self.restarts += 1
         self.url = url
         self.at_seconds = float(at_seconds)
+        self._position = max(float(at_seconds), 0.0)
+        # Paused, then taken to a movement: the operator pressed a button that
+        # means "show me that", and handing him a still of it is the console
+        # obeying the letter of a request nobody made. The speed is not reset
+        # for the opposite reason - it is a way of watching rather than a
+        # property of one file, and somebody working through a night at 8x does
+        # not want it undone by every seek.
+        self._paused = False
         self._state = "connecting"
 
     def stop(self) -> None:
         self.url = None
+        self._position = None
+        self._paused = False
         self._state = "stopped"
+
+    # -- the transport ----------------------------------------------------
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = bool(paused)
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    def set_rate(self, rate: float) -> None:
+        if float(rate) > 0.0:
+            self._rate = float(rate)
+
+    def position_seconds(self) -> float | None:
+        return self._position
+
+    def seek_seconds(self, seconds: float) -> bool:
+        if self.url is None:
+            return False
+        self._position = max(float(seconds), 0.0)
+        return True
 
     def release(self) -> None:
         self.url = None
@@ -167,6 +235,16 @@ class VlcVideoPane(QWidget):
         # Once libVLC has been handed its player back, nothing here may touch it
         # again: that is a use-after-free in a C library, not an exception.
         self._released = False
+        # The transport, held here as well as in libVLC. Held because the answer
+        # has to be available the instant a button is drawn, and asking a player
+        # that has no media yet gives an answer about nothing.
+        self._paused = False
+        self._rate = 1.0
+        # Where the last show() asked to start. It is what `position_seconds`
+        # answers until libVLC has opened the file and has a time of its own -
+        # otherwise the readout under the picture would sit at 00:00:00 for the
+        # second or two after every seek, which reads as a failed seek.
+        self._asked_for = 0.0
 
         # Polled rather than driven by VLC events: libVLC delivers events on its
         # own threads, and touching Qt from those is how a UI toolkit crashes.
@@ -203,6 +281,10 @@ class VlcVideoPane(QWidget):
         self._last_frame_at = 0.0
         self._last_count = -1
         self.frames_seen = 0
+        # See FakeVideoPane.show: a pane taken to a new moment starts running,
+        # and the speed the operator chose survives the seek.
+        self._paused = False
+        self._asked_for = max(float(at_seconds), 0.0)
         media = self._instance.media_new(url)
         # Never negative: libVLC reads this as a float and a negative one is not
         # a position in any file. The console clamps too; this is the floor
@@ -213,10 +295,16 @@ class VlcVideoPane(QWidget):
         self._player.set_media(media)
         self._attach_surface()
         self._player.play()
+        # Re-applied to the new media rather than assumed to carry over: libVLC
+        # keeps the rate on the player, but a player handed media it cannot play
+        # at that rate resets it, and a console whose speed control and player
+        # disagree is a console lying about how fast the footage is moving.
+        self._apply_rate()
         logger.info("showing %s from %.1f s in", url, start)
 
     def stop(self) -> None:
         self._url = None
+        self._paused = False
         if self._released:
             return
         self._player.stop()
@@ -249,6 +337,101 @@ class VlcVideoPane(QWidget):
                     action()
                 except Exception:  # noqa: BLE001 - a leak beats a crash on shutdown
                     logger.exception("the video %s would not %s", name, step)
+
+    # -- the transport ----------------------------------------------------
+    #
+    # Nothing below starts a timer, retries anything, or restarts a stream. Each
+    # one is a request passed straight to libVLC and an answer read back out,
+    # and each is guarded, because the tests drive this class with stub players
+    # and a pane that refuses to show a picture because a stub has no opinion
+    # about the playback rate is a worse failure than a stub that says nothing.
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        paused = bool(paused)
+        self._paused = paused
+        if self._released or self._url is None:
+            return
+        act = getattr(self._player, "set_pause", None)
+        if act is not None:
+            act(1 if paused else 0)
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    def set_rate(self, rate: float) -> None:
+        """Quarter speed to eight times. Zero is not slow motion.
+
+        A rate of zero is a player that never advances again, wearing the face
+        of a player that is running; a negative one is not something libVLC
+        plays at all. Both are refused here rather than handed on.
+        """
+        rate = float(rate)
+        if rate <= 0.0:
+            return
+        self._rate = rate
+        if self._released:
+            return
+        self._apply_rate()
+
+    def _apply_rate(self) -> None:
+        act = getattr(self._player, "set_rate", None)
+        if act is not None:
+            act(self._rate)
+
+    def position_seconds(self) -> float | None:
+        """How far into the file the picture is, or None when nothing is on.
+
+        libVLC answers -1 while it is still opening the media, which is not a
+        position. Until it has one, this is the moment the last show() asked
+        for - otherwise the clock under the picture would drop to 00:00:00 for
+        a second after every seek, which reads as a seek that failed.
+        """
+        if self._released or self._url is None:
+            return None
+        reader = getattr(self._player, "get_time", None)
+        if reader is None:
+            return self._asked_for
+        try:
+            milliseconds = reader()
+        except Exception:  # noqa: BLE001 - a reading, not a control
+            logger.debug("the player would not say where it is", exc_info=True)
+            return self._asked_for
+        if milliseconds is None or milliseconds < 0:
+            return self._asked_for
+        return float(milliseconds) / 1000.0
+
+    def seek_seconds(self, seconds: float) -> bool:
+        """Move within the file that is already open. False means it did not.
+
+        `set_time` is used here and deliberately not in `show`: it only takes
+        effect once libVLC has the media open, which after `play()` it does not
+        yet, and the ways of waiting for that are the two things this class is
+        forbidden to do. By the time anything is being sought, it is playing -
+        the media is open and there is nothing to wait for.
+
+        The caller has to be told when this did not happen, because the answer
+        then is to open the file again at the right moment, and a skip that
+        silently did nothing is a console that has stopped following the clock
+        it is drawing.
+        """
+        if self._released or self._url is None:
+            return False
+        act = getattr(self._player, "set_time", None)
+        if act is None:
+            return False
+        target = max(float(seconds), 0.0)
+        try:
+            act(int(target * 1000))
+        except Exception:  # noqa: BLE001 - a refused seek is not a crash
+            logger.debug("the player would not move to %.1f s", target, exc_info=True)
+            return False
+        self._asked_for = target
+        return True
 
     @property
     def state(self) -> PaneState:
