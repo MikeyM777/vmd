@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt
@@ -84,6 +85,28 @@ RECENT_LIMIT = 20
 # for as long as the console is open, and the Logs tab holds five hundred lines.
 FAILURES_SPELLED_OUT = 3
 FAILURES_BETWEEN_REMINDERS = 100
+
+# How long the console waits before restarting a stream that has just failed,
+# and how far that wait grows: 2 s, 4, 8, 16, 32, then a minute for ever.
+#
+# The first attempt is immediate, because a stream that dropped once and comes
+# straight back is the common case and waiting on it would cost the picture for
+# nothing. What the growth is for is the other case: a camera that is off, or an
+# address that is wrong, fails on every tick for as long as the console is open.
+# Restarting it thirty times a minute is this module's own lesson - recovery
+# code firing too early - one level up from the pane, and it wrote 40 lines into
+# the Logs tab in 18 seconds, which evicts everything else from the 500-line
+# ring inside four minutes.
+RESTART_FIRST_DELAY = 2.0
+RESTART_BACKOFF_MAX = 60.0
+
+# After this many failures in a row the console stops implying it is about to
+# fix this. It keeps trying, slowly, because a camera that is switched back on
+# must come back without anyone restarting the console - but it stops saying
+# "failed" as though the next attempt were the one, and points at the place the
+# operator can actually do something.
+GIVING_UP_AFTER = 6
+GIVEN_UP_WORDS = "failed - not coming back on its own; check the address in Settings"
 
 # Why the confidence column is sometimes empty, said where the operator can read
 # it. Without this line a blank cell reads as "the detector was not sure", which
@@ -171,6 +194,7 @@ class LiveTab(QWidget):
         local_url: Callable[[str], str | None],
         events=None,
         storage=None,
+        clock: Callable[[], float] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -189,6 +213,10 @@ class LiveTab(QWidget):
         # How many times each stream has been restarted since it last played.
         # One int per stream, cleared when the streams change.
         self._restarts: dict[str, int] = {}
+        # And when each may be tried again. Injected clock so a test can wind
+        # four hundred seconds of heartbeats past without waiting for any.
+        self._next_try: dict[str, float] = {}
+        self._clock = clock or time.monotonic
         self._alarm_stream: str | None = None
         # Which events have already been accounted for, rather than the highest
         # id among them. None, not an empty set: the first read establishes what
@@ -458,6 +486,7 @@ class LiveTab(QWidget):
         self._panes.clear()
         self._status.clear()
         self._restarts.clear()
+        self._next_try.clear()
         for frame in self._frames.values():
             frame.setParent(None)
         self._frames.clear()
@@ -508,17 +537,40 @@ class LiveTab(QWidget):
             state = pane.state
             self._set_status(name, state)
             if state == "failed":
-                url = self._local_url(name)
-                if url:
-                    self._say_it_failed(name)
-                    pane.show(url)
+                self._restart_when_due(name, pane)
             elif state == "playing":
                 # Actually recovered, rather than merely on its way somewhere.
                 # A stream that flaps between failed and connecting has not.
                 self._restarts.pop(name, None)
+                self._next_try.pop(name, None)
         self._refresh_events()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
+
+    def _restart_when_due(self, name: str, pane) -> None:
+        """Restart a failed stream, but never faster than the backoff allows.
+
+        The first attempt is immediate; each one after it waits longer, up to a
+        minute. A stream that has failed this many times running is not about to
+        be fixed by trying harder, and the console must not spend the operator's
+        Logs tab saying so.
+        """
+        now = self._clock()
+        if now < self._next_try.get(name, 0.0):
+            return
+        url = self._local_url(name)
+        if not url:
+            return
+        count = self._restarts.get(name, 0) + 1
+        self._restarts[name] = count
+        self._next_try[name] = now + min(
+            RESTART_FIRST_DELAY * 2 ** (count - 1), RESTART_BACKOFF_MAX
+        )
+        self._say_it_failed(name)
+        pane.show(url)
+        # The word on screen changes once the console has stopped believing its
+        # own retries; it is written here so the change lands with the attempt.
+        self._set_status(name, "failed")
 
     def _say_it_failed(self, name: str) -> None:
         """Report a restart, without reporting the same one every two seconds.
@@ -531,8 +583,7 @@ class LiveTab(QWidget):
         one place the operator can read it. The supervisor already learned
         this; the panes had not.
         """
-        count = self._restarts.get(name, 0) + 1
-        self._restarts[name] = count
+        count = self._restarts.get(name, 0)
         if count <= FAILURES_SPELLED_OUT:
             logger.warning("%s failed; restarting it", name)
         elif count % FAILURES_BETWEEN_REMINDERS == 0:
@@ -557,7 +608,10 @@ class LiveTab(QWidget):
         label = self._labels.get(name)
         if label is None:
             return
-        label.setText(f"{name}  -  {STATE_WORDS.get(state, state)}")
+        words = STATE_WORDS.get(state, state)
+        if state == "failed" and self._restarts.get(name, 0) >= GIVING_UP_AFTER:
+            words = GIVEN_UP_WORDS
+        label.setText(f"{name}  -  {words}")
         label.setStyleSheet(f"color: {STATE_COLOURS.get(state, PALETTE['muted'])};")
 
     # --------------------------------------------------------------- steering

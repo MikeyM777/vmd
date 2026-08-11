@@ -45,13 +45,19 @@ PLAYHEAD_WIDTH = 3
 # A movement mark, and how close a click has to be to mean it rather than the
 # time under the pointer.
 #
-# Six pixels. A whole day is drawn in a few hundred of them - one pixel is
-# several minutes - so the pixel under the pointer is never the second the
-# movement began, and a click that lands beside a mark meant the mark. Six is
-# wide enough to hit with a trackpad on a laptop that lives outdoors and narrow
-# enough that two events minutes apart stay separately clickable.
+# Thirty seconds, and the unit is the point. A whole day is drawn in a few
+# hundred pixels - the pixel under the pointer is never the second the movement
+# began - so a click that lands beside a mark meant the mark, and this exists to
+# say so.
+#
+# It was six PIXELS, which is not a distance on this bar at all. At 1000 px wide
+# one pixel is 86.4 s, so six of them silently redirected a click to an event up
+# to 518 s away; on a real day with 113 marks there was no clickable moment more
+# than 2.8 s from a mark, and plain time-seeking became impossible. Measuring in
+# seconds also means a window the operator drags narrower does not change which
+# moments of the day can be reached.
 MARK_WIDTH = 3
-MARK_TOLERANCE_PX = 6
+MARK_TOLERANCE_SECONDS = 30.0
 
 # How far before the movement playback starts. An event that begins on the
 # first frame you see is one you have already missed: the approach is the part
@@ -312,13 +318,15 @@ class PlaybackTab(QWidget):
     def _mark_near(self, fraction: float, width: int) -> object | None:
         """The movement mark this click meant, if it meant one.
 
-        Nearest wins, so two events minutes apart stay separately clickable.
+        Nearest wins, so two events a minute apart stay separately clickable.
+        `width` is no longer read: the tolerance is a duration, and how wide the
+        window happens to be is not one.
         """
-        if not self.event_marks or width <= 0:
+        if not self.event_marks:
             return None
-        x = fraction * width
-        nearest = min(self.event_marks, key=lambda mark: abs(mark[0] * width - x))
-        if abs(nearest[0] * width - x) > MARK_TOLERANCE_PX:
+        when = time_at(fraction, self._day_start, self._day_end)
+        nearest = min(self.event_marks, key=lambda mark: abs(mark[1].started - when))
+        if abs(nearest[1].started - when) > MARK_TOLERANCE_SECONDS:
             return None
         return nearest[1]
 
@@ -327,7 +335,7 @@ class PlaybackTab(QWidget):
     def click_at(self, fraction: float, width: int | None = None) -> None:
         """Play whatever covers this fraction of the day, or say what does not.
 
-        A click within a few pixels of a movement mark means the mark, and
+        A click within half a minute of a movement mark means the mark, and
         plays from five seconds before it. The alternative - the exact time
         under the pointer - is a time nobody can aim at: one pixel of the bar is
         several minutes of the day.

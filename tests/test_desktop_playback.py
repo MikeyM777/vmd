@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QPoint, Qt
 from PySide6.QtGui import QColor
 
-from vmd.desktop.playback import PlaybackTab
+from vmd.desktop.playback import EVENT_LEAD_SECONDS, PlaybackTab
 from vmd.desktop.style import PALETTE
 from vmd.desktop.timeline import day_bounds
 from vmd.desktop.video import FakeVideoPane
@@ -425,19 +425,19 @@ def test_clicking_a_mark_seeks_five_seconds_before_the_movement(
 
 
 def test_a_click_within_the_tolerance_prefers_the_mark(qtbot, tmp_path: Path) -> None:
-    """Six pixels either side. A mark is three pixels wide and a whole day is
-    drawn in a few hundred of them, so the pixel under the pointer is never the
-    second the movement began."""
+    """Half a minute either side. A whole day is drawn in a few hundred pixels,
+    so the pixel under the pointer is never the second the movement began."""
     start, end = day_bounds(2026, 8, 11)
     span = end - start
-    events = FakeEvents([movement(1, start + span / 2)])
+    at = start + span / 2
+    events = FakeEvents([movement(1, at)])
     tab, _, index = build_with_events(qtbot, tmp_path, events)
     try:
         index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
         tab.show_day(2026, 8, 11, stream="thermal")
 
-        tab.click_at(106 / 200, width=200)  # six pixels away
-        assert tab.playhead_time == start + span / 2 - 5.0
+        tab.click_at((at + 20.0 - start) / span, width=200)  # twenty seconds away
+        assert abs(tab.playhead_time - (at - 5.0)) < 1.0
     finally:
         index.close()
 
@@ -445,14 +445,15 @@ def test_a_click_within_the_tolerance_prefers_the_mark(qtbot, tmp_path: Path) ->
 def test_a_click_outside_the_tolerance_is_an_ordinary_seek(qtbot, tmp_path: Path) -> None:
     start, end = day_bounds(2026, 8, 11)
     span = end - start
-    events = FakeEvents([movement(1, start + span / 2)])
+    at = start + span / 2
+    events = FakeEvents([movement(1, at)])
     tab, _, index = build_with_events(qtbot, tmp_path, events)
     try:
         index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
         tab.show_day(2026, 8, 11, stream="thermal")
 
-        tab.click_at(107 / 200, width=200)  # seven pixels away
-        assert tab.playhead_time == start + span * 107 / 200
+        tab.click_at((at + 45.0 - start) / span, width=200)  # forty-five seconds away
+        assert abs(tab.playhead_time - (at + 45.0)) < 1.0
     finally:
         index.close()
 
@@ -494,3 +495,84 @@ def test_an_event_store_that_cannot_be_read_still_draws_the_day(
         assert tab.event_marks == []
     finally:
         index.close()
+
+
+# ------------------------------------------------- how close a click has to be
+#
+# The tolerance was six PIXELS on a bar spanning a whole day. At 1000 px wide
+# one pixel is 86.4 s, so a click was silently redirected to an event up to
+# 518 s - eight and a half minutes - away. On a day with 113 marks there was no
+# clickable moment more than 2.8 s from a mark, and plain time-seeking became
+# impossible. It is a duration now, and it means the same thing at every width.
+
+
+def test_a_click_a_minute_from_a_mark_means_the_time_not_the_mark(
+    qtbot, tmp_path: Path
+) -> None:
+    start, _end = day_bounds(2026, 8, 11)
+    at = start + 12 * 3600
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    a_minute_later = at + 60.0
+    tab.click_at((a_minute_later - start) / day_span(), width=1000)
+
+    assert abs(tab.playhead_time - a_minute_later) < 1.0, (
+        "a click a minute away was redirected to a mark"
+    )
+
+
+def test_a_click_a_few_seconds_from_a_mark_still_means_the_mark(
+    qtbot, tmp_path: Path
+) -> None:
+    start, _end = day_bounds(2026, 8, 11)
+    at = start + 12 * 3600
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    tab.click_at((at + 10.0 - start) / day_span(), width=1000)
+
+    assert abs(tab.playhead_time - (at - EVENT_LEAD_SECONDS)) < 1.0
+
+
+def test_the_tolerance_is_the_same_duration_at_every_width(qtbot, tmp_path: Path) -> None:
+    """A window the operator dragged narrower must not change which moments of
+    the day can be reached."""
+    start, _end = day_bounds(2026, 8, 11)
+    at = start + 12 * 3600
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    a_minute_later = (at + 60.0 - start) / day_span()
+    for width in (200, 1000, 4000):
+        tab.click_at(a_minute_later, width=width)
+        assert abs(tab.playhead_time - (at + 60.0)) < 1.0, f"at {width} px wide"
+
+    ten_seconds_later = (at + 10.0 - start) / day_span()
+    for width in (200, 1000, 4000):
+        tab.click_at(ten_seconds_later, width=width)
+        assert abs(tab.playhead_time - (at - EVENT_LEAD_SECONDS)) < 1.0, f"at {width} px wide"
+
+
+def test_a_day_full_of_marks_still_has_moments_that_can_be_clicked(
+    qtbot, tmp_path: Path
+) -> None:
+    """113 marks in a day was a real day. Every second of it was within 2.8 s of
+    a mark, so nothing but marks could be reached."""
+    start, _end = day_bounds(2026, 8, 11)
+    events = [movement(n, start + n * (86400 / 113.0)) for n in range(113)]
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents(events))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    # Half way between two marks: about six minutes from either.
+    between = start + 1.5 * (86400 / 113.0)
+    tab.click_at((between - start) / day_span(), width=1000)
+    assert abs(tab.playhead_time - between) < 1.0

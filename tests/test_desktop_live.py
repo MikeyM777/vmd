@@ -85,7 +85,7 @@ def movement(
     )
 
 
-def build(qtbot, *names: str, events=None, register: bool = True):
+def build(qtbot, *names: str, events=None, register: bool = True, clock=None):
     ptz = FakePtz()
     panes: dict[str, FakeVideoPane] = {}
 
@@ -98,6 +98,7 @@ def build(qtbot, *names: str, events=None, register: bool = True):
         make_pane=make_pane,
         local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
         events=events,
+        clock=clock,
     )
     # A tab that is about to be given to a parent widget is left unregistered:
     # qtbot would then close and delete it twice over.
@@ -160,26 +161,74 @@ def test_a_failed_stream_is_restarted(qtbot) -> None:
     assert panes["thermal"].restarts == 1
 
 
-def test_a_stream_that_will_never_come_back_does_not_fill_the_log(qtbot, caplog) -> None:
-    """A camera that is off fails on every tick for as long as the console is
-    open - thirty lines a minute into a ring that holds five hundred. Within
-    twenty minutes the Logs tab holds nothing else, and go2rtc's "401
-    Unauthorized", the line that says why, has been pushed out of the only
-    place the operator can read it."""
-    tab, _, panes = build(qtbot, "thermal")
+class HandWoundClock:
+    """Two seconds per turn, exactly as the heartbeat runs. No test waits."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_a_stream_that_will_never_come_back_is_not_restarted_every_two_seconds(
+    qtbot, caplog
+) -> None:
+    """A camera that is off, or an address that is wrong, fails on every tick
+    for as long as the console is open. Restarting it thirty times a minute is
+    the recovery-code-firing-too-early mistake this module's docstring is about,
+    one level up: it also floods a ring buffer that holds five hundred lines and
+    pushes out go2rtc's "401 Unauthorized" - the line that says why."""
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
     panes["thermal"].pretend_failed()
 
     with caplog.at_level("WARNING", logger="vmd.desktop.live"):
-        for _ in range(200):
+        for _ in range(200):  # 400 s of heartbeats
             panes["thermal"].pretend_failed()
             tab.refresh()
+            clock.advance(2.0)
 
-    assert panes["thermal"].restarts == 200, "it must still be restarted every time"
+    assert panes["thermal"].restarts >= 1, "it must still try"
+    assert panes["thermal"].restarts <= 20, (
+        f"{panes['thermal'].restarts} restarts in 400 s is a restart storm"
+    )
     assert len(caplog.records) <= 5, "the log was flooded by one dead stream"
     assert caplog.records, "and it must not go silent about it either"
-    assert any("200" in record.getMessage() for record in caplog.records), (
-        "the reminder has to say how many times, or it reads like the first one"
-    )
+
+
+def test_a_stream_that_keeps_failing_stops_claiming_it_will_fix_itself(qtbot) -> None:
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    for _ in range(200):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        clock.advance(2.0)
+
+    label = tab.stream_label_text("thermal").lower()
+    assert "not coming back" in label
+    assert "settings" in label, "say where the operator can do something about it"
+
+
+def test_a_stream_that_comes_back_forgets_the_backoff(qtbot) -> None:
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    for _ in range(30):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        clock.advance(2.0)
+
+    panes["thermal"].pretend_playing()
+    tab.refresh()
+    assert "not coming back" not in tab.stream_label_text("thermal").lower()
+
+    before = panes["thermal"].restarts
+    panes["thermal"].pretend_failed()
+    tab.refresh()
+    assert panes["thermal"].restarts == before + 1, "a recovered stream waits again"
 
 
 def test_a_stream_that_comes_back_and_fails_again_is_reported_again(qtbot, caplog) -> None:
