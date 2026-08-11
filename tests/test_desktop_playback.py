@@ -154,6 +154,46 @@ def test_the_bar_draws_recorded_time_and_leaves_gaps_empty(qtbot, tmp_path: Path
         index.close()
 
 
+def test_recordings_that_meet_are_drawn_meeting(qtbot, tmp_path: Path) -> None:
+    """A day of five-minute files is one unbroken day, and has to look like it.
+
+    Rounding each bar's WIDTH rather than both its edges left a black pixel
+    between every pair, so a camera that never stopped came out as a comb of 288
+    hairline gaps - a bar claiming a dropout every five minutes. On the tab
+    whose whole job is that a real gap is visible, that is the worst kind of
+    wrong: it makes the true gaps unfindable among the false ones.
+    """
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, end = day_bounds(2026, 8, 11)
+        for offset in range(0, 86400, 300):
+            index.add(
+                "thermal", str(tmp_path / f"{offset}.mp4"),
+                start + offset, start + offset + 300, 1000,
+            )
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        # At several widths, because whether the rounding bites depends on how
+        # many pixels a recording gets: at 1100 px each of the 288 files is
+        # 3.82 px and rounding up hides it, and at 1262 - which is what the bar
+        # gets on his own 1280 px screen - each is 4.38 px, rounding down, and
+        # every second boundary was a black line.
+        for width in (1100, 1262, 1366, 1900, 2540):
+            tab.bar.setFixedWidth(width)
+            image = tab.bar.grab().toImage()
+            blank = [
+                x
+                for x in range(image.width())
+                if image.pixelColor(x, 12) == QColor(PALETTE["well"])
+            ]
+            assert blank == [], (
+                f"at {width} px, {len(blank)} pixels of a day that was recorded "
+                f"end to end were drawn as a gap"
+            )
+    finally:
+        index.close()
+
+
 def test_the_bar_draws_a_playhead_where_it_was_clicked(qtbot, tmp_path: Path) -> None:
     tab, pane, index = build(qtbot, tmp_path)
     try:
@@ -1060,13 +1100,33 @@ def test_the_moment_being_watched_is_written_out_in_full(qtbot, tmp_path: Path) 
 
 
 def test_the_readout_is_bigger_than_the_body_text(qtbot, tmp_path: Path) -> None:
-    from vmd.desktop.style import SIZE_BODY
+    """Measured with the application's own appearance on, which is the only
+    measurement that means anything.
 
-    tab, pane, index = build(qtbot, tmp_path)
+    A stylesheet beats setFont, and the application stylesheet puts a font-size
+    on QWidget. A readout given its size only by setFont reports the size it was
+    asked for and draws at the size of the smallest note on the tab - which is
+    exactly what happened, and what a test reading `font()` could not see.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from vmd.desktop.style import SIZE_BODY, stylesheet
+
+    was = QApplication.instance().styleSheet()
+    QApplication.instance().setStyleSheet(stylesheet())
     try:
-        assert tab.readout.font().pixelSize() > SIZE_BODY
+        tab, pane, index = build(qtbot, tmp_path)
+        try:
+            tab.show()
+            qtbot.waitExposed(tab)
+            assert tab.readout.fontInfo().pixelSize() > SIZE_BODY, (
+                f"the readout draws at {tab.readout.fontInfo().pixelSize()} px"
+            )
+            assert tab._status.fontInfo().pixelSize() <= SIZE_BODY
+        finally:
+            index.close()
     finally:
-        index.close()
+        QApplication.instance().setStyleSheet(was)
 
 
 # ==================================================================== zooming
@@ -1087,6 +1147,42 @@ def test_the_three_zooms_are_offered_as_buttons(qtbot, tmp_path: Path) -> None:
             assert button.text().strip()
     finally:
         index.close()
+
+
+def test_which_zoom_is_on_can_be_seen(qtbot, tmp_path: Path) -> None:
+    """Three identical buttons say nothing about which one is in force, and the
+    operator would have to read it off the bar - which is the thing he is trying
+    to understand in the first place.
+
+    Measured with the application's own appearance on. Qt's default style draws
+    a checked button sunken all by itself, so without the stylesheet this test
+    would pass whatever the console actually looks like - and the console does
+    not use Qt's default style.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from vmd.desktop.style import stylesheet
+    from vmd.desktop.timeline import ONE_HOUR, WHOLE_DAY
+
+    was = QApplication.instance().styleSheet()
+    QApplication.instance().setStyleSheet(stylesheet())
+    try:
+        tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+        try:
+            tab.play_at_time(noon + 60)
+            on = [name for name, b in tab.zoom_buttons.items() if b.isChecked()]
+            assert on == [WHOLE_DAY], on
+
+            button = tab.zoom_buttons[ONE_HOUR]
+            before = button.grab().toImage()
+            qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+            after = button.grab().toImage()
+            assert [n for n, b in tab.zoom_buttons.items() if b.isChecked()] == [ONE_HOUR]
+            assert before != after, "the chosen zoom is drawn exactly like the other two"
+        finally:
+            index.close()
+    finally:
+        QApplication.instance().setStyleSheet(was)
 
 
 def test_zooming_in_narrows_the_window_to_the_hour(qtbot, tmp_path: Path) -> None:

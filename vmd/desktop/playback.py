@@ -77,6 +77,7 @@ from vmd.desktop.style import (
     SIZE_HEADING,
     SPACE_SNUG,
     SPACE_STEP,
+    WEIGHT_VALUE,
 )
 from vmd.desktop.timeline import (
     ZOOM_ORDER,
@@ -298,11 +299,17 @@ class TimelineBar(QWidget):
         for index, (name, bars) in enumerate(lanes):
             lane_top = top + index * lane_height
             for left, span in bars:
+                # Both edges rounded to the same grid, so two recordings that
+                # meet meet on the bar as well. Rounding the WIDTH instead left
+                # a black pixel between them, and a day of five-minute files
+                # came out as a comb of 288 hairline gaps - a bar claiming a
+                # dropout every five minutes on a camera that never stopped.
                 x = int(round(left * width))
+                right = int(round((left + span) * width))
                 # At least one pixel: a recording shorter than a pixel of the
                 # window is still a recording, and drawing nothing would claim
                 # it is a gap.
-                w = max(1, int(round(span * width)))
+                w = max(1, right - x)
                 painter.fillRect(x, lane_top, min(w, width - x), lane_height - 1, recorded)
             if name and len(lanes) > 1:
                 painter.setPen(QColor(PALETTE["muted"]))
@@ -656,7 +663,15 @@ class PlaybackTab(QWidget):
         font.setPixelSize(SIZE_BAND)
         font.setBold(True)
         self.readout.setFont(font)
-        self.readout.setStyleSheet(f"color: {PALETTE['ink']}; font-family: {MONO};")
+        # The size is in the widget's own stylesheet as well as in its font,
+        # and it has to be: the application stylesheet sets a font-size on
+        # QWidget, and a stylesheet beats setFont. Without this line the one
+        # thing on this tab that has to be readable from across the room was
+        # drawn at the size of the smallest note on it.
+        self.readout.setStyleSheet(
+            f"color: {PALETTE['ink']}; font-family: {MONO}; "
+            f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
+        )
         row.addWidget(self.readout)
         row.addStretch(1)
 
@@ -666,6 +681,17 @@ class PlaybackTab(QWidget):
             button.setMinimumHeight(34)
             button.setMinimumWidth(78)
             button.setCheckable(True)
+            # Which zoom is on has to be visible, and the application
+            # stylesheet has no opinion about a checked button - so all three
+            # were drawn identically and the one that was on was the one you
+            # could work out by looking at the bar. The same fault the Logs
+            # tab's filters have. Marked by the accent, which is what this
+            # design reserves for the state of an active control.
+            button.setStyleSheet(
+                f"QPushButton:checked {{ background: {PALETTE['line']}; "
+                f"border: 2px solid {PALETTE['accent']}; "
+                f"font-weight: {WEIGHT_VALUE}; color: {PALETTE['ink']}; }}"
+            )
             button.setToolTip(f"Show {name.lower()} on the bar below")
             button.clicked.connect(lambda _checked=False, z=name: self.set_zoom(z))
             self.zoom_buttons[name] = button
@@ -832,6 +858,7 @@ class PlaybackTab(QWidget):
         self.zoom = WHOLE_DAY
         self.view_start, self.view_end = self.day_start, self.day_end
         self._redraw_window()
+        self._draw_readout()
 
         day = date.toString("d MMMM yyyy")
         name = " and ".join(shown) if shown else ""
@@ -1541,7 +1568,7 @@ class PlaybackTab(QWidget):
         """The moment being watched, big, with the pointer's own time beside it."""
         if self.playhead_time is None:
             when = datetime.datetime.fromtimestamp((self.view_start + self.view_end) / 2)
-            self.readout_text = when.strftime("%A %-d %B %Y".replace("%-d", "%#d"))
+            self.readout_text = when.strftime("%A %d %B %Y")
         else:
             when = datetime.datetime.fromtimestamp(self.playhead_time)
             self.readout_text = when.strftime("%A %d %B %Y   %H:%M:%S")
