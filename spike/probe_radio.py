@@ -2,27 +2,40 @@
 
 `vmd/radio/airos.py` reads airOS's `status.cgi`. It was written from general
 knowledge of airOS and **has never been pointed at a real radio**. The payload
-the test suite serves was invented, not captured. If the owner's airOS version
-or model names its fields differently, the console's link panel shows dashes for
-ever and nothing on screen says why.
+the test suite serves was invented, not captured.
+
+The radio in the field answers **403 to the login**, so the login is where the
+failure is and dumping `status.cgi` says nothing about it. airOS answers 403 for
+several reasons that are not the password - a POST that arrives without the
+session cookie it sets on its own login page, a POST that does not look like it
+came from that page, a lockout after repeated tries - and from this end they are
+indistinguishable. So this prints the exchange itself.
 
     uv run python spike/probe_radio.py 10.0.0.9 --user ubnt
 
 It asks for the password rather than taking it on the command line, because
 PowerShell writes every command that is typed into `ConsoleHost_history.txt` in
-plain text and keeps it. Then it prints three things:
+plain text and keeps it. Then it prints, in order:
 
-  1. the raw JSON the radio sent, pretty-printed, with the password redacted in
-     both the typed and the percent-encoded form;
-  2. what `parse_status` made of it, field by field - including, for anything it
+  1. **the login exchange** - every request it made, in which flow, the status
+     that came back, the headers that settle this (`Set-Cookie` says whether a
+     session was ever opened, `Location` whether the login redirected,
+     `WWW-Authenticate` whether it wanted HTTP auth instead, `Server` which build
+     this is), the cookies held, and the hidden fields of the login page, since
+     that is where a CSRF token would be;
+  2. the raw JSON the radio sent, pretty-printed;
+  3. what `parse_status` made of it, field by field - including, for anything it
      could not find, the exact JSON keys it looked for;
-  3. the names this radio actually uses, so a mismatch between the two is
-     visible at a glance.
+  4. the names this radio actually uses, so a mismatch is visible at a glance.
 
-That turns "the panel shows dashes" into a one-line edit in `airos.py` instead
-of a morning of guessing. Read-only throughout: nothing here changes a radio
-setting, because a console that can reconfigure the link it depends on is a
-console that can cut itself off.
+Everything is redacted against the password in both the typed and the
+percent-encoded form, and every body is truncated: this output is meant to be
+pasted into an email.
+
+That turns "the antenna returns 403" and "the panel shows dashes" into a change
+in `airos.py` instead of three rounds of guessing. Read-only throughout: nothing
+here changes a radio setting, because a console that can reconfigure the link it
+depends on is a console that can cut itself off.
 """
 
 from __future__ import annotations
@@ -33,6 +46,7 @@ import http.cookiejar
 import json
 import ssl
 import sys
+import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,15 +58,42 @@ from pathlib import Path
 # parser, not a copy of it that can drift.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from vmd.radio.airos import parse_status  # noqa: E402
+from vmd.radio.airos import (  # noqa: E402
+    API_LOGIN_PATH,
+    LOGIN_FLOWS,
+    LOGIN_PATH,
+    REDACTED,
+    TELLING_HEADERS,
+    hidden_fields,
+    login_fields,
+    parse_status,
+    redact,
+)
 
 TIMEOUT = 6.0
 
-REDACTED = "***"
+# The flows the console tries, in the order it tries them. Imported rather than
+# restated: two implementations that drift are worse than one that is wrong,
+# because the probe would then answer a question about a login nobody sends.
+FLOWS = LOGIN_FLOWS
+
+# How much of a body is worth printing. A login page is tens of kilobytes of
+# HTML and this output has to fit in an email.
+BODY_CHARACTERS = 400
+BODY_LINES = 8
 
 
 class ProbeError(Exception):
-    """The radio could not be read, with a sentence saying why."""
+    """The radio could not be read, with a sentence saying why.
+
+    Carries the login exchange as well, because the failing case is the case:
+    a tool that prints the exchange only when the login worked prints it exactly
+    when nobody needs it.
+    """
+
+    def __init__(self, message: str, exchange: list | None = None) -> None:
+        super().__init__(message)
+        self.exchange = list(exchange or [])
 
 
 # The keys `parse_status` looks for, in the order it looks for them. Printed
@@ -85,44 +126,64 @@ UNITS: dict[str, str] = {
 
 
 @dataclass
+class Exchange:
+    """One request of the login, and everything about it worth reading.
+
+    Deliberately a record rather than a printed line: the redaction happens once,
+    at the point the report is written, so nothing can be added here later that
+    goes to the screen without passing through it.
+    """
+
+    flow: str
+    method: str
+    url: str
+    status: int | None = None
+    said: str = ""
+    headers: dict = field(default_factory=dict)
+    cookies: list[str] = field(default_factory=list)
+    hidden: dict = field(default_factory=dict)
+    body: str = ""
+
+
+@dataclass
 class Answer:
     """One reading of status.cgi, and how it was reached."""
 
     scheme: str
     body: str
     notes: list[str] = field(default_factory=list)
+    exchange: list[Exchange] = field(default_factory=list)
+    flow: str = ""
 
 
 # ------------------------------------------------------------------ redaction
-
-
-def redact(text: str, password: str) -> str:
-    """Hide the password in every form this program could have written it.
-
-    Both forms, and this is not belt and braces: the login is posted as an
-    encoded form, so a radio that echoes what it was sent - or a diagnostic that
-    prints the request - shows `p%40ss`, not `p@ss`. Masking one and printing the
-    other is printing it. That has already happened once in this project.
-    """
-    if not password:
-        return text
-    # safe="" on purpose: the default leaves "/" alone, which would have left
-    # half of a password containing a slash on the screen.
-    forms = (password, urllib.parse.quote(password, safe=""), urllib.parse.quote_plus(password))
-    for form in forms:
-        if form:
-            text = text.replace(form, REDACTED)
-    return text
+#
+# `redact` and `REDACTED` are the console's own, imported above rather than
+# restated here. The rule they enforce - hide the password in the typed form and
+# in both percent-encoded forms, because the login is posted as an encoded form -
+# is one this project has already broken once, and two copies of it are two
+# chances to break it again.
 
 
 # ------------------------------------------------------------------ the fetch
 
 
 def reason_for(exc: BaseException) -> str:
-    """One sentence for every way a radio refuses to be read."""
+    """One sentence for every way a radio refuses to be read.
+
+    401 and 403 are not the same answer and must not read as the same sentence.
+    401 is an authentication challenge. 403 is the radio refusing the request,
+    which may be the password and may equally be a session it never opened - and
+    saying otherwise is what sent the owner hunting a password that was fine.
+    """
     if isinstance(exc, urllib.error.HTTPError):
-        if exc.code in (401, 403):
-            return "the radio refused the username or password"
+        if exc.code == 401:
+            return "the radio refused the username or password (HTTP 401)"
+        if exc.code == 403:
+            return (
+                "the radio answered HTTP 403: it refused the request, which need "
+                "not mean the password is wrong - see the login exchange above"
+            )
         return f"the radio answered HTTP {exc.code}"
     if isinstance(exc, ssl.SSLError):
         return (
@@ -139,7 +200,7 @@ def reason_for(exc: BaseException) -> str:
     return f"could not connect: {exc}"
 
 
-def _opener() -> urllib.request.OpenerDirector:
+def _opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector:
     # The same three handlers the console uses, for the same three reasons:
     # airOS ships a self-signed certificate for an address that is not in it, the
     # login is a cookie, and no proxy may ever sit between this machine and a
@@ -150,52 +211,264 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         urllib.request.HTTPSHandler(context=context),
-        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+        urllib.request.HTTPCookieProcessor(jar),
     )
 
 
+def _kept(headers) -> dict[str, str]:
+    """The response headers that settle this, and only those."""
+    kept: dict[str, str] = {}
+    if headers is None:
+        return kept
+    for name in TELLING_HEADERS:
+        values = headers.get_all(name) if hasattr(headers, "get_all") else None
+        if values is None:
+            one = headers.get(name)
+            values = [one] if one else []
+        if values:
+            kept[name] = " | ".join(str(value) for value in values)
+    return kept
+
+
+def _held(jar: http.cookiejar.CookieJar) -> list[str]:
+    """The cookies in hand, named and measured but never quoted.
+
+    Whether a session cookie exists is the diagnosis. Its value is a live
+    credential for the radio, and nobody needs it read out over a phone.
+    """
+    return sorted(f"{cookie.name} ({len(cookie.value or '')} characters)" for cookie in jar)
+
+
+def _record(
+    exchange: list[Exchange],
+    flow: str,
+    method: str,
+    url: str,
+    jar: http.cookiejar.CookieJar,
+    response=None,
+    error: BaseException | None = None,
+    body: str = "",
+    hidden: dict | None = None,
+) -> None:
+    """One line of the story, whether it went well or not."""
+    if error is None:
+        status = getattr(response, "status", None)
+        said = str(getattr(response, "reason", "") or "")
+        headers = getattr(response, "headers", None)
+    elif isinstance(error, urllib.error.HTTPError):
+        # An HTTPError is a response: it has a code, a reason and headers, and
+        # those are exactly the three things this exists to show.
+        status = error.code
+        said = str(error.reason or "")
+        headers = error.headers
+    else:
+        status = None
+        said = reason_for(error)
+        headers = None
+    exchange.append(
+        Exchange(
+            flow=flow,
+            method=method,
+            url=url,
+            status=status,
+            said=said,
+            headers=_kept(headers),
+            cookies=_held(jar),
+            hidden=dict(hidden or {}),
+            body=body,
+        )
+    )
+
+
+def _login(
+    flow: str,
+    scheme: str,
+    host: str,
+    username: str,
+    password: str,
+    jar: http.cookiejar.CookieJar,
+    opener: urllib.request.OpenerDirector,
+    exchange: list[Exchange],
+    timeout: float,
+) -> dict[str, str]:
+    """One login flow, recorded request by request. Raises what the radio raised."""
+    if flow == "api":
+        url = f"{scheme}://{host}{API_LOGIN_PATH}"
+        data = json.dumps({"username": username, "password": password}).encode()
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        return _post(flow, url, data, headers, jar, opener, exchange, timeout)
+
+    url = f"{scheme}://{host}{LOGIN_PATH}"
+    hidden: dict[str, str] = {}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    if flow == "session":
+        # The candidate this whole exercise is about: the login page sets a
+        # cookie and carries a token, and a POST without them may be the 403.
+        request = urllib.request.Request(url, headers={"Accept": "text/html"})
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                page = response.read().decode("utf-8", "replace")
+                hidden = hidden_fields(page)
+                _record(exchange, flow, "GET", url, jar, response=response, body=page, hidden=hidden)
+                opened = _kept(response.headers)
+        except (urllib.error.URLError, OSError) as exc:
+            _record(exchange, flow, "GET", url, jar, error=exc)
+            raise
+        headers["Referer"] = url
+        headers["Origin"] = f"{scheme}://{host}"
+        if opened.get("X-CSRF-ID"):
+            headers["X-CSRF-ID"] = opened["X-CSRF-ID"]
+
+    data = urllib.parse.urlencode(login_fields(username, password, hidden)).encode()
+    return _post(flow, url, data, headers, jar, opener, exchange, timeout)
+
+
+def _post(
+    flow: str,
+    url: str,
+    data: bytes,
+    headers: dict,
+    jar: http.cookiejar.CookieJar,
+    opener: urllib.request.OpenerDirector,
+    exchange: list[Exchange],
+    timeout: float,
+) -> dict[str, str]:
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+            _record(exchange, flow, "POST", url, jar, response=response, body=body)
+            after = _kept(response.headers)
+    except (urllib.error.URLError, OSError) as exc:
+        body = ""
+        if isinstance(exc, urllib.error.HTTPError):
+            body = exc.read().decode("utf-8", "replace")
+        _record(exchange, flow, "POST", url, jar, error=exc, body=body)
+        raise
+    csrf = after.get("X-CSRF-ID") or headers.get("X-CSRF-ID")
+    return {"X-CSRF-ID": csrf} if csrf else {}
+
+
 def fetch_status(host: str, username: str, password: str, timeout: float = TIMEOUT) -> Answer:
-    """Log in and read status.cgi, https first and then http, as the console does."""
+    """Log in and read status.cgi, the way the console does and saying so.
+
+    Every scheme and every flow the console would try, in the order it tries
+    them, with what came back from each one kept. Nothing here decides what the
+    403 means: it collects what would let somebody decide.
+    """
     host = host.strip()
     if not host:
         raise ProbeError("no radio address was given")
 
     notes: list[str] = []
+    exchange: list[Exchange] = []
     for scheme in ("https", "http"):
-        opener = _opener()
-        data = urllib.parse.urlencode(
-            {"username": username, "password": password, "uri": "/"}
-        ).encode()
-        try:
-            request = urllib.request.Request(
-                f"{scheme}://{host}/login.cgi",
-                data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            opener.open(request, timeout=timeout).read()
-        except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                # Not a reason to try the other scheme: the radio answered, and
-                # what it said was no.
-                raise ProbeError(reason_for(exc)) from exc
-            notes.append(f"{scheme}://{host}/login.cgi - {reason_for(exc)}")
-            continue
-        except (urllib.error.URLError, OSError) as exc:
-            notes.append(f"{scheme}://{host}/login.cgi - {reason_for(exc)}")
-            continue
+        for flow in FLOWS:
+            jar = http.cookiejar.CookieJar()
+            opener = _opener(jar)
+            try:
+                carried = _login(
+                    flow, scheme, host, username, password, jar, opener, exchange, timeout
+                )
+            except (urllib.error.URLError, OSError) as exc:
+                notes.append(f"{scheme} {flow} login - {reason_for(exc)}")
+                if not isinstance(exc, urllib.error.HTTPError):
+                    # Nothing answered at all. The other flows would only spend
+                    # another timeout each finding that out.
+                    break
+                continue
 
-        try:
-            with opener.open(f"{scheme}://{host}/status.cgi", timeout=timeout) as response:
-                body = response.read().decode("utf-8", "replace")
-        except (urllib.error.URLError, OSError) as exc:
-            notes.append(f"{scheme}://{host}/status.cgi - {reason_for(exc)}")
-            continue
-        return Answer(scheme=scheme, body=body, notes=notes)
+            url = f"{scheme}://{host}/status.cgi"
+            try:
+                request = urllib.request.Request(url, headers=dict(carried))
+                with opener.open(request, timeout=timeout) as response:
+                    body = response.read().decode("utf-8", "replace")
+                    _record(exchange, flow, "GET", url, jar, response=response, body=body)
+            except (urllib.error.URLError, OSError) as exc:
+                _record(exchange, flow, "GET", url, jar, error=exc)
+                notes.append(f"{url} - {reason_for(exc)}")
+                continue
+            return Answer(scheme=scheme, body=body, notes=notes, exchange=exchange, flow=flow)
 
     raise ProbeError(
-        f"{host} could not be read. What was tried:\n"
-        + "\n".join(f"      {note}" for note in notes)
+        f"{host} could not be logged into. What was tried:\n"
+        + "\n".join(f"      {note}" for note in notes),
+        exchange=exchange,
     )
+
+
+# ------------------------------------------------------------- the login story
+
+
+def excerpt(body: str, password: str) -> list[str]:
+    """A body, cut down to something that fits in an email, and redacted.
+
+    Cut before it is wrapped, so a login page that is one 30 kB line of HTML
+    costs the same few lines as one that is nicely formatted.
+    """
+    text = redact(body or "", password)
+    lines = text.splitlines()
+    cut = lines[:BODY_LINES]
+    shown = "\n".join(cut)
+    if len(shown) > BODY_CHARACTERS:
+        cut = shown[:BODY_CHARACTERS].splitlines()
+        cut.append("... (cut)")
+    elif len(lines) > BODY_LINES:
+        cut.append("... (cut)")
+    wrapped: list[str] = []
+    for line in cut:
+        if line.strip():
+            wrapped += textwrap.wrap(line, width=64) or [line.strip()]
+    return wrapped
+
+
+def login_lines(exchange: list[Exchange], password: str, flow: str = "") -> list[str]:
+    """The login exchange, request by request.
+
+    This is the block the owner sends back, and it has to settle the cause in
+    one round rather than three. Every request; the status of each; the four
+    headers that decide it; the cookies held at that point; and the hidden
+    fields of the login page, because a CSRF token nobody sent back is the
+    strongest candidate for a 403 that has nothing to do with the password.
+    """
+    lines = ["-" * 72, "the login exchange (what was sent, and what came back)", "-" * 72]
+    if not exchange:
+        lines.append("  nothing was sent: there was no address to send it to.")
+        return lines
+    for step in exchange:
+        head = f"  [{step.flow}] {step.method} {redact(step.url, password)}"
+        lines.append(head)
+        answered = f"HTTP {step.status}" if step.status is not None else "no answer"
+        said = redact(step.said, password)
+        lines.append(f"      -> {answered}" + (f" ({said})" if said else ""))
+        for name, value in step.headers.items():
+            lines.append(f"      {name}: {redact(value, password)}")
+        if step.cookies:
+            lines.append("      cookies held: " + ", ".join(step.cookies))
+        else:
+            lines.append("      cookies held: none")
+        if step.hidden:
+            lines.append("      hidden fields on the page (a CSRF token would be here):")
+            for name, value in step.hidden.items():
+                lines.append(f"        {name} = {redact(value, password)}")
+        for line in excerpt(step.body, password):
+            lines.append(f"      | {line}")
+    lines.append("")
+    if flow:
+        lines.append(f"  The {flow} login is the one this radio accepted.")
+        if flow == "session":
+            lines.append("  It wanted the cookie from its own login page, which is why 403.")
+        elif flow == "cold":
+            lines.append("  It accepted a plain POST with no session opened first.")
+        else:
+            lines.append("  It logged in through the airOS 8 API rather than the form.")
+    else:
+        lines.append("  No flow logged in. Whichever status is above is the whole answer:")
+        lines.append("  401 is a rejected password; 403 is the radio refusing the request,")
+        lines.append("  and the Set-Cookie and hidden-field lines above say whether a")
+        lines.append("  session was ever opened to refuse.")
+    return lines
 
 
 # ---------------------------------------------------------------- the reading
@@ -352,16 +625,25 @@ def main(argv: list[str] | None = None, ask=getpass.getpass, fetch=fetch_status)
     try:
         answer = fetch(args.host, args.user, password, TIMEOUT)
     except ProbeError as exc:
-        print(f"  [x] {exc}")
+        # The exchange first and the verdict second: the login is where the
+        # failure is, so printing only the sentence would throw away the report.
+        for line in login_lines(getattr(exc, "exchange", []), password):
+            print(line)
         print()
-        print("  Check the address, the username, the password, and that this")
-        print("  machine is on the same network as the radio.")
+        print(f"  [x] {redact(str(exc), password)}")
+        print()
+        print("  Send the block above. It says whether the radio ever opened a")
+        print("  session, what it refused, and in which words.")
         print()
         return 1
     except Exception as exc:  # noqa: BLE001 - a sentence beats a traceback, always
-        print(f"  [x] the radio could not be read: {exc}")
+        print(f"  [x] the radio could not be read: {redact(str(exc), password)}")
         print()
         return 1
+
+    for line in login_lines(answer.exchange, password, answer.flow):
+        print(line)
+    print()
 
     for note in answer.notes:
         print(f"  [ ] {note}")

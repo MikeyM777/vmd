@@ -41,11 +41,23 @@ STATUS = {
 }
 
 
-def fetch_returning(payload, scheme: str = "https", notes: list[str] | None = None):
+def fetch_returning(
+    payload,
+    scheme: str = "https",
+    notes: list[str] | None = None,
+    exchange: list | None = None,
+    flow: str = "cold",
+):
     body = payload if isinstance(payload, str) else json.dumps(payload)
 
     def fetch(host: str, username: str, password: str, timeout: float = 0.0):
-        return probe_radio.Answer(scheme=scheme, body=body, notes=list(notes or []))
+        return probe_radio.Answer(
+            scheme=scheme,
+            body=body,
+            notes=list(notes or []),
+            exchange=list(exchange or []),
+            flow=flow,
+        )
 
     return fetch
 
@@ -190,6 +202,7 @@ def test_no_address_is_a_sentence_and_never_a_connection() -> None:
     ("error", "expected"),
     [
         (urllib.error.HTTPError("u", 401, "Unauthorized", {}, None), "username or password"),
+        (urllib.error.HTTPError("u", 403, "Forbidden", {}, None), "403"),
         (urllib.error.HTTPError("u", 500, "Server Error", {}, None), "500"),
         (ssl.SSLError("wrong version number"), "certificate"),
         (urllib.error.URLError(ConnectionRefusedError("refused")), "refused"),
@@ -200,3 +213,291 @@ def test_every_way_a_radio_can_fail_reads_as_a_sentence(error, expected: str) ->
     said = probe_radio.reason_for(error)
     assert expected in said
     assert said == said.strip() and said, "a sentence, not an empty string"
+
+
+def test_a_403_is_not_called_a_rejected_password() -> None:
+    """The defect this file's tool now exists to settle. 403 is the radio
+    refusing the request; whether the password is wrong is not in it."""
+    said = probe_radio.reason_for(urllib.error.HTTPError("u", 403, "Forbidden", {}, None))
+    assert "username or password" not in said
+    assert "403" in said
+
+
+# --------------------------------------------------------- the login exchange
+#
+# The radio in the field answers 403 to the login, so the login is where the
+# failure now is, and dumping status.cgi says nothing about it. This section is
+# the whole deliverable: the owner runs this once and sends back what it prints,
+# and that has to be enough to settle the cause in one round rather than three.
+
+SESSION = probe_radio.Exchange(
+    flow="session",
+    method="GET",
+    url="https://10.0.0.9/login.cgi",
+    status=200,
+    headers={
+        "Set-Cookie": "AIROS_SESSIONID=0123456789abcdef; path=/",
+        "Server": "lighttpd",
+        "Content-Type": "text/html",
+    },
+    cookies=["AIROS_SESSIONID"],
+    hidden={"AIROS_TOKEN": "t0ken", "uri": "/index.cgi"},
+    body="<html><form>...</form></html>",
+)
+REFUSED = probe_radio.Exchange(
+    flow="cold",
+    method="POST",
+    url="https://10.0.0.9/login.cgi",
+    status=403,
+    said="Forbidden",
+    headers={"WWW-Authenticate": 'Basic realm="airOS"', "Location": "/login.cgi"},
+)
+
+
+def test_it_prints_every_request_of_the_login_exchange(capsys) -> None:
+    _code, out = run(
+        [HOST], fetch_returning(STATUS, exchange=[SESSION, REFUSED]), capsys=capsys
+    )
+    assert "GET" in out and "POST" in out
+    assert out.count("/login.cgi") >= 2, "every request, not just the last"
+    assert "200" in out and "403" in out, "and the status of each"
+    assert "session" in out and "cold" in out, "and which flow it belonged to"
+
+
+def test_it_prints_the_response_headers_that_settle_this(capsys) -> None:
+    """Set-Cookie says whether a session was ever opened, Location whether the
+    login redirected, WWW-Authenticate whether it wanted HTTP auth instead, and
+    Server which build this is. Those four are the answer."""
+    _code, out = run(
+        [HOST], fetch_returning(STATUS, exchange=[SESSION, REFUSED]), capsys=capsys
+    )
+    for header in ("Set-Cookie", "Location", "WWW-Authenticate", "Server"):
+        assert header in out, f"{header} is one of the four that settles this"
+
+
+def test_it_prints_the_hidden_fields_of_the_login_page(capsys) -> None:
+    """This is where a CSRF token lives, and a token nobody sent back is the
+    strongest candidate for the 403."""
+    _code, out = run([HOST], fetch_returning(STATUS, exchange=[SESSION]), capsys=capsys)
+    assert "AIROS_TOKEN" in out
+    assert "t0ken" in out
+
+
+def test_it_prints_the_cookies_it_holds_without_printing_their_values(capsys) -> None:
+    """The name and the fact of a session cookie is the diagnosis. Its value is
+    a live credential for the radio and nobody needs it read out over a phone."""
+    _code, out = run([HOST], fetch_returning(STATUS, exchange=[SESSION]), capsys=capsys)
+    assert "AIROS_SESSIONID" in out
+    held = [line for line in out.splitlines() if "cookies held" in line.lower()]
+    assert held, "it must say what it is holding"
+    assert "0123456789abcdef" not in " ".join(held)
+
+
+def test_it_says_which_flow_got_in(capsys) -> None:
+    """Which login the radio accepted is the single most useful line here: it is
+    the difference between a radio that wants a session opened first and one
+    that does not, and that is the whole open question."""
+    _code, out = run(
+        [HOST], fetch_returning(STATUS, exchange=[SESSION], flow="session"), capsys=capsys
+    )
+    assert "the one this radio accepted" in out
+    got_in = next(line for line in out.splitlines() if "accepted" in line)
+    assert "session" in got_in
+
+    _code, out = run(
+        [HOST], fetch_returning(STATUS, exchange=[REFUSED], flow="cold"), capsys=capsys
+    )
+    got_in = next(line for line in out.splitlines() if "accepted" in line)
+    assert "cold" in got_in
+
+
+def test_a_cookie_is_named_and_measured_but_never_quoted() -> None:
+    """It is a live credential for a device on the operator's desk, and this
+    output is meant to be pasted into an email."""
+    import http.cookiejar
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    request = urllib.request.Request("http://10.0.0.9/login.cgi")
+    response = type(
+        "R",
+        (),
+        {
+            "info": lambda self: _headers("Set-Cookie: AIROS_SESSIONID=s3cr3tvalue; path=/"),
+        },
+    )()
+    jar.extract_cookies(response, request)
+    held = probe_radio._held(jar)
+    assert held == ["AIROS_SESSIONID (11 characters)"]
+    assert "s3cr3tvalue" not in " ".join(held)
+
+
+def _headers(raw: str):
+    import email
+
+    return email.message_from_string(raw)
+
+
+def test_the_login_exchange_is_printed_even_when_nothing_logged_in(capsys) -> None:
+    """The failing case is the case. A tool that prints the exchange only when
+    the login worked prints it exactly when nobody needs it."""
+
+    def fetch(host, username, password, timeout=0.0):
+        raise probe_radio.ProbeError("the radio answered HTTP 403", exchange=[SESSION, REFUSED])
+
+    code, out = run([HOST], fetch, capsys=capsys)
+    assert code == 1
+    assert "Traceback" not in out
+    assert "403" in out
+    assert "Set-Cookie" in out, "the exchange, not just the error"
+    assert "AIROS_TOKEN" in out
+
+
+def test_the_login_exchange_never_prints_the_password(capsys) -> None:
+    """In either form, and in a body, a header, a hidden field or a URL."""
+    leaky = probe_radio.Exchange(
+        flow="cold",
+        method="POST",
+        url=f"https://10.0.0.9/login.cgi?u={USER}&p={PASSWORD}",
+        status=403,
+        said=f"rejected password={PASSWORD}",
+        headers={"Set-Cookie": f"last=p%40ss%20word%2F1; note={PASSWORD}"},
+        hidden={"prefill": PASSWORD},
+        body=f"username={USER}&password=p%40ss+word%2F1&uri=%2F",
+    )
+    code, out = run([HOST], fetch_returning(STATUS, exchange=[leaky]), capsys=capsys)
+    assert code == 0
+    assert PASSWORD not in out
+    assert "p%40ss%20word%2F1" not in out
+    assert "p%40ss+word%2F1" not in out
+
+
+def test_the_bodies_are_truncated(capsys) -> None:
+    """A radio's login page is tens of kilobytes of HTML and the owner has to
+    paste this into an email."""
+    huge = probe_radio.Exchange(
+        flow="session",
+        method="GET",
+        url="https://10.0.0.9/login.cgi",
+        status=200,
+        body="x" * 20000,
+    )
+    _code, out = run([HOST], fetch_returning(STATUS, exchange=[huge]), capsys=capsys)
+    assert "x" * 20000 not in out
+    assert len(out) < 12000, f"the whole report came to {len(out)} characters"
+
+
+def test_the_probe_tries_exactly_what_the_console_tries(capsys) -> None:
+    """Two implementations that drift are worse than one that is wrong: the
+    probe would then answer a question about a login the console does not send."""
+    from vmd.radio.airos import LOGIN_FLOWS
+
+    assert probe_radio.FLOWS == LOGIN_FLOWS
+
+
+# ------------------------------------------------------ against a fake airOS
+#
+# Everything above injects the fetch. These run the real one, against the same
+# fake radios the console is tested against - imported rather than copied, so
+# that a radio the console is proved against is a radio the probe is proved
+# against too. Loopback only; nothing here goes near a real address.
+
+from tests.test_radio import Behaviour, FakeRadio, SESSION_COOKIE, TOKEN  # noqa: E402
+
+
+@pytest.fixture
+def fake_radio():
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    Behaviour.mode = "plain"
+    Behaviour.logged_in = False
+    Behaviour.accept_login = True
+    Behaviour.echo = False
+    Behaviour.csrf = False
+    Behaviour.posts = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeRadio)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"{server.server_address[0]}:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_it_reports_the_session_a_token_radio_wanted(fake_radio: str) -> None:
+    """The exchange has to show the cookie and the token, because those are the
+    two things that decide whether the 403 was ever about the password."""
+    Behaviour.mode = "token"
+    answer = probe_radio.fetch_status(fake_radio, USER, "linkpass", timeout=5.0)
+    assert answer.flow == "session"
+    # The https attempt is in here too, recorded as the failure it was: this
+    # fake speaks plain http, and what was tried is part of the report.
+    assert [step for step in answer.exchange if step.status is None], "https was tried"
+    page = next(
+        step
+        for step in answer.exchange
+        if step.method == "GET" and "login.cgi" in step.url and step.status == 200
+    )
+    assert page.hidden["AIROS_TOKEN"] == TOKEN
+    assert "Set-Cookie" in page.headers
+    posted = next(step for step in answer.exchange if step.method == "POST")
+    assert any("AIROS_SESSIONID" in cookie for cookie in posted.cookies)
+    assert '"signal": -63' in answer.body or '"signal":-63' in answer.body
+
+
+def test_it_reports_a_403_it_could_not_get_past(fake_radio: str) -> None:
+    """The case in the field. Nothing logs in, and the report is the deliverable."""
+    Behaviour.mode = "forbidden"
+    with pytest.raises(probe_radio.ProbeError) as caught:
+        probe_radio.fetch_status(fake_radio, USER, "linkpass", timeout=5.0)
+    exchange = caught.value.exchange
+    assert exchange, "the exchange has to survive the failure"
+    refusals = [step for step in exchange if step.status == 403]
+    assert len(refusals) >= 2, "both flows were tried and both were refused"
+    assert {step.flow for step in refusals} >= {"session", "cold"}
+    assert "username or password" not in str(caught.value)
+
+
+def test_the_report_of_a_403_says_a_session_was_opened(fake_radio: str, capsys) -> None:
+    """Which is the line that ends the investigation: a cookie was set and the
+    radio still said no, or no cookie was ever set at all."""
+    Behaviour.mode = "forbidden"
+
+    def fetch(host, username, password, timeout=0.0):
+        return probe_radio.fetch_status(fake_radio, username, password, timeout=5.0)
+
+    code, out = run([HOST], fetch, password="linkpass", capsys=capsys)
+    assert code == 1
+    assert "Traceback" not in out
+    assert "AIROS_SESSIONID" in out, "the cookie the radio set"
+    assert "AIROS_TOKEN" in out, "the token its login page carried"
+    assert "403" in out
+    assert "username or password" not in out
+    # Set-Cookie itself is quoted whole and on purpose: its path, its flags and
+    # whether there is more than one of it are the diagnosis. What is never
+    # quoted is the jar, which is a running tally and would repeat that value on
+    # every line of the report.
+    assert SESSION_COOKIE in out
+    held = [line for line in out.splitlines() if "cookies held" in line]
+    assert held and SESSION_COOKIE.split("=")[1] not in " ".join(held)
+
+
+def test_the_probe_never_reaches_a_radio_through_a_proxy(monkeypatch) -> None:
+    """It posts the radio's password. urllib otherwise honours http_proxy and,
+    on Windows, the registry's proxy settings, and on an air-gapped machine that
+    is traffic which should not exist at all."""
+    import http.cookiejar
+    import urllib.request
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    opener = probe_radio._opener(http.cookiejar.CookieJar())
+    routed = [
+        handler.proxies
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies
+    ]
+    assert routed == [], f"the radio would be reached through {routed}"
