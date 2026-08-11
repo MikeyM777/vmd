@@ -8,10 +8,18 @@ all.
 
 That mattered more here than it would elsewhere. **The link is the bottleneck of
 this entire system**: one camera at the far end of a Ubiquiti point-to-point hop
-of more than 15 km carrying about 5 Mb/s, and every bandwidth problem this
-project has had - 20-40 s of latency, streams dropping during pans, video
-stuttering - was a link problem. The figure that explains those is throughput
-against the negotiated capacity, and nothing on screen showed it.
+of more than 15 km, and every bandwidth problem this project has had - 20-40 s
+of latency, streams dropping during pans, video stuttering - was a link problem.
+
+And when the radio was finally read, the figure that explains those turned out
+not to be the one this panel led with. It showed throughput against the
+negotiated capacity - "3.1 Mb/s of 24 Mb/s (13%)", a link with room to spare -
+about a radio reporting **88% of its airtime spent**, carrying 10.7 Mb/s of
+video, with PTZ commands taking two seconds to answer. Airtime is what a
+wireless link runs out of; bits per second are what that airtime happens to buy
+at the modulation rate of the moment. So the airtime leads, the capacity figure
+is named as the estimate it is, and "will another stream fit" - the question the
+whole 4K argument turns on - has an answer on the screen.
 
 Two rules run through the whole file:
 
@@ -74,12 +82,53 @@ SIGNAL_MARGINAL_DBM = -80.0
 # How full the link has to be before it is worth saying so. Above 70% a burst
 # no longer fits and latency starts building; above 90% it is simply full, which
 # is what a stuttering picture looks like from this end.
+#
+# These are the fractions of the CAPACITY figure, and they are now the fallback
+# rather than the headline - see `_traffic_lines`. On a radio that reports its
+# airtime they are not used at all.
 BUSY_FRACTION = 0.7
 FULL_FRACTION = 0.9
 
-# Below this the airOS link quality figure is saying the link is spending its
-# time on retries rather than on data.
-CCQ_POOR_PERCENT = 80.0
+# Airtime: the share of the medium's TIME that is spent, and the reading that
+# tells him whether another stream will fit. It is the question the whole 4K
+# argument turns on and the panel did not show it.
+#
+# Why these two numbers, and why they are lower than the throughput fractions
+# above:
+#
+# * A wireless link is one shared, half-duplex medium. What runs out is airtime,
+#   not bits per second - the bits per second a given airtime buys depend on the
+#   modulation rate, which falls with the signal, so the same 10 Mb/s can cost
+#   30% of the air on a good day and 90% on a wet one. Throughput alone cannot
+#   see that happen. Airtime can.
+# * Delay does not rise with load, it rises with 1/(1-load). At 60% a packet
+#   waits about two and a half times what it would on an empty link, at 80%
+#   five times, at 90% ten. His PTZ commands take two seconds to answer at 88%,
+#   which is that curve and not a camera fault.
+# * Video is bursty. A key frame is several times the mean rate for a few
+#   milliseconds, so a link with 20% of its air free cannot absorb a burst that
+#   needs twice its average - the burst queues, and queueing is the latency and
+#   the stutter.
+#
+# So: below 60% there is room for another stream; from 60% there is no room for
+# a burst and latency is already building; from 80% the link is full and what is
+# on it already is not getting through cleanly. Deliberately one band
+# pessimistic, which is this panel's rule everywhere: calling a working link
+# busy costs a phone call, calling a full link healthy costs the picture.
+AIRTIME_BUSY_PERCENT = 60.0
+AIRTIME_FULL_PERCENT = 80.0
+
+# Below this the link quality figure is saying the link is spending its time on
+# retries rather than on data. Whichever field it came from - airMAX's
+# linkscores on the firmware that was measured, ccq on older builds - the parser
+# hands this panel a percentage, so there is one scale here and no guessing.
+QUALITY_POOR_PERCENT = 80.0
+
+# How far apart the two ends' signals have to be before the difference is worth
+# a sentence. A few dB is ordinary - different radios, different cables, a
+# different noise floor at each end. Six is not: that is one dish aimed better
+# than the other, and it is a fault that is invisible from either end alone.
+ASYMMETRY_DB = 6.0
 
 # The mark that says whether readings are still arriving, and its two words.
 #
@@ -190,9 +239,33 @@ def _signal_lines(link: dict) -> list[tuple[str, str]]:
             PALETTE["alarm"],
             "Close to the noise: this is where the picture starts breaking up.",
         )
-    lines = [(f"Signal: {signal:.0f} dBm - {words}", colour)]
+    # The far end's reading goes on this same line rather than on a heading of
+    # its own. Both halves matter on a point-to-point link - it can be strong
+    # one way and weak the other - but the panel is one column on a laptop and a
+    # second "Signal:" block would cost more than the fact is worth.
+    #
+    # The COLOUR still follows this end's figure alone. `vmd/desktop/window.py`
+    # colours the status chip from `signal_dbm` and says in as many words that
+    # it must never disagree with this panel about the same reading; a far end
+    # that governed the ink here would have the two arguing one line apart.
+    remote = _number(link.get("remote_signal_dbm"))
+    if remote is None:
+        lines = [(f"Signal: {signal:.0f} dBm - {words}", colour)]
+    else:
+        lines = [
+            (f"Signal: {signal:.0f} dBm here, {remote:.0f} dBm at the far end - {words}", colour)
+        ]
     if meaning:
         lines.append((meaning, PALETTE["muted"]))
+    if remote is not None and abs(signal - remote) >= ASYMMETRY_DB:
+        lines.append(
+            (
+                f"The two ends do not hear each other equally - {abs(signal - remote):.0f} dB "
+                "apart. That is usually one dish aimed better than the other, and the "
+                "weaker direction is the one that fails first.",
+                PALETTE["warn"],
+            )
+        )
 
     noise = _number(link.get("noise_dbm"))
     if noise is not None:
@@ -206,11 +279,106 @@ def _signal_lines(link: dict) -> list[tuple[str, str]]:
 
 
 def _traffic_lines(link: dict) -> list[tuple[str, str]]:
-    """Throughput against capacity: the view that explains the video problems.
+    """What the link is carrying, led by the figure that says whether more fits.
 
-    About 5 Mb/s of link and a 4K stream will not fit in it. Shown as a share of
-    what the radio says it negotiated, because "4.2 Mb/s" on its own is a number
-    and "4.2 of 5" is a diagnosis.
+    Airtime when the radio reports it, and throughput against capacity when it
+    does not. Which of those two is the headline is not a presentation choice:
+    a wireless link runs out of TIME, not of bits per second, and his radio was
+    at 88% of its airtime while this panel said "3.1 Mb/s of 24 Mb/s (13%)" - a
+    link with room to spare, about a link that had none.
+    """
+    airtime = _number(link.get("airtime_percent"))
+    if airtime is not None:
+        return _airtime_lines(link, airtime)
+    return _capacity_share_lines(link)
+
+
+def _airtime_lines(link: dict, airtime: float) -> list[tuple[str, str]]:
+    """The airtime, the traffic in it, and the capacity estimate put in its place.
+
+    The order is the argument. Airtime first because it is the true reading;
+    what is being carried second, with what the airtime says the whole link is
+    worth; and airMAX's capacity estimate last and grey, because 194 Mb/s beside
+    88% airtime is not a second opinion, it is a number from a different
+    question - what the modulation rate would allow, not what this link is
+    doing.
+    """
+    if airtime >= AIRTIME_FULL_PERCENT:
+        words, colour = "the link is full", PALETTE["alarm"]
+        meaning = (
+            "Nothing else will fit on it. A picture that stutters, falls behind, or "
+            "drops during a pan is this, not the camera and not the console."
+        )
+    elif airtime >= AIRTIME_BUSY_PERCENT:
+        words, colour = "little room left", PALETTE["warn"]
+        meaning = (
+            "There is no room for a burst - a key frame, or a pan - and latency builds "
+            "from here."
+        )
+    else:
+        words, colour, meaning = "room to spare", PALETTE["ink"], ""
+
+    lines = [(f"Airtime: {airtime:.0f}% used - {words}", colour)]
+    if meaning:
+        lines.append((meaning, colour))
+
+    coming, going = _number(link.get("rx_airtime_percent")), _number(
+        link.get("tx_airtime_percent")
+    )
+    if coming is not None and going is not None:
+        lines.append(
+            (f"{coming:.0f}% of it coming in, {going:.0f}% going out.", PALETTE["muted"])
+        )
+
+    rate = _number(link.get("rx_mbps")), _number(link.get("tx_mbps"))
+    carried = [
+        f"{value:.1f} Mb/s {way}"
+        for value, way in zip(rate, ("in", "out"))
+        if value is not None
+    ]
+    if carried:
+        said = "Carrying " + ", ".join(carried) + "."
+        total = sum(value for value in rate if value is not None)
+        # What the whole link is worth, from two figures the radio measured
+        # rather than from one it estimated - and the answer to "will another
+        # stream fit". Only worked out when the link is busy enough for the
+        # arithmetic to mean anything: at low airtime the modulation would
+        # change under a second stream anyway, and the number would be a guess
+        # wearing the clothes of a measurement.
+        if airtime >= AIRTIME_BUSY_PERCENT and total > 0:
+            said += (
+                f" That costs {airtime:.0f}% of the airtime, so about "
+                f"{total / airtime * 100.0:.0f} Mb/s is the whole of this link."
+            )
+        lines.append((said, PALETTE["ink"]))
+
+    estimate = [
+        f"{value:.0f} Mb/s {way}"
+        for value, way in (
+            (_number(link.get("rx_capacity_mbps")), "in"),
+            (_number(link.get("tx_capacity_mbps")), "out"),
+        )
+        if value
+    ]
+    if estimate:
+        lines.append(
+            (
+                "The radio's own estimate is " + " and ".join(estimate) + ", worked out "
+                "from the signal rather than measured. The airtime above is what the "
+                "link is actually doing.",
+                PALETTE["muted"],
+            )
+        )
+    return lines
+
+
+def _capacity_share_lines(link: dict) -> list[tuple[str, str]]:
+    """Throughput against capacity, for a radio that reports no airtime.
+
+    Weaker than the airtime view and kept because it is all such a radio can
+    say: "4.2 Mb/s" on its own is a number and "4.2 of 18" is at least an
+    argument. What it cannot see is the modulation rate falling underneath it,
+    which is why it is no longer the headline anywhere the airtime exists.
     """
     lines: list[tuple[str, str]] = []
     busiest = 0.0
@@ -265,31 +433,31 @@ def _traffic_lines(link: dict) -> list[tuple[str, str]]:
 
 
 def _detail_lines(link: dict) -> list[tuple[str, str]]:
-    """CCQ, distance, and what the radio calls itself. Omitted when unknown.
+    """Link quality and what the radio calls itself. Omitted when unknown.
 
     `parse_status` is deliberately defensive: a field it could not find comes
     back as None rather than as zero, because a console reporting 0 dBm because
     it could not find the field is worse than one reporting nothing. Undoing
     that here would put the lie back on the screen.
+
+    There is no distance here any more, and that is the same rule. The panel
+    used to print `wireless.distance` as metres; on the radio that was finally
+    read, that field is 0 and the station's own is 1, on a path that is really
+    15 km. Neither is metres, nothing here knows what they are, and "Distance:
+    1 km" is worse than nothing because somebody would believe it.
     """
     lines: list[tuple[str, str]] = []
 
-    ccq = _number(link.get("ccq"))
-    if ccq is not None:
-        # airOS reports this on a 0-1000 scale in the builds this was written
-        # against; "985%" is not something anyone can read. UNPROVEN on a real
-        # device - probe_radio.py prints the raw figure beside this one.
-        percent = ccq / 10.0 if ccq > 100 else ccq
+    quality = _number(link.get("quality_percent"))
+    if quality is not None:
+        # Already a percentage whichever field it came from: airMAX's linkscores
+        # are 0-100 and ccq is 0-1000, and the parser is where that is known.
         lines.append(
             (
-                f"Link quality: {percent:.0f}%",
-                PALETTE["warn"] if percent < CCQ_POOR_PERCENT else PALETTE["ink"],
+                f"Link quality: {quality:.0f}%",
+                PALETTE["warn"] if quality < QUALITY_POOR_PERCENT else PALETTE["ink"],
             )
         )
-
-    distance = _number(link.get("distance_m"))
-    if distance:
-        lines.append((f"Distance: {distance / 1000.0:.1f} km", PALETTE["muted"]))
 
     device = str(link.get("device") or "")
     uptime = _number(link.get("uptime_s"))

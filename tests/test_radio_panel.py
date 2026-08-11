@@ -21,31 +21,56 @@ import time
 
 import pytest
 
+from tests.test_radio import REAL_STATUS
 from vmd.desktop.style import PALETTE
-from vmd.radio.airos import RadioError
-from vmd.radio.panel import STALE_AFTER_SECONDS, LinkPanel, link_lines
+from vmd.radio.airos import RadioError, parse_status
+from vmd.radio.panel import (
+    AIRTIME_BUSY_PERCENT,
+    AIRTIME_FULL_PERCENT,
+    STALE_AFTER_SECONDS,
+    LinkPanel,
+    link_lines,
+)
 from vmd.settings import Settings
 
 
 def reading(**kwargs) -> dict:
-    """A radio service answer, in the shape RadioService.status() returns."""
+    """A radio service answer, in the shape RadioService.status() returns.
+
+    The access point's shape: no airtime, no far end, a quality figure that came
+    from `ccq`. Kept because it is the radio that already worked, and a panel
+    that reads a station and stops reading this one has broken something.
+    """
     base = {
         "connected": True,
         "reason": "",
         "signal_dbm": -63,
         "noise_dbm": -96,
         "ccq": 985.0,
+        "quality_percent": 98.5,
         "tx_mbps": 0.512,
         "rx_mbps": 4.2,
         "tx_capacity_mbps": 24.0,
         "rx_capacity_mbps": 18.0,
-        "distance_m": 15400,
         "uptime_s": 84231,
         "device": "LOCO-north",
         "age_seconds": 1.0,
     }
     base.update(kwargs)
     return base
+
+
+def his_link(**kwargs) -> dict:
+    """His radio's own answer, through the parser rather than written by hand.
+
+    Every number in it came off the device: -66 dBm here and -63 dBm at the far
+    end, 88% of the airtime spent, 10.7 Mb/s coming in. A panel test written
+    against a dict somebody typed is a test of what somebody typed.
+    """
+    payload = parse_status(REAL_STATUS).as_dict()
+    payload["age_seconds"] = 1.0
+    payload.update(kwargs)
+    return payload
 
 
 def texts(lines: list[tuple[str, str]]) -> str:
@@ -86,6 +111,18 @@ def test_a_stale_reading_is_never_presented_as_the_state_of_the_link_now() -> No
     aged = [text for text, _ in lines if "ago" in text.lower() or "old" in text.lower()]
     assert aged, "a stale reading must carry its age"
     assert not coloured(lines, PALETTE["ok"]), "nothing stale may read as healthy"
+
+
+def test_a_link_with_nothing_on_the_far_end_reads_as_a_fault_and_not_a_blank() -> None:
+    """The parser reports an empty `sta` list as the link being down, with the
+    radio's state in words. The panel has to draw that as the fault it is: this
+    is the reading an operator gets at the moment the far end loses power."""
+    down = parse_status({"wireless": {"essid": "LOCO", "mode": "sta-ptp", "sta": []}}).as_dict()
+    down["age_seconds"] = 1.0
+    lines = link_lines(down)
+    assert coloured(lines, PALETTE["alarm"])
+    assert "link is down" in texts(lines)
+    assert "probe_radio" not in texts(lines), "nothing here is a parser problem"
 
 
 def test_a_radio_that_could_not_be_read_shows_the_reason_it_gave() -> None:
@@ -161,6 +198,139 @@ def test_throughput_without_a_capacity_is_still_shown_and_says_which_is_missing(
     assert "capacity" in texts(lines)
 
 
+# ------------------------------------------------------------------- the airtime
+#
+# The number that matters most, and the panel did not show it. His link reports
+# `polling.use: 88` - 88% of the airtime spent - while carrying 10.7 Mb/s of
+# camera video with PTZ commands taking two seconds to answer, and what the
+# panel said about it was "3.1 Mb/s of 24 Mb/s (13%)": a link with room to
+# spare. It has none. Airtime, not throughput, is what a wireless link runs out
+# of, so it leads.
+
+
+def test_the_airtime_is_shown_and_his_link_reads_as_full() -> None:
+    lines = link_lines(his_link())
+    said = texts(lines)
+    assert "88" in said and "airtime" in said
+    assert coloured(lines, PALETTE["alarm"]), "88% of the airtime is not a black figure"
+
+
+def test_the_airtime_is_the_first_thing_said_about_the_traffic() -> None:
+    """Prominence is not decoration here. The throughput figure is the one that
+    read as healthy while the link was full, and whichever of them comes first
+    is the one an operator glancing at the column actually reads."""
+    lines = [text.lower() for text, _ in link_lines(his_link())]
+    airtime = next(index for index, text in enumerate(lines) if "airtime" in text)
+    carrying = next(index for index, text in enumerate(lines) if "mb/s" in text)
+    assert airtime < carrying, lines
+
+
+def test_a_link_with_airtime_to_spare_is_not_shouted_about() -> None:
+    """His signal is workable and stays amber on its own account; what must not
+    be coloured is the airtime, and nothing may claim the link is full."""
+    quiet = link_lines(his_link(airtime_percent=25.0, rx_airtime_percent=20.0,
+                                tx_airtime_percent=5.0))
+    assert not coloured(quiet, PALETTE["alarm"])
+    airtime = [(text, colour) for text, colour in quiet if "airtime" in text.lower()]
+    assert airtime and airtime[0][1] not in (PALETTE["warn"], PALETTE["alarm"]), airtime
+    assert "25" in texts(quiet), "it is still shown - it is the figure to watch"
+    assert "full" not in texts(quiet)
+
+
+def test_the_airtime_bands_are_where_a_wireless_link_actually_turns() -> None:
+    """Below the busy mark there is room for another stream; above the full mark
+    there is not room for the one already there."""
+    healthy = link_lines(his_link(airtime_percent=AIRTIME_BUSY_PERCENT - 5))
+    busy = link_lines(his_link(airtime_percent=AIRTIME_BUSY_PERCENT))
+    full = link_lines(his_link(airtime_percent=AIRTIME_FULL_PERCENT))
+    airtime_of = lambda lines: next(  # noqa: E731 - one expression, read once
+        colour for text, colour in lines if "airtime" in text.lower()
+    )
+    assert airtime_of(healthy) not in (PALETTE["warn"], PALETTE["alarm"])
+    assert airtime_of(busy) == PALETTE["warn"]
+    assert airtime_of(full) == PALETTE["alarm"]
+
+
+def test_the_airtime_is_split_by_direction_because_the_video_is_one_way() -> None:
+    said = texts(link_lines(his_link()))
+    assert "73" in said and "15" in said
+
+
+def test_a_full_link_says_that_is_what_a_stuttering_picture_is() -> None:
+    said = texts(link_lines(his_link()))
+    assert "stutter" in said or "full" in said
+
+
+def test_a_radio_that_reports_no_airtime_keeps_the_view_that_worked() -> None:
+    """An access point that reports no `polling.use` must not lose the only
+    reading it had: throughput against capacity is all such a radio can say."""
+    lines = link_lines(reading(rx_mbps=17.5, rx_capacity_mbps=18.0))
+    assert "airtime" not in texts(lines), "nothing may be invented from an absent field"
+    assert coloured(lines, PALETTE["alarm"])
+    assert "17.5" in " ".join(text for text, _ in lines)
+
+
+# --------------------------------------------------- the capacity is an estimate
+#
+# `dl_capacity: 194400` is 194 Mb/s on a 40 MHz link at -66 dBm: an airMAX
+# estimate worked out from the modulation rate, not a ceiling this link has ever
+# reached. Printed as "13% of capacity" beside 88% airtime it is not merely
+# uninformative, it contradicts the one figure that is true.
+
+
+def test_the_capacity_is_presented_as_an_estimate_and_never_as_a_percentage_used() -> None:
+    lines = link_lines(his_link())
+    said = texts(lines)
+    assert "estimate" in said, said
+    assert "13%" not in said and "(6%)" not in said, "airtime is the share that is real"
+
+
+def test_the_airtime_says_what_the_link_is_really_carrying() -> None:
+    """The arithmetic that settles the 4K argument: 10.9 Mb/s costs 88% of the
+    airtime, so the whole link is about 12 Mb/s - not the 194 the estimate
+    claims, and not room for a second stream."""
+    said = texts(link_lines(his_link()))
+    assert "12" in said, said
+
+
+# ------------------------------------------------------------------ the far end
+#
+# `sta[0].remote.signal` is what the OTHER radio hears. A link can be strong one
+# way and weak the other - which is what a dish knocked out of alignment looks
+# like - and the panel could not show it.
+
+
+def test_both_ends_of_the_link_are_on_the_one_signal_line() -> None:
+    lines = link_lines(his_link())
+    signal = [text for text, _ in lines if text.startswith("Signal")]
+    assert len(signal) == 1, "the far end may not cost the panel a second heading"
+    assert "-66" in signal[0] and "-63" in signal[0], signal
+
+
+def test_the_far_end_is_left_off_when_the_radio_did_not_report_one() -> None:
+    signal = [text for text, _ in link_lines(reading()) if text.startswith("Signal")]
+    assert signal == ["Signal: -63 dBm - healthy"], signal
+
+
+def test_two_ends_that_do_not_hear_each_other_equally_say_so() -> None:
+    """The asymmetry is the diagnosis: one dish is aimed better than the other,
+    and the weaker direction is the one that fails first."""
+    said = texts(link_lines(his_link(signal_dbm=-66, remote_signal_dbm=-84)))
+    assert "18 db" in said or "far end" in said
+    lines = link_lines(his_link(signal_dbm=-66, remote_signal_dbm=-84))
+    assert coloured(lines, PALETTE["warn"]) or coloured(lines, PALETTE["alarm"])
+
+
+def test_the_headline_colour_still_follows_the_signal_the_status_band_reads() -> None:
+    """`vmd/desktop/window.py:_link_state` colours the status chip from
+    `signal_dbm` and says in as many words that it must never disagree with this
+    panel about the same reading. A far end that governed the colour here would
+    make the two argue one line apart on the screen."""
+    lines = link_lines(his_link(signal_dbm=-58, remote_signal_dbm=-84))
+    signal = [(t, c) for t, c in lines if t.startswith("Signal")]
+    assert signal[0][1] == PALETTE["ok"], signal
+
+
 # --------------------------------------------------- what is not known is left out
 
 
@@ -169,29 +339,47 @@ def test_an_unknown_field_is_left_off_rather_than_shown_as_zero() -> None:
     undo it: a console reporting 0 dBm because it could not find the field is
     worse than one reporting nothing."""
     lines = link_lines(
-        reading(ccq=None, distance_m=None, uptime_s=None, device="", tx_mbps=None, rx_mbps=None)
+        reading(
+            ccq=None,
+            quality_percent=None,
+            uptime_s=None,
+            device="",
+            tx_mbps=None,
+            rx_mbps=None,
+            airtime_percent=None,
+        )
     )
     said = texts(lines)
     assert "0 %" not in said and "0%" not in said
     assert "0.0 mb/s" not in said
-    assert "distance" not in said
+    assert "airtime" not in said
     assert "up for" not in said
 
 
 def test_the_things_that_are_known_are_all_shown() -> None:
     said = texts(link_lines(reading()))
-    assert "quality" in said, "CCQ"
-    assert "15.4 km" in said, "distance"
+    assert "quality" in said, "the link quality figure"
     assert "loco-north" in said, "the device's name"
     assert "up for" in said, "uptime"
 
 
-def test_ccq_is_shown_as_a_percentage_whatever_scale_the_radio_used() -> None:
-    """airOS reports CCQ on a 0-1000 scale in the builds this was written
-    against, and "985%" is not something anyone can read."""
-    assert "98" in texts(link_lines(reading(ccq=985.0)))
-    assert "985" not in texts(link_lines(reading(ccq=985.0)))
-    assert "94" in texts(link_lines(reading(ccq=94.0)))
+def test_no_distance_is_shown_because_none_of_the_fields_is_metres() -> None:
+    """`wireless.distance` came back 0 and `sta[0].distance` came back 1 on a
+    link that is really 15 km. "Distance: 1 m" is not a smaller error than
+    saying nothing; it is a worse one, because somebody would believe it."""
+    assert "distance" not in texts(link_lines(his_link()))
+    assert "km" not in texts(link_lines(his_link()))
+
+
+def test_the_link_quality_is_a_percentage_whatever_the_radio_called_it() -> None:
+    """The parser normalises the scale - airMAX's linkscores are already 0-100
+    and ccq is 0-1000 - so the panel shows what it is handed and nothing here
+    has to know which radio it is talking to."""
+    assert "98" in texts(link_lines(reading(quality_percent=98.5)))
+    assert "985" not in texts(link_lines(reading(quality_percent=98.5)))
+    assert "100" in texts(link_lines(his_link())), "his link scores 100 both ways"
+    poor = link_lines(reading(quality_percent=61.0))
+    assert [text for text, colour in poor if colour == PALETTE["warn"] and "61" in text]
 
 
 # -------------------------------------------------------------------- the panel
@@ -304,6 +492,37 @@ def test_no_sentence_is_cut_in_half_by_the_column_it_sits_in(qtbot) -> None:
     # A widget below it that will take every pixel it is allowed to, as the
     # movement list does in the real column: that is what leaves the panel with
     # exactly the height it asked for and no more.
+    filler = QWidget()
+    layout.addWidget(filler, 1)
+    column.resize(340, 860)
+    column.show()
+    QApplication.processEvents()
+    assert panel.clipped() == [], "half a sentence is worse than none"
+
+
+def test_the_longest_the_panel_can_be_still_fits_the_column(qtbot) -> None:
+    """The panel grew: airtime, its split by direction, what the airtime says
+    the link is worth, and the capacity estimate demoted to a sentence. This is
+    the worst case it can now reach - his radio's own reading with a marginal
+    signal, two ends that disagree, an airtime past full and a poor quality
+    figure - which is four wrapped sentences more than the panel that was
+    measured for this column."""
+    from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+    worst = his_link(
+        signal_dbm=-85,
+        remote_signal_dbm=-66,
+        airtime_percent=95.0,
+        rx_airtime_percent=80.0,
+        tx_airtime_percent=15.0,
+        quality_percent=61.0,
+    )
+    column = QWidget()
+    qtbot.addWidget(column)
+    column.setFixedWidth(340)
+    layout = QVBoxLayout(column)
+    panel = LinkPanel(FakeRadioService(worst))
+    layout.addWidget(panel)
     filler = QWidget()
     layout.addWidget(filler, 1)
     column.resize(340, 860)
