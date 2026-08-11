@@ -4,11 +4,21 @@
 radio and prints everything that came back, so that a link panel showing dashes
 becomes a change in `airos.py` rather than three rounds of guessing.
 
-It has now done that once, and it earned its keep on the first run: the radio
-answered the login with HTTP 200 and the words `Invalid credentials.` in the
-body, which the console had been reading as a successful login - so the failure
-surfaced later as an unexplained 403 from `status.cgi`. The session flow was
-proved right at the same time. Both are in `airos.py` now.
+It has now done that twice, and it earned its keep on both runs.
+
+The first: the radio answered the login with HTTP 200 and the words `Invalid
+credentials.` in the body, which the console had been reading as a successful
+login - so the failure surfaced later as an unexplained 403 from `status.cgi`.
+The session flow was proved right at the same time.
+
+The second, once the password was right: it printed the radio's whole answer and
+the signal came back UNKNOWN. `wireless.signal` does not exist on a station -
+the reading is in `wireless.sta[0]` - there is no `ccq` on this firmware, and
+`polling.use`, the airtime, was not being read at all on a link that was 88%
+full. All of that is in `airos.py` now, and this file's field report looks where
+the parser looks: a probe that goes on naming the old keys would report a link
+as unreadable that the console is reading perfectly well, which is this same
+failure pointed the other way.
 
 Run it from anywhere, with whatever python is to hand:
 
@@ -173,30 +183,75 @@ class ProbeError(Exception):
 # The keys `parse_status` looks for, in the order it looks for them. Printed
 # beside anything that came back unknown, because the name it wanted is the
 # whole of the fix.
+#
+# Half of these changed when the parser met a real radio. A station keeps its
+# reading in `wireless.sta[0]` and there is no `wireless.signal` at all, so a
+# report that went on naming only the old keys would report a link as unreadable
+# that the console is reading perfectly well - which is the same failure this
+# tool exists to prevent, pointed the other way.
 LOOKED_FOR: dict[str, tuple[str, ...]] = {
-    "connected": ("wireless.essid", "wireless.count"),
-    "signal_dbm": ("wireless.signal", "wireless.rssi (added to the noise floor)"),
-    "noise_dbm": ("wireless.noisef", "wireless.noise"),
+    "connected": ("wireless.essid", "wireless.count", "wireless.sta (empty means down)"),
+    "signal_dbm": (
+        "wireless.signal",
+        "wireless.sta.0.signal",
+        "wireless.rssi (added to the noise floor)",
+        "wireless.sta.0.rssi (added to the noise floor)",
+    ),
+    "remote_signal_dbm": ("wireless.sta.0.remote.signal",),
+    "noise_dbm": ("wireless.noisef", "wireless.noise", "wireless.sta.0.noisefloor"),
+    "quality_percent": (
+        "wireless.sta.0.dl_avg_linkscore",
+        "wireless.sta.0.ul_avg_linkscore",
+        "wireless.ccq (which is a 0-1000 scale, and these are not)",
+    ),
     "ccq": ("wireless.ccq",),
+    "airtime_percent": ("wireless.polling.use",),
+    "rx_airtime_percent": ("wireless.polling.rx_use",),
+    "tx_airtime_percent": ("wireless.polling.tx_use",),
     "tx_mbps": ("wireless.throughput.tx",),
     "rx_mbps": ("wireless.throughput.rx",),
     "tx_capacity_mbps": ("wireless.polling.dl_capacity", "wireless.txrate"),
     "rx_capacity_mbps": ("wireless.polling.ul_capacity", "wireless.rxrate"),
-    "distance_m": ("wireless.distance",),
     "uptime_s": ("host.uptime",),
     "device": ("host.hostname", "host.devmodel"),
 }
 
 UNITS: dict[str, str] = {
     "signal_dbm": "dBm",
+    "remote_signal_dbm": "dBm",
     "noise_dbm": "dBm",
+    "quality_percent": "%",
+    "airtime_percent": "%",
+    "rx_airtime_percent": "%",
+    "tx_airtime_percent": "%",
     "tx_mbps": "Mb/s",
     "rx_mbps": "Mb/s",
     "tx_capacity_mbps": "Mb/s",
     "rx_capacity_mbps": "Mb/s",
-    "distance_m": "m",
     "uptime_s": "s",
 }
+
+
+def is_station(payload: dict) -> bool:
+    """Whether this radio is the station end of the link, as it says itself."""
+    wireless = payload.get("wireless") or {}
+    return str(wireless.get("mode") or "").lower().startswith("sta")
+
+
+def looked_for(payload: dict) -> dict[str, tuple[str, ...]]:
+    """The keys the parser reads for THIS answer.
+
+    Only the two capacities depend on the answer, and they have to: `dl` and
+    `ul` are the link's directions rather than the radio's, so on a station the
+    downlink is what arrives. A report that named `dl_capacity` as the source of
+    the outgoing figure on a station would be naming the wrong key with perfect
+    confidence, which is exactly the sort of thing this tool exists to stop.
+    """
+    paths = dict(LOOKED_FOR)
+    if is_station(payload):
+        paths["rx_capacity_mbps"] = ("wireless.polling.dl_capacity", "wireless.rxrate")
+        paths["tx_capacity_mbps"] = ("wireless.polling.ul_capacity", "wireless.txrate")
+    return paths
 
 
 @dataclass
@@ -579,11 +634,23 @@ def login_lines(exchange: list[Exchange], password: str, flow: str = "") -> list
 
 
 def at_path(payload: dict, path: str):
-    """The value at a dotted path, or `None` and False if it is not there."""
-    # Only the part before a bracket or a space: the table above annotates one
-    # path with how it is used, and that annotation is for the reader.
+    """The value at a dotted path, or `None` and False if it is not there.
+
+    A step that is a number indexes a list, because the reading of a
+    point-to-point link lives in `wireless.sta.0` - the one entry for the radio
+    at the other end - and a walk that only opened dictionaries walked straight
+    past everything that turned out to matter.
+    """
+    # Only the part before a bracket or a space: the table above annotates some
+    # paths with how they are used, and that annotation is for the reader.
     node = payload
     for step in path.split(" ")[0].split("."):
+        if step.isdigit():
+            index = int(step)
+            if not isinstance(node, list) or index >= len(node):
+                return None, False
+            node = node[index]
+            continue
         if not isinstance(node, dict) or step not in node:
             return None, False
         node = node[step]
@@ -598,7 +665,7 @@ def field_lines(payload: dict) -> list[str]:
     """
     parsed = parse_status(payload).as_dict()
     lines: list[str] = []
-    for name, paths in LOOKED_FOR.items():
+    for name, paths in looked_for(payload).items():
         value = parsed.get(name)
         found = [path for path in paths if at_path(payload, path)[1]]
         if name == "connected":
@@ -620,22 +687,50 @@ def field_lines(payload: dict) -> list[str]:
     return lines
 
 
-def key_lines(payload: dict, prefix: str = "") -> list[str]:
-    """The names this radio actually uses, two levels deep."""
+def key_lines(payload: dict, prefix: str = "", depth: int = 4) -> list[str]:
+    """The names this radio actually uses.
+
+    Lists are opened as well as dictionaries, and that is not a tidy-up: on the
+    radio this was run against, everything the console was missing lived in
+    `wireless.sta[0]` and one level further down again in its `remote`. The old
+    walk opened dictionaries only, so it printed `wireless.*` with `sta` in the
+    list and then stopped - naming the container and none of its contents, which
+    is the one thing this block exists to do.
+    """
     lines: list[str] = []
     for key, value in payload.items():
         path = f"{prefix}{key}"
-        if isinstance(value, dict):
-            lines.append(f"  {path + '.*':<24} {', '.join(sorted(value)) or '(empty)'}")
-            for inner, deeper in value.items():
-                if isinstance(deeper, dict):
-                    lines.append(
-                        f"  {path + '.' + inner + '.*':<24} "
-                        f"{', '.join(sorted(deeper)) or '(empty)'}"
-                    )
-        else:
-            lines.append(f"  {path:<24} {value!r}")
+        lines += _named(path, value, depth)
     return lines
+
+
+def _named(path: str, value, depth: int) -> list[str]:
+    """One value's names, or its value if it does not have any."""
+    if depth <= 0:
+        return [f"  {path:<24} {_short(value)}"]
+    if isinstance(value, dict):
+        lines = [f"  {path + '.*':<24} {', '.join(sorted(value)) or '(empty)'}"]
+        for inner, deeper in value.items():
+            if isinstance(deeper, (dict, list)):
+                lines += _named(f"{path}.{inner}", deeper, depth - 1)
+        return lines
+    if isinstance(value, list):
+        if not value:
+            return [f"  {path:<24} (empty list)"]
+        if not any(isinstance(item, (dict, list)) for item in value):
+            # chainrssi and its like: a list of numbers is a value, not a shape.
+            return [f"  {path:<24} {_short(value)}"]
+        lines = [f"  {path:<24} a list of {len(value)}"]
+        for index, item in enumerate(value):
+            lines += _named(f"{path}.{index}", item, depth - 1)
+        return lines
+    return [f"  {path:<24} {value!r}"]
+
+
+def _short(value, limit: int = 60) -> str:
+    """A value as a reader can take it in, and never as a wall of JSON."""
+    written = repr(value)
+    return written if len(written) <= limit else written[:limit] + "..."
 
 
 # -------------------------------------------------------------------- verdict
@@ -656,9 +751,24 @@ def _wrapped(names: list[str], width: int = 68) -> list[str]:
     return lines
 
 
+def _reported_distance(payload: dict) -> bool:
+    """Whether this radio sent a distance at all, in either of its two places."""
+    return any(
+        at_path(payload, path)[1]
+        for path in ("wireless.distance", "wireless.sta.0.distance")
+    )
+
+
 def verdict(payload: dict) -> list[str]:
     status = parse_status(payload)
     lines = ["", "=" * 72, "VERDICT", "=" * 72, ""]
+    if not status.connected and status.reason:
+        lines += [
+            f"This radio says the link is not up: {status.reason}.",
+            "The console will draw that as a fault rather than as a blank, which is",
+            "what it is.",
+            "",
+        ]
     if status.signal_dbm is None:
         lines += [
             "The console's link panel will show dashes for the signal, because the",
@@ -669,6 +779,19 @@ def verdict(payload: dict) -> list[str]:
     else:
         lines += [
             f"The console's link panel will show {status.signal_dbm} dBm as its headline.",
+        ]
+        if status.remote_signal_dbm is not None:
+            lines += [
+                f"The far end hears {status.remote_signal_dbm} dBm back, which is the "
+                "other half of",
+                "a point-to-point link and is on the same line of the panel.",
+            ]
+    if status.airtime_percent is not None:
+        lines += [
+            "",
+            f"Airtime: {status.airtime_percent:g}% of it is spent. This is the figure the",
+            "panel leads with, and it is the one that says whether another stream will",
+            "fit - a wireless link runs out of TIME, not of bits per second.",
         ]
     unknown = [
         name
@@ -685,19 +808,30 @@ def verdict(payload: dict) -> list[str]:
     if status.ccq is not None and status.ccq > 100:
         lines += [
             "",
-            f"CCQ came back as {status.ccq:g}, which is not a percentage. The panel",
+            f"CCQ came back as {status.ccq:g}, which is not a percentage. The parser",
             "reads anything above 100 as tenths of a percent, which is the 0-1000",
-            "scale airOS is understood to use. Check it against the radio's own web",
-            "interface while you are in there.",
+            "scale airOS uses where it reports ccq at all. Check it against the",
+            "radio's own web interface while you are in there.",
         ]
     if status.tx_capacity_mbps is not None or status.rx_capacity_mbps is not None:
         lines += [
             "",
-            "Check the capacity figures against the radio's own web interface. The",
-            "parser reads polling.dl_capacity / ul_capacity as kbps and txrate /",
-            "rxrate as Mb/s. That is what airOS is understood to do and it has not",
-            "been confirmed on a real device - and a capacity in the wrong unit is",
-            "exactly what would hide a link running full.",
+            "The capacity figures are an ESTIMATE and the panel now says so. They are",
+            "polling.dl_capacity / ul_capacity, in kbps - which is confirmed on a real",
+            "radio rather than assumed, against a throughput in the same unit beside",
+            "them. What has NOT been confirmed is that they mean anything: 194 Mb/s",
+            "on a 40 MHz link is a modulation rate worked out from the signal, and it",
+            "sat on this panel beside an airtime of 88% saying the link was 13% used.",
+            "The airtime is the figure to trust.",
+        ]
+    if _reported_distance(payload):
+        lines += [
+            "",
+            "This radio reported a distance and the panel does not show it. On the",
+            "device this was written against, wireless.distance was 0 and the station's",
+            "own was 1, on a path that is really 15 km: neither field is in metres and",
+            "nothing here knows what they are. A distance nobody can justify is left",
+            "off rather than printed as '1 m'.",
         ]
     lines += ["", "Nothing above was assumed. Every line is something the radio said.", ""]
     return lines

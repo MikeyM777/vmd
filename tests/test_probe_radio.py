@@ -20,7 +20,7 @@ import urllib.error
 import pytest
 
 from spike import probe_radio
-from tests.test_radio import ADVERSARIAL_PASSWORDS, encodings, leaks
+from tests.test_radio import ADVERSARIAL_PASSWORDS, REAL_STATUS, encodings, leaks
 
 HOST = "10.0.0.9"
 USER = "ubnt"
@@ -252,6 +252,84 @@ def test_a_field_that_was_found_is_not_reported_as_missing(capsys) -> None:
     _code, out = run([HOST], fetch_returning(STATUS), capsys=capsys)
     signal_line = [line for line in out.splitlines() if line.strip().startswith("signal")]
     assert signal_line and "unknown" not in signal_line[0].lower()
+
+
+# ---------------------------------------------- against the radio it was run on
+#
+# The probe was pointed at the owner's NanoStation 5AC loco and reported the
+# signal as UNKNOWN, which was true of the parser and no longer is. Its field
+# report has to look where the parser now looks, or it goes on saying a link is
+# unreadable that the console is reading.
+
+
+def test_it_finds_the_signal_of_a_station_where_the_parser_now_looks(capsys) -> None:
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    signal = next(
+        line for line in out.splitlines() if line.strip().startswith("signal_dbm")
+    )
+    assert "-66" in signal, signal
+    assert "unknown" not in signal.lower()
+    assert "sta" in signal, "and it says which key it came off"
+
+
+def test_it_reports_the_airtime_because_that_is_the_reading_that_mattered(capsys) -> None:
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    airtime = next(
+        line for line in out.splitlines() if line.strip().startswith("airtime_percent")
+    )
+    assert "88" in airtime and "polling.use" in airtime, airtime
+
+
+def test_it_reports_the_far_end_and_the_link_quality(capsys) -> None:
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    remote = next(
+        line for line in out.splitlines() if line.strip().startswith("remote_signal_dbm")
+    )
+    assert "-63" in remote and "remote" in remote
+    quality = next(
+        line for line in out.splitlines() if line.strip().startswith("quality_percent")
+    )
+    assert "100" in quality and "linkscore" in quality, quality
+
+
+def test_it_prints_the_names_inside_the_station_entry(capsys) -> None:
+    """The station entry is where everything on this firmware turned out to be,
+    and the key list walked straight past it: `sta` is a list, and the report
+    only ever opened dictionaries. The names it missed are the names of the
+    whole fix."""
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    for name in ("dl_avg_linkscore", "noisefloor", "chainrssi"):
+        assert name in out, f"{name} is one of the names this radio uses"
+    assert "wireless.sta" in out
+    # And one level further in, because the far end's reading lives there.
+    assert "remote" in out and "tx_throughput" in out
+
+
+def test_the_verdict_leads_with_the_airtime_and_puts_the_capacity_in_its_place(
+    capsys,
+) -> None:
+    """194 Mb/s of "capacity" printed as a headline beside 88% airtime is worse
+    than useless: it is the number that made a full link look healthy."""
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    verdict = out.split("VERDICT")[-1].lower()
+    assert "airtime" in verdict and "88" in verdict
+    assert "estimate" in verdict, "the capacity has to be named as one"
+    assert "kbps" in verdict and "confirmed" in verdict
+
+
+def test_the_verdict_says_why_no_distance_is_reported(capsys) -> None:
+    """The radio sent a distance. Two of them, in fact - 0 and 1 - on a 15 km
+    link, and the report has to say that is why the panel shows neither rather
+    than leaving somebody to wonder where it went."""
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    verdict = out.split("VERDICT")[-1].lower()
+    assert "distance" in verdict and "metres" in verdict
+
+
+def test_a_link_with_nothing_associated_is_reported_as_down(capsys) -> None:
+    payload = {"host": {}, "wireless": {"essid": "LOCO", "mode": "sta-ptp", "sta": []}}
+    _code, out = run([HOST], fetch_returning(payload), capsys=capsys)
+    assert "link is down" in out.lower() or "nothing is associated" in out.lower()
 
 
 def test_a_radio_that_answers_everything_reports_a_usable_link(capsys) -> None:
