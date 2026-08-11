@@ -10,11 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from vmd.radio.airos import AirOsRadio, RadioError, parse_status
+from vmd.radio.airos import AirOsRadio, RadioError, hidden_fields, parse_status
 from vmd.radio.service import RadioService
 from vmd.settings import RadioSettings, Settings
 
 USER, PASSWORD = "ubnt", "linkpass"
+# Deliberately full of characters a form encodes, so a message that leaked the
+# password in either form fails the test that says it must not.
+TRICKY_PASSWORD = "p@ss word/1"
 
 STATUS = {
     "host": {"hostname": "LOCO-north", "uptime": 84231, "devmodel": "NanoStation 5AC loco"},
@@ -32,35 +35,130 @@ STATUS = {
 }
 
 
-class FakeRadio(BaseHTTPRequestHandler):
-    logged_in = False
+# The login page a token-requiring airOS serves on GET /login.cgi: a session
+# cookie in the headers and a token in a hidden field. Both have to come back on
+# the POST or the radio answers 403 - which is the whole of this file's point.
+SESSION_COOKIE = "AIROS_SESSIONID=s3ss10n"
+TOKEN = "t0ken"
+CSRF_ID = "csrf-9"
+LOGIN_PAGE = (
+    "<html><body><form action='/login.cgi' method='post'>"
+    f"<input type='hidden' name='AIROS_TOKEN' value='{TOKEN}'>"
+    "<input type='hidden' name='uri' value='/index.cgi'>"
+    "<input type='text' name='username'>"
+    "<input type='password' name='password'>"
+    "</form></body></html>"
+)
+
+
+class Behaviour:
+    """How the fake radio answers. Set per test; read on every request.
+
+    Four radios, because the whole question this file exists to answer is which
+    of them the owner's device is:
+
+    * `plain` - no login page at all (GET /login.cgi is 404) and a cold POST is
+      accepted. The radio the code was originally written for.
+    * `token` - a login page that sets a cookie and carries a hidden token, and
+      a POST without either is refused with 403 whatever the password is.
+    * `forbidden` - 403 to every login, always.
+    * `unauthorized` - 401 to every login: a genuine authentication challenge.
+    """
+
+    mode = "plain"
     accept_login = True
+    logged_in = False
+    posts: list[dict] = []
+    # A radio that says back what it was sent. Not hypothetical: this project has
+    # already printed a percent-encoded password once, and a device that quotes
+    # the form it rejected is exactly how the console would come to repeat one.
+    echo = False
+    # airOS 8 hands back an X-CSRF-ID on the login and refuses everything
+    # afterwards that does not repeat it - a valid session, refused with 403.
+    csrf = False
+
+
+class FakeRadio(BaseHTTPRequestHandler):
+    def _send(self, code: int, payload: bytes = b"", extra: tuple = (), said: str = "") -> None:
+        self.send_response(code, said or None)
+        for name, value in extra:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
 
     def do_POST(self) -> None:  # noqa: N802
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
-        if not type(self).accept_login or f"password={PASSWORD}" not in body:
-            self.send_response(403)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+        Behaviour.posts.append(
+            {
+                "path": self.path,
+                "body": body,
+                "cookie": self.headers.get("Cookie", ""),
+                "referer": self.headers.get("Referer", ""),
+                "origin": self.headers.get("Origin", ""),
+                "content_type": self.headers.get("Content-Type", ""),
+            }
+        )
+        if self.path.startswith("/api/"):
+            # This fake is a login.cgi radio. The airOS 8 endpoint is not here.
+            self._send(404)
             return
-        type(self).logged_in = True
-        self.send_response(200)
-        self.send_header("Set-Cookie", "AIROS_SESSIONID=abc; path=/")
-        self.send_header("Content-Length", "2")
-        self.end_headers()
-        self.wfile.write(b"ok")
+        said = body if Behaviour.echo else ""
+        if Behaviour.mode == "unauthorized":
+            self._send(401, extra=(("WWW-Authenticate", 'Basic realm="airOS"'),), said=said)
+            return
+        if Behaviour.mode == "forbidden":
+            self._send(403, said=said)
+            return
+        if Behaviour.mode == "broken":
+            self._send(500, said=said)
+            return
+        if Behaviour.mode == "token" and (
+            SESSION_COOKIE not in self.headers.get("Cookie", "")
+            or f"AIROS_TOKEN={TOKEN}" not in body
+        ):
+            # The refusal this whole change is about: the password is correct and
+            # the answer is still 403, because the session was never opened.
+            self._send(403)
+            return
+        if not Behaviour.accept_login or f"password={PASSWORD}" not in body:
+            self._send(403)
+            return
+        Behaviour.logged_in = True
+        granted = [("Set-Cookie", "AIROS_SESSIONID=abc; path=/")]
+        if Behaviour.csrf:
+            granted.append(("X-CSRF-ID", CSRF_ID))
+        self._send(200, b"ok", tuple(granted))
 
     def do_GET(self) -> None:  # noqa: N802
-        if not type(self).logged_in:
+        if self.path.startswith("/login.cgi"):
+            if Behaviour.mode in ("token", "forbidden"):
+                self._send(
+                    200,
+                    LOGIN_PAGE.encode(),
+                    (
+                        ("Set-Cookie", f"{SESSION_COOKIE}; path=/"),
+                        ("Content-Type", "text/html"),
+                    ),
+                )
+            else:
+                self._send(404)
+            return
+        if not Behaviour.logged_in:
             # airOS answers an unauthenticated status.cgi with its login page,
             # not with an error - which is why the client must notice HTML.
-            payload = b"<html>login</html>"
-        else:
-            payload = json.dumps(STATUS).encode()
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+            self._send(200, b"<html>login</html>", (("Content-Type", "text/html"),))
+            return
+        if Behaviour.csrf and self.headers.get("X-CSRF-ID") != CSRF_ID:
+            # The session is valid and the answer is still 403.
+            self._send(403)
+            return
+        self._send(
+            200,
+            json.dumps(STATUS).encode(),
+            (("Content-Type", "application/json"),),
+        )
 
     def log_message(self, *args: object) -> None:
         pass
@@ -68,8 +166,12 @@ class FakeRadio(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def radio() -> Iterator[str]:
-    FakeRadio.logged_in = False
-    FakeRadio.accept_login = True
+    Behaviour.mode = "plain"
+    Behaviour.logged_in = False
+    Behaviour.accept_login = True
+    Behaviour.echo = False
+    Behaviour.csrf = False
+    Behaviour.posts = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeRadio)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -128,17 +230,168 @@ def test_the_capacity_is_in_megabits_whichever_field_reported_it() -> None:
     assert parse_status({"wireless": {"essid": "x"}}).tx_capacity_mbps is None
 
 
-def test_a_wrong_password_says_so(radio: str) -> None:
-    FakeRadio.accept_login = False
-    with pytest.raises(RadioError) as caught:
-        AirOsRadio(radio, USER, "wrong").status()
-    assert "username or password" in str(caught.value)
-
-
 def test_an_unreachable_radio_is_a_sentence_not_a_crash() -> None:
     with pytest.raises(RadioError) as caught:
         AirOsRadio("192.0.2.99:8", USER, PASSWORD).status()
     assert "cannot reach" in str(caught.value)
+
+
+# ------------------------------------------------------------------- the login
+#
+# The owner pointed this at the real radio and it answered 403. The code called
+# that a rejected username or password and told the operator so, which sent them
+# hunting a password problem that may not exist: airOS answers 403 to a login
+# posted without the session cookie it sets on its own login page, to one that
+# does not look like it came from that page, and after too many attempts.
+#
+# Nobody here can reach the radio, so none of the following is a claim about the
+# owner's device. What it fixes is what the code is entitled to say.
+
+
+def test_a_radio_that_wants_its_session_cookie_is_logged_into(radio: str) -> None:
+    """The strongest candidate for the 403, and the one the fix is built around.
+
+    This radio refuses a cold POST with 403 however right the password is. It
+    sets AIROS_SESSIONID on a GET of its login page and puts a token in a hidden
+    field, and it accepts the POST that carries both. The old code never made
+    that GET, so it could never have logged in here.
+    """
+    Behaviour.mode = "token"
+    device = AirOsRadio(radio, USER, PASSWORD)
+    status = device.status()
+    assert status.signal_dbm == -63
+    assert device.login_method == "session"
+    posted = Behaviour.posts[-1]
+    assert SESSION_COOKIE in posted["cookie"], "the POST must carry the session cookie"
+    assert f"AIROS_TOKEN={TOKEN}" in posted["body"], "and the token from the form"
+
+
+def test_the_login_looks_like_it_came_from_the_radios_own_page(radio: str) -> None:
+    """Some builds refuse a form POST with no Referer or Origin of their own."""
+    Behaviour.mode = "token"
+    AirOsRadio(radio, USER, PASSWORD).status()
+    posted = Behaviour.posts[-1]
+    assert posted["referer"].endswith("/login.cgi")
+    assert radio in posted["origin"]
+
+
+def test_a_radio_that_needs_no_token_still_works(radio: str) -> None:
+    """The fallback has to be real, not decorative.
+
+    This radio has no login page at all - GET /login.cgi is a 404 - and accepts
+    the cold POST the console has always sent. The token-carrying flow cannot
+    even start here, so if the fallback were not tried this radio would stop
+    being readable the moment the fix landed.
+    """
+    Behaviour.mode = "plain"
+    device = AirOsRadio(radio, USER, PASSWORD)
+    assert device.status().signal_dbm == -63
+    assert device.login_method == "cold"
+
+
+def test_a_401_is_reported_as_a_rejected_password(radio: str) -> None:
+    """401 is an authentication challenge and nothing else. Saying so is fair."""
+    Behaviour.mode = "unauthorized"
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(radio, USER, "wrong").status()
+    said = str(caught.value)
+    assert "username or password" in said
+    assert "401" in said
+    assert "login.cgi" in said
+
+
+def test_a_403_is_not_reported_as_a_rejected_password(radio: str) -> None:
+    """The defect. A 403 is the radio refusing the request, and the code cannot
+    tell from it whether the password is wrong. It must not say that it can."""
+    Behaviour.mode = "forbidden"
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(radio, USER, PASSWORD).status()
+    said = str(caught.value)
+    assert "username or password" not in said, "403 does not say that"
+    assert "403" in said, "the operator needs the code"
+    assert "login.cgi" in said, "and the URL it came from"
+    # And a hint at what it does mean, since the operator has no terminal.
+    assert "cookie" in said.lower() or "session" in said.lower()
+
+
+def test_a_403_says_both_login_flows_were_tried(radio: str) -> None:
+    """Otherwise the first thing anyone asks is whether it tried the other one.
+
+    This radio serves a proper login page and still refuses every POST, so both
+    flows get as far as posting and both are refused. The sentence may say they
+    were tried because they were.
+    """
+    Behaviour.mode = "forbidden"
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(radio, USER, PASSWORD).status()
+    assert "probe_radio" in str(caught.value), "and where the answer comes from"
+    to_login = [post for post in Behaviour.posts if post["path"] == "/login.cgi"]
+    assert [post for post in to_login if post["referer"]], "the session flow posted"
+    assert [post for post in to_login if not post["referer"]], "and so did the cold one"
+
+
+def test_a_session_that_needs_its_token_repeating_keeps_reading(radio: str) -> None:
+    """airOS 8 hands back an X-CSRF-ID and refuses everything that omits it.
+
+    A login that succeeded and a status.cgi that comes back 403 is the same
+    defect one step later, and it would read as a dead link rather than as a
+    header that was dropped.
+    """
+    Behaviour.csrf = True
+    device = AirOsRadio(radio, USER, PASSWORD)
+    assert device.status().signal_dbm == -63
+
+
+def test_the_password_is_never_in_the_message_in_either_form(radio: str) -> None:
+    """It has bitten this project once already. A password masked in one form and
+    printed percent-encoded in the other is a password that has been printed.
+
+    This radio quotes the form it rejected, which is how the console would come
+    to repeat one: the login is posted encoded, so what comes back is
+    `p%40ss+word%2F1` and not the password as it was typed.
+    """
+    Behaviour.mode = "forbidden"
+    Behaviour.echo = True
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(radio, USER, TRICKY_PASSWORD).status()
+    said = str(caught.value)
+    assert "403" in said, "the radio's own words are still reported"
+    assert TRICKY_PASSWORD not in said
+    assert "p%40ss%20word%2F1" not in said
+    assert "p%40ss+word%2F1" not in said
+
+
+def test_an_unexplained_code_is_reported_as_itself(radio: str) -> None:
+    """Anything that is neither 401 nor 403 gets the number and no story."""
+    Behaviour.mode = "broken"
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(radio, USER, PASSWORD).status()
+    said = str(caught.value)
+    assert "500" in said
+    assert "username or password" not in said
+
+
+def test_a_radio_that_never_answered_is_not_accused_of_anything(radio: str) -> None:
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio("192.0.2.99:8", USER, PASSWORD).status()
+    assert "username or password" not in str(caught.value)
+
+
+# ------------------------------------------------------- reading the login page
+
+
+def test_the_hidden_fields_of_a_login_page_are_found() -> None:
+    """A CSRF token lives in a hidden input, and that is where the fix looks."""
+    found = hidden_fields(LOGIN_PAGE)
+    assert found["AIROS_TOKEN"] == TOKEN
+    assert found["uri"] == "/index.cgi"
+    assert "password" not in found, "only hidden fields, not the typed ones"
+
+
+def test_a_page_that_is_not_a_login_page_yields_nothing_rather_than_raising() -> None:
+    assert hidden_fields("") == {}
+    assert hidden_fields("<html><p>not a form at all</p>") == {}
+    assert hidden_fields("<input type=hidden name=a value=b><input type=hidden>") == {"a": "b"}
 
 
 # -------------------------------------------------- the reading, off the thread
@@ -205,8 +458,8 @@ def test_the_reading_is_cached_so_every_heartbeat_does_not_log_in(radio: str) ->
         assert until(lambda: service.status().get("connected") is True)
         # Inside the window it must not touch the radio at all, so a radio that
         # has started refusing logins cannot change the answer yet.
-        FakeRadio.logged_in = False
-        FakeRadio.accept_login = False
+        Behaviour.logged_in = False
+        Behaviour.accept_login = False
         for _ in range(20):
             assert service.status()["connected"] is True
         # Past the window it goes back to the radio and reports the new failure.
