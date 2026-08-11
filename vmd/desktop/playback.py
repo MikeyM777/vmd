@@ -769,7 +769,7 @@ class PlaybackTab(QWidget):
         not what is currently being recorded.
         """
         try:
-            names = sorted({segment.stream for segment in self._index.all()})
+            names = self._names_on_disk()
         except sqlite3.Error as error:
             self._report_unreadable(error)
             return []
@@ -786,6 +786,18 @@ class PlaybackTab(QWidget):
         finally:
             self._loading = False
         return names
+
+    def _names_on_disk(self) -> list[str]:
+        """The camera names, asked for as names rather than counted by hand.
+
+        `streams()` is one DISTINCT out of SQLite. Collecting them from every
+        row was seven and a half seconds of the drawing thread on ninety days of
+        two cameras, at start-up, before the console had shown anything.
+        """
+        streams = getattr(self._index, "streams", None)
+        if streams is not None:
+            return list(streams())
+        return sorted({segment.stream for segment in self._index.all()})
 
     def stream_names(self) -> list[str]:
         """The cameras, without the entry that means more than one of them."""

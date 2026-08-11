@@ -240,3 +240,26 @@ def test_bounds_with_no_stream_named_covers_everything(tmp_path):
         assert index.bounds() == (50.0, 900.0)
     finally:
         index.close()
+
+
+def test_the_stream_names_come_out_without_reading_every_row(tmp_path):
+    """Playback asks this on every redraw. Reading the whole catalogue to
+    collect distinct names was seven and a half seconds of the thread that
+    draws the window on a season's recordings."""
+    index = build(tmp_path)
+    try:
+        for n in range(50):
+            index.add("visible", f"/rec/v{n}.mp4", float(n), float(n + 1), 10, commit=False)
+            index.add("thermal", f"/rec/t{n}.mp4", float(n), float(n + 1), 10, commit=False)
+        index.commit()
+        assert index.streams() == ["thermal", "visible"]
+    finally:
+        index.close()
+
+
+def test_an_empty_catalogue_has_no_stream_names(tmp_path):
+    index = build(tmp_path)
+    try:
+        assert index.streams() == []
+    finally:
+        index.close()

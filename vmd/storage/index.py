@@ -125,6 +125,22 @@ class SegmentIndex:
             ).fetchall()
         return [self._to_segment(row) for row in rows]
 
+    def streams(self) -> list[str]:
+        """The names anything has been recorded under, sorted.
+
+        Playback asks this every time it is opened and every time it is taken to
+        a day, and it used to ask it by reading every row in the catalogue and
+        collecting the distinct names in Python. On ninety days of five-minute
+        recordings from two cameras - 51,840 rows, which is a laptop that has
+        been watching a perimeter for a season - that was seven and a half
+        seconds of the thread that draws the window, at start-up, before the
+        console had shown anything at all.
+        """
+        rows = self._connection.execute(
+            "SELECT DISTINCT stream FROM segments ORDER BY stream"
+        ).fetchall()
+        return [row["stream"] for row in rows]
+
     def between(self, stream: str, window_start: float, window_end: float) -> list[Segment]:
         """The segments of one stream that touch this window, oldest first.
 
