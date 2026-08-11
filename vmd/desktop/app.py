@@ -118,6 +118,14 @@ def build_wiring(
             config_path=settings_path.parent / "go2rtc.json",
             binary=find_binary(),
         )
+    # Before the services, because the services hold the loop that keeps the
+    # camera's bitrate inside what the link is carrying - and that needs both of
+    # them: the radio to read and the camera to write to. One object each, not
+    # two: a second RadioService would log in to the radio a second time, and a
+    # second PtzService would hold a second connection to a camera that hands
+    # out very few of them.
+    ptz = PtzService(settings)
+    radio = RadioService(settings)
     services = ConsoleServices(
         settings=settings,
         settings_path=settings_path,
@@ -126,6 +134,8 @@ def build_wiring(
         # Built whether or not detection is enabled: ConsoleServices decides
         # whether to supervise it, and building it costs nothing but an object.
         detector=DetectorProcess(settings_path),
+        ptz=ptz,
+        radio=radio,
     )
     return Wiring(
         settings_path=settings_path,
@@ -133,8 +143,8 @@ def build_wiring(
         # Beside the segment index, because the two are reclaimed together.
         events_path=Path(settings.storage.root) / "events.db",
         services=services,
-        ptz=PtzService(settings),
-        radio=RadioService(settings),
+        ptz=ptz,
+        radio=radio,
     )
 
 

@@ -3283,3 +3283,159 @@ def test_a_save_that_leaves_the_camera_held_is_settled_too(tmp_path: Path, caplo
     said = said_in(caplog).lower()
     assert "camera" in said and "recorder" in said, said
 
+
+# ------------------------------------------ matching the picture to the link
+#
+# The loop itself is `tests/test_autobitrate.py`. These are about where it runs:
+# on the console's own heartbeat, off the thread that draws the window, and only
+# when there is both a camera to write to and a radio to read.
+
+
+class Radio:
+    def __init__(self, reading: dict) -> None:
+        self.reading = reading
+        self.asked = 0
+
+    def status(self) -> dict:
+        self.asked += 1
+        return dict(self.reading)
+
+
+class Ptz:
+    def __init__(self) -> None:
+        self.fitted: list[int] = []
+
+    def fit_encoders_to_link(self, ceiling_kbps: int) -> dict:
+        self.fitted.append(ceiling_kbps)
+        return {"ok": True, "changed": [], "applied": {}, "refused": []}
+
+
+def console_with_a_link(tmp_path: Path, reading: dict, clock=None):
+    settings_path = tmp_path / "settings.json"
+    settings = settings_for(tmp_path)
+    radio, ptz = Radio(reading), Ptz()
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        disk=watching(settings),
+        clock=clock or Clock(),
+        # On the caller's thread: no test in this suite waits on a worker.
+        executor=lambda work: work(),
+        ptz=ptz,
+        radio=radio,
+    )
+    return services, radio, ptz
+
+
+def test_the_heartbeat_is_what_drives_the_bitrate_loop(tmp_path: Path) -> None:
+    """One heartbeat for the whole console. A loop with a timer of its own is a
+    second thing to stop when the window closes and a second thing to forget."""
+    clock = Clock()
+    services, radio, ptz = console_with_a_link(
+        tmp_path,
+        {
+            "connected": True,
+            "airtime_percent": 92.0,
+            "signal_dbm": -66.0,
+            "age_seconds": 1.0,
+        },
+        clock=clock,
+    )
+
+    for _ in range(20):
+        services.tick()
+        clock.advance(2.0)
+
+    assert radio.asked >= 5, "the loop reads the link the console already has"
+    assert ptz.fitted, "a link that busy for that long should have been acted on"
+
+
+def test_a_console_with_no_radio_never_touches_the_camera(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings = settings_for(tmp_path)
+    ptz = Ptz()
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        disk=watching(settings),
+        executor=lambda work: work(),
+        ptz=ptz,
+        radio=None,
+    )
+
+    for _ in range(20):
+        services.tick()
+
+    assert ptz.fitted == []
+    assert services.state()["link_bitrate"]["running"] is False
+
+
+def test_the_link_loop_is_in_what_the_console_reports(tmp_path: Path) -> None:
+    """The operator has no terminal. Whether this is running at all has to be
+    something the console can be asked, not something only the log knows."""
+    services, _, _ = console_with_a_link(
+        tmp_path, {"connected": False, "reason": "the radio is not set up"}
+    )
+    services.tick()
+
+    reported = services.state()["link_bitrate"]
+    assert reported["running"] is False
+    assert "radio" in reported["reason"]
+
+
+def test_saving_the_switch_off_reaches_the_loop_without_a_restart(tmp_path: Path) -> None:
+    clock = Clock()
+    services, _, ptz = console_with_a_link(
+        tmp_path,
+        {
+            "connected": True,
+            "airtime_percent": 92.0,
+            "signal_dbm": -66.0,
+            "age_seconds": 1.0,
+        },
+        clock=clock,
+    )
+    changed = settings_for(tmp_path)
+    changed.bitrate.mode = "manual"
+    services.apply(changed)
+
+    for _ in range(20):
+        services.tick()
+        clock.advance(2.0)
+
+    assert ptz.fitted == []
+
+
+def test_a_bad_link_reading_cannot_take_the_heartbeat_down(tmp_path: Path) -> None:
+    """The heartbeat restarts the children. Nothing hung off it may raise."""
+
+    class Broken:
+        def status(self) -> dict:
+            raise RuntimeError("the radio reader fell over")
+
+    settings_path = tmp_path / "settings.json"
+    settings = settings_for(tmp_path)
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        disk=watching(settings),
+        executor=lambda work: work(),
+        ptz=Ptz(),
+        radio=Broken(),
+    )
+
+    services.tick()  # must not raise
+    assert services.state()["link_bitrate"]["running"] is False
+

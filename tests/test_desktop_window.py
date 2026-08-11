@@ -398,6 +398,25 @@ def test_the_wiring_is_built_without_a_display(tmp_path: Path) -> None:
     assert not wiring.events_path.exists()
 
 
+def test_one_radio_and_one_camera_serve_both_the_window_and_the_link_loop(
+    tmp_path: Path,
+) -> None:
+    """A second RadioService would log in to the radio a second time, and a
+    second PtzService would hold a second connection to a camera that hands out
+    very few of them. The loop that matches the picture to the link gets the
+    ones the window already has."""
+    path = write_settings(tmp_path)
+    wiring = build_wiring(load_settings(path), path, with_services=False)
+
+    assert wiring.services.bitrate is not None, (
+        "the console has a camera and a radio, so it has a loop"
+    )
+    assert wiring.services._radio is wiring.radio
+    # And it reports itself, so a console that is not following the link can be
+    # asked why rather than only guessed at.
+    assert "link_bitrate" in wiring.services.state()
+
+
 def test_a_pane_that_cannot_be_built_becomes_a_message(qtbot) -> None:
     """A laptop with a broken libVLC still has to reach Settings and Logs."""
 

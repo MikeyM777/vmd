@@ -26,6 +26,7 @@ from vmd.desktop.watch import Watched
 # month. `vmd.record_main` costs the console nothing to import - it pulls the
 # standard library and vmd.storage, which the Playback tab already imports.
 from vmd.detect_main import STATUS_FILENAME, detected_streams
+from vmd.ptz.autobitrate import BitrateLoop
 from vmd.record_main import ALREADY_RECORDING_EXIT
 from vmd.record_main import STATUS_FILENAME as RECORDER_STATUS_FILENAME
 from vmd.settings import Settings
@@ -1313,6 +1314,8 @@ class ConsoleServices:
         now: Callable[[], float] = time.time,
         disk: DiskWatcher | None = None,
         executor: Callable[[Callable[[], None]], None] | None = None,
+        ptz=None,
+        radio=None,
     ) -> None:
         self.settings = settings
         self.settings_path = Path(settings_path)
@@ -1390,6 +1393,33 @@ class ConsoleServices:
         # that has died four times in the last two minutes is not running,
         # whatever the count since boot says.
         self._restarted_at: dict[str, list[float]] = {}
+
+        # Keeping the camera's bitrate inside what the link is carrying.
+        #
+        # Here rather than in the window because it is a thing the console does
+        # whether or not anyone is looking at it, and because the heartbeat that
+        # drives it already lives here. Its own timer would be a second thing to
+        # stop when the window closes and a second thing to forget.
+        #
+        # Both halves are needed and neither is guessed at: a camera to write to
+        # and a radio to read. Without either, there is no loop at all - which
+        # is not the same as a loop that decides to do nothing, and `state` says
+        # which. See `vmd/ptz/autobitrate.py`.
+        self._radio = radio
+        self.bitrate: BitrateLoop | None = (
+            BitrateLoop(
+                settings=settings,
+                apply=lambda kbps: ptz.fit_encoders_to_link(kbps),
+                clock=clock,
+                # The same worker seam the disk and the children's reports use.
+                # An ONVIF write takes seconds over this link and must not run
+                # on the thread that draws the window - and must not run on the
+                # radio's reader either, which has its own answer to deliver.
+                executor=executor,
+            )
+            if ptz is not None and radio is not None
+            else None
+        )
 
     def _managed(self) -> list[Managed]:
         """The children the supervisor holds, given what is configured now."""
@@ -1672,7 +1702,27 @@ class ConsoleServices:
             self._recent_restarts(name)
         # Not on the caller's thread and not on every call; see DiskWatcher.
         self.disk.poll()
+        self._follow_the_link()
         return started
+
+    def _follow_the_link(self) -> None:
+        """Hand the loop one link reading. Arithmetic here, never a network call.
+
+        `RadioService.status` answers from what its own reader last left behind
+        and never waits, so this costs nothing on the heartbeat even when the
+        radio is unreachable - which is the case where it matters, and the case
+        the radio was moved onto a thread of its own for.
+
+        Separately guarded. The heartbeat is what restarts the children, and
+        nothing hung off it may be able to stop that.
+        """
+        loop = self.bitrate
+        if loop is None or self._radio is None:
+            return
+        try:
+            loop.poll(self._radio.status())
+        except Exception:  # noqa: BLE001 - a bad reading must not stop supervision
+            logger.exception("the link could not be read for the automatic picture setting")
 
     def _child(self, name: str):
         """The service the supervisor knows by that name, or None."""
@@ -1748,6 +1798,12 @@ class ConsoleServices:
         # The folder it watches may have moved too, and a saved folder is a new
         # question rather than one to wait out the poll interval for.
         self.disk.apply(settings)
+        # And the switch that turns the automatic picture setting on and off is
+        # one of these. It is read live rather than at startup, so it takes
+        # effect on the next heartbeat: the operator who unticks it because the
+        # picture keeps blipping must not have to be told to reboot the laptop.
+        if self.bitrate is not None:
+            self.bitrate.apply_settings(settings)
 
         problems: list[str] = []
 
@@ -1863,6 +1919,11 @@ class ConsoleServices:
         return []
 
     def stop(self) -> None:
+        # First, and it is only a flag: a closing console must not dispatch a
+        # fresh ONVIF write on its way out, and must not wait for one either.
+        # The write, if there is one in flight, is on a daemon thread.
+        if self.bitrate is not None:
+            self.bitrate.close()
         self.supervisor.stop_all()
 
     def local_url(self, stream_name: str) -> str | None:
@@ -1888,6 +1949,36 @@ class ConsoleServices:
             # Which streams the radio link is carrying more than once. Empty is
             # the healthy answer and the ordinary one. See `link_doubled`.
             "on_camera": self.link_doubled(),
+            # Whether the picture is being matched to the link, and if not, why.
+            # A loop that is silently doing nothing and a loop that is working
+            # look identical on screen unless something can be asked.
+            "link_bitrate": self.bitrate_state(),
+        }
+
+    def bitrate_state(self) -> dict:
+        """What the automatic picture setting is doing, in words.
+
+        A dict rather than the dataclass, because everything else in `state` is
+        one and the status band reads them all the same way.
+        """
+        loop = self.bitrate
+        if loop is None:
+            return {
+                "running": False,
+                "reason": "there is no radio set up, so the link cannot be followed",
+                "target_kbps": None,
+                "below_floor": False,
+                "changes": 0,
+                "refused": 0,
+            }
+        state = loop.state()
+        return {
+            "running": state.running,
+            "reason": state.reason,
+            "target_kbps": state.target_kbps,
+            "below_floor": state.below_floor,
+            "changes": state.changes,
+            "refused": state.refused,
         }
 
     def streams_on_camera(self) -> dict[str, set[str]]:

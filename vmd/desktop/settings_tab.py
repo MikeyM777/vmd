@@ -812,6 +812,38 @@ class SettingsTab(QWidget):
         radio_form.addRow("Address", self._radio_host)
         radio_form.addRow("Username", self._radio_user)
         radio_form.addRow("Password", self._radio_password)
+
+        # In the Radio box on purpose, and not with the camera tools below.
+        # This is a thing the console does BECAUSE of the radio: with no radio
+        # set up it does nothing at all, and an operator who has just typed a
+        # radio address is the one person who needs to see it exists.
+        self.link_auto_field = QCheckBox(
+            "Turn the picture down by itself when the link gets busy"
+        )
+        self.link_auto_field.setToolTip(
+            "Every serious problem this system has had has been the radio link "
+            "being full. When it fills up, the picture stutters and the camera "
+            "takes seconds to answer the arrow keys, because the steering has "
+            "to queue behind the video.\n\n"
+            "With this ticked, VMD watches how busy the link is and asks the "
+            "camera for a smaller picture when it is struggling, then a better "
+            "one again once it has been quiet for a while. It changes things "
+            "rarely, and each change makes the picture jump for a moment.\n\n"
+            "Untick it to leave the camera exactly as it is set. Nothing else "
+            "changes: the picture, the recording and the movement alarms all "
+            "carry on."
+        )
+        radio_form.addRow("", self.link_auto_field)
+
+        self.link_help = WrappedNote(
+            "It never goes below the lowest picture you allow. If the link "
+            "cannot carry even that, it says so in the Logs tab rather than "
+            "spoiling the picture further."
+        )
+        self.link_help.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
+        radio_form.addRow("", self.link_help)
         layout.addWidget(radio_box)
 
         tools_box = QGroupBox("The camera")
@@ -941,6 +973,19 @@ class SettingsTab(QWidget):
         self._radio_password.setText(str(value))
 
     @property
+    def link_auto(self) -> bool:
+        """Whether the picture is matched to the link, or left as it is set.
+
+        Reads and writes `bitrate.mode`, which already had `auto` and `manual`
+        in it and until now had nothing acting on either.
+        """
+        return self.link_auto_field.isChecked()
+
+    @link_auto.setter
+    def link_auto(self, value: bool) -> None:
+        self.link_auto_field.setChecked(bool(value))
+
+    @property
     def detection_enabled(self) -> bool:
         return self._detection_enabled.isChecked()
 
@@ -1048,6 +1093,7 @@ class SettingsTab(QWidget):
         self.radio_host = settings.radio.host
         self.radio_username = settings.radio.username
         self.radio_password = settings.radio.password
+        self.link_auto = settings.bitrate.mode == "auto"
         self.detection_enabled = settings.detection.enabled
         self.detection_classify = settings.detection.classify
         self.min_travel_px = (
@@ -1197,6 +1243,12 @@ class SettingsTab(QWidget):
             # A radio with no address cannot be asked anything, so it is off.
             enabled=bool(radio_host),
         )
+        # Only the switch. The floor, the ceiling and the by-hand rate are not
+        # on this form: they are numbers in kilobits that mean nothing to the
+        # operator, and the two that matter already have sensible values. What
+        # he needs on the page is the one thing he might want to stop.
+        payload["bitrate"] = dict(payload.get("bitrate", {}))
+        payload["bitrate"]["mode"] = "auto" if self.link_auto else "manual"
         payload["storage"] = dict(payload.get("storage", {}))
         payload["storage"].update(
             root=self.storage_root.strip() or "recordings",
@@ -1390,6 +1442,13 @@ def _report_header(settings: Settings) -> list[str]:
         f"delete after  : "
         f"{settings.storage.retention_days if settings.storage.retention_days else 'never'}",
         f"link ceiling  : {settings.bitrate.ceiling_kbps} kb/s",
+        f"link floor    : {settings.bitrate.floor_kbps} kb/s",
+        # Whether anything is moving the bitrate at all. A report that shows a
+        # ceiling and a floor without saying whether they are being acted on is
+        # a report that will be read as "the picture is being managed" whichever
+        # way the switch is set.
+        f"link follows  : "
+        f"{'automatically' if settings.bitrate.mode == 'auto' else 'left as set by hand'}",
         f"video         : {settings.video_mode}, {settings.video_buffer_ms} ms buffer",
     ]
 

@@ -1008,3 +1008,48 @@ def test_a_budget_lowered_on_an_empty_folder_saves_straight_away(
     tab, path = build(qtbot, tmp_path, budgeted(root, 100.0))
     tab.budget_gb = "10"
     assert tab.save() is True, tab.message
+
+
+# ------------------------------------------- matching the picture to the link
+
+
+def test_the_link_switch_is_on_the_form_and_on_by_default(qtbot, tmp_path: Path) -> None:
+    """It has to be switchable off from here. Every serious failure this system
+    has had traces to the link, and an operator watching the picture blip has to
+    be able to stop it happening without a terminal and without being told to
+    edit a file."""
+    tab, path = build(qtbot, tmp_path)
+    assert tab.link_auto is True
+    tab.link_auto = False
+    assert tab.save() is True, tab.message
+    assert load_settings(path).bitrate.mode == "manual"
+
+
+def test_the_switch_comes_back_as_it_was_left(qtbot, tmp_path: Path) -> None:
+    settings = Settings()
+    settings.bitrate.mode = "manual"
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.link_auto is False
+
+
+def test_the_link_switch_says_what_it_does_in_plain_words(qtbot, tmp_path: Path) -> None:
+    """The operator is not technical and will never read the spec. The form says
+    things like "Watch for movement" and "Heat camera"; this is held to the same
+    standard, and it has to name what switching it off costs."""
+    tab, _ = build(qtbot, tmp_path)
+    words = (
+        tab.link_auto_field.text()
+        + " "
+        + tab.link_auto_field.toolTip()
+        + " "
+        + tab.link_help.text()
+    ).lower()
+
+    assert tab.link_auto_field.text().strip()
+    assert "link" in words
+    assert "picture" in words
+    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
+    assert not any(word in words for word in banned), words
+    # No units, no acronyms and no protocol names on the face of it.
+    for jargon in ("onvif", "kbps", "kb/s", "bitrate", "airtime", "encoder", "airos"):
+        assert jargon not in tab.link_auto_field.text().lower(), tab.link_auto_field.text()
