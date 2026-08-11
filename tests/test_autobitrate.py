@@ -321,6 +321,32 @@ def test_a_change_the_camera_did_not_keep_is_counted_rather_than_believed() -> N
     assert control.state().changes == 0
 
 
+def test_a_bitrate_the_camera_did_not_keep_does_not_move_where_the_loop_thinks_it_is() -> None:
+    """The other half of the same sentence, and the half that was not true.
+
+    The loop said "what it reports now is what it is doing; the request was not
+    believed" - and had already recorded the request as the camera's new
+    setting two lines above. So the next busy window took 70% of a bitrate the
+    camera never had, and the one after that 70% of that, walking the loop's
+    idea of the picture down to the floor while the camera sat at 5000 kb/s the
+    whole time. Then a calm link climbed back from a number that was fiction.
+
+    The rule is the one the failed-write case already follows: the loop tracks
+    what it has COMMANDED and the camera has KEPT, never what it has asked for.
+    """
+    clock, camera = Clock(), Camera({"ok": True, "changed": ["enc0"], "refused": ["enc0"]})
+    control = loop(clock, camera, ceiling=5000)
+
+    feed(control, clock, link(BUSY), BUSY_FOR_SECONDS + BEAT)
+    clock.tick(MIN_SECONDS_BETWEEN_DOWN)
+    feed(control, clock, link(BUSY), BUSY_FOR_SECONDS + BEAT)
+
+    assert camera.asked == [int(5000 * DOWN_FACTOR)] * 2, (
+        "a change the camera did not keep must not move the loop's idea of it"
+    )
+    assert control.state().target_kbps == 5000
+
+
 def test_a_write_that_failed_is_tried_again_rather_than_assumed_to_have_worked() -> None:
     clock, camera = Clock(), Camera({"ok": False, "error": "the camera refused the command"})
     control = loop(clock, camera, ceiling=5000)

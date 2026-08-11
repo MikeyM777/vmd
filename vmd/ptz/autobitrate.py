@@ -384,8 +384,17 @@ class BitrateLoop:
                 )
                 return
             refused = result.get("refused") or []
-            self._target = wanted
             if refused:
+                # And the loop's idea of where the camera is does not move,
+                # which is the other half of "the request was not believed" and
+                # the half that was not true. Moved, the next busy window took
+                # 70% of a bitrate the camera never had, and the one after that
+                # 70% of that - walking the loop down to the floor while the
+                # camera sat where it started, and then climbing back from a
+                # number that was fiction. It is also what makes the retry
+                # right: `apply_budget` skips a stream already at its target, so
+                # asking for the same budget again asks only the stream that
+                # refused.
                 self._refused += 1
                 logger.warning(
                     "The camera was asked for %d kb/s and did not keep it on %s. "
@@ -395,6 +404,7 @@ class BitrateLoop:
                     ", ".join(str(name) for name in refused),
                 )
                 return
+            self._target = wanted
             self._changes += 1
         logger.info("%s", sentence)
 
