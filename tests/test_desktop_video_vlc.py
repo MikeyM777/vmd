@@ -258,3 +258,85 @@ def test_the_drain_at_teardown_is_not_mistaken_for_frames(qtbot) -> None:
 
     assert pane.frames_seen == 58, "the drain was counted as frames arriving"
     assert pane.state == "failed"
+
+
+@pytest.fixture
+def a_recorded_minute(tmp_path: Path) -> Path:
+    """A real file with a clock burned into it, sixty seconds long.
+
+    Generated rather than recorded off a camera, because the assertion is about
+    libVLC's position in a file and nothing about how the file was made. Sixty
+    seconds is long enough that starting thirty in cannot be confused with
+    starting at nought by any amount of buffering, and short enough to write in
+    a couple of seconds.
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("needs ffmpeg")
+    target = tmp_path / "minute.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=15:duration=60",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "15",
+            "-pix_fmt", "yuv420p", "-y", str(target),
+        ],
+        check=True,
+        timeout=120,
+    )
+    return target
+
+
+@pytest.mark.integration
+def test_the_real_pane_opens_a_file_where_it_was_asked_to(
+    qtbot, a_recorded_minute: Path
+) -> None:
+    """The part a unit test cannot settle.
+
+    `set_time` after `play()` is silently dropped on media that has not opened
+    yet, so a pane that looked correct in every widget test would have played
+    every segment from its first frame - which is what Playback did, and is why
+    clicking 14:32 on the timeline could show you 14:27. What is asserted here
+    is libVLC's own idea of where it is, not what the console asked for.
+    """
+    from vmd.desktop.video import VlcVideoPane
+
+    pane = VlcVideoPane()
+    qtbot.addWidget(pane)
+    pane.resize(320, 240)
+    pane.show_widget()
+
+    pane.show(a_recorded_minute.as_uri(), at_seconds=30.0)
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline and pane.state != "playing":
+        qtbot.wait(200)
+    assert pane.state == "playing", "the pane never reported frames"
+
+    where = pane._player.get_time() / 1000.0
+    pane.stop()
+    # Generous either way: a keyframe every second means the demuxer lands on
+    # the one at or before 30 s, and the file has been playing for a moment by
+    # the time this is read. What is being ruled out is nought.
+    assert 27.0 <= where <= 40.0, f"asked for 30 s in and libVLC is at {where:.1f} s"
+
+
+@pytest.mark.integration
+def test_the_real_pane_still_starts_a_file_at_the_beginning_by_default(
+    qtbot, a_recorded_minute: Path
+) -> None:
+    """The other half: nothing seeks unless it was asked to."""
+    from vmd.desktop.video import VlcVideoPane
+
+    pane = VlcVideoPane()
+    qtbot.addWidget(pane)
+    pane.resize(320, 240)
+    pane.show_widget()
+
+    pane.show(a_recorded_minute.as_uri())
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline and pane.state != "playing":
+        qtbot.wait(200)
+    assert pane.state == "playing", "the pane never reported frames"
+
+    where = pane._player.get_time() / 1000.0
+    pane.stop()
+    assert where < 10.0, f"nothing asked for a seek and libVLC is at {where:.1f} s"

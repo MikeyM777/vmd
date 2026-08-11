@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from PySide6.QtCore import QDate, QPoint, Qt
 from PySide6.QtGui import QColor
 
@@ -576,3 +578,112 @@ def test_a_day_full_of_marks_still_has_moments_that_can_be_clicked(
     between = start + 1.5 * (86400 / 113.0)
     tab.click_at((between - start) / day_span(), width=1000)
     assert abs(tab.playhead_time - between) < 1.0
+
+
+# ------------------------------------------------------------------ the seek
+#
+# The offset used to be computed, stored, and never used: `VideoPane.show` took
+# a URL and nothing else, so a click on 14:32 opened the file containing 14:32
+# and played it from the beginning - up to a whole segment away from the moment
+# the operator asked about. For a system whose purpose is "something happened,
+# show me", that is not playback.
+
+
+def test_a_click_opens_the_file_at_the_moment_it_asked_for(
+    qtbot, tmp_path: Path
+) -> None:
+    start, end = day_bounds(2026, 8, 11)
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        # Five-minute segments, the length the recorder actually writes.
+        for offset in range(0, 3600, 300):
+            index.add(
+                "thermal", str(tmp_path / f"{offset}.mp4"),
+                start + offset, start + offset + 300, 1000,
+            )
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        # Twelve minutes into the day: two segments in, and two minutes into
+        # the third.
+        tab.click_at((12 * 60) / (end - start))
+        assert pane.url is not None and pane.url.endswith("600.mp4")
+        assert pane.at_seconds == pytest.approx(120.0, abs=1.0)
+    finally:
+        index.close()
+
+
+def test_a_movement_mark_plays_from_before_the_movement(
+    qtbot, tmp_path: Path
+) -> None:
+    """An event that begins on the first frame you see is one you have already
+    missed: the approach is the part worth watching."""
+    start, end = day_bounds(2026, 8, 11)
+    when = start + 3600 + 100  # a hundred seconds into the hour's segment
+    events = FakeEvents([movement(1, when)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "hour.mp4"), start + 3600, start + 3900, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.click_at((when - start) / (end - start))
+        assert pane.url is not None and pane.url.endswith("hour.mp4")
+        assert pane.at_seconds == pytest.approx(95.0, abs=0.5)
+        assert "before the movement" in tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_movement_at_the_very_start_of_a_file_is_clamped_not_lost(
+    qtbot, tmp_path: Path
+) -> None:
+    """Five seconds before a movement two seconds into a segment is a moment
+    in the previous file, or in a gap. The answer to "show me this movement"
+    can never be "there is nothing there"."""
+    start, end = day_bounds(2026, 8, 11)
+    when = start + 3600 + 2  # two seconds into the segment
+    events = FakeEvents([movement(1, when)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        # One segment, with a gap in front of it: nothing covers when - 5 s.
+        index.add("thermal", str(tmp_path / "hour.mp4"), start + 3600, start + 3900, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.click_at((when - start) / (end - start))
+        assert pane.url is not None and pane.url.endswith("hour.mp4")
+        assert pane.at_seconds == pytest.approx(0.0, abs=0.01)
+        assert "no recording" not in tab.status_text
+        # And the sentence says the lead it really got, not the one it wanted.
+        assert "2s before the movement" in tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_movement_whose_footage_is_gone_still_says_so(qtbot, tmp_path: Path) -> None:
+    """Clamping the lead may not turn "retention reclaimed this" into a seek
+    into some other file."""
+    start, end = day_bounds(2026, 8, 11)
+    when = start + 3600
+    events = FakeEvents([movement(1, when)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "later.mp4"), start + 7200, start + 7500, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.click_at((when - start) / (end - start))
+        assert pane.url is None
+        assert "no longer on disk" in tab.status_text
+    finally:
+        index.close()
+
+
+def test_the_position_never_goes_backwards_past_the_start_of_a_file(
+    qtbot, tmp_path: Path
+) -> None:
+    """The floor under everything: whatever the arithmetic above did, libVLC is
+    never asked to open a file at a negative second."""
+    start, end = day_bounds(2026, 8, 11)
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, start + 300, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.click_at(0.0)
+        assert pane.at_seconds >= 0.0
+    finally:
+        index.close()

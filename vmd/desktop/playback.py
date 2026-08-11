@@ -25,6 +25,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -32,15 +33,34 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.style import PALETTE
+from vmd.desktop.live import WrappedNote
+from vmd.desktop.style import (
+    MONO,
+    PALETTE,
+    SIZE_HEADING,
+    SPACE_SNUG,
+    SPACE_STEP,
+)
 from vmd.desktop.timeline import coverage_bars, day_bounds, seek_target, time_at
 from vmd.desktop.video import VideoPane
 from vmd.storage.index import Segment, SegmentIndex
 
 logger = logging.getLogger(__name__)
 
-BAR_HEIGHT = 34
+# How tall the day is drawn. Taller than it was, because it is the one control
+# on this tab and it is aimed at with a mouse: a 34 px strip at the bottom of
+# the window read as a divider rather than as the thing you click.
+BAR_HEIGHT = 54
 PLAYHEAD_WIDTH = 3
+
+# Where the hour rules go, and how much of the bar they cross. A day drawn as
+# an unbroken strip is a strip: nothing on it says which end is morning, so a
+# gap in the coverage cannot be turned into a time without counting pixels.
+HOUR_STEP = 3
+TICK_HEIGHT = 8
+
+# What the tab says before anything has been recorded at all.
+NOTHING_RECORDED = "Nothing has been recorded yet."
 
 # A movement mark, and how close a click has to be to mean it rather than the
 # time under the pointer.
@@ -104,13 +124,27 @@ class TimelineBar(QWidget):
         width = self.width()
         height = self.height()
         painter.fillRect(0, 0, width, height, QColor(PALETTE["well"]))
+        # The hours, under everything. Without them a day is an unmarked strip
+        # and a gap in it cannot be read as a time without counting pixels.
+        rules = QColor(PALETTE["line"])
+        painter.setPen(rules)
+        font = painter.font()
+        font.setPixelSize(SIZE_HEADING)
+        painter.setFont(font)
+        for hour in range(0, 24, HOUR_STEP):
+            x = int(round(hour / 24.0 * width))
+            painter.fillRect(x, height - TICK_HEIGHT, 1, TICK_HEIGHT, rules)
+            if hour:
+                painter.drawText(x + 3, height - TICK_HEIGHT - 2, f"{hour:02d}")
         recorded = QColor(PALETTE["ok"])
+        # Above the hour marks, so the labels stay readable over a full day.
+        top, span_height = 0, height - TICK_HEIGHT - SIZE_HEADING - 4
         for left, span in self._bars:
             x = int(round(left * width))
             # At least one pixel: a segment shorter than a pixel of the day is
             # still a segment, and drawing nothing would claim it is a gap.
             w = max(1, int(round(span * width)))
-            painter.fillRect(x, 0, min(w, width - x), height, recorded)
+            painter.fillRect(x, top, min(w, width - x), span_height, recorded)
         # Over the coverage, under the playhead: a mark says something happened
         # there, and the playhead says where the operator is looking now.
         movement = QColor(PALETTE["alarm"])
@@ -157,11 +191,12 @@ class PlaybackTab(QWidget):
         # (fraction of the day, the event) for every mark on the bar.
         self.event_marks: list[tuple[float, object]] = []
         self.status_text = ""
-        # The offset is recorded here and applied by the player: VideoPane.show
-        # takes a URL and nothing else, so the "start this many seconds in" half
-        # of a seek is carried in this attribute rather than in the URL. A later
-        # task hands it to libVLC. Until then the file opens at its beginning,
-        # and this says by how much that is wrong.
+        # How far into the file the last seek asked to start. It is handed to
+        # the player now rather than only recorded: `VideoPane.show` takes the
+        # position, and until it did, an operator who clicked 14:32 was given
+        # the file containing 14:32 played from its beginning - up to five
+        # minutes from the moment they asked about. For a system whose whole
+        # purpose is "something happened, show me", that is not playback.
         self.seek_offset = 0.0
         self.playhead_time: float | None = None
         # Guards the controls while they are being set from code, so that
@@ -169,10 +204,11 @@ class PlaybackTab(QWidget):
         self._loading = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(SPACE_STEP, SPACE_STEP, SPACE_STEP, SPACE_STEP)
+        layout.setSpacing(SPACE_STEP)
 
         controls = QHBoxLayout()
+        controls.setSpacing(SPACE_SNUG)
         controls.addWidget(QLabel("Day"))
         self.date_selector = QDateEdit()
         self.date_selector.setCalendarPopup(True)
@@ -188,16 +224,41 @@ class PlaybackTab(QWidget):
         layout.addLayout(controls)
 
         if isinstance(pane, QWidget):
-            layout.addWidget(pane, 1)
+            # The same frame the Live tab gives its pictures, so footage looks
+            # like footage on both tabs rather than like a hole on one of them.
+            well = QFrame()
+            well.setObjectName("videoFrame")
+            well.setStyleSheet(
+                f"QFrame#videoFrame {{ border: 1px solid {PALETTE['line_strong']}; "
+                f"background: {PALETTE['well']}; }}"
+            )
+            inside = QVBoxLayout(well)
+            inside.setContentsMargins(0, 0, 0, 0)
+            inside.addWidget(pane)
+            layout.addWidget(well, 1)
 
         self.bar = TimelineBar(self)
         layout.addWidget(self.bar)
 
-        self._status = QLabel("")
-        self._status.setWordWrap(True)
+        # A WrappedNote, not a word-wrapped QLabel: this line carries "no
+        # recording at 14:32" and "the movement there is no longer on disk",
+        # which are the two answers an operator most needs to read whole.
+        self._status = WrappedNote("")
+        self._status.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-family: {MONO};"
+        )
         layout.addWidget(self._status)
 
-        self.refresh_streams()
+        names = self.refresh_streams()
+        # Draw the day now rather than waiting for the operator to touch a
+        # control. Opening this tab used to show an empty bar over a day that
+        # had been recorded all along, because nothing called `_reload` until
+        # something changed - and "nothing was recorded" is precisely the
+        # answer this tab must never give by accident.
+        if names:
+            self._reload()
+        else:
+            self._set_status(NOTHING_RECORDED)
 
     # ------------------------------------------------------------- the streams
 
@@ -343,11 +404,29 @@ class PlaybackTab(QWidget):
         width = self.bar.width() if width is None else width
         event = self._mark_near(fraction, width)
         if event is not None:
-            self._play_at(event.started - EVENT_LEAD_SECONDS, event=event)
+            self._play_at(event.started, event=event)
             return
         self._play_at(time_at(fraction, self._day_start, self._day_end))
 
     def _play_at(self, when: float, event=None) -> None:
+        """Open the file covering this moment, at this moment inside it.
+
+        For a movement mark the lead is taken off HERE rather than off the time
+        that was asked for, and that is the difference between a mark that
+        plays and one that says there is no recording. An event two seconds
+        into a segment is five seconds after a moment that belongs to the
+        previous file, or to a gap - and the answer to "show me this movement"
+        can never be "there is nothing there". So the file is found from the
+        event's own time and the lead is taken off inside it, clamped at the
+        start of the file, with the sentence saying the lead it really got.
+        """
+        lead = 0.0
+        if event is not None:
+            found = seek_target(self._segments, when)
+            # However much of the five seconds fits inside this file. Nothing,
+            # if the movement began on its first frame.
+            lead = min(EVENT_LEAD_SECONDS, found.offset_seconds) if found else 0.0
+            when -= lead
         self.playhead_time = when
         clock = datetime.datetime.fromtimestamp(when).strftime("%H:%M:%S")
         span = self._day_end - self._day_start
@@ -376,12 +455,16 @@ class PlaybackTab(QWidget):
             # as_uri refuses a relative path; the index should never hold one,
             # but a playable guess beats an exception in front of an operator.
             url = path.resolve().as_uri()
-        self._pane.show(url)
+        self._pane.show(url, at_seconds=self.seek_offset)
         logger.info("playing %s from %.1f s in", path.name, target.offset_seconds)
         note = f"{clock} - {path.name}, {_duration(target.offset_seconds)} in"
         if event is not None:
+            # The lead it really got, not the one it asked for. A movement two
+            # seconds into a file is played from that file's first frame, and
+            # saying "5s before" about it would be the console rounding a
+            # measurement up in front of somebody making a decision from it.
             note = (
-                f"{clock} - {_duration(EVENT_LEAD_SECONDS)} before the movement on "
+                f"{clock} - {_duration(lead)} before the movement on "
                 f"{event.stream}, {path.name}"
             )
         self._set_status(note)

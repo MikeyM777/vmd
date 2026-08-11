@@ -65,8 +65,10 @@ class BrokenPane(QLabel):
         self.setWordWrap(True)
         self.setMargin(16)
 
-    def show(self, url: str) -> None:  # noqa: A003 - the protocol's name
-        logger.debug("not showing %s: this pane could not be built", url)
+    def show(self, url: str, at_seconds: float = 0.0) -> None:  # noqa: A003
+        logger.debug(
+            "not showing %s from %.1f s in: this pane could not be built", url, at_seconds
+        )
 
     def stop(self) -> None:
         return None

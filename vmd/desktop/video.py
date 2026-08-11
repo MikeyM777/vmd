@@ -30,9 +30,20 @@ LATE_AFTER_SECONDS = 8.0
 
 @runtime_checkable
 class VideoPane(Protocol):
-    """Anything that can show one stream."""
+    """Anything that can show one stream, optionally from part-way in.
 
-    def show(self, url: str) -> None: ...
+    `at_seconds` is how far into the media to start, and it has a default so
+    that everything which only ever shows a live stream is unchanged. It exists
+    for Playback: an operator who clicks 14:32 on the timeline was being given
+    the file containing 14:32 played from its beginning, which with a
+    five-minute segment is up to five minutes from the moment they asked for.
+    A timeline that lands you minutes from the event is not playback.
+
+    A live stream is not seekable and the demuxer ignores the request, so
+    nothing has to know which kind it is holding.
+    """
+
+    def show(self, url: str, at_seconds: float = 0.0) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -47,16 +58,22 @@ class FakeVideoPane:
         self.url: str | None = None
         self.restarts = 0
         self.released = False
+        # Where the last `show` was asked to start. Recorded rather than acted
+        # on, so a widget test can assert what the console asked for without
+        # libVLC being installed - and so the assertion is about the console's
+        # arithmetic, which is the part a unit test can actually settle.
+        self.at_seconds = 0.0
         self._state: PaneState = "stopped"
 
     @property
     def state(self) -> PaneState:
         return self._state
 
-    def show(self, url: str) -> None:
+    def show(self, url: str, at_seconds: float = 0.0) -> None:
         if self.url is not None:
             self.restarts += 1
         self.url = url
+        self.at_seconds = float(at_seconds)
         self._state = "connecting"
 
     def stop(self) -> None:
@@ -161,7 +178,24 @@ class VlcVideoPane(QWidget):
         """Realise the widget so it has a window handle for VLC to draw into."""
         super().show()
 
-    def show(self, url: str) -> None:  # noqa: A003 - the protocol's name
+    def show(self, url: str, at_seconds: float = 0.0) -> None:  # noqa: A003
+        """Play this, from the beginning or from part-way in.
+
+        The position is a media option and not a `set_time` after `play()`, and
+        that is the whole of the difficulty. `set_time` only takes effect once
+        libVLC has the media open and playing; called straight after `play()` on
+        a file that has not been opened yet it is silently dropped, and the
+        alternatives are both things this file is forbidden to do - poll on the
+        GUI thread until the state turns, or set a timer to try again later.
+        Every disconnection ever reported from the field traced back to a timer
+        in this class firing early, which is why there is no timer here.
+
+        `:start-time` is read by the demuxer while the media is being opened, so
+        there is nothing to wait for and nothing to retry: by the time anything
+        is playing it is already playing from the right place. It is ignored by
+        a live stream, which is not seekable, so the Live tab needs to know
+        nothing about any of this.
+        """
         if self._released:
             logger.warning("not showing %s: this pane has been released", url)
             return
@@ -170,10 +204,16 @@ class VlcVideoPane(QWidget):
         self._last_count = -1
         self.frames_seen = 0
         media = self._instance.media_new(url)
+        # Never negative: libVLC reads this as a float and a negative one is not
+        # a position in any file. The console clamps too; this is the floor
+        # under whatever reaches here.
+        start = max(float(at_seconds), 0.0)
+        if start > 0.0:
+            media.add_option(f":start-time={start:.3f}")
         self._player.set_media(media)
         self._attach_surface()
         self._player.play()
-        logger.info("showing %s", url)
+        logger.info("showing %s from %.1f s in", url, start)
 
     def stop(self) -> None:
         self._url = None
