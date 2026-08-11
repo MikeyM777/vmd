@@ -1412,3 +1412,273 @@ def test_what_ffmpeg_said_reaches_the_log(tmp_path, caplog):
     assert "pcm_mulaw" in said, said
     assert "Could not write header" in said, said
     assert "thermal" in said, "the line must say which stream it is about"
+
+
+# --------------------------------------------------------------------------
+# Where the recorder pulls from, after start-up.
+#
+# The answer used to be decided once, in __init__, from a port answering - and
+# never revisited. The scheduled task starts this process at logon, before any
+# human has opened the console, so there is no streaming server to find and the
+# camera is used directly. The operator opens the console minutes or hours
+# later; go2rtc starts and opens its own connection to the camera, and from that
+# moment every stream crosses the 15 km, ~5 Mb/s radio link twice, for months,
+# with nothing anywhere saying so. The detector fixed exactly this
+# (vmd\detect\runner.py, _try_the_other_address); the more important of the two
+# processes still had it.
+# --------------------------------------------------------------------------
+
+
+def write_endpoint(path, port=8554, name="thermal"):
+    path.write_text(
+        json.dumps(
+            {
+                "api_port": 1984,
+                "rtsp_port": port,
+                "streams": {name: f"rtsp://127.0.0.1:{port}/{name}"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def answering(monkeypatch):
+    """A stand-in for the streaming server's RTSP port, with a switch on it.
+
+    Nothing here touches a real address: is_live is the only thing in the
+    recorder that opens a socket, and this replaces it. A test that connected to
+    a real port would be a test that hangs when the fix regresses.
+    """
+    alive = {"yes": False}
+    monkeypatch.setattr(
+        record_main_module, "is_live", lambda endpoint, timeout=1.5: alive["yes"]
+    )
+    return alive
+
+
+def counting_spawn():
+    started = []
+
+    def spawn(command, log_path=None):
+        started.append(command)
+        return FakeProcess()
+
+    return spawn, started
+
+
+def test_the_recorder_moves_to_the_local_server_when_it_appears(tmp_path, monkeypatch):
+    """The reboot case: no console at logon, a console an hour later."""
+    endpoint = tmp_path / "streaming.json"  # nothing has written it yet
+    alive = answering(monkeypatch)
+
+    service = RecordingService(
+        build_settings(tmp_path),
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+        source_settle_seconds=30.0,
+    )
+    service.run_once(now=1000.0)
+    assert service.recorders[0].source_url == "rtsp://example/thermal"
+
+    write_endpoint(endpoint)
+    alive["yes"] = True
+
+    service.run_once(now=1100.0)  # first seen here; not yet settled
+    assert service.recorders[0].source_url == "rtsp://example/thermal"
+
+    service.run_once(now=1200.0)  # settled, and nothing is being written
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal", (
+        "the recorder never moved to the local server, so the radio link is "
+        "carrying this stream twice for the life of the process"
+    )
+    service.stop()
+
+
+def test_a_streaming_server_that_comes_and_goes_does_not_restart_ffmpeg(
+    tmp_path, monkeypatch
+):
+    """Restarting ffmpeg every few seconds is a cut in the footage every few
+    seconds. A go2rtc that is flapping must not be followed."""
+    endpoint = write_endpoint(tmp_path / "streaming.json")
+    alive = answering(monkeypatch)
+    alive["yes"] = True
+    spawn, started = counting_spawn()
+
+    service = RecordingService(
+        build_settings(tmp_path),
+        spawn=spawn,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+        source_settle_seconds=60.0,
+    )
+    service.run_once(now=1000.0)
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal"
+    spawned_once = len(started)
+
+    # Thirty seconds down, thirty seconds up, for five minutes. Long enough
+    # that a check lands twice inside each stretch and short enough that no
+    # stretch outlasts the settle window - which is the whole of the rule.
+    for step in range(1, 31):
+        alive["yes"] = (step // 3) % 2 == 0
+        service.run_once(now=1000.0 + step * 10)
+
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal"
+    assert len(started) == spawned_once, "ffmpeg was restarted by a flapping go2rtc"
+    service.stop()
+
+
+def test_it_falls_back_to_the_camera_when_the_streaming_server_dies(
+    tmp_path, monkeypatch
+):
+    """Recording from the wrong place beats not recording."""
+    endpoint = write_endpoint(tmp_path / "streaming.json")
+    alive = answering(monkeypatch)
+    alive["yes"] = True
+
+    service = RecordingService(
+        build_settings(tmp_path),
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+        source_settle_seconds=30.0,
+    )
+    service.run_once(now=1000.0)
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal"
+
+    alive["yes"] = False  # the console was closed, or go2rtc died
+    service.run_once(now=1010.0)
+    service.run_once(now=1100.0)
+
+    assert service.recorders[0].source_url == "rtsp://example/thermal", (
+        "with the local server gone the recorder must go back to the camera "
+        "rather than pointing ffmpeg at a dead loopback port for ever"
+    )
+    service.stop()
+
+
+def _segment_epoch(name):
+    from vmd.storage.discovery import parse_segment_start
+
+    return parse_segment_start(name)
+
+
+def test_the_move_waits_for_a_segment_boundary(tmp_path, monkeypatch):
+    """Closing ffmpeg mid-segment truncates the file it has open. The switch is
+    deferred until ffmpeg has just opened a new one, so at most a few seconds of
+    footage is at risk and every segment before it was closed by ffmpeg."""
+    endpoint = tmp_path / "streaming.json"
+    alive = answering(monkeypatch)
+    settings = build_settings(tmp_path)
+    settings.storage.segment_seconds = 300
+
+    service = RecordingService(
+        settings,
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+        source_settle_seconds=30.0,
+    )
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    first = "2026-08-07_10-00-00.mp4"
+    second = "2026-08-07_10-05-00.mp4"
+    (directory / first).write_bytes(b"x" * 2048)
+    base = _segment_epoch(first)
+
+    service.run_once(now=base + 10)
+    write_endpoint(endpoint)
+    alive["yes"] = True
+
+    service.run_once(now=base + 100)  # noticed
+    service.run_once(now=base + 200)  # settled, but 200s into a 300s segment
+    assert service.recorders[0].source_url == "rtsp://example/thermal", (
+        "the switch cut into the segment ffmpeg had open"
+    )
+
+    (directory / second).write_bytes(b"")  # ffmpeg has just opened the next file
+    service.run_once(now=base + 305)
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal"
+    service.stop()
+
+
+def test_the_wait_for_a_boundary_is_bounded(tmp_path, monkeypatch):
+    """A stream that never produces a boundary must not keep the link doubled
+    for ever. The gap is then honest rather than absent."""
+    endpoint = tmp_path / "streaming.json"
+    alive = answering(monkeypatch)
+    settings = build_settings(tmp_path)
+    settings.storage.segment_seconds = 300
+
+    service = RecordingService(
+        settings,
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+        source_settle_seconds=30.0,
+    )
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    name = "2026-08-07_10-00-00.mp4"
+    (directory / name).write_bytes(b"x" * 2048)
+    base = _segment_epoch(name)
+
+    service.run_once(now=base + 10)
+    write_endpoint(endpoint)
+    alive["yes"] = True
+
+    service.run_once(now=base + 50)  # noticed here
+    service.run_once(now=base + 400)  # settled, never at a boundary
+    assert service.recorders[0].source_url == "rtsp://example/thermal"
+
+    service.run_once(now=base + 5000)  # long past any reasonable wait
+    assert service.recorders[0].source_url == "rtsp://127.0.0.1:8554/thermal"
+    service.stop()
+
+
+def test_the_source_is_said_out_loud_when_it_changes(tmp_path, monkeypatch, caplog):
+    """Recording that is silently costing double the link is the kind of
+    invisible fault this project keeps being bitten by."""
+    endpoint = tmp_path / "streaming.json"
+    alive = answering(monkeypatch)
+
+    with caplog.at_level(logging.INFO):
+        service = RecordingService(
+            build_settings(tmp_path),
+            spawn=spawn_fake,
+            endpoint_path=endpoint,
+            source_check_interval=0.0,
+            source_settle_seconds=30.0,
+        )
+        service.run_once(now=1000.0)
+        said_at_first = " ".join(r.getMessage() for r in caplog.records)
+        assert "thermal" in said_at_first and "camera" in said_at_first
+
+        caplog.clear()
+        write_endpoint(endpoint)
+        alive["yes"] = True
+        service.run_once(now=1100.0)
+        service.run_once(now=1200.0)
+        said = " ".join(r.getMessage() for r in caplog.records)
+
+    assert "thermal" in said, said
+    assert "streaming server" in said, said
+    service.stop()
+
+
+def test_status_says_where_each_stream_is_being_read_from(tmp_path, monkeypatch):
+    endpoint = write_endpoint(tmp_path / "streaming.json")
+    alive = answering(monkeypatch)
+    alive["yes"] = True
+    service = RecordingService(
+        build_settings(tmp_path),
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+    )
+    service.run_once(now=1000.0)
+    status = service.status(now=1000.0)
+    assert status["streams"][0]["local_source"] is True
+    assert status["link_doubled"] == []
+    service.stop()

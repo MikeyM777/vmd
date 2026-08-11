@@ -32,6 +32,44 @@ logger = logging.getLogger(__name__)
 # settings it was started with.
 DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 
+# ------------------------------------------------- where the streams are read
+#
+# How often that file, and the port it names, are asked about again.
+#
+# It used to be asked exactly once, in __init__. The scheduled task starts this
+# process at logon, before any human has opened the console, so there is no
+# streaming server to find and every stream is recorded straight from the
+# camera. The operator opens the console an hour later; go2rtc starts and opens
+# its own connection to the camera, and from that moment every stream crosses
+# the 15 km, ~5 Mb/s radio link twice - for months, with nothing saying so,
+# because recording still works. That is the contention the whole architecture
+# exists to prevent. The detector fixed exactly this and wrote down why; see
+# `_try_the_other_address` in vmd\detect\runner.py.
+SOURCE_CHECK_SECONDS = 15.0
+
+# How long the new answer must hold before ffmpeg is moved to it.
+#
+# Moving means stopping and restarting ffmpeg, which is a cut in the footage. A
+# go2rtc that comes and goes - one that is failing to start, or a console being
+# opened and closed - must not cut the recording every few seconds. This is the
+# same rule the supervisor applies to a service it has just started
+# (`stable_after`): a thing that has only just appeared has proved nothing yet.
+SOURCE_SETTLE_SECONDS = 60.0
+
+# How soon after a segment boundary the move is allowed to happen.
+#
+# ffmpeg is killed rather than asked politely - on Windows `terminate` is
+# `TerminateProcess` - so whatever file it has open at that moment is left
+# without its index. Waiting until it has only just opened a new one makes that
+# file a few seconds long instead of a few minutes: every segment before it was
+# closed by ffmpeg itself and is whole. Cheaper than it looks, because the wait
+# only runs while a move is pending.
+BOUNDARY_GRACE_SECONDS = 15.0
+
+# Nothing, as distinct from "no streaming server". `None` is a real answer here
+# - it means the camera - so it cannot double as "no answer yet".
+_NO_PENDING = object()
+
 # The detector's database, beside this service's own. Opened only if it is
 # already there; see _event_store.
 EVENTS_FILENAME = "events.db"
@@ -426,6 +464,8 @@ class RecordingService:
         settle_seconds: float = 5.0,
         endpoint_path: str | Path | None = None,
         settings_path: str | Path | None = None,
+        source_check_interval: float = SOURCE_CHECK_SECONDS,
+        source_settle_seconds: float = SOURCE_SETTLE_SECONDS,
     ) -> None:
         self.settings = settings
         # Where the operator's choices are written down, so that saving the
@@ -434,8 +474,22 @@ class RecordingService:
         # hands in a Settings object directly wants.
         self.settings_path = Path(settings_path) if settings_path else None
         self._settings_stamp = self._settings_timestamp()
-        endpoint = read_endpoint(endpoint_path or DEFAULT_ENDPOINT_PATH)
-        self._endpoint = endpoint if endpoint and is_live(endpoint) else None
+        # The path, not the answer. The answer changes underneath this process:
+        # see SOURCE_CHECK_SECONDS.
+        self._endpoint_path = Path(endpoint_path or DEFAULT_ENDPOINT_PATH)
+        self._endpoint = self._live_endpoint()
+        self.source_check_interval = source_check_interval
+        self.source_settle_seconds = source_settle_seconds
+        self._last_source_check: float | None = None
+        # The answer waiting to be believed, when it is not the one in use.
+        self._pending_endpoint: object = _NO_PENDING
+        self._pending_since: float | None = None
+        self._switch_due: float | None = None
+        self._source_switches = 0
+        # What has already been said about each stream's source, so the line is
+        # written when the answer changes rather than on every rebuild. Set
+        # before _build_recorders, which is what says it.
+        self._announced_local: dict[str, bool] = {}
         # How long a file must sit untouched before it counts as finished. The
         # same window guards both discovery and orphan adoption; adoption used
         # to have none, which made it the weaker of the two paths.
@@ -499,6 +553,10 @@ class RecordingService:
         # the same way every five seconds is reported once. Cleared with the
         # recorders, because a fresh recorder's first complaint is news again.
         self._last_ffmpeg_line: dict[str, str] = {}
+        # Not cleared with them: which side of the link a stream is read from is
+        # news when it changes, and a rebuild for some other reason has not
+        # changed it.
+        self._announce_sources()
 
     def _settings_timestamp(self) -> int | None:
         """When the settings file was last written, or None if there is no file."""
@@ -561,13 +619,178 @@ class RecordingService:
 
         If the streaming server is not running, the camera is used directly:
         recording something is more important than recording it cheaply.
+
+        Says nothing: whether the answer is worth a line depends on whether it
+        has changed, which is `_announce_sources`.
         """
-        local = local_source(self._endpoint, stream.name)
-        if local:
-            logger.info("recording %s from the local streaming server", stream.name)
-            return local
-        logger.info("recording %s directly from the camera", stream.name)
-        return stream.url
+        return local_source(self._endpoint, stream.name) or stream.url
+
+    # -------------------------------------------- keeping that answer current
+
+    def _live_endpoint(self) -> dict | None:
+        """What the streaming server is, right now, or None if there is not one.
+
+        A stale file is worse than none - it would point ffmpeg at a loopback
+        port nothing is listening on - so the file is only believed while
+        something answers on the port it names.
+        """
+        endpoint = read_endpoint(self._endpoint_path)
+        if endpoint and is_live(endpoint):
+            return endpoint
+        return None
+
+    def _sources_from(self, endpoint) -> dict[str, str]:
+        """Where each enabled stream would be read from, given that endpoint."""
+        return {
+            stream.name: local_source(endpoint, stream.name) or stream.url
+            for stream in self.settings.camera.streams
+            if stream.enabled
+        }
+
+    def _sources_now(self) -> dict[str, str]:
+        return {recorder.stream: recorder.source_url for recorder in self.recorders}
+
+    def _recheck_source(self, now: float) -> None:
+        """Ask again where the streams should be read from, and move if it changed.
+
+        Three things have to hold at once, and each of them is a way this can go
+        wrong rather than a nicety:
+
+        * **Notice at all.** The console starts minutes or hours after this
+          process, and a go2rtc that restarts can come back on a different port
+          (`free_port`), so the answer this process started with expires.
+        * **Do not flap.** Moving means killing ffmpeg and starting it again. A
+          go2rtc that is failing to start would otherwise cut the recording
+          every couple of seconds, which is worse than the doubled link it is
+          being moved away from.
+        * **Move away as readily as towards.** If go2rtc dies while the console
+          is gone, ffmpeg is pointed at a dead loopback port and the stream
+          simply stops. Recording from the wrong place beats not recording.
+        """
+        if self._last_source_check is not None:
+            elapsed = now - self._last_source_check
+            if 0 <= elapsed < self.source_check_interval:
+                return
+        self._last_source_check = now
+
+        fresh = self._live_endpoint()
+        wanted = self._sources_from(fresh)
+        if wanted == self._sources_now():
+            # Already reading from there. Keep the endpoint itself current all
+            # the same: the ports may be the same object with a new process
+            # behind it, and a later rebuild must not re-derive an old answer.
+            self._endpoint = fresh
+            self._forget_pending_source()
+            return
+
+        if self._pending_endpoint is _NO_PENDING or (
+            self._sources_from(self._pending_endpoint) != wanted
+        ):
+            # A different answer from the one that was settling: start again.
+            self._pending_endpoint = fresh
+            self._pending_since = now
+            # How long the boundary may be waited for before the move happens
+            # anyway. Without it a stream that never closes a segment - one that
+            # is failing, or one whose ffmpeg is held back - would keep the link
+            # doubled for ever while politely waiting for a boundary that is
+            # never coming.
+            self._switch_due = (
+                now
+                + max(self.source_settle_seconds, 0.0)
+                + 2.0 * self.settings.storage.segment_seconds
+            )
+            return
+
+        waited = now - (self._pending_since or now)
+        if waited < self.source_settle_seconds:
+            return
+        if not self._at_a_segment_boundary(now) and now < (self._switch_due or now):
+            return
+        self._move_sources(fresh, now)
+
+    def _forget_pending_source(self) -> None:
+        self._pending_endpoint = _NO_PENDING
+        self._pending_since = None
+        self._switch_due = None
+
+    def _at_a_segment_boundary(self, now: float) -> bool:
+        """Has every recorder only just opened the file it is writing?
+
+        Read from the names, which is where the truth is: ffmpeg stamps each
+        file with the moment it opened it, and on Windows the modification time
+        of a file something still holds is not written back until the handle is
+        closed - so mtime cannot answer this and the filename can.
+
+        A stream with no files yet, or one whose ffmpeg is not running, has
+        nothing open to lose and never holds the move up.
+        """
+        for recorder in self.recorders:
+            if not recorder.running:
+                continue
+            try:
+                starts = segment_starts(recorder.output_dir)
+            except OSError:
+                continue
+            if not starts:
+                continue
+            if now - starts[-1] > BOUNDARY_GRACE_SECONDS:
+                return False
+        return True
+
+    def _move_sources(self, endpoint: dict | None, now: float) -> None:
+        self._endpoint = endpoint
+        self._forget_pending_source()
+        self._source_switches += 1
+        self._rebuild_recorders("where the streams are read from changed", now)
+
+    def _announce_sources(self) -> None:
+        """Say which side of the radio link each stream is being read from.
+
+        Said when it changes, in this process's own output, because that output
+        is what reaches the Logs tab. "Recording" that is silently costing
+        double the link is precisely the kind of fault this machine has been
+        bitten by: everything reports healthy, the picture stutters, and every
+        part of the system blames the link.
+
+        No URL is ever put in these lines. The camera's address carries its
+        password.
+        """
+        for recorder in self.recorders:
+            local = bool(local_source(self._endpoint, recorder.stream))
+            if self._announced_local.get(recorder.stream) == local:
+                continue
+            self._announced_local[recorder.stream] = local
+            if local:
+                logger.info(
+                    "%s is being recorded from the streaming server on this "
+                    "machine, so the radio link carries it once",
+                    recorder.stream,
+                )
+            elif self._endpoint is not None:
+                logger.warning(
+                    "%s is being recorded straight from the camera even though "
+                    "the streaming server is running - it is not serving a "
+                    "stream by that name, so the radio link is carrying %s "
+                    "twice",
+                    recorder.stream,
+                    recorder.stream,
+                )
+            else:
+                logger.info(
+                    "%s is being recorded straight from the camera; there is no "
+                    "streaming server on this machine to read it from",
+                    recorder.stream,
+                )
+
+    def link_doubled(self) -> list[str]:
+        """Streams being pulled from the camera while go2rtc holds it as well."""
+        if self._endpoint is None:
+            return []
+        return [
+            recorder.stream
+            for recorder in self.recorders
+            if not local_source(self._endpoint, recorder.stream)
+        ]
 
     def run_once(self, now: float | None = None) -> None:
         """One pass: keep recorders alive, index finished segments, apply retention.
@@ -581,6 +804,7 @@ class RecordingService:
         """
         now = time.time() if now is None else now
         self._stage("settings", self._reload_settings, now)
+        self._stage("the streaming server", self._recheck_source, now)
         for recorder in self.recorders:
             self._started_at.setdefault(recorder.stream, now)
         self._stage("supervisor", self.supervisor.tick)
@@ -724,6 +948,9 @@ class RecordingService:
                 "held_back": r.held_back,
                 "restarts": self.supervisor.restarts.get(r.stream, 0),
                 "exit_code": r.exit_code,
+                # Which side of the radio link this stream is coming from. Not
+                # the URL: the camera's address carries its password.
+                "local_source": bool(local_source(self._endpoint, r.stream)),
             }
             for r in self.recorders
         ]
@@ -753,6 +980,10 @@ class RecordingService:
             "stall_restarts": self._stall_restarts,
             "empty_segments": self._empty_segments,
             "restarts": dict(self.supervisor.restarts),
+            # Streams crossing the radio link twice: pulled from the camera
+            # while go2rtc is holding it as well. Empty is the healthy answer.
+            "link_doubled": self.link_doubled(),
+            "source_switches": self._source_switches,
         }
 
     def _index_new_segments(self, now: float) -> None:
