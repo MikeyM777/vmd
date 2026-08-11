@@ -559,8 +559,10 @@ There is **no file to edit**. Everything goes in the console:
    and **Password**. The password is shown as you type it and is never hidden
    behind dots. That is on purpose: this laptop is offline and does nothing else,
    and a password you cannot read back is far more trouble than one you can.
-4. Under **Streams**, put in the RTSP address of each camera stream and tick
-   **record** next to the ones you want recorded. If you do not know the
+4. Under **Streams**, put in the RTSP address of each camera view and tick
+   **Use this view** next to the ones you want. That tick is the whole view, not
+   just its recording: a view that is not ticked is not shown in the Live tab,
+   is not recorded, and is not watched for movement. If you do not know the
    addresses, the camera prober in the table above finds them for you.
 5. Under **Storage**, set the folder and how many GB the recordings may use.
 6. Press **Save**. It says `Saved.` in green.

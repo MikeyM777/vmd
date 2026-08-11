@@ -193,12 +193,40 @@ class StreamRowWidget(QWidget):
         self.url_field = QLineEdit(stream.url)
         self.url_field.setPlaceholderText("rtsp://address/path")
 
-        self.record_field = QCheckBox("record")
+        # It said `record`, and it is not that. The setting behind it is
+        # `enabled`, and it governs whether this view exists at all: whether
+        # go2rtc pulls it, whether a pane shows it, whether it is offered in the
+        # Live tab's view chooser, whether it is watched - and, among all of
+        # that, whether it is recorded. The owner switched it off for the
+        # visible camera, found the chooser offering only "All" and "thermal",
+        # and asked why there was no visible option. The chooser was right; the
+        # label had told him he was turning off a recording preference.
+        #
+        # The name in settings.json is untouched. `enabled` stays `enabled`, and
+        # every file already written keeps loading exactly as it did.
+        self.record_field = QCheckBox("Use this view")
         self.record_field.setChecked(stream.enabled)
+        self.record_field.setToolTip(
+            "Whether this camera view is used at all.\n\n"
+            "Off means it is switched off completely: it does not appear in the "
+            "Live tab, nothing is recorded from it, and nothing watches it for "
+            "movement. Everything typed on this line is kept, so ticking it "
+            "again brings the view back as it was."
+        )
 
         self.reader_field = QComboBox()
         self.reader_field.addItems(READERS)
         self.reader_field.setCurrentText(stream.reader if stream.reader in READERS else "auto")
+        # Honest already - these are the two ways of reading the stream, by
+        # their own names - and left alone for that reason. What it was missing
+        # is any hint of what it is: a bare box saying "auto" beside an address
+        # says nothing about what is automatic about it.
+        self.reader_field.setToolTip(
+            "How the video is read from this address.\n\n"
+            "Leave this on auto. The other setting is for a camera whose video "
+            "the ordinary reader will not play - try it only if the picture "
+            "will not come up and you have been asked to."
+        )
 
         self.remove_button = QPushButton("Remove")
 
@@ -678,6 +706,21 @@ class SettingsTab(QWidget):
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
         streams_outer.setSpacing(SPACE_STEP)
+        # On the form rather than only in a tooltip. An operator who unticks a
+        # view and finds it gone from the Live tab has to be able to work out
+        # why from what is in front of them - which is exactly what did not
+        # happen: the box said "record", so switching a camera off entirely
+        # looked like switching off a recording preference.
+        self.streams_help = WrappedNote(
+            "One line per camera view. A view that is not ticked is switched "
+            "off completely: it is not shown in the Live tab, nothing is "
+            "recorded from it, and nothing watches it. What is typed on its "
+            "line is kept either way."
+        )
+        self.streams_help.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
+        streams_outer.addWidget(self.streams_help)
         self._streams_layout = QVBoxLayout()
         self._streams_layout.setSpacing(SPACE_ROOM)
         streams_outer.addLayout(self._streams_layout)
@@ -1083,7 +1126,12 @@ class SettingsTab(QWidget):
         seen: set[str] = set()
         for name, url, enabled, _reader in self.streams():
             if enabled and not url:
-                return f'"{name or "A stream"}" is ticked to record but has no address.'
+                # "ticked to record" was the old label's words. The tick means
+                # the view is in use, and the sentence has to say what to do.
+                return (
+                    f'"{name or "A stream"}" is ticked to be used but has no '
+                    f"address. Type one in, or untick it."
+                )
             if url and not name:
                 return "A stream has an address but no name."
             if name and name in seen:

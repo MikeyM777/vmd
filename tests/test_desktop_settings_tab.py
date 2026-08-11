@@ -132,6 +132,43 @@ def test_a_stream_added_in_the_window_is_the_stream_that_is_saved(qtbot, tmp_pat
     ]
 
 
+def test_the_tick_that_switches_a_view_off_does_not_call_itself_record(
+    qtbot, tmp_path: Path
+) -> None:
+    """The label said `record`. The setting is `enabled`, and it governs whether
+    the view exists at all - whether go2rtc pulls it, whether a pane shows it,
+    whether it is in the view chooser. The owner turned it off for the visible
+    camera, found the chooser offering only All and thermal, and asked why there
+    was no visible option: the chooser was right and the label had lied to him.
+    """
+    tab, _ = build(qtbot, tmp_path)
+    tab.set_streams([("thermal", "rtsp://a/1", True, "auto")])
+    row = tab.stream_rows()[0]
+    words = (row.record_field.text() + " " + row.record_field.toolTip()).lower()
+    assert row.record_field.text().strip()
+    assert "record" not in row.record_field.text().lower(), (
+        "recording is one of the things it governs, not what it is"
+    )
+    # And it says what switching it off actually costs, in the three places the
+    # operator would notice: the picture, the disk, and the watching.
+    for consequence in ("live", "record", "movement"):
+        assert consequence in words, words
+    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
+    assert not any(word in words for word in banned), words
+
+
+def test_the_form_says_what_becomes_of_a_view_that_is_switched_off(
+    qtbot, tmp_path: Path
+) -> None:
+    """On the form itself, not in a tooltip only: an operator who unticks one
+    and finds it gone from the Live tab has to be able to work out why without
+    asking anyone."""
+    tab, _ = build(qtbot, tmp_path)
+    said = tab.streams_help.text().lower()
+    assert said.strip()
+    assert "live" in said
+
+
 def test_unticking_record_is_saved_rather_than_deleting_the_stream(qtbot, tmp_path: Path) -> None:
     tab, path = build(qtbot, tmp_path)
     tab.set_streams([("thermal", "rtsp://a/1", True, "auto")])
