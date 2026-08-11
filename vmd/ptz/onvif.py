@@ -63,6 +63,33 @@ class PtzError(Exception):
     """The camera could not be moved, with a sentence explaining why."""
 
 
+@dataclass(frozen=True)
+class Profile:
+    """One media profile: a picture the camera can send, and a lens behind it.
+
+    `source` is the video source token, and it is the field that matters on this
+    camera. A multi-spectral head has two sensors behind two lenses on one
+    gimbal, and the camera presents them as separate video sources - which is
+    the only thing in the whole ONVIF answer that reliably says "these two
+    pictures are different lenses" rather than "these two pictures are the same
+    lens at two bitrates". Names lie about that constantly: `MainStream` and
+    `SubStream` are one lens, and a camera calling its profiles `Profile_1` and
+    `Profile_2` has told you nothing at all.
+    """
+
+    token: str
+    name: str = ""
+    source: str = ""
+
+
+# Words a camera puts in a profile or source name when it means one lens or the
+# other. Deliberately short: this is a hint used before falling back to the
+# video sources, and a long list of guesses is a long list of ways to point the
+# thermal zoom at the visible lens.
+THERMAL_WORDS = ("thermal", "therm", "ir", "tir", "lwir")
+VISIBLE_WORDS = ("visible", "visual", "vis", "optical", "rgb", "day", "colour", "color")
+
+
 @dataclass
 class PtzCapability:
     """What this camera turned out to support."""
@@ -73,6 +100,12 @@ class PtzCapability:
     auth: str = ""
     supports_home: bool = False
     services: dict[str, str] = field(default_factory=dict)
+    profiles: list[Profile] = field(default_factory=list)
+    # Whether the camera will accept "go to this zoom" rather than only "keep
+    # zooming while I ask". Absent from a great many cameras, which is why the
+    # zoom control has a second way of working and why this is discovered
+    # rather than assumed.
+    absolute_zoom: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -81,7 +114,143 @@ class PtzCapability:
             "profile": self.profile,
             "auth": self.auth,
             "supports_home": self.supports_home,
+            "absolute_zoom": self.absolute_zoom,
+            "profiles": [
+                {"token": p.token, "name": p.name, "source": p.source} for p in self.profiles
+            ],
         }
+
+
+def read_profiles(text: str) -> list[Profile]:
+    """The profiles in a GetProfiles answer, in the order the camera listed them.
+
+    Parsed with regular expressions for the same reason the rest of this file
+    is: there is no XML library worth the dependency for four messages, and the
+    shape here is fixed by the ONVIF schema rather than by a vendor.
+
+    What is deliberately NOT done is any cleverness about namespace prefixes.
+    Cameras answer with `trt:Profiles`, `tt:Profiles` or bare `Profiles`
+    depending on the firmware, so the prefix is skipped rather than matched.
+    """
+    profiles: list[Profile] = []
+    for block in re.findall(r"<(?:\w+:)?Profiles\b(.*?)</(?:\w+:)?Profiles>", text, re.DOTALL):
+        token = _first(r'token="([^"]+)"', block)
+        if not token:
+            continue
+        profiles.append(
+            Profile(
+                token=token,
+                name=_first(r"<(?:\w+:)?Name>(.*?)</(?:\w+:)?Name>", block) or "",
+                source=_first(
+                    r"<(?:\w+:)?VideoSourceConfiguration\b.*?"
+                    r"<(?:\w+:)?SourceToken>(.*?)</(?:\w+:)?SourceToken>",
+                    block,
+                )
+                or "",
+            )
+        )
+    if profiles:
+        return profiles
+    # A camera that answered in one line without the closing tags this expects.
+    # One profile is still better than none: it is what the console did before
+    # any of this existed, and it steers.
+    token = _first(r'token="([^"]+)"', text)
+    return [Profile(token=token)] if token else []
+
+
+def match_profiles(streams: list[str], profiles: list[Profile]) -> dict[str, str]:
+    """Which profile belongs to which of the operator's streams.
+
+    The problem this solves is small and the cost of getting it wrong is not.
+    The console knows its pictures as "thermal" and "visible" because that is
+    what the operator called them in Settings. The camera knows them as opaque
+    tokens. Sending the thermal zoom to the visible lens is not an error
+    anything reports - the picture the operator is watching simply does not
+    respond, which looks exactly like a lost command.
+
+    So, in order of how much each step can be trusted:
+
+    1. **The name says which it is.** `thermal`, `ir`, `visible`, `optical`. When
+       a camera bothers to say, believe it.
+    2. **The video sources say how many lenses there are.** Two distinct sources
+       are two sensors, and the streams left over are paired with them in the
+       order both were listed - which is the order every dual-sensor camera
+       presents them in, and the order the operator listed his streams in.
+    3. **There is only one lens.** Then every stream maps to it and the two zoom
+       controls will move the same glass. That is the truth about such a camera
+       and it is better shown than hidden.
+
+    Returns a name -> profile token map, leaving out any stream it could not
+    place. A missing entry is a zoom control that says it does not know which
+    lens it belongs to, which beats one that quietly moves the wrong one.
+    """
+    if not profiles:
+        return {}
+
+    chosen: dict[str, str] = {}
+    taken: set[str] = set()
+
+    def words_of(profile: Profile) -> str:
+        return f"{profile.name} {profile.source} {profile.token}".lower()
+
+    for stream in streams:
+        wanted = (
+            THERMAL_WORDS
+            if any(word in stream.lower() for word in THERMAL_WORDS)
+            else VISIBLE_WORDS
+            if any(word in stream.lower() for word in VISIBLE_WORDS)
+            else ()
+        )
+        if not wanted:
+            continue
+        # The other lens's words must NOT appear, or "visible" matches a profile
+        # called "IR-cut visible" on the thermal head.
+        against = VISIBLE_WORDS if wanted is THERMAL_WORDS else THERMAL_WORDS
+        for profile in profiles:
+            if profile.token in taken:
+                continue
+            said = words_of(profile)
+            if any(_word_in(word, said) for word in wanted) and not any(
+                _word_in(word, said) for word in against
+            ):
+                chosen[stream] = profile.token
+                taken.add(profile.token)
+                break
+
+    # Whatever is left, paired by lens. One profile per distinct video source,
+    # first listed first, because a camera that offers a main and a sub stream
+    # per sensor lists them that way and the second of a pair is the same glass.
+    per_source: list[Profile] = []
+    seen_sources: set[str] = set()
+    for profile in profiles:
+        key = profile.source or profile.token
+        if key in seen_sources:
+            continue
+        seen_sources.add(key)
+        per_source.append(profile)
+
+    spare = [profile for profile in per_source if profile.token not in taken]
+    for stream in streams:
+        if stream in chosen:
+            continue
+        if spare:
+            profile = spare.pop(0)
+            chosen[stream] = profile.token
+            taken.add(profile.token)
+        elif len(per_source) == 1:
+            # One lens, two pictures of it. Say so by mapping both rather than
+            # by leaving one control mysteriously dead.
+            chosen[stream] = per_source[0].token
+    return chosen
+
+
+def _word_in(word: str, said: str) -> bool:
+    """Whether `word` appears in `said` as a word rather than inside another.
+
+    Short keys make this necessary: "ir" is in "third", "wire" and "direct",
+    and a profile called "Direct" is not the thermal lens.
+    """
+    return re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", said) is not None
 
 
 def _security_header(username: str, password: str) -> str:
@@ -282,14 +451,15 @@ class OnvifPtz:
             self.capability = PtzCapability(available=False, reason=str(exc))
             return self.capability
 
-        token = _first(r'token="([^"]+)"', profiles)
-        if not token:
+        found = read_profiles(profiles)
+        if not found:
             self.capability = PtzCapability(
                 available=False, reason="the camera returned no media profiles"
             )
             return self.capability
 
-        self.capability.profile = token
+        self.capability.profiles = found
+        self.capability.profile = found[0].token
         self.capability.available = True
         self.capability.reason = "ready"
 
@@ -312,6 +482,14 @@ class OnvifPtz:
             return self.capability
 
         self.capability.supports_home = "HomeSupported>true" in nodes.replace(" ", "")
+        # Whether the zoom slider can send the lens somewhere, or can only ask
+        # it to keep moving. ONVIF advertises the absolute spaces it accepts in
+        # the node; a camera that lists no absolute zoom space and is sent an
+        # AbsoluteMove answers with a fault, which on a console means an arrow
+        # that reports failure at the moment somebody is trying to see
+        # something. Asked once here, remembered, and the zoom control changes
+        # what its buttons do rather than trying and failing.
+        self.capability.absolute_zoom = "AbsoluteZoomPositionSpace" in nodes
         if "PTZNode" not in nodes:
             # It answered, and what it said was that it has no head.
             self.capability.available = False
@@ -321,16 +499,32 @@ class OnvifPtz:
             )
         return self.capability
 
-    def _profile(self) -> str:
+    def _profile(self, profile: str | None = None) -> str:
+        """The profile a command is addressed to.
+
+        `None` means the camera's first one, which is what every command meant
+        before there was more than one lens to address. Naming it explicitly is
+        what lets the thermal zoom go to the thermal lens without the pan and
+        tilt - one gimbal, shared by both - having to care.
+        """
+        if profile:
+            return profile
         if not self.capability.profile:
             self.connect()
         if not self.capability.profile:
             raise PtzError(self.capability.reason or "the camera has no PTZ profile")
         return self.capability.profile
 
+    def profiles(self) -> list[Profile]:
+        """Every media profile the camera offers, discovering them if needed."""
+        if not self.capability.profiles:
+            self.connect()
+        return list(self.capability.profiles)
+
     # --------------------------------------------------------------- moving
 
-    def move(self, pan: float, tilt: float, zoom: float = 0.0) -> None:
+    def move(self, pan: float, tilt: float, zoom: float = 0.0,
+             profile: str | None = None) -> None:
         """Move at a speed, until told to stop.
 
         Speeds are -1..1, which is what ONVIF uses. Continuous movement is the
@@ -340,7 +534,7 @@ class OnvifPtz:
         pan, tilt, zoom = (_clamp(v) for v in (pan, tilt, zoom))
         body = (
             f'<ContinuousMove xmlns="{PTZ}">'
-            f"<ProfileToken>{_xml(self._profile())}</ProfileToken>"
+            f"<ProfileToken>{_xml(self._profile(profile))}</ProfileToken>"
             '<Velocity xmlns:tt="http://www.onvif.org/ver10/schema">'
             f'<tt:PanTilt x="{pan:.3f}" y="{tilt:.3f}"/>'
             f'<tt:Zoom x="{zoom:.3f}"/>'
@@ -348,14 +542,38 @@ class OnvifPtz:
         )
         self._post("/onvif/ptz_service", body, expect="ContinuousMoveResponse")
 
-    def stop(self) -> None:
+    def zoom_to(self, where: float, profile: str | None = None) -> None:
+        """Send one lens to a zoom, 0.0 wide to 1.0 tele.
+
+        Only the zoom is sent. An AbsoluteMove carrying a PanTilt as well would
+        slew the head every time somebody touched a zoom slider, and the head is
+        shared between the two lenses: zooming the thermal picture would move
+        the visible one off whatever the operator had it pointed at.
+        """
+        where = max(0.0, min(1.0, float(where)))
+        body = (
+            f'<AbsoluteMove xmlns="{PTZ}">'
+            f"<ProfileToken>{_xml(self._profile(profile))}</ProfileToken>"
+            '<Position xmlns:tt="http://www.onvif.org/ver10/schema">'
+            f'<tt:Zoom x="{where:.3f}"/>'
+            "</Position></AbsoluteMove>"
+        )
+        self._post("/onvif/ptz_service", body, expect="AbsoluteMoveResponse")
+
+    def stop(self, profile: str | None = None, pan_tilt: bool = True,
+             zoom: bool = True) -> None:
         body = (
             f'<Stop xmlns="{PTZ}">'
-            f"<ProfileToken>{_xml(self._profile())}</ProfileToken>"
-            "<PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>"
+            f"<ProfileToken>{_xml(self._profile(profile))}</ProfileToken>"
+            f"<PanTilt>{'true' if pan_tilt else 'false'}</PanTilt>"
+            f"<Zoom>{'true' if zoom else 'false'}</Zoom></Stop>"
         )
         # The one command that must never be believed on faith: a stop that was
         # not carried out is a head left slewing with no key held.
+        #
+        # Which of the two can be stopped alone matters here: letting go of a
+        # zoom button must not also halt a pan the operator is still holding,
+        # and they are separate motors on one head.
         self._post("/onvif/ptz_service", body, expect="StopResponse")
 
     def home(self) -> None:
@@ -366,12 +584,16 @@ class OnvifPtz:
         )
         self._post("/onvif/ptz_service", body, expect="GotoHomePositionResponse")
 
-    def position(self) -> dict | None:
-        """Where the head is now, if the camera will say."""
+    def position(self, profile: str | None = None) -> dict | None:
+        """Where the head is now, if the camera will say.
+
+        Asked per profile, because the zoom in the answer is that profile's
+        lens. The pan and tilt are the same head whichever profile is asked.
+        """
         try:
             text = self._post(
                 "/onvif/ptz_service",
-                f'<GetStatus xmlns="{PTZ}"><ProfileToken>{_xml(self._profile())}'
+                f'<GetStatus xmlns="{PTZ}"><ProfileToken>{_xml(self._profile(profile))}'
                 "</ProfileToken></GetStatus>",
             )
         except PtzError:
