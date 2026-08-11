@@ -726,6 +726,11 @@ class RecordingService:
             self._stuck_deletions = 0
             self._stall_restarts = 0
             self._empty_segments = 0
+            # ...and how many of them have been cleared away. Counted apart
+            # from the total because "24 were written and 24 are gone" and "24
+            # were written and 24 are still there" are different states of the
+            # folder, and only one of them needs a person.
+            self._empty_removed = 0
             self._empty_seen: set[str] = set()
             self._stage_failures: dict[str, int] = {}
             self._adopt_orphans()
@@ -1071,7 +1076,26 @@ class RecordingService:
         The file ffmpeg currently holds is never counted - on Windows its size
         in the directory entry stays zero until the handle is closed, so the
         newest file being empty is the ordinary state of a healthy recorder.
+
+        **And then it is deleted.** Reporting them was right and left the other
+        half undone: nothing removed them. `held_back` bounds the rate at five
+        files per two minutes, which is about 3,600 files a day while the fault
+        lasts, in the very directory this globs and stats in full on every
+        five-second pass - so the fault got slower and more expensive the longer
+        it went on, and left a folder the operator could not make sense of. The
+        count is what carries the information; the file carries nothing, by
+        definition. What may be deleted is decided in `_remove_empty_segment`,
+        which asks two questions and not one.
+
+        What has been reported is remembered so that it is reported once, and
+        that memo is now bounded by what is actually on the disk. Deleting is
+        what keeps it near empty in the ordinary case; the pruning is what keeps
+        it bounded in the case where the deletions themselves are refused - a
+        read-only folder, a share gone sour - which is the case where the old
+        set would have grown fastest.
         """
+        present: set[str] = set()
+        listed_everything = True
         for recorder in self.recorders:
             try:
                 files = sorted(
@@ -1079,30 +1103,72 @@ class RecordingService:
                     for path in recorder.output_dir.glob("*.mp4")
                 )
             except OSError:
+                # This directory's paths are unaccounted for this pass, so
+                # nothing may be pruned on the strength of not having seen them.
+                listed_everything = False
                 continue
-            for _mtime, path in files[:-1]:
+            present.update(str(path) for _mtime, path in files)
+            for mtime, path in files[:-1]:
                 key = str(path)
-                if key in self._empty_seen:
-                    continue
-                try:
-                    if path.stat().st_size != 0:
+                if key not in self._empty_seen:
+                    try:
+                        if path.stat().st_size != 0:
+                            continue
+                    except OSError:
                         continue
-                except OSError:
-                    continue
-                self._empty_seen.add(key)
-                self._empty_segments += 1
-                # Loud the first few times, then rare: this is one line per
-                # broken segment and the Logs tab holds five hundred.
-                if self._empty_segments <= 3 or self._empty_segments % 100 == 0:
-                    logger.error(
-                        "%s: %s was opened and nothing was ever written to it "
-                        "(%d such files so far), so it is not footage and is not "
-                        "indexed. ffmpeg is exiting before it records anything - "
-                        "its own words are in the lines above",
-                        recorder.stream,
-                        path.name,
-                        self._empty_segments,
-                    )
+                    self._empty_seen.add(key)
+                    self._empty_segments += 1
+                    # Loud the first few times, then rare: this is one line per
+                    # broken segment and the Logs tab holds five hundred.
+                    if self._empty_segments <= 3 or self._empty_segments % 100 == 0:
+                        logger.error(
+                            "%s: %s was opened and nothing was ever written to it "
+                            "(%d such files so far), so it is not footage, it is "
+                            "not indexed, and it has been deleted. ffmpeg is "
+                            "exiting before it records anything - its own words "
+                            "are in the lines above",
+                            recorder.stream,
+                            path.name,
+                            self._empty_segments,
+                        )
+                # Reported, and worth nothing. Said before it goes, so that the
+                # log never names a file nobody can find without also saying why
+                # it is not there.
+                if self._remove_empty_segment(path, mtime):
+                    self._empty_removed += 1
+                    present.discard(key)
+        if listed_everything:
+            self._empty_seen &= present
+
+    def _remove_empty_segment(self, path: Path, mtime: float) -> bool:
+        """Delete a file that is provably not footage. True once it is gone.
+
+        Two questions, and both of them have to answer before anything is
+        unlinked, because the cost of being wrong here is footage:
+
+        * **Is anything writing it?** `_still_being_written` asks the handles
+          first - Windows refuses to open a file exclusively while somebody else
+          holds it - and falls back to the settle window only where there are no
+          handles to ask about. It errs towards yes.
+        * **Is it still empty?** Asked again, here, at the last moment. The
+          listing this was reached from is a moment old, and a moment is all it
+          takes for ffmpeg to have written the header into the file that was
+          empty when it was listed.
+
+        The newest file in the directory never reaches this at all; see the
+        caller. Anything that refuses - a read-only folder, a file that vanished
+        between the two questions - is a False and nothing else. Deleting is a
+        tidiness; not deleting costs a file.
+        """
+        if self._still_being_written(path, mtime):
+            return False
+        try:
+            if path.stat().st_size != 0:
+                return False
+            path.unlink()
+        except OSError:
+            return False
+        return True
 
     def _stage(self, name: str, work, *args) -> None:
         try:
@@ -1368,6 +1434,7 @@ class RecordingService:
             "stuck_deletions": self._stuck_deletions,
             "stall_restarts": self._stall_restarts,
             "empty_segments": self._empty_segments,
+            "empty_removed": self._empty_removed,
             "restarts": dict(self.supervisor.restarts),
             # Streams being read straight from the camera rather than through
             # the local streaming server, counted the way the detector counts

@@ -2141,3 +2141,143 @@ def test_the_report_does_not_stay_behind_in_a_folder_that_was_left(tmp_path):
     assert not old.exists(), "the report was left behind in the folder that was left"
     assert (tmp_path / "elsewhere" / record_main_module.STATUS_FILENAME).exists()
     service.stop()
+
+
+# --------------------------------------------------------------------------
+# The residue of a broken ffmpeg, and the set that remembered every piece of it.
+#
+# Nothing deleted a zero-byte segment: the index skips them, retention only
+# deletes what is in the index, and the disk watcher does not count them. A
+# persistent fault writes up to five of them every two minutes - about 3,600 a
+# day - into the same directory that is globbed and stat'ed on every five-second
+# pass, and `_empty_seen` remembered the path of every one of them for ever, in
+# a process meant to run for months.
+# --------------------------------------------------------------------------
+
+
+def _empty_at(directory, name, mtime):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"")
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_a_segment_that_was_never_written_to_is_deleted_once_it_is_reported(tmp_path, caplog):
+    """It is provably not footage - ffmpeg opened it, wrote no header and moved
+    on - and the count is what carries the information, not the file."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    empty = _empty_at(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    newest = _empty_at(directory, "2026-08-07_10-05-00.mp4", 200.0)
+
+    with caplog.at_level(logging.ERROR):
+        service.run_once(now=1000.0)
+
+    assert not empty.exists(), "the zero-byte file is still there"
+    assert newest.exists(), "the file ffmpeg has open was deleted"
+    status = service.status(now=1000.0)
+    assert status["empty_segments"] == 1, "deleting it lost the fact that it happened"
+    assert status["empty_removed"] == 1
+    assert status["healthy"] is False
+    assert "2026-08-07_10-00-00.mp4" in " ".join(r.getMessage() for r in caplog.records)
+    service.stop()
+
+
+def test_the_file_ffmpeg_still_has_open_is_never_deleted(tmp_path):
+    """On Windows the size in the directory entry stays zero until the handle is
+    closed, so a file that is being written looks exactly like the broken ones."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    being_written = _empty_at(directory, "2026-08-07_10-00-00.mp4", time.time())
+    _empty_at(directory, "2026-08-07_10-05-00.mp4", time.time())
+
+    # Held open, and touched a moment ago: both of the two things asked before
+    # anything is deleted say this file is alive. Windows would refuse the
+    # unlink as well, which is a second belt and not the reason - the question
+    # is asked so that this is deliberate on every platform rather than lucky on
+    # one.
+    with open(being_written, "ab"):
+        assert service._still_being_written(being_written, time.time()) is True
+        service.run_once(now=time.time())
+
+    assert being_written.exists(), (
+        "a file something still had open was deleted as though it were residue"
+    )
+    service.stop()
+
+
+def test_a_file_that_grew_between_the_look_and_the_delete_is_left_alone(tmp_path, monkeypatch):
+    """The listing is a moment old by the time anything acts on it. Only a file
+    that is still empty at the instant of deletion may be deleted."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    late = _empty_at(directory, "2026-08-07_10-00-00.mp4", 100.0)
+    _empty_at(directory, "2026-08-07_10-05-00.mp4", 200.0)
+
+    original = service._still_being_written
+
+    def writes_first(path, mtime):
+        if path == late:
+            path.write_bytes(b"a real segment after all")
+        return original(path, mtime)
+
+    monkeypatch.setattr(service, "_still_being_written", writes_first)
+    service.run_once(now=1000.0)
+
+    assert late.exists() and late.stat().st_size > 0, "footage was deleted"
+    service.stop()
+
+
+def test_nothing_with_footage_in_it_is_ever_deleted(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+    real = _segment(directory, "2026-08-07_10-00-00.mp4", size=2048, mtime=100.0)
+    _segment(directory, "2026-08-07_10-05-00.mp4", size=2048, mtime=200.0)
+
+    for step in range(5):
+        service.run_once(now=1000.0 + step)
+
+    assert real.exists()
+    assert service.status(now=1000.0)["empty_removed"] == 0
+    service.stop()
+
+
+def test_what_has_been_reported_is_bounded_by_what_is_on_disk(tmp_path, monkeypatch):
+    """Up to 3,600 paths a day while the fault lasts, in a process meant to run
+    for months. Deleting them is the bound; a folder that refuses the deletions
+    must not become the same unbounded set by another route."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    directory = tmp_path / "recordings" / "thermal"
+
+    # A folder that will not let anything be deleted - read-only, or a share
+    # that has gone sour. The reporting still has to happen.
+    monkeypatch.setattr(service, "_remove_empty_segment", lambda path, mtime: False)
+    written = [
+        _empty_at(directory, f"2026-08-07_10-{minute:02d}-00.mp4", 100.0 + minute)
+        for minute in range(40)
+    ]
+    service.run_once(now=2000.0)
+    assert service.status(now=2000.0)["empty_segments"] == 39
+    assert len(service._empty_seen) == 39
+
+    # They are cleared away by whatever fixed the folder - by hand, by the
+    # deletions starting to work again. What is remembered goes with them.
+    for path in written:
+        path.unlink()
+    _empty_at(directory, "2026-08-07_11-00-00.mp4", 9000.0)
+    service.run_once(now=3000.0)
+
+    assert len(service._empty_seen) <= 1, (
+        f"{len(service._empty_seen)} paths are still remembered for files that "
+        "are not on the disk any more"
+    )
+    assert service.status(now=3000.0)["empty_segments"] == 39, (
+        "forgetting the paths must not forget that it happened"
+    )
+    service.stop()
