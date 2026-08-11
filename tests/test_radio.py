@@ -926,3 +926,93 @@ def test_the_radio_is_never_reached_through_a_proxy(monkeypatch) -> None:
         if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies
     ]
     assert routed == [], f"the radio would be reached through {routed}"
+
+
+# --------------------------------------- reading it often enough to look alive
+#
+# "I want the numbers from the signal to be automatically updated realtime - I
+# want to see that it's actually capturing them." The cadence is half of that;
+# the other half is in the panel, which needs something that changes once per
+# reading that actually landed.
+
+
+class SteadyRadio:
+    """A radio that answers at once, and counts how often it was asked."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def status(self):
+        self.calls += 1
+        return _Steady()
+
+
+class _Steady:
+    @staticmethod
+    def as_dict() -> dict:
+        return {"connected": True, "reason": "", "signal_dbm": -63.0}
+
+
+def test_the_radio_is_read_again_inside_one_beat_of_the_console() -> None:
+    """The panel is redrawn on the window's heartbeat and nowhere else, so an
+    interval longer than that beat means some beats redraw the previous reading
+    and the figures visibly stall. Pinned against the heartbeat itself rather
+    than against a number, because the number that matters is the relationship."""
+    from vmd.desktop.window import HEARTBEAT_MS
+    from vmd.radio.service import CACHE_SECONDS
+
+    assert CACHE_SECONDS < HEARTBEAT_MS / 1000.0, (
+        "the radio is asked less often than the console draws it"
+    )
+
+
+def test_each_reading_that_landed_is_counted() -> None:
+    """What the panel's mark advances on. A count of readings, not of redraws:
+    the console redraws whether or not the radio answered."""
+    radio = SteadyRadio()
+    service = _service_around(radio)
+    try:
+        assert until(lambda: service.status().get("readings") == 1, PATIENCE)
+        assert until(lambda: service.status().get("readings", 0) >= 2, PATIENCE)
+    finally:
+        service.close()
+
+
+def test_a_read_that_failed_is_not_counted_as_a_reading() -> None:
+    """He is being shown that figures are arriving. A login timeout is not a
+    figure arriving, and a mark that advanced on one would be a lie told twice
+    a minute for months."""
+    wedged = WedgedRadio()
+    service = _service_around(wedged)
+    try:
+        service.status()
+        assert wedged.entered.wait(PATIENCE)
+        wedged.released.set()
+        # The radio's own words, not merely "not connected": a reading nobody
+        # has taken yet also says not connected, and waiting for that would let
+        # this pass without a failed read ever having landed.
+        assert until(lambda: "cannot reach" in service.status().get("reason", ""), PATIENCE)
+        assert "readings" not in service.status(), service.status()
+    finally:
+        wedged.released.set()
+        service.close()
+
+
+def test_a_radio_that_will_not_answer_is_still_asked_only_one_at_a_time() -> None:
+    """The interval is a floor, not a rate. A radio that has to log in again
+    takes seconds to answer, and nothing may start a second read while the
+    first is still out - which is what would turn a shorter interval into a
+    radio being hammered."""
+    import time as _time
+
+    wedged = WedgedRadio()
+    service = _service_around(wedged)
+    try:
+        for _ in range(30):
+            service.status()
+            _time.sleep(0.01)
+        assert wedged.entered.wait(PATIENCE)
+        assert wedged.calls == 1, f"{wedged.calls} reads were started at once"
+    finally:
+        wedged.released.set()
+        service.close()

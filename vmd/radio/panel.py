@@ -81,6 +81,34 @@ FULL_FRACTION = 0.9
 # time on retries rather than on data.
 CCQ_POOR_PERCENT = 80.0
 
+# The mark that says whether readings are still arriving, and its two words.
+#
+# "I want the numbers from the signal to be automatically updated realtime - I
+# want to see that it's actually capturing them." The second half of that is the
+# hard half: a figure that is correct but never visibly moves is exactly what a
+# frozen figure looks like, and this console has spent a day teaching its
+# operator - correctly - not to believe a screen that looks calm.
+#
+# The age cannot carry it. The panel is redrawn on the same two-second beat that
+# takes the reading, so the age at the moment of drawing is always about one
+# beat: it would read "2 s ago" for ever, which is the frozen number all over
+# again. So the mark advances once per reading that actually landed, and it
+# advances on nothing else - a mark that moved on every redraw would say only
+# that the console is redrawing, which he can already see.
+#
+# Two shapes and not two colours, which is the recording dot's rule and
+# DESIGN.md's: a filled dot and a hollow one while readings are arriving, a
+# still bar when they have stopped. What separates them across a room is the
+# movement, not the ink - and the still bar is the state that has to be
+# unmistakable, because it is the one that means the figures above are history.
+#
+# Quiet on purpose. It is one short muted line at the bottom of a panel someone
+# stands in front of for months, and it changes at the pace of a slow pulse.
+ARRIVING_GLYPHS = ("●", "○")
+ARRIVING_WORDS = "readings arriving"
+STOPPED_GLYPH = "■"
+STOPPED_WORDS = "no new readings"
+
 CHECKING_WORDS = "Checking the radio..."
 NOT_SET_UP_WORDS = (
     "The radio is not set up. Enter its address, username and password in "
@@ -119,10 +147,21 @@ def link_lines(link: dict) -> list[tuple[str, str]]:
             lines.append((f"That was {_age(age)} ago.", PALETTE["warn"]))
         return lines
 
-    lines += _signal_lines(link, stale)
+    lines += _signal_lines(link)
     lines += _traffic_lines(link)
     lines += _detail_lines(link)
     if stale:
+        # Every figure goes grey, not only the ones that were green.
+        #
+        # Saying it was not enough. A panel full of coloured figures reads as a
+        # panel full of current figures whatever the sentence underneath says,
+        # and the operator has to be able to tell at a glance - without reading
+        # anything - whether he is looking at now or at four minutes ago. The
+        # rule was already here for the healthy colour, on the grounds that a
+        # stale reading may not be drawn in the ink that means "the link is fine
+        # right now"; it is just as true of the amber and the red, which claim
+        # "the link is in trouble right now" and cannot say that either.
+        lines = [(text, PALETTE["muted"]) for text, _colour in lines]
         lines.append(
             (
                 f"Read {_age(age)} ago, so not necessarily the link now.",
@@ -132,7 +171,7 @@ def link_lines(link: dict) -> list[tuple[str, str]]:
     return lines
 
 
-def _signal_lines(link: dict, stale: bool) -> list[tuple[str, str]]:
+def _signal_lines(link: dict) -> list[tuple[str, str]]:
     signal = _number(link.get("signal_dbm"))
     if signal is None:
         return [(NO_SIGNAL_WORDS, PALETTE["warn"])]
@@ -151,10 +190,6 @@ def _signal_lines(link: dict, stale: bool) -> list[tuple[str, str]]:
             PALETTE["alarm"],
             "Close to the noise: this is where the picture starts breaking up.",
         )
-    # A stale reading may never be drawn in the colour that means "the link is
-    # fine right now", because that is the one thing it cannot say.
-    if stale and colour == PALETTE["ok"]:
-        colour = PALETTE["muted"]
     lines = [(f"Signal: {signal:.0f} dBm - {words}", colour)]
     if meaning:
         lines.append((meaning, PALETTE["muted"]))
@@ -314,15 +349,48 @@ class LinkPanel(QGroupBox):
         self.setSizePolicy(policy)
         self._labels: list[QLabel] = []
         self._shown: list[tuple[str, str]] = []
+        # The mark, and the state behind it. It is a label of its own rather
+        # than another entry in `lines`, and that is deliberate twice over: the
+        # lines are what the radio said, and this is whether it is still saying
+        # anything; and the lines are only redrawn when they change, which is
+        # the one thing an indicator of liveness must not wait for.
+        self._pulse = QLabel("")
+        self._pulse.setWordWrap(True)
+        policy = self._pulse.sizePolicy()
+        policy.setHeightForWidth(True)
+        policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+        self._pulse.setSizePolicy(policy)
+        self._layout.addWidget(self._pulse)
+        # A sentinel, not None: a service that never reports a count at all must
+        # still move the mark once, on its first reading, rather than never.
+        self._counted: object = object()
+        self._beat = 0
+        self._pulse_state: tuple[str, str, str] = ("", "", "")
         # How many times the panel has actually been redrawn. This runs every
         # two seconds for months; the number says whether it is doing work for
         # nothing.
         self.rebuilds = 0
         self.refresh()
 
+    # Exposed so the tests name the same two shapes the panel draws, rather
+    # than a copy of them that can drift.
+    ARRIVING = ARRIVING_GLYPHS
+
     def lines(self) -> list[tuple[str, str]]:
         """What is on screen, for the window and for the tests."""
         return list(self._shown)
+
+    def pulse(self) -> tuple[str, str, str]:
+        """The mark, its words and its colour: glyph, sentence, colour.
+
+        Empty glyph means there is nothing to say about readings at all - no
+        radio has been set up, or none has ever answered and the panel is
+        already saying so in as many words. Those are two different states from
+        "it was answering and has stopped", which is the whole point: a hard
+        failure that looks like still-checking is how the one fault at the far
+        end of this link went unnoticed for months.
+        """
+        return self._pulse_state
 
     def clipped(self) -> list[str]:
         """Any sentence the panel is not tall enough to show in full.
@@ -335,7 +403,8 @@ class LinkPanel(QGroupBox):
         """
         cut: list[str] = []
         room = self._layout.contentsRect()
-        shown = [label for label in self._labels if label.isVisibleTo(self) and label.text()]
+        everything = [*self._labels, self._pulse]
+        shown = [label for label in everything if label.isVisibleTo(self) and label.text()]
         for index, label in enumerate(shown):
             # Three ways to lose a line, and the third is the one that actually
             # happened: the label is too short for its own wrapped text; it runs
@@ -364,18 +433,61 @@ class LinkPanel(QGroupBox):
         borders stands in until the first resize corrects it.
         """
         width = max(self._layout.contentsRect().width(), self.width() - 24, 1)
-        for label in self._labels:
+        for label in (*self._labels, self._pulse):
             if label.text():
                 label.setMinimumHeight(label.heightForWidth(width))
+
+    def _advance(self, link: dict) -> None:
+        """Move the mark on, if a reading has landed since the last redraw.
+
+        Nothing here reads a clock. The mark advances on the count the service
+        publishes and on nothing else, so it says "a reading arrived", never
+        "the console repainted" - and when the readings stop, so does it.
+        """
+        age = link.get("age_seconds")
+        known = isinstance(age, (int, float))
+        if link.get("checking") or not known:
+            # Nobody has answered yet, or there is no radio to answer. Neither
+            # is a stopped reading and neither may be drawn as one; the panel is
+            # already saying which of the two it is, in words.
+            self._pulse_state = ("", "", "")
+            return
+        if not link.get("connected") or age >= STALE_AFTER_SECONDS:
+            # It is still being asked every beat. What has stopped arriving is
+            # answers, and this mark is about answers.
+            self._pulse_state = (STOPPED_GLYPH, STOPPED_WORDS, PALETTE["warn"])
+            return
+        counted = link.get("readings")
+        if counted != self._counted:
+            self._counted = counted
+            self._beat = (self._beat + 1) % len(ARRIVING_GLYPHS)
+        self._pulse_state = (
+            ARRIVING_GLYPHS[self._beat],
+            ARRIVING_WORDS,
+            PALETTE["muted"],
+        )
 
     def refresh(self) -> None:
         try:
             link = self._radio.status()
         except Exception:  # noqa: BLE001 - the pictures are not downstream of this
             logger.exception("the radio could not be asked about the link")
+            link = {}
             lines = [("The radio could not be asked about the link.", PALETTE["alarm"])]
         else:
-            lines = link_lines(link if isinstance(link, dict) else {})
+            link = link if isinstance(link, dict) else {}
+            lines = link_lines(link)
+
+        # Before the early return below, and that is the point of it being here:
+        # the lines are redrawn only when they change, and a mark that waited
+        # for something else to change would be a mark that never moves on a
+        # link that is behaving itself.
+        self._advance(link)
+        glyph, words, colour = self._pulse_state
+        self._pulse.setText(f"{glyph} {words}" if glyph else "")
+        self._pulse.setStyleSheet(f"color: {colour};" if colour else "")
+        self._pulse.setVisible(bool(glyph))
+
         if lines == self._shown:
             return
         self._shown = lines
@@ -392,7 +504,10 @@ class LinkPanel(QGroupBox):
             policy.setHeightForWidth(True)
             policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
             label.setSizePolicy(policy)
-            self._layout.addWidget(label)
+            # Before the mark, which stays at the bottom: it is the panel's
+            # footer, and a line about the link appearing underneath it would
+            # read as something the mark was about.
+            self._layout.insertWidget(self._layout.indexOf(self._pulse), label)
             self._labels.append(label)
         for index, label in enumerate(self._labels):
             if index < len(lines):

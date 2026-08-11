@@ -310,3 +310,131 @@ def test_no_sentence_is_cut_in_half_by_the_column_it_sits_in(qtbot) -> None:
     column.show()
     QApplication.processEvents()
     assert panel.clipped() == [], "half a sentence is worse than none"
+
+
+# ------------------------------------------- showing that it is actually reading
+#
+# The operator's own words: "I want the numbers from the signal to be
+# automatically updated realtime - I want to see that it's actually capturing
+# them." Two requirements, and the second is the one that matters. A figure that
+# is correct but never visibly moves is indistinguishable from a figure that is
+# frozen, and this system has spent a whole day teaching him - correctly - not
+# to believe a console that looks calm.
+#
+# The age cannot be that indicator. The panel is redrawn on the same two-second
+# heartbeat that takes the reading, so the age at the moment of drawing is
+# always about two seconds, whatever the interval is: it would sit at "2 s ago"
+# for ever and look exactly like the frozen number he is complaining about. So
+# what moves is a mark that advances once per reading that actually landed.
+
+
+def test_the_panel_shows_a_mark_saying_readings_are_arriving(qtbot) -> None:
+    panel = LinkPanel(FakeRadioService(reading(readings=4)))
+    qtbot.addWidget(panel)
+    panel.refresh()
+    glyph, words, _colour = panel.pulse()
+    assert glyph, "nothing on the panel says whether it is still reading"
+    assert words
+
+
+def test_the_mark_advances_only_when_a_new_reading_lands(qtbot) -> None:
+    """A mark that changed on every redraw would be a decoration that says
+    nothing: the console redraws whether or not the radio answered."""
+    service = FakeRadioService(reading(readings=4))
+    panel = LinkPanel(service)
+    qtbot.addWidget(panel)
+    panel.refresh()
+    settled = panel.pulse()[0]
+    for _ in range(3):
+        panel.refresh()
+    assert panel.pulse()[0] == settled, "the mark moved without a reading behind it"
+
+    service._status = reading(readings=5)
+    panel.refresh()
+    assert panel.pulse()[0] != settled, "a reading landed and nothing on screen moved"
+
+
+def test_the_mark_stops_when_the_readings_stop(qtbot) -> None:
+    """The recording dot's rule: two shapes, and what tells them apart is that
+    one of them moves. A console that has stopped reading the radio may not go
+    on looking like one that is reading it."""
+    panel = LinkPanel(FakeRadioService(reading(age_seconds=STALE_AFTER_SECONDS + 200)))
+    qtbot.addWidget(panel)
+    panel.refresh()
+    glyph, words, colour = panel.pulse()
+    assert glyph and glyph != panel.ARRIVING[0] and glyph != panel.ARRIVING[1]
+    assert "no" in words.lower()
+    assert colour == PALETTE["warn"]
+
+
+def test_a_radio_that_is_not_answering_is_not_shown_as_reading(qtbot) -> None:
+    """It is still being asked every heartbeat. What is not arriving is answers,
+    and the mark is about answers."""
+    panel = LinkPanel(
+        FakeRadioService(
+            {"connected": False, "reason": "cannot reach 10.0.0.9", "age_seconds": 1.0}
+        )
+    )
+    qtbot.addWidget(panel)
+    panel.refresh()
+    glyph, _words, colour = panel.pulse()
+    assert glyph not in panel.ARRIVING
+    assert colour == PALETTE["warn"]
+
+
+def test_a_radio_nobody_has_reached_yet_is_a_third_state(qtbot) -> None:
+    """Never answered is not the same as answered-and-refused, and neither is
+    the same as reading. The band got this wrong for months: no signal figure
+    fell through to muted, so a hard failure looked exactly like still checking."""
+    checking = LinkPanel(FakeRadioService({"connected": False, "checking": True}))
+    qtbot.addWidget(checking)
+    checking.refresh()
+    refused = LinkPanel(
+        FakeRadioService(
+            {"connected": False, "reason": "Invalid credentials.", "age_seconds": 1.0}
+        )
+    )
+    qtbot.addWidget(refused)
+    refused.refresh()
+
+    assert checking.pulse()[0] == "", "a radio nobody has reached is not a stopped one"
+    assert refused.pulse()[0] != "", "a refusal must not look like still checking"
+    assert texts(checking.lines()) != texts(refused.lines())
+
+
+def test_a_radio_that_was_never_set_up_says_nothing_about_readings(qtbot) -> None:
+    """Nothing is being read because nothing was asked for. That is not a fault
+    and may not be drawn as one."""
+    panel = LinkPanel(FakeRadioService({"connected": False, "reason": "the radio is not set up"}))
+    qtbot.addWidget(panel)
+    panel.refresh()
+    assert panel.pulse()[0] == ""
+
+
+# ------------------------------------------------------ stale has to LOOK stale
+
+
+def test_every_figure_goes_grey_when_the_readings_stop() -> None:
+    """Saying it is not enough. A panel full of coloured figures reads as a
+    panel full of current figures, whatever the sentence at the bottom says -
+    and he has to be able to tell at a glance whether he is looking at now or
+    at four minutes ago."""
+    stale = link_lines(reading(signal_dbm=-85, rx_mbps=17.5, rx_capacity_mbps=18.0,
+                               age_seconds=STALE_AFTER_SECONDS + 200))
+    figures = [(text, colour) for text, colour in stale if "ago" not in text.lower()]
+    assert figures, "the panel stopped showing the figures altogether"
+    assert all(colour == PALETTE["muted"] for _text, colour in figures), figures
+    # And the one line that is about now - that these are not it - still is.
+    assert coloured(stale, PALETTE["warn"])
+
+
+def test_a_current_reading_keeps_the_colours_that_mean_something() -> None:
+    live = link_lines(reading(signal_dbm=-85, rx_mbps=17.5, rx_capacity_mbps=18.0))
+    assert coloured(live, PALETTE["alarm"]), "a marginal link now is an alarm now"
+
+
+def test_the_throughput_against_capacity_survives_all_of_this() -> None:
+    """The most useful figure on the panel: whether the visible camera fits on
+    the link at all."""
+    said = texts(link_lines(reading(rx_mbps=4.2, rx_capacity_mbps=18.0)))
+    assert "4.2" in said and "18" in said

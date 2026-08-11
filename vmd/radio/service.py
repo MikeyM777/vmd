@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import threading
 
@@ -11,9 +12,25 @@ from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# How often the radio is actually asked. Reading it more than once a few seconds
-# tells nobody anything new and costs the radio a login each time.
-CACHE_SECONDS = 4.0
+# How long a reading is believed before another one is taken.
+#
+# One second, which is deliberately SHORTER than the console's two-second
+# heartbeat, and the reason is not that the radio needs asking every second. The
+# heartbeat is the only thing that ever calls `status`, so the heartbeat sets the
+# rate; this number only decides whether a given beat takes a fresh reading or
+# redraws the last one. At four seconds - what it was - most beats redrew, so the
+# figures on the panel changed once every second or third beat and the operator's
+# own complaint was exactly that: "I want to see that it's actually capturing
+# them." Under the heartbeat, every beat takes a reading and the signal moves on
+# its own, which is the most honest liveness indicator there is on a 15 km path.
+#
+# What stops that hammering a radio that has to log in again is not this number.
+# It is `BackgroundValue`'s one-read-at-a-time rule: nothing starts a second read
+# while the first is still out, so a radio that takes eight seconds to answer is
+# asked once every eight seconds, not once a second. The interval is a floor on
+# the gap between reads, never a rate - and on the happy path a read is one
+# `status.cgi` GET, because the session opener is kept between reads.
+CACHE_SECONDS = 1.0
 
 # What the status line has to show before the radio has ever answered. Never a
 # blank and never a dash: both of those are how this console says "the radio has
@@ -97,16 +114,31 @@ def _reader(radio: AirOsRadio):
     Bound to the radio object rather than to the service, so that a save which
     replaces the radio cannot have a read already in flight write its answer
     about the old address into the new one's reading.
+
+    Each answer that came back carries how many have come back, and only the
+    ones that did are counted. That number is the only thing on this machine
+    that changes exactly once per reading, and it is what lets the panel show
+    that figures are arriving rather than only claiming they are. It cannot be
+    done with the age: the panel is redrawn on the same beat that takes the
+    reading, so the age at the moment of drawing is always about one beat, and a
+    number that always reads "2 s ago" is indistinguishable from a frozen one -
+    which is the complaint this answers.
+
+    A failed read is not counted. He is being shown that figures are arriving,
+    and a login timeout is not a figure arriving.
     """
+    taken = itertools.count(1)
 
     def read() -> dict:
         try:
             status: LinkStatus = radio.status()
-            return status.as_dict()
         except RadioError as exc:
             return {"connected": False, "reason": str(exc)}
         except Exception as exc:  # noqa: BLE001 - the console outlives the radio
             logger.exception("could not read the radio")
             return {"connected": False, "reason": str(exc)}
+        payload = status.as_dict()
+        payload["readings"] = next(taken)
+        return payload
 
     return read
