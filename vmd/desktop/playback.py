@@ -792,6 +792,14 @@ class PlaybackTab(QWidget):
             # Only with exactly two. With three, "both" does not say which two.
             if len(names) == 2 and self._second_pane is not None:
                 self.stream_selector.addItem(BOTH)
+            if chosen and chosen != BOTH and self.stream_selector.findText(chosen) < 0:
+                # A camera the catalogue has never heard of, being shown by
+                # name. `show_day` does this deliberately when an alarm names a
+                # stream with nothing on disk - "offer it anyway, and let the
+                # empty day say so" - and dropping it here would take the tab
+                # off the camera it is showing and draw nothing, which is the
+                # one answer this tab may never give by accident.
+                self.stream_selector.addItem(chosen)
             if chosen and self.stream_selector.findText(chosen) >= 0:
                 self.stream_selector.setCurrentText(chosen)
         finally:

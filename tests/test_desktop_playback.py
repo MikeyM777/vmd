@@ -933,6 +933,27 @@ def test_a_camera_that_started_recording_after_the_tab_opened_is_offered(
         index.close()
 
 
+def test_a_camera_asked_for_by_name_survives_the_list_being_asked_again(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Show me" names a camera the catalogue may have nothing for.
+
+    `show_day` offers that camera anyway - "and let the empty day say so" -
+    because an alarm on a stream whose footage retention has already reclaimed
+    still has to be answerable. Re-asking the catalogue rebuilds the list from
+    what is on disk, and a camera that is not on disk was dropped out of it: the
+    tab came off the camera it had been told to show and drew nothing at all,
+    including the movement marks, which is the one answer this tab may never
+    give by accident.
+    """
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert tab.shown_streams() == ["thermal"]
+    finally:
+        index.close()
+
+
 def test_coming_back_to_an_empty_playback_tab_asks_the_catalogue_again(
     qtbot, tmp_path: Path
 ) -> None:
