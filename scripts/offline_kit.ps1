@@ -28,7 +28,11 @@
 # =============================================================================
 param(
     [string]$To,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    # Print what would be copied and copy nothing. The exclusion list below
+    # decides what does and does not leave this machine, which is the kind of
+    # claim that should be checkable rather than believed.
+    [switch]$ListOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,20 +159,92 @@ Write-Info "Copying to $To. This is several gigabytes and takes a while."
 # without holding them all in memory first, it can be run again to continue
 # after a pull-out, and it says what it is doing.
 #
-# What is left behind, and why:
-#   recordings   footage of somebody's perimeter. Never travels by accident.
-#   *.db         the segment and event indexes, which describe recordings that
-#                will not be there.
-#   settings.json  the camera's address and password. Typed on the laptop that
-#                will use it, in the Settings tab, as everything else is.
-#   *.pid, logs  what a run on this machine left behind. Meaningless there.
-#   .git         history. The laptop is a deployment, not a working copy.
-$robocopyArgs = @(
-    $root, $To, '/E', '/R:1', '/W:1', '/NFL', '/NDL', '/NP',
-    '/XD', (Join-Path $root 'recordings'), (Join-Path $root '.git'),
-           (Join-Path $binDir 'logs'), (Join-Path $root 'build'),
-    '/XF', 'settings.json', '*.pid', '*.db', '*.db-wal', '*.db-shm', '*.log'
+# --- what a run leaves beside the settings, and why none of it travels -------
+#
+# Everything in this list is written by a run and rebuilt by the next one on
+# the machine that reads it, so leaving it behind costs nothing. Every item
+# also carries something about *this* machine, which is the actual reason:
+#
+#   settings.json   the camera's address and password. Typed on the laptop that
+#                   will use it, in the Settings tab, as everything else is.
+#   go2rtc.json     the same camera password again, in the streamer's own
+#                   config. The console rewrites this file at every start from
+#                   settings.json, so the only thing sending it would achieve is
+#                   putting credentials for a camera the target may not even be
+#                   pointed at yet onto a USB stick.
+#   streaming.json  which ports go2rtc took here.
+#   detection.json  what the detector had to say about this machine's streams.
+#   *.pid           the claim a recorder writes. A PID from another machine is
+#                   at best meaningless and at worst matches something.
+#   *.pid.json      the companion identity file beside it - vmd\record_main.py
+#                   writes recorder.pid.json holding the interpreter path, the
+#                   settings path and a timestamp. Note that /XF *.pid does NOT
+#                   match it: robocopy matches the whole name, and this one ends
+#                   in .json. In practice it is only read after a pid has been
+#                   taken out of recorder.pid, which is excluded, so a stray
+#                   companion is never reached - but it is full of C:\...
+#                   absolute paths from the build machine, and there is no
+#                   reason for those to be on the deployment laptop at all.
+#   *.db and friends  the segment and event indexes, which describe recordings
+#                   that will not be there.
+#   smoke_record.*  what a smoke test left lying around.
+#
+# Directories, by full path rather than by bare name, because a bare name in
+# /XD matches at every level and .venv is full of directories called things
+# like __pycache__. The environment is copied byte for byte on purpose: it is
+# the thing that has been proved to work, and thinning it out is how a copy
+# starts differing from the original in ways nobody can see.
+#
+#   Ultralytics     the detector library's own config, which records
+#                   datasets_dir and weights_dir as absolute paths on this
+#                   machine and a per-install uuid. It is recreated locally on
+#                   first use; carrying this one over would point the offline
+#                   laptop at folders that only exist here.
+#   recordings, footage, clips   video of somebody's perimeter. Never travels
+#                   by accident.
+#   .git            history. The laptop is a deployment, not a working copy.
+#   build, bin\logs, and the tool caches   scratch.
+$excludeFiles = @(
+    'settings.json', 'go2rtc.json', 'streaming.json', 'detection.json',
+    '*.pid', '*.pid.json',
+    '*.db', '*.db-wal', '*.db-shm',
+    '*.log', 'smoke_record.*'
 )
+
+$excludeDirs = @(
+    'recordings', 'footage', 'clips', '.git', 'build', 'Ultralytics',
+    '.pytest_cache', '.mypy_cache', '.ruff_cache', '.superpowers',
+    '.playwright-mcp', '.claude'
+) | ForEach-Object { Join-Path $root $_ }
+$excludeDirs += (Join-Path $binDir 'logs')
+
+# What commissioning a camera leaves lying in the project root: frame grabs,
+# saved copies of the camera's own web pages, hex dumps, test clips. .gitignore
+# refuses to commit any of it for the same reason it should not travel - the
+# next still saved here is of the perimeter this system watches, and
+# flir_saved.html is a saved page out of the camera's web interface.
+#
+# Named one by one, and only in the project root. A *.png pattern would also
+# strip the 1,214 icons matplotlib ships inside .venv, and *.bin would strip
+# model weights out of torch: an environment that works here has to be the
+# environment that arrives there. Nothing the application needs in the root has
+# one of these extensions - it is .bat, .exe, .md, .toml, .lock and .pt.
+$SCRATCH_EXTENSIONS = @(
+    '.jpg', '.jpeg', '.png', '.bmp',    # frame grabs
+    '.html',                            # saved camera web pages
+    '.bin',                             # hex dumps from probing the camera
+    '.ts', '.mp4', '.mkv', '.avi', '.mov', '.wav'   # stray recordings
+)
+$excludeFiles += @(
+    Get-ChildItem -Path $root -File -ErrorAction SilentlyContinue |
+        Where-Object { $SCRATCH_EXTENSIONS -contains $_.Extension } |
+        ForEach-Object { $_.FullName }
+)
+
+$robocopyArgs = @($root, $To, '/E', '/R:1', '/W:1', '/NP')
+if ($ListOnly) { $robocopyArgs += '/L' }        # say what would travel, copy nothing
+else           { $robocopyArgs += @('/NFL', '/NDL') }
+$robocopyArgs += @('/XD') + $excludeDirs + @('/XF') + $excludeFiles
 & robocopy @robocopyArgs | Out-Host
 $code = $LASTEXITCODE
 

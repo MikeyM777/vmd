@@ -555,9 +555,21 @@ of that can happen.
    whichever it is, and press Enter. It copies the whole folder across. This is
    about 2 GB and takes a few minutes.
 
-   It deliberately leaves behind: your recordings, the recording index, and
-   `settings.json`. Camera addresses and passwords are typed on the laptop that
-   will use them, in the Settings tab, like everything else.
+   **It deliberately leaves things behind**, and all of it is either private to
+   this machine or rebuilt automatically on the other one:
+
+   - your **recordings** and the index of them
+   - **`settings.json`** and **`go2rtc.json`** — both hold the camera's address
+     and password. Those are typed on the laptop that will use them, in the
+     Settings tab, like everything else
+   - **frame grabs and saved camera web pages** left in the folder from
+     commissioning — the next still saved there is of the perimeter this system
+     watches, and it has no business on a USB stick
+   - the scratch a run leaves beside the settings, all of which the other
+     machine writes fresh
+
+   To see exactly what would travel before it does, without copying anything,
+   there is `offline-kit.bat -ListOnly`.
 
 ### Stage 2 — on the laptop with no internet
 
