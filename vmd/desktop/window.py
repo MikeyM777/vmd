@@ -759,20 +759,11 @@ class ConsoleWindow(QMainWindow):
                 # It reads the service's answer and never the radio, because
                 # asking the radio costs about 12 s when it is unreachable.
                 radio=radio,
-                # ----------------------------------------------------------
-                # TO BE WIRED: the camera's zoom, one lens at a time.
-                #
-                # The zoom bars under the pictures are built and drawn; what
-                # they have nothing to talk to yet is the per-profile ONVIF
-                # zoom, which lives in `vmd/ptz/` and is being written
-                # separately. Whatever goes here answers `go_to(name, where)`,
-                # `creep(name, speed)` and `position(name) -> float | None`,
-                # must not wait on the camera, and must report only what the
-                # camera actually said. Until then the bars draw themselves
-                # disabled and say the zoom is not reported, which is the
-                # truth. See the note in `LiveTab.__init__`.
-                # ----------------------------------------------------------
-                zoom=None,
+                # No zoom is passed. The bars under the pictures are driven by a
+                # `ZoomHandle` the tab builds over its own command sender - see
+                # `LiveTab.__init__` - because that sender is what keeps a
+                # button press off the radio link. The parameter exists so a
+                # test can put something else in its place.
             )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.

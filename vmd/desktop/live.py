@@ -59,7 +59,7 @@ from vmd.desktop.style import (
 from vmd.desktop.video import VideoPane
 from vmd.desktop.watch import Watched
 from vmd.desktop.zoombar import ZoomBar
-from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
+from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands, ZoomHandle
 from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
 
@@ -213,6 +213,17 @@ NOTHING_YET = "Nothing has moved yet."
 # so the button says both of the ways back rather than assuming he knows either.
 FULLSCREEN_WORDS = "Fullscreen"
 LEAVE_FULLSCREEN_WORDS = "Leave fullscreen  (Esc)"
+
+# What the tab says when the camera turns out to have one lens behind both
+# pictures. Two zoom bars that move the same glass is confusing until somebody
+# says why - the operator drags the thermal slider, the visible picture zooms
+# too, and the only conclusions available to him are that the console is wrong
+# or that the camera is broken. Neither is true, and the camera is the one that
+# said so: `Lenses.shared()` is read from the profiles it listed.
+SHARED_LENS_NOTE = (
+    "This camera has one lens behind both pictures, so either zoom bar moves "
+    "the same glass."
+)
 
 # How wide the side column is, as a share of the tab and between two stops.
 #
@@ -554,30 +565,30 @@ class LiveTab(QWidget):
         # costs about 12 s of login timeouts.
         self._radio = radio
         # ------------------------------------------------------------------
-        # THE ZOOM. Handed in, and None on this console today.
+        # THE ZOOM, one lens at a time.
         #
-        # What goes here is the camera's per-profile zoom, and it is being
-        # written separately in `vmd/ptz/` - this camera is two cameras behind
-        # one gimbal, and telling "the camera" to zoom told whichever profile
-        # the device handed back first. Whatever arrives has to answer three
-        # things: `go_to(name, where)`, `creep(name, speed)` and
-        # `position(name) -> float | None`.
+        # `ZoomHandle` over the same `PtzCommands` the steering uses, which is
+        # what makes the zoom safe to touch from a widget: every one of its
+        # methods returns at once, the commanding goes to the sender thread, and
+        # the reading is a number somebody else fetched. The camera is at the
+        # far end of a radio link whose round trip was last measured at two
+        # seconds, and this is called from a button press and from the heartbeat
+        # that draws the window.
         #
-        # Two rules it has to keep, both of them already paid for elsewhere in
-        # this console. It must not WAIT on the camera - the round trip over the
-        # radio link was last measured at two seconds, and this is called from a
-        # button press and from the heartbeat that draws the window; that is
-        # what `PtzCommands` exists for on the steering side. And `position`
-        # must answer with what the camera actually reported, or None. Never
-        # what it was told: a zoom readout inferred from a command is right
-        # until the first command that does not arrive, and looks right for ever
-        # afterwards.
+        # Built here rather than handed in because it wraps this tab's own
+        # command sender, which nothing outside this tab has. What CAN be handed
+        # in is a substitute, for the tests: `zoom` is a way of putting
+        # something else in its place, never a way of switching the zoom off.
         #
-        # Until it is wired the bars are drawn honestly rather than helpfully:
-        # no position, and the whole control disabled, because a slider sitting
-        # at zero says the lens is fully wide.
+        # A `ptz` that has never heard of a zoom gets no handle at all, and the
+        # bars are then drawn disabled and honest rather than live and useless.
+        # That is the same rule the storage and link panels follow about the
+        # services handed to them: a part that cannot answer costs its own
+        # readout and nothing else.
         # ------------------------------------------------------------------
         self._zoom_source = zoom
+        if self._zoom_source is None and hasattr(ptz, "zoom_ready"):
+            self._zoom_source = ZoomHandle(self._commands)
         # One per stream, built with the panes and dropped with them.
         self._zoom_bars: dict[str, ZoomBar] = {}
         # Which lenses have already had their refusal to report a zoom written
@@ -587,6 +598,9 @@ class LiveTab(QWidget):
         # months and the Logs tab holds five hundred lines; see `_say_it_failed`
         # for the same rule one level up.
         self._zoom_unread: set[str] = set()
+        # And whether the camera's refusal to say what its zoom can do at all
+        # has been written down. Same rule, one level up from a single lens.
+        self._zoom_unready = False
         self._panes: dict[str, VideoPane] = {}
         self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
@@ -713,6 +727,16 @@ class LiveTab(QWidget):
         self._no_views.setVisible(False)
         pictures.addWidget(self._no_views)
         pictures.addWidget(self._wall_area, 1)
+        # Under the pictures and above the alarm strip, because it is about the
+        # two controls beneath them and it belongs where they are - including in
+        # fullscreen, where the side column that would otherwise have held it is
+        # gone. Hidden until the camera says it is true.
+        self._lens_note = WrappedNote(SHARED_LENS_NOTE)
+        self._lens_note.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
+        self._lens_note.setVisible(False)
+        pictures.addWidget(self._lens_note)
         pictures.addWidget(self._build_alarm_strip())
         layout.addLayout(pictures, 1)
 
@@ -830,6 +854,7 @@ class LiveTab(QWidget):
             self._keys_note,
             self._movement_empty,
             self._alarm_label,
+            self._lens_note,
         ):
             if not label.text() or not label.isVisibleTo(self):
                 continue
@@ -1282,11 +1307,12 @@ class LiveTab(QWidget):
             bar.setContentsMargins(SPACE_SNUG, SPACE_TIGHT, SPACE_SNUG, SPACE_TIGHT)
             bar.go_to.connect(self._zoom_to)
             bar.creep.connect(self._zoom_creep)
-            # A console with nothing wired to the lenses draws a control that
-            # plainly cannot move one. The alternative - a live-looking slider
-            # whose buttons quietly go nowhere - is the shape of failure this
-            # whole readout exists to remove.
-            bar.setEnabled(self._zoom_source is not None)
+            # Dead until the camera has said it has a zoom, which `_refresh_zoom`
+            # asks at the end of this method and again on every heartbeat. This
+            # way round on purpose: a live-looking slider whose buttons quietly
+            # go nowhere is the shape of failure this whole readout exists to
+            # remove, so the control starts by claiming nothing.
+            bar.setEnabled(False)
             self._zoom_bars[stream.name] = bar
             frame_layout.addWidget(bar)
             # The drags on this picture steer the camera. Filtered off the pane
@@ -1422,6 +1448,44 @@ class LiveTab(QWidget):
         except Exception:  # noqa: BLE001 - a lens must not cost the console
             logger.exception("the %s lens would not stop zooming", name)
 
+    def _zoom_ready(self) -> dict:
+        """What the zoom controls should look like before anybody touches them.
+
+        Three answers, and they are not the same answer. There is no zoom object
+        at all - a console handed a camera that has never heard of one - and
+        then the bars are dead and say so. There is one, and the camera has not
+        answered yet or refused, and the bars are dead for now and say the same
+        thing, which is the truth until it changes. Or the camera has said what
+        it can do, and the bars are what it said: a slider that sends the lens
+        somewhere when absolute zoom is there, and buttons that zoom while held
+        when it is not.
+
+        Nothing here crosses the link: `zoom_ready` reads what the camera
+        already said. It is called on the heartbeat, which is why that matters.
+        """
+        if self._zoom_source is None:
+            return {"ok": False, "absolute": False, "shared": False}
+        ask = getattr(self._ptz, "zoom_ready", None)
+        if ask is None:
+            # Something was handed in and there is nothing to say otherwise.
+            # This is the substituted case; the console's own camera answers.
+            return {"ok": True, "absolute": True, "shared": False}
+        try:
+            answer = ask()
+        except Exception:  # noqa: BLE001 - the heartbeat draws either way
+            if not self._zoom_unready:
+                self._zoom_unready = True
+                logger.warning(
+                    "the camera would not say what its zoom can do", exc_info=True
+                )
+            return {"ok": False, "absolute": False, "shared": False}
+        self._zoom_unready = False
+        return {
+            "ok": bool(answer.get("ok")),
+            "absolute": bool(answer.get("absolute")),
+            "shared": bool(answer.get("shared")),
+        }
+
     def _refresh_zoom(self) -> None:
         """Draw where each lens says it is, on the heartbeat.
 
@@ -1430,10 +1494,30 @@ class LiveTab(QWidget):
         arrive and looks right for ever after, which is the exact state this
         readout exists to make visible: a lens already at its stop and a lens
         that never got the order are the same unchanging picture otherwise.
+
+        The reading itself is somebody else's work: `poll` asks the sender
+        thread to refresh whichever lenses are worth refreshing, and `position`
+        answers from what that last brought back. `Lenses` is what decides there
+        is nothing to do, which on a link nobody is zooming is the usual answer -
+        a readout polled across this hop every two seconds for ever would be the
+        console spending the link it exists to watch through.
         """
         if not self._zoom_bars:
             return
+        ready = self._zoom_ready()
+        # Said under the pictures rather than left as two sliders that
+        # mysteriously move together.
+        self._lens_note.setVisible(bool(ready["shared"]))
+        if self._zoom_source is not None:
+            try:
+                self._zoom_source.poll()
+            except Exception:  # noqa: BLE001 - a readout is not the pictures
+                if not self._zoom_unready:
+                    self._zoom_unready = True
+                    logger.warning("the zoom could not be read", exc_info=True)
         for name, bar in self._zoom_bars.items():
+            bar.setEnabled(bool(ready["ok"]))
+            bar.set_absolute(bool(ready["absolute"]))
             if self._zoom_source is None:
                 bar.set_position(None)
                 continue

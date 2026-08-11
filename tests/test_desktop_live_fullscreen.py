@@ -46,13 +46,46 @@ COMMAND_TIMEOUT = 10.0
 
 
 class FakePtz:
-    def __init__(self) -> None:
+    """A camera with two lenses on it, answering the way `OnvifPtz` does.
+
+    The zoom half of this is what the Live tab now really talks to: the tab
+    builds a `ZoomHandle` over its own `PtzCommands`, and every command reaches
+    the camera through the sender thread. So a test that presses a zoom button
+    and then reads `zooms` is measuring the whole path, not a signal.
+    """
+
+    def __init__(self, absolute: bool = True, shared: bool = False) -> None:
         self.commands: list[tuple] = []
+        self.zooms: list[tuple] = []
+        self.holds: list[tuple] = []
+        self.polls = 0
+        self.ready = {"ok": True, "absolute": absolute, "shared": shared,
+                      "reason": "ready"}
+        self.where: dict[str, float | None] = {}
 
     def apply(self, settings) -> None: ...
 
     def status(self) -> dict:
         return {"available": True, "reason": "ready"}
+
+    # -- the zoom, in the shape `PtzCommands` and `ZoomHandle` expect ---------
+
+    def zoom_ready(self) -> dict:
+        return dict(self.ready)
+
+    def zoom(self, stream: str, where: float) -> dict:
+        self.zooms.append((stream, where))
+        return {"ok": True, "error": ""}
+
+    def zoom_hold(self, stream: str, speed: float) -> dict:
+        self.holds.append((stream, speed))
+        return {"ok": True, "error": ""}
+
+    def zoom_poll(self) -> None:
+        self.polls += 1
+
+    def zoom_position(self, stream: str) -> float | None:
+        return self.where.get(stream)
 
     def move(self, pan: float, tilt: float, zoom: float) -> dict:
         self.commands.append(("move", pan, tilt, zoom))
@@ -80,6 +113,7 @@ class FakeZoom:
         self.positions: dict[str, float | None] = dict(positions)
         self.told: list[tuple[str, float]] = []
         self.crept: list[tuple[str, float]] = []
+        self.polls = 0
         self.refuses = False
 
     def go_to(self, name: str, where: float) -> None:
@@ -92,6 +126,38 @@ class FakeZoom:
         if self.refuses:
             raise RuntimeError("the camera did not answer")
         return self.positions.get(name)
+
+    def poll(self) -> None:
+        self.polls += 1
+
+
+class PtzWithNoZoom:
+    """A camera object that has never heard of a lens.
+
+    Not a hypothetical: the services are handed in, and the tab has to work
+    against one that answers only the four steering calls. What it must cost is
+    the zoom readout and nothing else.
+    """
+
+    def __init__(self) -> None:
+        self.commands: list[tuple] = []
+
+    def apply(self, settings) -> None: ...
+
+    def status(self) -> dict:
+        return {"available": True, "reason": "ready"}
+
+    def move(self, pan: float, tilt: float, zoom: float) -> dict:
+        self.commands.append(("move", pan, tilt, zoom))
+        return {"ok": True}
+
+    def stop(self) -> dict:
+        self.commands.append(("stop",))
+        return {"ok": True}
+
+    def home(self) -> dict:
+        self.commands.append(("home",))
+        return {"ok": True}
 
 
 class FakeServices:
@@ -172,9 +238,9 @@ def settings_with(*names: str) -> Settings:
     )
 
 
-def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane):
+def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None):
     """A Live tab on its own, with fakes for everything it reaches out to."""
-    ptz = FakePtz()
+    ptz = ptz if ptz is not None else FakePtz()
     panes: dict = {}
 
     def make_pane(name: str):
@@ -642,15 +708,125 @@ def test_the_bar_draws_what_the_camera_reports_and_never_what_it_was_told(
     assert tab.zoom_bar("thermal").position() == pytest.approx(0.90)
 
 
-def test_a_console_with_no_zoom_yet_draws_the_bars_honestly(qtbot) -> None:
-    """Nothing is wired to the lenses on a console started without them, and a
-    slider sitting at zero would be saying the lens is fully wide."""
-    tab, _ptz, _panes = live_tab(qtbot, "thermal", zoom=None)
+def test_a_camera_with_no_zoom_at_all_draws_the_bars_honestly(qtbot) -> None:
+    """A camera that has never heard of a lens, and a slider sitting at zero
+    would be saying that lens is fully wide."""
+    tab, _ptz, panes = live_tab(qtbot, "thermal", ptz=PtzWithNoZoom())
     tab.refresh()
     bar = tab.zoom_bar("thermal")
     assert bar.position() is None
     assert bar.caption() == UNKNOWN_CAPTION
     assert not bar.isEnabled(), "a control that reaches nothing may not look live"
+    assert panes["thermal"].url is not None, "the picture went with the readout"
+
+
+# --------------------------------------------- the lens at the end of the wire
+
+
+def test_the_zoom_bars_reach_the_camera_through_the_command_sender(qtbot) -> None:
+    """The whole path, not the signal: bar, `ZoomHandle`, `PtzCommands`, camera.
+
+    It goes through the sender for the same reason the arrow keys do - the
+    camera is at the far end of a radio link that was last measured at two
+    seconds a round trip, and this is called from a button press on the thread
+    that draws the window.
+    """
+    ptz = FakePtz()
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", "visible", ptz=ptz)
+    ptz.where = {"thermal": 0.30, "visible": 0.30}
+    tab.refresh()
+
+    tab.zoom_bar("visible").slider().setValue(70)
+    assert tab.wait_for_camera(COMMAND_TIMEOUT), "the zoom never left the console"
+    assert ptz.zooms[-1] == ("visible", 0.7)
+    assert not any(name == "thermal" for name, _where in ptz.zooms), "the other lens"
+
+
+def test_a_camera_that_cannot_be_sent_to_a_zoom_gets_buttons_that_hold(
+    qtbot,
+) -> None:
+    """Absolute zoom is optional in ONVIF and plenty of cameras refuse it. The
+    slider becomes a readout and the buttons fall back to what every camera can
+    do - move while held - which is what `zoom_ready` reports and what the bar
+    is told before anybody touches it."""
+    ptz = FakePtz(absolute=False)
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", ptz=ptz)
+    ptz.where = {"thermal": 0.30}
+    tab.refresh()
+
+    # The press and the release are waited on separately, because the sender is
+    # a latest-value mailbox per lens: a button pressed and let go inside one
+    # instant is one intention that came to nothing, and the stop is the half of
+    # it that survives - which is the right way round, and the same guarantee
+    # the steering has.
+    _out, into = tab.zoom_bar("thermal").buttons()
+    into.pressed.emit()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    assert ptz.holds == [("thermal", CREEP)]
+    into.released.emit()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    assert ptz.holds[-1] == ("thermal", 0.0), "a lens was left zooming"
+    assert ptz.zooms == [], "a camera that refuses absolute zoom was sent one"
+
+
+def test_one_lens_behind_both_pictures_is_said_rather_than_left_mysterious(
+    qtbot,
+) -> None:
+    """Two zoom bars that move the same glass is confusing until somebody says
+    why: he drags the thermal slider, the visible picture zooms too, and the
+    only conclusions left to him are that the console is wrong or the camera is
+    broken. The camera is the one that said so."""
+    ptz = FakePtz(shared=True)
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", "visible", ptz=ptz)
+    tab.refresh()
+    assert tab._lens_note.isVisibleTo(tab)
+    assert "one lens" in tab._lens_note.text().lower()
+
+    ptz.ready["shared"] = False
+    tab.refresh()
+    assert not tab._lens_note.isVisibleTo(tab), (
+        "a camera with two lenses was told it has one"
+    )
+
+
+def test_a_camera_that_has_not_answered_yet_leaves_the_bars_dead(qtbot) -> None:
+    """The lenses are found by asking the camera, which happens on the worker
+    and takes as long as the link takes. Until it has, the console knows nothing
+    about the zoom - and a control that looks live while it knows nothing is the
+    thing this readout exists to replace."""
+    ptz = FakePtz()
+    ptz.ready = {"ok": False, "absolute": False, "shared": False,
+                 "reason": "the camera has not been asked yet"}
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", ptz=ptz)
+    tab.refresh()
+    assert not tab.zoom_bar("thermal").isEnabled()
+
+    ptz.ready = {"ok": True, "absolute": True, "shared": False, "reason": "ready"}
+    ptz.where = {"thermal": 0.55}
+    tab.refresh()
+    assert tab.zoom_bar("thermal").isEnabled(), "the camera answered and nothing woke"
+    assert tab.zoom_bar("thermal").position() == pytest.approx(0.55)
+
+
+def test_the_zoom_is_refreshed_on_the_heartbeat_and_never_read_inline(
+    qtbot,
+) -> None:
+    """`poll` on the beat, `position` from the cache. The other way round - a
+    readout that asked the camera every time the window redrew - is two SOAP
+    round trips every two seconds for ever on a link that was measured at 88%
+    of its airtime while carrying the video, to refresh a number that only
+    changes when somebody touches the zoom."""
+    ptz = FakePtz()
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", ptz=ptz)
+    # One beat at a time, because the sender is a latest-value mailbox: three
+    # refreshes in the same instant are one refresh, and that is right - what is
+    # measured here is that every beat asks, not that every ask is delivered.
+    seen = []
+    for _ in range(3):
+        tab.refresh()
+        assert tab.wait_for_camera(COMMAND_TIMEOUT)
+        seen.append(ptz.polls)
+    assert seen == [1, 2, 3], f"the readouts were refreshed {seen} times"
 
 
 def test_a_camera_that_will_not_say_where_its_zoom_is_costs_only_the_readout(
