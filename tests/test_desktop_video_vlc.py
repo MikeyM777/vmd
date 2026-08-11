@@ -7,6 +7,7 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -82,6 +83,146 @@ def test_the_real_pane_plays_a_real_stream(qtbot, synthetic_stream: str) -> None
 
     pane.stop()
     assert pane.state == "stopped"
+
+
+@pytest.mark.integration
+def test_a_real_stream_in_a_real_tab_puts_pixels_on_the_screen(
+    qtbot, synthetic_stream: str
+) -> None:
+    """The one test in this suite that would have caught a black picture.
+
+    Everything else here asserts on state strings, and the state string in the
+    fault this was written for said `playing`: the stream, the credentials, the
+    network and the demuxer were all fine, frames were being counted, and the
+    operator was looking at a black rectangle. What was over the picture was a
+    transparent widget that Qt had quietly turned into a native window of its
+    own, which is a surface in the stacking order whatever it paints.
+
+    So this builds the whole thing - a real `LiveTab`, real `VlcVideoPane`s, a
+    real stream - shows it, and reads the screen where the picture is. Not
+    `QWidget.grab()`: that renders what Qt would paint, which is the widget's
+    own black background, and it would pass against a pane showing nothing at
+    all. libVLC draws into a window of its own inside the pane, so the only
+    honest question is what is on the screen at those coordinates.
+    """
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from vmd.desktop.app import pane_factory
+    from vmd.desktop.live import LiveTab
+    from vmd.desktop.picker import blankness
+    from vmd.settings import CameraSettings, Settings, StreamSettings
+
+    class Ptz:
+        def move(self, *a, **k):
+            return {"ok": True}
+
+        def stop(self, *a, **k):
+            return {"ok": True}
+
+        def home(self, *a, **k):
+            return {"ok": True}
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.setStyleSheet("background: #050607;")
+    box = QVBoxLayout(host)
+    box.setContentsMargins(0, 0, 0, 0)
+    tab = LiveTab(
+        ptz=Ptz(),
+        make_pane=pane_factory(),
+        local_url=lambda name: synthetic_stream,
+        executor=lambda work: work(),
+    )
+    box.addWidget(tab)
+    host.resize(900, 600)
+    host.move(40, 40)
+    host.show()
+    qtbot.waitExposed(host)
+
+    tab.apply(
+        Settings(
+            camera=CameraSettings(
+                host="127.0.0.1",
+                streams=[StreamSettings(name="thermal", url=synthetic_stream)],
+            )
+        )
+    )
+    pane = tab._panes["thermal"]
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and pane.state != "playing":
+        qtbot.wait(200)
+    assert pane.state == "playing", "the pane never reported frames"
+    # The picture is drawn by another window on another thread; a frame counted
+    # is not yet a frame presented.
+    qtbot.wait(1500)
+
+    def what_is_on_the_screen():
+        screen = QGuiApplication.primaryScreen()
+        shot = screen.grabWindow(0).toImage()
+        if shot.isNull() or shot.width() <= 0:
+            pytest.skip("this display cannot be read back")
+        ratio = shot.width() / max(screen.geometry().width(), 1)
+        corner = pane.mapToGlobal(QPoint(0, 0))
+        return shot.copy(
+            int(corner.x() * ratio),
+            int(corner.y() * ratio),
+            int(pane.width() * ratio),
+            int(pane.height() * ratio),
+        )
+
+    def whose_window_covers_the_middle_of_it() -> tuple[int, str]:
+        """The window Windows would deliver a click at the pane's centre to.
+
+        Asked because the pixels alone cannot answer the question. `grabWindow`
+        reads the composited screen, so a picture drawn by some *other* window
+        that happens to sit at those coordinates reads exactly like a picture
+        drawn into the pane - which is not a hypothetical: a pane that never
+        gets `set_hwnd` makes libVLC open a window of its own, and it lands over
+        this one. It is also how a sheet laid over the pane hides the video
+        while every counter goes on climbing.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        middle = pane.mapToGlobal(QPoint(pane.width() // 2, pane.height() // 2))
+        found = user32.WindowFromPoint(wintypes.POINT(middle.x(), middle.y()))
+        named = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(wintypes.HWND(found), named, 256)
+        return int(found or 0), named.value
+
+    if sys.platform.startswith("win"):
+        owner, called = whose_window_covers_the_middle_of_it()
+        assert owner == int(pane.winId()), (
+            f"the middle of the picture belongs to {called!r} ({owner}), not to the "
+            f"pane ({int(pane.winId())}) - something is between the operator and "
+            f"the video"
+        )
+
+    picture = what_is_on_the_screen()
+    assert picture.width() > 0 and picture.height() > 0, "the pane is not on the screen"
+    spread = blankness(picture)
+    assert spread > 5.0, (
+        f"the pane says playing and the screen where it is measures {spread:.2f} - "
+        f"one flat colour is a black picture, whatever the frame counter says"
+    )
+
+    # And it survives the thing that rearranges the pictures. A view switched
+    # away from and back to is a fresh `show`, which re-attaches the surface;
+    # this is where a stale window handle would show itself.
+    tab.show_view("thermal")
+    qtbot.wait(2500)
+    again = blankness(what_is_on_the_screen())
+    assert again > 5.0, f"the picture went after the view was switched: {again:.2f}"
+
+    tab.shutdown()
+    for built in tab._panes.values():
+        built.release()
 
 
 def test_the_pane_is_told_where_vlc_is_before_it_imports_it() -> None:
