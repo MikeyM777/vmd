@@ -54,6 +54,18 @@ EVENTS_FILENAME = "events.db"
 # this module would pull cv2 and numpy into the window's process.
 STATUS_FILENAME = "detection.json"
 
+# How long an open stream may go without delivering a frame before it is called
+# out. The camera can legitimately be slow - a re-encoded thermal at a few
+# frames a second is a normal setting, and the design allows for a frame every
+# three seconds - so this has to be far longer than any real frame interval and
+# far shorter than a night. A minute is both.
+#
+# It exists because a `VideoCapture.read()` on a link that dropped without
+# closing blocks inside ffmpeg, possibly for ever, and nothing on that thread
+# runs while it does: the capture stays "open", the reason stays empty, and a
+# dead camera looks exactly like a quiet perimeter.
+STALLED_AFTER_SECONDS = 60.0
+
 
 def detected_streams(settings: Settings) -> list:
     """The streams to watch: enabled, ticked for detection, master switch on.
@@ -229,6 +241,9 @@ class DetectionService:
             # thermal while the visible is unreachable is a normal Tuesday, and
             # one health flag would report that as failure.
             "detecting": sum(1 for s in streams if s["opened"]),
+            # Open, and sending nothing. Counted apart from `detecting` because
+            # a wedged read is counted in it and is the opposite of detecting.
+            "stalled": sum(1 for s in streams if _stalled(s)),
             "configured": len(streams),
             "events": sum(s["events"] for s in streams),
             # Movement that was seen and confirmed but never reached the
@@ -290,14 +305,33 @@ class DetectionService:
         """
         for detector in self.detectors:
             state = detector.state()
-            key = (state["opened"], state["reason"])
+            stalled = _stalled(state)
+            key = (state["opened"], state["reason"], stalled)
             if getattr(detector, "_last_logged", None) == key:
                 continue
             detector._last_logged = key
-            if state["opened"]:
-                logger.info("%s: detecting", state["stream"])
-            else:
+            if not state["opened"]:
                 logger.warning("%s: %s", state["stream"], state["reason"])
+            elif stalled:
+                # The read has not returned. Said as a warning because from
+                # everywhere else this is indistinguishable from nothing having
+                # walked past, and the two could not matter more differently.
+                logger.warning(
+                    "%s: the stream is open but has sent nothing for %.0f seconds; "
+                    "nothing there is being watched",
+                    state["stream"],
+                    state["seconds_since_frame"],
+                )
+            else:
+                logger.info("%s: detecting", state["stream"])
+
+
+def _stalled(state: dict) -> bool:
+    """True when an open stream has gone quiet for longer than any camera would."""
+    if not state.get("opened"):
+        return False
+    since = state.get("seconds_since_frame")
+    return since is not None and since > STALLED_AFTER_SECONDS
 
 
 def _write_json_atomically(payload: dict, path: Path) -> None:

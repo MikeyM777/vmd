@@ -508,6 +508,78 @@ def test_a_store_that_refuses_a_write_does_not_stop_the_detector(tmp_path):
         detector.close()
 
 
+def test_a_capture_that_wedged_mid_read_is_visible_as_a_stall(tmp_path):
+    """The one failure this loop cannot catch by itself.
+
+    `VideoCapture.read()` on a socket that stopped talking can block inside
+    ffmpeg for a long time and, on a link that dropped without closing, for
+    ever. Nothing in this thread runs while that is happening: the read-failure
+    counter never advances, the capture is still "open", and `reason` is still
+    the empty string it was set to on the last frame that did arrive. From the
+    console it is indistinguishable from a quiet perimeter.
+
+    So the age of the last frame is published, and something outside the wedged
+    thread can read it. This test never blocks on a real read - it drives the
+    clock.
+    """
+    clock = Clock(start=1000.0, step=0.0)
+    detector, store = build(tmp_path, captures=[FakeCapture(frames=1)], clock=clock)
+    try:
+        assert detector.state()["seconds_since_frame"] is None  # nothing has arrived
+        assert detector.step() is True
+        assert detector.state()["seconds_since_frame"] == 0.0
+        clock.now += 300.0  # five minutes of a read that never returned
+        assert detector.state()["seconds_since_frame"] == 300.0
+        assert detector.state()["opened"] is True  # which is exactly the trap
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_capture_that_never_delivered_a_first_frame_is_a_stall_too(tmp_path):
+    """The wedge can happen on the first read as easily as the thousandth.
+
+    A capture that opened and then blocked before producing anything would have
+    no last-frame time at all, and "no frames yet" must not read as "fine".
+    The clock starts when the capture opens.
+    """
+    clock = Clock(start=1000.0, step=0.0)
+
+    class SilentCapture:
+        def read(self):
+            return False, None
+
+        def release(self):
+            pass
+
+    detector, store = build(tmp_path, captures=[SilentCapture()], clock=clock)
+    try:
+        detector.step()  # opens, reads nothing
+        assert detector.state()["opened"] is True
+        assert detector.state()["seconds_since_frame"] == 0.0
+        clock.now += 300.0
+        assert detector.state()["seconds_since_frame"] == 300.0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_service_says_so_when_a_stream_stops_delivering(tmp_path):
+    """Published, and also said - the Logs tab is where an operator looks."""
+    from vmd.detect_main import STALLED_AFTER_SECONDS
+
+    clock = Clock(start=1000.0, step=0.0)
+    detector, store = build(tmp_path, captures=[FakeCapture(frames=1)], clock=clock)
+    try:
+        detector.step()
+        clock.now += STALLED_AFTER_SECONDS + 1.0
+        state = detector.state()
+        assert state["seconds_since_frame"] > STALLED_AFTER_SECONDS
+    finally:
+        detector.close()
+        store.close()
+
+
 def test_the_ignore_mask_is_repainted_when_the_frame_changes_size(tmp_path):
     """The stream can change resolution without anyone asking it to.
 

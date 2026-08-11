@@ -166,6 +166,13 @@ class StreamDetector:
         self.reopens = 0
         self.reason = "the stream has not been opened yet"
         self._frame_index = 0
+        # When the last frame arrived, so that something outside this thread can
+        # tell a quiet perimeter from a read that has wedged. `read()` on a
+        # socket that stopped talking blocks inside ffmpeg, and while it does,
+        # no code here runs: the read-failure counter does not advance, the
+        # capture is still open, and `reason` is still the empty string the last
+        # good frame set. Nothing but the clock can show the difference.
+        self._last_frame_at: float | None = None
         self._frame_times: dict[int, float] = {}
         self._frame_order: deque[int] = deque()
 
@@ -204,6 +211,14 @@ class StreamDetector:
             "blobs": getattr(self.pipeline, "blobs_seen", 0),
             "rejected": dict(getattr(self.pipeline, "rejected", {}) or {}),
             "suppressed": getattr(self.pipeline, "frames_suppressed", 0),
+            # How long this open capture has been silent, counted from the last
+            # frame or, if none has arrived, from when it opened. None while
+            # nothing is open. Read from whichever thread is asking, which is
+            # the point: the detector's own thread is the one that may be
+            # blocked inside a read that will not return.
+            "seconds_since_frame": (
+                None if self._last_frame_at is None else self._clock() - self._last_frame_at
+            ),
         }
 
     # -- the loop ---------------------------------------------------------
@@ -244,6 +259,7 @@ class StreamDetector:
         self._read_failures = 0
         self.reason = ""
         now = self._clock()
+        self._last_frame_at = now
         index = self._frame_index
         self._frame_index += 1
         self.frames += 1
@@ -286,6 +302,10 @@ class StreamDetector:
             return False
         self._capture = capture
         self._read_failures = 0
+        # The silence is timed from here, not from the first frame. A capture
+        # can wedge on its first read as easily as on its thousandth, and "no
+        # frame has ever arrived" must not read as "nothing to report".
+        self._last_frame_at = self._clock()
         self.reopen_delay = self.initial_reopen_delay
         self.reason = ""
         logger.info("%s: reading %s", self.stream, without_credentials(self.url))
@@ -326,6 +346,9 @@ class StreamDetector:
         except Exception:  # noqa: BLE001 - releasing is best-effort
             logger.debug("%s: releasing the capture failed", self.stream, exc_info=True)
         self._capture = None
+        # There is nothing open to have gone silent, and a number left over
+        # from the capture before this one would be read as one that had.
+        self._last_frame_at = None
 
     # -- frames -----------------------------------------------------------
 

@@ -162,6 +162,36 @@ def test_the_painted_ignore_mask_reaches_the_pipeline_that_reads_it(tmp_path):
         service.stop()
 
 
+def test_a_stream_that_opened_and_went_quiet_is_reported_as_stalled(tmp_path, caplog):
+    """An open capture that has stopped delivering is not "detecting".
+
+    `read()` on a link that dropped without closing blocks inside ffmpeg, and
+    while it does nothing on that thread runs - so the capture stays open, the
+    reason stays empty, and the console counts the stream among the ones being
+    watched. It is the one failure that looks exactly like a quiet perimeter.
+    """
+    from vmd.detect_main import STALLED_AFTER_SECONDS
+
+    service = service_for(tmp_path)
+    try:
+        detector = service.detectors[0]
+        detector.step()
+        assert service.status()["stalled"] == 0
+
+        # The read went in and did not come out.
+        detector._last_frame_at = time.time() - (STALLED_AFTER_SECONDS + 5.0)
+        status = service.status()
+        assert status["stalled"] == 1
+        assert status["detecting"] == 1, "it is still open, which is the trap"
+
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "sent nothing" in said, said
+    finally:
+        service.stop()
+
+
 def test_what_the_rejection_rules_threw_away_is_published(tmp_path):
     """The console is another process and cannot ask.
 
