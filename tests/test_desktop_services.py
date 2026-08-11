@@ -26,6 +26,7 @@ from vmd.desktop.services import (
     RecorderProcess,
     _creation_flags,
     _default_spawn,
+    _pid_alive,
     _taskkill_tree,
     detector_fingerprint,
     process_started_at,
@@ -2086,6 +2087,71 @@ def test_a_start_time_left_over_from_an_earlier_child_is_ignored(tmp_path: Path)
 
 LIVENESS_PATIENCE = 10.0
 LIVENESS_CEILING = 5.0
+
+
+def _tasklist(monkeypatch, stdout: str, seen: dict | None = None):
+    """Stand in for the one command `_pid_alive` runs, on the platform it runs on."""
+    monkeypatch.setattr(os, "name", "nt")
+
+    def run(command, **kwargs):
+        if seen is not None:
+            seen["command"] = list(command)
+            seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_asking_whether_a_pid_is_alive_cannot_wait_for_ever(monkeypatch) -> None:
+    """`tasklist` was run with no timeout at all.
+
+    It is run from a `BackgroundValue` reader thread, and that reader is the
+    only thing that ever notices an adopted recorder has died. A `tasklist` that
+    wedges - and the case it is asked about is a machine in trouble - takes the
+    reader with it for good: `close` gives up after two seconds and abandons the
+    thread, and nothing starts another. The console then reports the adopted
+    recorder as running for the rest of the day on the strength of one answer
+    from the morning.
+
+    Every other caller of `tasklist` in this codebase passes a timeout. This one
+    did not, and it is the one on the path that decides whether a recorder is
+    started at all.
+    """
+    seen: dict = {}
+    _tasklist(monkeypatch, '"recorder.exe","4242","Services","0","12,345 K"\n', seen)
+
+    assert _pid_alive(4242) is True
+    assert seen.get("timeout"), "a tasklist that wedges wedges the reader for ever"
+    # And no console window flashing over the pictures every time it is asked,
+    # which is what the two other callers of tasklist already avoid.
+    assert seen.get("creationflags"), "the check flashes a console window at the operator"
+
+
+def test_a_pid_is_looked_for_as_a_pid_and_not_as_digits_somewhere_in_the_answer(
+    monkeypatch,
+) -> None:
+    """`str(pid) in result.stdout` proves something adjacent to what matters.
+
+    `tasklist`'s answer is a table and every column in it is numbers: another
+    process's PID, a session number, "12,345 K" of memory. Those digits appearing
+    anywhere in the output was taken as proof that the process is alive - and
+    this is the check that decides whether the console adopts a recorder it
+    believes is already running or starts one, so being wrong means either two
+    recorders on one directory or none at all.
+
+    The answer below is a table the filter did not narrow, which is what makes
+    the difference between the two readings visible: 45 is in "12,345 K" and is
+    not a PID in it.
+    """
+    listing = (
+        '"System Idle Process","0","Services","0","8 K"\n'
+        '"recorder.exe","1234","Services","0","12,345 K"\n'
+    )
+    _tasklist(monkeypatch, listing)
+
+    assert _pid_alive(1234) is True, "the PID that really is in the answer"
+    assert _pid_alive(45) is False, "digits inside a memory figure are not a process"
+    assert _pid_alive(8) is False, "digits inside a memory figure are not a process"
 
 
 def wait_until(predicate, timeout: float = LIVENESS_PATIENCE) -> bool:

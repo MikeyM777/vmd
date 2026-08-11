@@ -63,6 +63,13 @@ LIVENESS_SECONDS = 2.0
 # check from a quarter of a minute ago is the console inventing health.
 LIVENESS_UNANSWERED_SECONDS = 15.0
 
+# How long `tasklist` is given to answer before the question is abandoned.
+# Fifteen seconds is not a performance budget - a healthy answer is about 150 ms
+# - it is the number that stops a wedged `tasklist` taking the reader thread
+# that asks it with it for good. The same figure the other two callers of
+# `tasklist` in this codebase already use.
+TASKLIST_SECONDS = 15.0
+
 # How far the start time recorded in a PID file may differ from the one the
 # operating system reports before the process is treated as a stranger. A second
 # is generous: both numbers come from the same call, and the only thing between
@@ -1144,20 +1151,76 @@ def _proc_started_at(pid: int) -> float | None:  # pragma: no cover - not Window
 
 
 def _pid_alive(pid: int) -> bool:
-    """Is that process still there? Cheap, and does not require ownership."""
-    if os.name == "nt":
+    """Is that process still there? Cheap, and does not require ownership.
+
+    Three things here were wrong, and all three are about the same habit: asking
+    a question whose answer is nearly the one wanted.
+
+    **The answer is read as a table, not searched for digits.** It was
+    `str(pid) in result.stdout`, which is true when those digits appear anywhere
+    - inside another process's PID, inside a session number, inside "12,345 K"
+    of memory, or inside an error message echoing the filter back. This is the
+    check that decides whether the console adopts a recorder it believes is
+    already running or starts one, and being wrong in that direction means two
+    recorders writing into one directory and one index.
+
+    **There is a timeout.** There was none. This runs on a `BackgroundValue`
+    reader thread, and that reader is the only thing that ever notices an
+    adopted recorder has died. A `tasklist` that wedges - on a machine whose
+    filesystem or process table is exactly what is in trouble - took the reader
+    with it: `close` gives up after two seconds and abandons the thread, nothing
+    starts another, and the console reported the recorder as running for the
+    rest of the day on one answer from the morning. Every other caller of
+    `tasklist` in this codebase already passes one.
+
+    **No console window.** Asked on a heartbeat for the life of the console, and
+    a window flashing over the pictures is not something an operator watching a
+    perimeter should have to see.
+
+    A question that could not be asked at all reads as "still there", which is
+    `ChildProcess.running`'s documented asymmetry: believing a live recorder is
+    gone starts a second one on the same directory, and that is the collision
+    adoption exists to prevent.
+    """
+    if os.name != "nt":  # pragma: no cover - not the deployment platform
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    try:
         result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
             capture_output=True,
             text=True,
             check=False,
+            timeout=TASKLIST_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return str(pid) in result.stdout
-    try:  # pragma: no cover - not the deployment platform
-        os.kill(pid, 0)
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("could not ask whether pid %s is still running", pid, exc_info=True)
         return True
-    except OSError:
-        return False
+    return _names_pid(result.stdout, pid)
+
+
+def _names_pid(answer: str, pid: int) -> bool:
+    """Whether `tasklist`'s CSV answer really contains a row for that PID.
+
+    `"Image Name","PID","Session Name","Session#","Mem Usage"`, so the PID is
+    the second field and nothing else in the row is it. A line that is not a
+    quoted row - "INFO: No tasks are running which match the specified
+    criteria.", an error, a blank - is not a process.
+    """
+    for line in answer.splitlines():
+        fields = [field.strip().strip('"') for field in line.strip().split('","')]
+        if len(fields) < 2 or not line.strip().startswith('"'):
+            continue
+        try:
+            if int(fields[1].replace(",", "").strip()) == pid:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _taskkill_tree(pid: int) -> bool:
