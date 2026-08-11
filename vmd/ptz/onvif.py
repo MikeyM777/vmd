@@ -38,7 +38,14 @@ logger = logging.getLogger(__name__)
 # tried one after another only when the camera refuses a login, which it does
 # immediately. A timeout raises PtzError from the first attempt and stops there,
 # so an unreachable camera costs this once per call, not three times.
-TIMEOUT = 2.0
+# 2.0 was wrong, and it was wrong for a reason worth writing down: it was chosen
+# from "the camera is one hop away, so a reply is milliseconds". It is one hop
+# away over a 15 km radio link carrying video, and when that link is busy an
+# ONVIF reply takes seconds. Every arrow key reported "cannot reach the camera:
+# timed out" against a camera that was answering perfectly well, just not inside
+# two seconds. The operator's steering stopped working and mine kept passing,
+# because nothing here has a radio link in it.
+TIMEOUT = 8.0
 
 MEDIA = "http://www.onvif.org/ver10/media/wsdl"
 PTZ = "http://www.onvif.org/ver20/ptz/wsdl"
@@ -203,10 +210,11 @@ class OnvifPtz:
             else list(self._openers())
         )
         last_error = "no response"
+        url = f"{self.base}{path}"
         for name, opener in attempts:
             header = _security_header(self.username, self.password) if name == "wsse" else ""
             request = urllib.request.Request(
-                f"{self.base}{path}",
+                url,
                 data=_envelope(body, header),
                 headers={"Content-Type": "application/soap+xml; charset=utf-8"},
             )
@@ -227,10 +235,16 @@ class OnvifPtz:
                     last_error = fault or f"the camera refused the login ({exc.code})"
                     continue  # try the next authentication style
                 raise PtzError(fault or f"the camera answered {exc.code}") from exc
+            # Naming the address it actually tried, and the wait it gave up
+            # after. "cannot reach 192.168.1.251: timed out" left the operator
+            # unable to tell a camera that is off from one that is simply slower
+            # than a number chosen here - and the number was the fault.
             except urllib.error.URLError as exc:
-                raise PtzError(f"cannot reach {self.host}: {exc.reason}") from exc
+                raise PtzError(
+                    f"cannot reach {url} after {TIMEOUT:.0f} s: {exc.reason}"
+                ) from exc
             except OSError as exc:
-                raise PtzError(f"cannot reach {self.host}: {exc}") from exc
+                raise PtzError(f"cannot reach {url} after {TIMEOUT:.0f} s: {exc}") from exc
             except ValueError as exc:
                 # urllib's basic handler raises ValueError - not HTTPError - when
                 # the camera answers a Digest challenge. Unhandled, that escaped

@@ -449,9 +449,22 @@ def test_an_unreachable_camera_gives_up_quickly(monkeypatch) -> None:
     assert time.monotonic() - started < 1.0
 
     assert waited, "urllib was never given a timeout at all"
-    assert max(waited) <= 3.0, (
-        f"a camera one hop away is given {max(waited)} s to answer; that is a "
-        "frozen console every time the link drops"
+    # The bound used to be 3 s, on the reasoning that a longer wait was "a
+    # frozen console every time the link drops". That reasoning has since been
+    # made obsolete twice over, and the number outlived it:
+    #
+    #   * PTZ no longer runs on the GUI thread. A slow answer costs a late
+    #     reply, not a window that stops repainting.
+    #   * The camera is one hop away over a 15 km radio link that is also
+    #     carrying video. When that link is busy an ONVIF reply genuinely takes
+    #     seconds, and 2 s reported "cannot reach the camera" for a camera that
+    #     was answering - the operator's arrow keys did nothing all evening.
+    #
+    # So the bound is now only against a wait long enough to look like a hang to
+    # somebody holding an arrow key down.
+    assert max(waited) <= 15.0, (
+        f"the camera is given {max(waited)} s to answer; past this an operator "
+        "holding an arrow key cannot tell a slow camera from a dead one"
     )
 
 
