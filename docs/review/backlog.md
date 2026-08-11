@@ -50,11 +50,12 @@ to that document's screenshot folder.
   11:30–12:25 and draws an empty bar under a line still saying "1h 25m recorded".
   Centre on the nearest footage, and say when the window holds none.
   `playback.py:921-931`.
-- **S — `test_live_and_playback_read_the_same_movement` is failing on master.**
-  After any heartbeat, `show_day` for a camera the catalogue has no segments for
-  leaves the Camera selector empty and drops every movement mark: `show_day` adds
-  the name, then `_reload` calls `refresh_streams` again and clears it.
-  Introduced by `545bf10`. `playback.py:830-845`, `:855-865`, `:775-799`.
+- ~~**S — `test_live_and_playback_read_the_same_movement` is failing on master.**~~
+  **Done — `5693933`, while the review was being written.** After any heartbeat,
+  `show_day` for a camera the catalogue had no segments for left the Camera
+  selector empty and dropped every movement mark: `show_day` added the name, then
+  `_reload` called `refresh_streams` again and cleared it. Introduced by
+  `545bf10`. `playback.py:830-845`, `:855-865`, `:775-799`.
 - **S — The date is drawn twice on Playback**, 40 px apart, in the day-picker
   button and the heading below it. `playback.py:641-656`, `:668-686`.
 - **S — Two help paragraphs are printed once per camera view**, side by side and

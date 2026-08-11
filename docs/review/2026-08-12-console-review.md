@@ -206,14 +206,14 @@ relative to the review folder above.
 | D8 | A refused save named the field by its Python attribute path — `storage.retention_days: Input should be a valid integer, unable to parse string as an integer` | `settings_tab.py:_first_problem` | `77-settings-bad-travel-1366x768.png` — **fixed today, see below** |
 | D9 | "Roughly 1 minutes left before the drive is full" | `disk.py:_duration` | **fixed today, see below** |
 | D10 | Timeline zoom lands on an empty window with no way to see where the footage is: with no playhead set, **1 hour** centres on the middle of the day. On a console that recorded 00:00–01:35 it jumps to 11:30–12:25 and draws an empty bar, while the line beneath still says "1h 25m recorded" | `playback.py:921-931` | `60-playback-day-1366x768.png` then `61-playback-hour-1366x768.png` |
-| D11 | **A test on master is failing right now.** `tests/test_desktop_window.py::test_live_and_playback_read_the_same_movement`. Cause: after the console has beaten a few times, `show_day` for a camera the catalogue has no segments for leaves the Camera selector **empty** and drops every movement mark — `show_day` adds the missing name, then `_reload` calls `refresh_streams` again and clears it. Introduced by `545bf10` (01:45 today) | `playback.py:830-845`, `playback.py:855-865`, `playback.py:775-799` | reproduced; see *How to reproduce D11* |
+| D11 | ~~A test on master is failing right now.~~ **Fixed while this was being written, by `5693933`.** `tests/test_desktop_window.py::test_live_and_playback_read_the_same_movement` was red for about twenty minutes: after any heartbeat, `show_day` for a camera the catalogue had no segments for left the Camera selector **empty** and dropped every movement mark — `show_day` added the missing name, then `_reload` called `refresh_streams` again and cleared it. Introduced by `545bf10` (01:45 today), closed by `5693933`. Kept here because the failure is instructive: a first-morning console has an empty catalogue, so this was the state he would have met | `playback.py:830-845`, `playback.py:855-865`, `playback.py:775-799` | reproduced before the fix; see *How to reproduce D11* |
 | D12 | On Playback the same date is drawn twice, 40 px apart — once in the day-picker button and once as the heading below it | `playback.py:641-656`, `:668-686` | `60-playback-day-1366x768.png` |
 | D13 | Two whole help paragraphs are printed once per camera view, side by side and word for word identical. The commit that removed one such pair (`fcd32f2`) left these two | `settings_tab.py:368` (`CLASSIFY_HELP`), `settings_tab.py:395` (`REGIONS_HELP`) | `78b-settings-stream-card-watched-1366x768.png` |
 | D14 | The Link panel says the same thing three times when opened: the headline note *"Nothing else fits - the picture can stutter or drop during a pan."*, then *"Airtime: 88% used - the link is full"*, then *"Nothing else will fit on it. A picture that stutters, falls behind, or drops during a pan is this…"* | `radio/panel.py` (`link_summary` note and `_traffic_lines`) | `42-link-details-open-1366x768.png` |
 | D15 | At 1366×768 the Recent movement table is cut through the middle of a row of text rather than at a row boundary — a half-height line of glyphs that reads as a rendering fault | side column, `live.py:979-1037` | `30-radiodown-live-1366x768.png` (bottom right) |
 | D16 | The zoom readout is a bare number: `42%`, with no noun anywhere on the control. The word "zoom" appears only in the *failure* caption (`zoom not reported`), so the control names itself only when it is not working | `zoombar.py:216-223` | `10-working-live-1920x1080.png` |
 
-### How to reproduce D11
+### How to reproduce D11 (against `545bf10`, before `5693933`)
 
 ```python
 from tests.test_desktop_window import FakeServices, FakePtz, FakeRadio, write_settings, beating
@@ -224,9 +224,10 @@ window.playback.stream_names()   # [] — it was ['thermal'] before the heartbea
 window.playback.event_marks      # []
 ```
 
-Without the heartbeat the same call leaves the selector holding `thermal` and
-one mark on the bar. It is the other agent's commit and its file, so I have not
-touched it.
+Without the heartbeat the same call left the selector holding `thermal` and one
+mark on the bar. It was another agent's commit in another agent's file, so it
+was reported rather than fixed here, and that agent closed it the same hour. As
+of this document the whole suite is green.
 
 ---
 
