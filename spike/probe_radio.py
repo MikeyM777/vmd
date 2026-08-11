@@ -815,8 +815,13 @@ def main(argv: list[str] | None = None, ask=getpass.getpass, fetch=fetch_status)
     print()
 
     for note in answer.notes:
-        print(f"  [ ] {note}")
-    print(f"  [ok] {answer.scheme}://{args.host}/status.cgi answered")
+        # Redacted like every other line here, and this one was not. The notes
+        # are built in `fetch_status` out of what the RADIO said - `exc.said` is
+        # quoted into them verbatim - and a radio that echoes the form it
+        # rejected puts a percent-encoded password in one. This whole report
+        # exists to be sent to somebody else; it may not carry a password.
+        print(f"  [ ] {redact(note, password)}")
+    print(redact(f"  [ok] {answer.scheme}://{args.host}/status.cgi answered", password))
     if answer.scheme == "https":
         print("       (its certificate is self-signed and was not checked, as the")
         print("        console does not check it either)")

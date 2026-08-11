@@ -20,12 +20,15 @@ import urllib.error
 import pytest
 
 from spike import probe_radio
+from tests.test_radio import ADVERSARIAL_PASSWORDS, encodings, leaks
 
 HOST = "10.0.0.9"
 USER = "ubnt"
-# Deliberately full of characters that are escaped when a form is encoded: the
-# redaction has to catch both the typed form and the percent-encoded one.
-PASSWORD = "p@ss word/1"
+# The weak one, kept as the password every non-redaction test types at the
+# prompt. The redaction tests below run over `ADVERSARIAL_PASSWORDS` instead:
+# this one is drawn entirely from the alphabet the redaction already handled,
+# which is exactly why it could not catch the leak it was written for.
+PASSWORD = ADVERSARIAL_PASSWORDS[0]
 
 STATUS = {
     "host": {"hostname": "LOCO-north", "uptime": 84231, "devmodel": "NanoStation 5AC loco"},
@@ -164,25 +167,49 @@ def test_the_password_is_prompted_for() -> None:
     assert asked, "the password must be prompted for, not left blank"
 
 
-def test_the_password_is_redacted_in_both_forms(capsys) -> None:
-    """It has bitten this project once already, in the diagnostic report: a
-    password that is masked in one form and printed percent-encoded in the other
-    is a password that has been printed."""
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_the_password_is_redacted_in_every_encoding(capsys, password: str) -> None:
+    """It has bitten this project twice, and both times in a report meant to be
+    sent to somebody else: a password masked in one form and printed in another
+    is a password that has been printed.
+
+    Every encoding at once, in the one field the radio is quoted verbatim in, so
+    that a form nobody thought of fails here rather than in an inbox.
+    """
     leaky = dict(STATUS)
-    leaky["debug"] = f"last login username={USER}&password={PASSWORD} uri=/"
-    encoded = "p%40ss%20word%2F1"
-    _code, out = run([HOST], fetch_returning(leaky), capsys=capsys)
-    assert PASSWORD not in out
-    assert encoded not in out
+    leaky["debug"] = " ".join(
+        f"{name}={form}" for name, form in encodings(password).items()
+    )
+    _code, out = run([HOST], fetch_returning(leaky), password=password, capsys=capsys)
+    assert leaks(out, password) == [], "the report carries the password"
     assert "password" in out.lower(), "the field itself is still shown, redacted"
 
 
-def test_the_redaction_covers_both_forms_directly() -> None:
-    text = f"password={PASSWORD} and password=p%40ss%20word%2F1"
-    hidden = probe_radio.redact(text, PASSWORD)
-    assert PASSWORD not in hidden
-    assert "p%40ss%20word%2F1" not in hidden
-    assert hidden.count(probe_radio.REDACTED) == 2
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_the_redaction_covers_every_encoding_directly(password: str) -> None:
+    text = " and ".join(f"password={form}" for form in encodings(password).values())
+    hidden = probe_radio.redact(text, password)
+    assert leaks(hidden, password) == []
+    assert probe_radio.REDACTED in hidden
+
+
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_a_note_the_radio_wrote_is_not_printed_as_it_came(capsys, password: str) -> None:
+    """The notes are the radio's own words about a login that did not work, and
+    they were the one line of this report printed verbatim.
+
+    They are built from what the radio said - `fetch_status` quotes `exc.said`
+    into them - and a radio that echoes the form it rejected puts the password
+    in there percent-encoded. This tool exists so that a non-technical operator
+    can send its output to somebody else; it has been pasted into a chat once
+    already today. It may not be able to carry a password out of the building.
+    """
+    said = " / ".join(f"{name}={form}" for name, form in encodings(password).items())
+    notes = [f'https session login - the radio refused it and said: "rejected {said}"']
+    code, out = run([HOST], fetch_returning(STATUS, notes=notes), password=password, capsys=capsys)
+    assert code == 0
+    assert "refused it and said" in out, "the note itself still reaches the operator"
+    assert leaks(out, password) == [], "the note carried the password into the report"
 
 
 def test_an_empty_password_redacts_nothing_rather_than_everything() -> None:
@@ -429,23 +456,30 @@ def test_the_login_exchange_is_printed_even_when_nothing_logged_in(capsys) -> No
     assert "AIROS_TOKEN" in out
 
 
-def test_the_login_exchange_never_prints_the_password(capsys) -> None:
-    """In either form, and in a body, a header, a hidden field or a URL."""
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_the_login_exchange_never_prints_the_password(capsys, password: str) -> None:
+    """In every encoding, and in a body, a header, a hidden field or a URL.
+
+    One field per encoding, so that a form the redaction has stopped covering
+    names itself rather than hiding behind the one beside it.
+    """
+    forms = encodings(password)
     leaky = probe_radio.Exchange(
         flow="cold",
         method="POST",
-        url=f"https://10.0.0.9/login.cgi?u={USER}&p={PASSWORD}",
+        url=f"https://10.0.0.9/login.cgi?u={USER}&p={forms['percent-encoded']}",
         status=403,
-        said=f"rejected password={PASSWORD}",
-        headers={"Set-Cookie": f"last=p%40ss%20word%2F1; note={PASSWORD}"},
-        hidden={"prefill": PASSWORD},
-        body=f"username={USER}&password=p%40ss+word%2F1&uri=%2F",
+        said=f"rejected password={forms['typed']}",
+        headers={"Set-Cookie": f"last={forms['form-encoded']}; note={forms['typed']}"},
+        hidden={"prefill": forms["Python-escaped"]},
+        body=f"username={USER}&password={forms['JSON-escaped']}&uri=%2F",
     )
-    code, out = run([HOST], fetch_returning(STATUS, exchange=[leaky]), capsys=capsys)
+    code, out = run(
+        [HOST], fetch_returning(STATUS, exchange=[leaky]), password=password, capsys=capsys
+    )
     assert code == 0
-    assert PASSWORD not in out
-    assert "p%40ss%20word%2F1" not in out
-    assert "p%40ss+word%2F1" not in out
+    assert "prefill" in out, "the exchange itself is still printed"
+    assert leaks(out, password) == []
 
 
 def test_the_bodies_are_truncated(capsys) -> None:
