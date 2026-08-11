@@ -44,6 +44,7 @@ class FakeVideoPane:
     def __init__(self) -> None:
         self.url: str | None = None
         self.restarts = 0
+        self.released = False
         self._state: PaneState = "stopped"
 
     @property
@@ -58,6 +59,11 @@ class FakeVideoPane:
 
     def stop(self) -> None:
         self.url = None
+        self._state = "stopped"
+
+    def release(self) -> None:
+        self.url = None
+        self.released = True
         self._state = "stopped"
 
     # -- test control -----------------------------------------------------
@@ -102,6 +108,9 @@ class VlcVideoPane(QWidget):
         self._last_frame_at = 0.0
         self.frames_seen = 0
         self._last_count = -1
+        # Once libVLC has been handed its player back, nothing here may touch it
+        # again: that is a use-after-free in a C library, not an exception.
+        self._released = False
 
         # Polled rather than driven by VLC events: libVLC delivers events on its
         # own threads, and touching Qt from those is how a UI toolkit crashes.
@@ -114,6 +123,9 @@ class VlcVideoPane(QWidget):
         super().show()
 
     def show(self, url: str) -> None:  # noqa: A003 - the protocol's name
+        if self._released:
+            logger.warning("not showing %s: this pane has been released", url)
+            return
         self._url = url
         self._last_frame_at = 0.0
         self._last_count = -1
@@ -126,7 +138,38 @@ class VlcVideoPane(QWidget):
 
     def stop(self) -> None:
         self._url = None
+        if self._released:
+            return
         self._player.stop()
+
+    def release(self) -> None:
+        """Hand libVLC back what it gave out. The pane is finished after this.
+
+        python-vlc frees nothing when its objects are collected - neither
+        `Instance` nor `MediaPlayer` defines `__del__` - so dropping a pane
+        leaves a player, its decoder threads and a whole libVLC instance alive
+        for the rest of the process. The panes are rebuilt whenever the streams
+        change, and each rebuild would otherwise leave another instance behind
+        on a machine that runs for months.
+
+        Everything here is guarded and done once. A second release is a double
+        free inside a C library, which is not an exception - it is the console
+        disappearing.
+        """
+        if self._released:
+            return
+        self._released = True
+        self._poll.stop()
+        self._url = None
+        for name, obj in (("player", self._player), ("instance", self._instance)):
+            for step in ("stop", "release"):
+                action = getattr(obj, step, None)
+                if action is None:
+                    continue
+                try:
+                    action()
+                except Exception:  # noqa: BLE001 - a leak beats a crash on shutdown
+                    logger.exception("the video %s would not %s", name, step)
 
     @property
     def state(self) -> PaneState:

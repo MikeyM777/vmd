@@ -114,6 +114,51 @@ class _StubPlayer:
         pass
 
 
+class _Releasable:
+    """Counts what a released libVLC object was asked to do."""
+
+    def __init__(self) -> None:
+        self.releases = 0
+        self.stops = 0
+
+    def release(self) -> None:
+        self.releases += 1
+
+    def stop(self) -> None:
+        self.stops += 1
+
+
+def test_releasing_a_pane_hands_back_the_player_and_the_instance(qtbot) -> None:
+    """Nothing in python-vlc frees anything when the object is collected, and
+    the panes are rebuilt whenever the streams change. A pane that was only
+    stopped keeps its decoder threads and its instance for the life of the
+    process."""
+    from vmd.desktop.video import VlcVideoPane
+
+    pane = VlcVideoPane()
+    qtbot.addWidget(pane)
+    player, instance = _Releasable(), _Releasable()
+    pane._player, pane._instance = player, instance
+
+    pane.release()
+
+    assert player.stops == 1
+    assert player.releases == 1
+    assert instance.releases == 1
+    assert pane.state == "stopped"
+    assert pane._poll.isActive() is False
+
+    # And it is over. A second release is a double free inside a C library, and
+    # showing again would hand a URL to a player that no longer exists.
+    pane.release()
+    pane.show("rtsp://127.0.0.1:1/nowhere")
+    pane.stop()
+    assert player.releases == 1
+    assert instance.releases == 1
+    assert player.stops == 1
+    assert pane.state == "stopped"
+
+
 def test_a_stream_vlc_has_given_up_on_is_reported_failed(qtbot) -> None:
     """VLC ends a dead RTSP session ~10 s after the source disappears. Ended is
     not Error, but it is just as final: no picture will ever arrive again."""

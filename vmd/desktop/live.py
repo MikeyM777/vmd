@@ -413,6 +413,17 @@ class LiveTab(QWidget):
         """Build a pane for every enabled stream, replacing whatever was there."""
         for pane in self._panes.values():
             pane.stop()
+            # Stopped is not finished. A libVLC pane holds a player, its decoder
+            # threads and an instance that nothing frees when the object is
+            # dropped, and this runs again every time the operator saves the
+            # settings. `release` is not part of the VideoPane protocol, so a
+            # pane without one is simply dropped.
+            release = getattr(pane, "release", None)
+            if release is not None:
+                try:
+                    release()
+                except Exception:  # noqa: BLE001 - a leak beats losing the tab
+                    logger.exception("a video pane would not let go of libVLC")
             if isinstance(pane, QWidget):
                 pane.setParent(None)
         self._panes.clear()

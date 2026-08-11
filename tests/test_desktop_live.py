@@ -335,6 +335,20 @@ def test_a_late_stream_looks_different_from_a_playing_one(qtbot) -> None:
     assert tab.stream_label_style("thermal") != playing_look
 
 
+def test_a_replaced_pane_hands_libvlc_back(qtbot) -> None:
+    """python-vlc frees nothing when its objects are collected. A pane that is
+    only stopped keeps a player, its decoder threads and a whole libVLC
+    instance, and the panes are rebuilt every time the streams change."""
+    tab, _, panes = build(qtbot, "thermal")
+    first = panes["thermal"]
+    assert first.released is False
+
+    tab.apply(settings_with("visible"))
+
+    assert first.released is True, "the old pane still holds libVLC"
+    assert panes["visible"].released is False
+
+
 def test_a_removed_stream_leaves_no_label_behind(qtbot) -> None:
     tab, _, _ = build(qtbot, "thermal", "visible")
     tab.apply(settings_with("thermal"))
