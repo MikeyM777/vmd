@@ -37,14 +37,22 @@ class RecordingService:
         retention_interval: float = 60.0,
         settle_seconds: float = 5.0,
         endpoint_path: str | Path | None = None,
+        settings_path: str | Path | None = None,
     ) -> None:
         self.settings = settings
+        # Where the operator's choices are written down, so that saving the
+        # Settings tab can reach a process the console cannot restart. None
+        # means "these settings and no others", which is what every caller that
+        # hands in a Settings object directly wants.
+        self.settings_path = Path(settings_path) if settings_path else None
+        self._settings_stamp = self._settings_timestamp()
         endpoint = read_endpoint(endpoint_path or DEFAULT_ENDPOINT_PATH)
         self._endpoint = endpoint if endpoint and is_live(endpoint) else None
         # How long a file must sit untouched before it counts as finished. The
         # same window guards both discovery and orphan adoption; adoption used
         # to have none, which made it the weaker of the two paths.
         self.settle_seconds = settle_seconds
+        self._spawn_kwargs = {"spawn": spawn} if spawn else {}
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
@@ -53,29 +61,15 @@ class RecordingService:
         self._events = None
         self._events_failures = 0
         try:
-            recorder_kwargs = {"spawn": spawn} if spawn else {}
-            self.recorders = [
-                SegmentRecorder(
-                    stream=stream.name,
-                    source_url=self._source_for(stream),
-                    output_dir=self.root / stream.name,
-                    segment_seconds=settings.storage.segment_seconds,
-                    **recorder_kwargs,
-                )
-                for stream in settings.camera.streams
-                if stream.enabled
-            ]
-            self.supervisor = Supervisor(
-                [Managed(name=r.stream, service=r) for r in self.recorders]
-            )
+            self._last_segment_at: dict[str, float] = {}
+            self._started_at: dict[str, float] = {}
+            self._build_recorders()
             self._seen: set[str] = {s.path for s in self.index.all()}
             self._last_warning: str | None = None
             # Retention runs on its own slower cadence; see _apply_retention.
             self.retention_interval = retention_interval
             self._last_retention = 0.0
             self._stuck_deletions = 0
-            self._last_segment_at: dict[str, float] = {}
-            self._started_at: dict[str, float] = {}
             self._stall_restarts = 0
             self._stage_failures: dict[str, int] = {}
             self._adopt_orphans()
@@ -85,6 +79,41 @@ class RecordingService:
             # immediate retry fail with "database is locked".
             self.index.close()
             raise
+
+    def _build_recorders(self) -> None:
+        """One recorder per enabled stream, and a supervisor over them.
+
+        Called again whenever the set of streams or the folder they write into
+        changes, so it must leave no trace of the recorders it replaced: the
+        stall clocks are keyed by stream name and a name that has just been
+        pointed somewhere else must start its grace period again, not inherit
+        the previous recorder's.
+        """
+        self.recorders = [
+            SegmentRecorder(
+                stream=stream.name,
+                source_url=self._source_for(stream),
+                output_dir=self.root / stream.name,
+                segment_seconds=self.settings.storage.segment_seconds,
+                **self._spawn_kwargs,
+            )
+            for stream in self.settings.camera.streams
+            if stream.enabled
+        ]
+        self.supervisor = Supervisor(
+            [Managed(name=r.stream, service=r) for r in self.recorders]
+        )
+        self._last_segment_at = {}
+        self._started_at = {}
+
+    def _settings_timestamp(self) -> int | None:
+        """When the settings file was last written, or None if there is no file."""
+        if self.settings_path is None:
+            return None
+        try:
+            return self.settings_path.stat().st_mtime_ns
+        except OSError:
+            return None
 
     def _event_store(self):
         """The movement events, if a detector has ever written any.
@@ -157,6 +186,7 @@ class RecordingService:
         everything before it has failed.
         """
         now = time.time() if now is None else now
+        self._stage("settings", self._reload_settings, now)
         for recorder in self.recorders:
             self._started_at.setdefault(recorder.stream, now)
         self._stage("supervisor", self.supervisor.tick)
@@ -206,13 +236,7 @@ class RecordingService:
             self._index_final_segments()
         except Exception:  # noqa: BLE001 - shutdown must always complete
             logger.exception("final indexing pass failed")
-        if self._events is not None:
-            try:
-                self._events.close()
-            except Exception:  # noqa: BLE001 - shutdown must always complete
-                logger.exception("the movement events would not close")
-            self._events = None
-        self.index.close()
+        self._close_stores()
 
     def status(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
@@ -279,6 +303,166 @@ class RecordingService:
                 )
                 self._seen.add(str(path))
                 self._last_segment_at[recorder.stream] = now
+
+    # ------------------------------------------------------ following the tab
+
+    def _reload_settings(self, now: float) -> None:
+        """Notice the operator saving the Settings tab, without being restarted.
+
+        This process is deliberately separate from the console and deliberately
+        outlives the window, which is what makes it unreachable: the next
+        console adopts this same process with the configuration it started with,
+        so "close it and open it again" changes nothing. That left the storage
+        budget, the retention policy, the segment length and the recording
+        folder unfixable by an operator who has no terminal.
+
+        The file's timestamp is the trigger rather than the clock. The ordinary
+        pass then costs one stat() and nothing else, which is what it has to
+        cost on a loop that runs every five seconds for months. Exiting and
+        letting somebody restart this was the other candidate and is not
+        available: the thing that would restart it is the console, and the
+        console is allowed to be closed.
+        """
+        if self.settings_path is None:
+            return
+        stamp = self._settings_timestamp()
+        if stamp is None:
+            # No file to read. `save_settings` writes a temporary file and
+            # renames it over this one, and os.replace never leaves the
+            # destination absent, so this is not the moment of a save - it is a
+            # file that has been moved, deleted, or put on a disk that went
+            # away. Whatever the reason, the settings in hand are the last ones
+            # the operator chose, and recording on those beats recording on the
+            # defaults or not recording at all.
+            return
+        if stamp == self._settings_stamp:
+            return
+        # Remembered before the load and whether or not the load works, so that
+        # a file which cannot be read is complained about once per version of
+        # itself rather than once every five seconds for as long as it is broken.
+        self._settings_stamp = stamp
+        try:
+            fresh = load_settings(self.settings_path)
+        except SettingsError as exc:
+            logger.error(
+                "the settings could not be read, so recording continues exactly "
+                "as it is on the last settings that worked: %s",
+                exc,
+            )
+            return
+        self._apply_settings(fresh, now)
+
+    def _apply_settings(self, fresh: Settings, now: float) -> None:
+        """Take the new settings, restarting only as much as has to restart.
+
+        Most of them are live the moment `self.settings` is replaced: the
+        retention pass reads the budget, the age rule and the warning threshold
+        out of it every time it runs. The three that are not are the ones that
+        were baked into something already running - the folder each ffmpeg
+        writes into, the length of the segments it cuts, and which streams have
+        an ffmpeg at all.
+
+        The camera's address is deliberately not one of them. Recording pulls
+        from the local streaming server keyed by stream name, so a corrected
+        address reaches the disk through go2rtc without this process moving.
+        """
+        previous = self.settings
+        self.settings = fresh
+
+        old_root = Path(previous.storage.root).resolve()
+        new_root = Path(fresh.storage.root)
+        if new_root.resolve() != old_root:
+            self._move_archive(new_root, now)
+            return
+
+        renamed = self._enabled_names(fresh) != self._enabled_names(previous)
+        relengthened = fresh.storage.segment_seconds != previous.storage.segment_seconds
+        if renamed or relengthened:
+            self._rebuild_recorders(
+                "the streams being recorded changed"
+                if renamed
+                else f"the segment length changed to {fresh.storage.segment_seconds}s",
+                now,
+            )
+            return
+        logger.info("settings reloaded; the storage rules now in force are the saved ones")
+
+    @staticmethod
+    def _enabled_names(settings: Settings) -> list[str]:
+        return [s.name for s in settings.camera.streams if s.enabled]
+
+    def _rebuild_recorders(self, reason: str, now: float) -> None:
+        """Stop every recorder, keep what it wrote, and start the new set.
+
+        Stopping first is not optional. Each ffmpeg has a file open; the file is
+        only finished once its process is gone, and it is only findable
+        afterwards if it is indexed before this object forgets about it.
+        """
+        logger.info("%s; restarting the recorders", reason)
+        self.supervisor.stop_all()
+        try:
+            self._index_new_segments(now)
+            self._index_final_segments()
+        except Exception:  # noqa: BLE001 - a lost index row must not stop recording
+            logger.exception("indexing before the restart failed")
+        self._build_recorders()
+
+    def _move_archive(self, new_root: Path, now: float) -> None:
+        """Point everything at a new recording folder, losing nothing on the way.
+
+        The order is the whole of it. Every recorder is stopped so the segment
+        it had open is closed and complete; those segments are indexed into the
+        *old* folder's catalogue, which is the only one that knows where they
+        are; only then is that catalogue closed and a new one opened beside the
+        new folder.
+
+        Retention is never left holding one folder's catalogue and the other's
+        rules. `self.index` and `self.settings.storage` are swapped together and
+        the retention clock is reset, so the next pass reads the new folder's
+        contents and measures them against the new folder's budget. Nothing in
+        the old folder is deleted - the operator moved the archive, they did not
+        ask for the old one to be thrown away - and nothing there is managed
+        from here any more, which is said out loud because it is the sort of
+        thing an operator finds out months later otherwise.
+        """
+        logger.warning(
+            "the recording folder changed from %s to %s. Everything already "
+            "recorded stays in the old folder, with its own index, and is no "
+            "longer deleted or counted by this service",
+            self.root,
+            new_root,
+        )
+        self.supervisor.stop_all()
+        try:
+            self._index_new_segments(now)
+            self._index_final_segments()
+        except Exception:  # noqa: BLE001 - the move must complete either way
+            logger.exception("the last segments in %s could not be indexed", self.root)
+        self._close_stores()
+
+        self.root = Path(new_root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.index = SegmentIndex(self.root / "segments.db")
+        self.events_path = self.root / EVENTS_FILENAME
+        self._events = None
+        self._seen = {s.path for s in self.index.all()}
+        # This folder's totals have never been measured, and waiting out the
+        # retention interval before measuring them would leave the budget
+        # unenforced on a folder that may already be full.
+        self._last_retention = 0.0
+        self._last_warning = None
+        self._stuck_deletions = 0
+        self._build_recorders()
+        self._adopt_orphans()
+
+    def _close_stores(self) -> None:
+        if self._events is not None:
+            try:
+                self._events.close()
+            except Exception:  # noqa: BLE001 - closing must not fail a close
+                logger.exception("the movement events would not close")
+            self._events = None
+        self.index.close()
 
     def _index_final_segments(self) -> None:
         """Index the file each recorder still had open, now that it has none.
@@ -540,7 +724,12 @@ def main(argv: list[str] | None = None) -> int:
     if not [s for s in settings.camera.streams if s.enabled]:
         print(f"no enabled streams in {args.settings}; nothing to record")
         return 1
-    service = RecordingService(settings, endpoint_path=endpoint_path)
+    # The path, not only the loaded settings: this process outlives the console
+    # window, so re-reading this file is the only way the Settings tab can ever
+    # reach it.
+    service = RecordingService(
+        settings, endpoint_path=endpoint_path, settings_path=args.settings
+    )
     if args.once:
         try:
             service.run_once()

@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 import subprocess
 import time
 
+from vmd import record_main as record_main_module
 from vmd.record_main import RecordingService, main, parse_args
 from vmd.settings import Settings, StreamSettings
 from vmd.storage.index import SegmentIndex
@@ -637,3 +639,234 @@ def test_stop_leaves_a_directory_alone_when_its_ffmpeg_would_not_die(tmp_path):
         assert reopened.all() == []
     finally:
         reopened.close()
+
+
+# ---------------------------------------------------------------------------
+# Following the Settings tab. This process outlives the console window, so the
+# next console adopts it with the configuration it started with - which makes
+# re-reading the file the only way a saved setting ever reaches it.
+# ---------------------------------------------------------------------------
+
+
+def save_settings_file(path, root, budget_gb=100.0, retention_days=None,
+                       segment_seconds=60, streams=(("thermal", True),)):
+    # 60s rather than the 4s the older tests use: the stall check restarts any
+    # recorder that has produced nothing for twice the segment length, and these
+    # tests step a fake clock by a hundred seconds between passes.
+    from vmd.settings import save_settings
+
+    settings = Settings()
+    settings.camera.streams = [
+        StreamSettings(name=name, url=f"rtsp://example/{name}", enabled=enabled)
+        for name, enabled in streams
+    ]
+    settings.storage.root = root
+    settings.storage.budget_gb = budget_gb
+    settings.storage.retention_days = retention_days
+    settings.storage.segment_seconds = segment_seconds
+    save_settings(settings, path)
+    return settings
+
+
+def touch_later(path):
+    """Make the file look newer, without waiting for a clock to move."""
+    stamp = os.stat(path).st_mtime + 10
+    os.utime(path, (stamp, stamp))
+
+
+def service_following(tmp_path, **kwargs):
+    path = tmp_path / "settings.json"
+    settings = save_settings_file(path, tmp_path / "recordings", **kwargs)
+    service = RecordingService(
+        settings, spawn=spawn_fake, settings_path=path, retention_interval=0.0
+    )
+    return service, path
+
+
+def test_a_saved_budget_reaches_a_recorder_that_is_already_running(tmp_path):
+    """The operator has no terminal and cannot restart this process.
+
+    The console can restart itself; it cannot restart this, because this is
+    meant to survive the window closing and the next window adopts it exactly
+    as it was.
+    """
+    service, path = service_following(tmp_path, budget_gb=100.0)
+    try:
+        service.run_once(now=100.0)
+        assert service.status()["budget_bytes"] == int(100.0 * 1024**3)
+
+        save_settings_file(path, tmp_path / "recordings", budget_gb=7.0, retention_days=3)
+        touch_later(path)
+        service.run_once(now=200.0)
+
+        assert service.status()["budget_bytes"] == int(7.0 * 1024**3)
+        assert service.settings.storage.retention_days == 3
+    finally:
+        service.stop()
+
+
+def test_an_unchanged_file_is_not_read_again(tmp_path, monkeypatch):
+    """The trigger is the file's timestamp, on a loop that runs for months."""
+    service, path = service_following(tmp_path)
+    reads = []
+    real = record_main_module.load_settings
+    monkeypatch.setattr(
+        record_main_module, "load_settings", lambda p: (reads.append(p), real(p))[1]
+    )
+    try:
+        for _ in range(5):
+            service.run_once()
+        assert reads == []
+    finally:
+        service.stop()
+
+
+def test_a_settings_file_that_has_gone_leaves_recording_exactly_as_it_is(tmp_path):
+    """A missing file is never read as "the operator wants the defaults".
+
+    load_settings answers a missing path with defaults, which is right for a
+    first run and catastrophic here: it would silently move the recording
+    folder and change the budget because a file was momentarily absent.
+    """
+    service, path = service_following(tmp_path, budget_gb=7.0)
+    try:
+        service.run_once(now=100.0)
+        before = service.status()["budget_bytes"]
+        root_before = service.root
+
+        path.unlink()
+        service.run_once(now=200.0)
+
+        assert service.status()["budget_bytes"] == before
+        assert service.root == root_before
+        assert service.recorders[0].running is True
+    finally:
+        service.stop()
+
+
+def test_an_unreadable_settings_file_does_not_stop_recording(tmp_path, caplog):
+    """Recording on stale settings beats not recording."""
+    service, path = service_following(tmp_path, budget_gb=7.0)
+    try:
+        service.run_once(now=100.0)
+        before = service.status()["budget_bytes"]
+
+        path.write_text("{ this is not json", encoding="utf-8")
+        touch_later(path)
+        with caplog.at_level(logging.ERROR):
+            service.run_once(now=200.0)
+
+        assert service.status()["budget_bytes"] == before
+        assert service.recorders[0].running is True
+        assert "last settings that worked" in caplog.text
+    finally:
+        service.stop()
+
+
+def test_a_broken_settings_file_is_complained_about_once_not_every_pass(tmp_path, caplog):
+    service, path = service_following(tmp_path)
+    try:
+        path.write_text("{ this is not json", encoding="utf-8")
+        touch_later(path)
+        with caplog.at_level(logging.ERROR):
+            for _ in range(6):
+                service.run_once()
+        assert caplog.text.count("last settings that worked") == 1
+    finally:
+        service.stop()
+
+
+def test_a_stream_ticked_for_recording_starts_being_recorded(tmp_path):
+    service, path = service_following(tmp_path, streams=(("thermal", True), ("visible", False)))
+    try:
+        service.run_once(now=100.0)
+        assert [r.stream for r in service.recorders] == ["thermal"]
+
+        save_settings_file(
+            path, tmp_path / "recordings", streams=(("thermal", True), ("visible", True))
+        )
+        touch_later(path)
+        service.run_once(now=200.0)
+
+        assert [r.stream for r in service.recorders] == ["thermal", "visible"]
+        assert all(r.running for r in service.recorders)
+    finally:
+        service.stop()
+
+
+def test_a_changed_segment_length_reaches_the_ffmpeg_command(tmp_path):
+    service, path = service_following(tmp_path, segment_seconds=300)
+    try:
+        service.run_once(now=100.0)
+        command = service.recorders[0].build_command()
+        assert command[command.index("-segment_time") + 1] == "300"
+
+        save_settings_file(path, tmp_path / "recordings", segment_seconds=60)
+        touch_later(path)
+        service.run_once(now=200.0)
+
+        command = service.recorders[0].build_command()
+        assert command[command.index("-segment_time") + 1] == "60"
+    finally:
+        service.stop()
+
+
+def test_moving_the_folder_keeps_the_segment_that_was_being_written(tmp_path):
+    """The hard one: an in-flight segment lives in the folder being left behind.
+
+    It must be closed, indexed into the catalogue that knows where it is, and
+    still findable there afterwards - not orphaned in a tree nothing reads.
+    """
+    service, path = service_following(tmp_path)
+    old_root = tmp_path / "recordings"
+    new_root = tmp_path / "elsewhere"
+    try:
+        service.run_once(now=100.0)
+        in_flight = old_root / "thermal" / "2026-08-07_10-00-00.mp4"
+        in_flight.write_bytes(b"x" * 4096)
+
+        save_settings_file(path, new_root)
+        touch_later(path)
+        service.run_once(now=200.0)
+
+        assert service.root == new_root
+        assert in_flight.exists(), "the footage must not be moved or deleted"
+        assert service.recorders[0].output_dir == new_root / "thermal"
+
+        old_index = SegmentIndex(old_root / "segments.db")
+        try:
+            found = [s.path for s in old_index.all()]
+        finally:
+            old_index.close()
+        assert str(in_flight) in found, "the segment left behind is unfindable"
+    finally:
+        service.stop()
+
+
+def test_moving_the_folder_never_applies_retention_to_the_wrong_one(tmp_path):
+    """Deleting the old folder's footage because the new one is over budget - or
+    the reverse - is the worst outcome available here, so the catalogue and the
+    budget are swapped together and never mixed.
+    """
+    service, path = service_following(tmp_path, budget_gb=100.0)
+    old_root = tmp_path / "recordings"
+    new_root = tmp_path / "elsewhere"
+    try:
+        service.run_once(now=100.0)
+        write_segments(tmp_path, ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4"])
+        service.run_once(now=1000.0)
+        old_files = sorted((old_root / "thermal").glob("*.mp4"))
+        assert len(old_files) == 2
+
+        # A budget far too small for anything, so the very next retention pass
+        # deletes whatever it can see.
+        save_settings_file(path, new_root, budget_gb=1 / 1024**3)
+        touch_later(path)
+        service.run_once(now=2000.0)
+
+        assert [p for p in old_files if p.exists()] == old_files, (
+            "retention reached into the folder it no longer manages"
+        )
+        assert service.index.all() == []
+    finally:
+        service.stop()
