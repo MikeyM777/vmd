@@ -22,6 +22,12 @@ from vmd.ptz.onvif import MEDIA, OnvifPtz, PtzError, _first, _xml
 
 logger = logging.getLogger(__name__)
 
+# The least a stream may be capped to and still be worth looking at. Below this
+# a 4K picture is blocks and a thermal one is a smear, so it is a floor rather
+# than a target - see `fit_to_link`, and the case where the budget cannot pay it
+# for every stream at once.
+MIN_STREAM_KBPS = 256
+
 
 @dataclass
 class EncoderConfig:
@@ -272,8 +278,29 @@ def fit_to_link(configs: list[EncoderConfig], ceiling_kbps: int) -> dict[str, in
         weights[config.token] = pixels
     total = sum(weights.values()) or 1
     # No stream below 256 kb/s: under that the picture stops being useful at all.
+    shares = {
+        token: max(MIN_STREAM_KBPS, int(usable * weight / total))
+        for token, weight in weights.items()
+    }
+    asked = sum(shares.values())
+    if asked <= ceiling_kbps or asked <= 0:
+        return shares
+    # A floor per stream, added up, can be more than the whole link. "No stream
+    # below 256" is right about one stream and says nothing about the total, and
+    # the total is the only thing this function exists to control: two streams
+    # against a 500 kb/s ceiling came out at 360 and 256, which is 616 asked of
+    # a link the operator has said may carry 500. The automatic loop can drive
+    # the ceiling to exactly there, and it would then be measuring a link it had
+    # itself overspent and cutting again against a camera 23% above where it
+    # believes it is.
+    #
+    # A budget that cannot afford the floor for every stream is a link that
+    # cannot carry them, and the honest answer is to keep the budget rather than
+    # the floor - the ceiling is the number the operator set, and `BitrateLoop`
+    # already has the sentence for what this state means to him: "the radio link
+    # cannot carry even N kb/s, which is the lowest picture you have allowed".
     return {
-        token: max(256, int(usable * weight / total)) for token, weight in weights.items()
+        token: max(1, ceiling_kbps * kbps // asked) for token, kbps in shares.items()
     }
 
 

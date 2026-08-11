@@ -303,6 +303,40 @@ def test_fitting_to_the_link_keeps_the_total_under_it() -> None:
     assert min(targets.values()) >= 256, "no stream may be capped into uselessness"
 
 
+def test_the_smallest_useful_bitrate_is_never_paid_out_of_a_budget_without_it() -> None:
+    """A floor per stream, added up, can be more than the whole link.
+
+    "No stream below 256 kb/s" is right about one stream and says nothing about
+    the total, and the total is the only thing this function exists to control.
+    On a two-stream camera with a 500 kb/s ceiling the shares came out at 360
+    and 256 - 616 kb/s asked of a link the operator has said may carry 500 - and
+    the whole point of the automatic loop is that it can drive the ceiling down
+    to exactly that. It then measures a link it has itself overspent and cuts
+    again, against a camera 23% above where it believes it is.
+
+    A budget that cannot afford the floor for every stream is a link that cannot
+    carry them. The honest answer is to keep the budget: `BitrateLoop` already
+    has a sentence for the state that puts the operator in - "the radio link
+    cannot carry even N kb/s, which is the lowest picture you have allowed" -
+    and it is the ceiling, not the floor, that he set.
+    """
+    from vmd.ptz.encoder import EncoderConfig, fit_to_link
+
+    def config(token: str, width: int, height: int) -> EncoderConfig:
+        return EncoderConfig(
+            token=token, name=token, encoding="H264", width=width, height=height,
+            fps=25, bitrate_kbps=8000, quality=5.0, gov_length=25,
+        )
+
+    two = [config("main", 3840, 2160), config("thermal", 640, 512)]
+    for ceiling in (400, 500, 800, 1000, 2000, 5000):
+        assert sum(fit_to_link(two, ceiling).values()) <= ceiling, ceiling
+
+    # And with more streams than the floor can be paid for at all.
+    five = [config(f"c{index}", 640, 480) for index in range(5)]
+    assert sum(fit_to_link(five, 1000).values()) <= 1000
+
+
 def test_capping_sends_every_field_back_not_just_the_bitrate(camera: tuple[str, int]) -> None:
     """ONVIF's Set is a whole-object write. Omitting resolution does not mean
     "leave it alone" - a camera that accepts it loses its resolution."""
