@@ -594,3 +594,238 @@ def test_a_broken_settings_file_can_be_replaced_from_the_tab(
 
     assert tab.save() is True
     assert load_settings(path).camera.host == "10.0.0.2"
+
+
+# ------------------------------------------- the heartbeat, with everything wedged
+#
+# The heartbeat is what restarts a dead child, redraws the panes and - the whole
+# reason this matters - lets the alarm strip appear. Four separate paths used to
+# do blocking network or process calls on this thread, and every one of them
+# blocks longest when the network is down, which is exactly when the operator
+# needs the console. While any of them blocked, a perimeter crossing was
+# silently missed.
+#
+# Every wedge below is bounded by a ceiling of its own, so a regression fails
+# this test in a few seconds rather than hanging the suite.
+
+import threading  # noqa: E402
+import time  # noqa: E402
+
+from vmd.background import BackgroundValue  # noqa: E402
+from vmd.desktop.services import ConsoleServices, RecorderProcess  # noqa: E402
+from vmd.radio.service import RadioService  # noqa: E402
+from vmd.streaming.go2rtc import Go2rtcService  # noqa: E402
+
+WEDGE_CEILING = 5.0
+
+
+class Wedge:
+    """Something that does not come back until the test lets it."""
+
+    def __init__(self, answer=None) -> None:
+        self.answer = answer
+        self.calls = 0
+        self.entered = threading.Event()
+        self.released = threading.Event()
+
+    def hold(self):
+        self.calls += 1
+        self.entered.set()
+        self.released.wait(WEDGE_CEILING)
+        return self.answer
+
+
+class WedgedRadio:
+    def __init__(self, wedge: Wedge) -> None:
+        self._wedge = wedge
+
+    def status(self):
+        self._wedge.hold()
+        raise OSError("cannot reach the radio")
+
+
+class WedgedPtz:
+    def __init__(self, wedge: Wedge) -> None:
+        self._wedge = wedge
+        self.applied: list = []
+
+    def apply(self, settings) -> None:
+        self.applied.append(settings)
+
+    def status(self) -> dict:
+        return {"available": False, "reason": "no camera address set"}
+
+    def move(self, pan, tilt, zoom) -> dict:
+        self._wedge.hold()
+        return {"ok": True}
+
+    def stop(self) -> dict:
+        self._wedge.hold()
+        return {"ok": True}
+
+    def home(self) -> dict:
+        self._wedge.hold()
+        return {"ok": True}
+
+
+class DeadOnArrival:
+    """go2rtc as a corrupt binary leaves it: spawned, and gone before anyone looks."""
+
+    pid = 5150
+
+    def poll(self):
+        return 0
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class Ticking:
+    """The supervisor's clock, wound two seconds per heartbeat by hand.
+
+    Without it the supervisor's own restart delay means it only tries to start a
+    dead go2rtc once every two real seconds, so a burst of heartbeats measured
+    back to back would never reach the launch at all - which is the very path
+    that used to sleep 0.8 s on this thread.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def heartbeat(self) -> None:
+        self.now += 2.0
+
+
+def wedged_console(tmp_path: Path, wedges: dict, clock=None):
+    """A console whose every slow dependency has stopped answering."""
+    path = write_settings(tmp_path)
+    settings = load_settings(path)
+
+    streaming = Go2rtcService(
+        settings,
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=lambda command: DeadOnArrival(),
+    )
+
+    (tmp_path / "recorder.pid").write_text("4242", encoding="utf-8")
+    recorder = RecorderProcess(
+        path,
+        pid_path=tmp_path / "recorder.pid",
+        spawn=lambda command: DeadOnArrival(),
+        kill_tree=lambda pid: True,
+        alive=_wedged_alive(wedges["liveness"]),
+    )
+
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=path,
+        streaming=streaming,
+        recorder=recorder,
+        clock=clock or time.monotonic,
+    )
+    services.start()
+
+    radio = RadioService(Settings())
+    radio.radio = WedgedRadio(wedges["radio"])
+    radio._reading = BackgroundValue(
+        read=radio.radio.status, stale_after=0.0, name="a wedged radio"
+    )
+    return path, services, radio
+
+
+def _wedged_alive(wedge: Wedge):
+    """A `tasklist` that answers once - so the child is adopted at all - and
+    then stops coming back."""
+
+    def alive(pid: int) -> bool:
+        if wedge.calls == 0:
+            wedge.calls += 1
+            return True
+        wedge.hold()
+        return True
+
+    return alive
+
+
+def test_the_heartbeat_returns_at_once_with_every_dependency_wedged(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.0)
+    wedges = {"radio": Wedge(), "liveness": Wedge(), "ptz": Wedge()}
+    clock = Ticking()
+    path, services, radio = wedged_console(tmp_path, wedges, clock=clock)
+    ptz = WedgedPtz(wedges["ptz"])
+
+    window = ConsoleWindow(
+        settings_path=path,
+        services=services,
+        ptz=ptz,
+        radio=radio,
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+    try:
+        # A camera command on the wire as well: the operator is steering while
+        # all this is going on, which is the state the freeze was measured in.
+        window.live.key_down("right", fine=False)
+        assert wedges["ptz"].entered.wait(WEDGE_CEILING)
+
+        clock.heartbeat()
+        window.heartbeat()  # the first one may still be starting things up
+        slowest = 0.0
+        for _ in range(5):
+            clock.heartbeat()
+            started = time.monotonic()
+            window.heartbeat()
+            slowest = max(slowest, time.monotonic() - started)
+        assert len(services.supervisor.restarts) and services.supervisor.restarts[
+            "streaming"
+        ] >= 4, "the dead go2rtc was never relaunched, so its launch was not measured"
+    finally:
+        for wedge in wedges.values():
+            wedge.released.set()
+        radio.close()
+        window.live.shutdown()
+
+    assert slowest < 0.3, f"a heartbeat took {slowest:.2f} s with everything wedged"
+
+
+def test_the_status_line_admits_it_has_not_heard_from_the_radio(
+    qtbot, tmp_path: Path
+) -> None:
+    """A blank, or a dash, is what this console says when the link is fine."""
+    wedges = {"radio": Wedge(), "liveness": Wedge(), "ptz": Wedge()}
+    path, services, radio = wedged_console(tmp_path, wedges)
+    window = ConsoleWindow(
+        settings_path=path,
+        services=services,
+        ptz=WedgedPtz(wedges["ptz"]),
+        radio=radio,
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+    try:
+        assert "link checking" in window.status_text()
+    finally:
+        for wedge in wedges.values():
+            wedge.released.set()
+        radio.close()
+
+
+def test_a_link_reading_that_has_gone_stale_says_how_old_it_is() -> None:
+    """Never a stale value presented as current."""
+    fresh = ConsoleWindow._link_words({"signal_dbm": -63, "age_seconds": 2.0})
+    stale = ConsoleWindow._link_words({"signal_dbm": -63, "age_seconds": 41.0})
+    assert fresh == "link -63 dBm"
+    assert "41" in stale and "ago" in stale

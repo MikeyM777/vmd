@@ -2027,3 +2027,162 @@ def test_a_start_time_left_over_from_an_earlier_child_is_ignored(tmp_path: Path)
     recorder.start()
 
     assert spawned == [], "an unrelated note must read as unverified, not as wrong"
+
+
+# -------------------------------------- asking about an adopted child's PID
+#
+# A child adopted from an earlier console is a PID and nothing else, and on
+# Windows the only way to ask about a PID is to shell out to `tasklist` - about
+# 150 ms. That was paid on the GUI thread, on every heartbeat, for every adopted
+# child, via `running` -> `state()` -> the status line. Every wait below is
+# bounded independently of the code under test, so a regression fails rather
+# than hangs.
+
+LIVENESS_PATIENCE = 10.0
+LIVENESS_CEILING = 5.0
+
+
+def wait_until(predicate, timeout: float = LIVENESS_PATIENCE) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+class WedgedLiveness:
+    """A `tasklist` that answers once and then stops coming back.
+
+    Once, because adoption checks the PID synchronously before it will adopt at
+    all - a machine where that never answered would never adopt anything, which
+    is a different test. What is being measured is the heartbeat afterwards.
+    """
+
+    def __init__(self, answer: bool = True) -> None:
+        self.answer = answer
+        self.calls = 0
+        self.entered = threading.Event()
+        self.released = threading.Event()
+
+    def __call__(self, pid: int) -> bool:
+        self.calls += 1
+        if self.calls == 1:
+            return self.answer
+        self.entered.set()
+        self.released.wait(LIVENESS_CEILING)
+        return self.answer
+
+
+def adopted_recorder(tmp_path: Path, alive) -> RecorderProcess:
+    pid_path = tmp_path / "recorder.pid"
+    pid_path.write_text("4242", encoding="utf-8")
+    return RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_path,
+        spawn=lambda command: FakeProcess(),
+        kill_tree=lambda pid: True,
+        alive=alive,
+    )
+
+
+def test_asking_whether_an_adopted_child_is_there_does_not_block(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Every call asks again, so nothing here is answered out of a cache that
+    # happens to be fresh - the point is that asking costs the caller nothing.
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.0)
+    wedged = WedgedLiveness()
+    recorder = adopted_recorder(tmp_path, wedged)
+    recorder.start()
+    assert recorder.running is True, "the live process should be adopted"
+    try:
+        started = time.monotonic()
+        for _ in range(20):  # forty seconds of heartbeats
+            assert recorder.running is True
+        elapsed = time.monotonic() - started
+    finally:
+        wedged.released.set()
+        recorder.stop()
+    assert elapsed < 0.5, f"twenty heartbeats cost {elapsed:.2f} s asking about a PID"
+
+
+def test_only_one_question_about_a_pid_is_ever_outstanding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.0)
+    wedged = WedgedLiveness()
+    recorder = adopted_recorder(tmp_path, wedged)
+    recorder.start()
+    try:
+        for _ in range(20):
+            assert recorder.running is True
+        assert wedged.entered.wait(LIVENESS_PATIENCE)
+        time.sleep(0.2)
+        assert wedged.calls == 2, (
+            f"{wedged.calls - 1} process listings were started at once"
+        )
+    finally:
+        wedged.released.set()
+        recorder.stop()
+
+
+def test_an_adopted_child_that_has_gone_is_noticed(tmp_path: Path, monkeypatch) -> None:
+    """Off-thread must not mean never: a recorder that died has to be restarted."""
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.05)
+    living = {4242}
+    recorder = adopted_recorder(tmp_path, lambda pid: pid in living)
+    recorder.start()
+    assert recorder.running is True
+    living.clear()
+    assert wait_until(lambda: recorder.running is False), "a dead child was never noticed"
+
+
+def test_a_pid_check_that_never_answers_is_not_reported_as_recording(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The last answer, repeated for ever, is the console inventing health."""
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.0)
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_UNANSWERED_SECONDS", 0.2)
+    wedged = WedgedLiveness()
+    recorder = adopted_recorder(tmp_path, wedged)
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=tmp_path / "settings.json",
+        streaming=None,
+        recorder=recorder,
+    )
+    services.start()
+    try:
+        assert wait_until(
+            lambda: "not been answered" in services.recording_state()["reason"]
+        ), services.recording_state()["reason"]
+    finally:
+        wedged.released.set()
+        recorder.stop()
+
+
+def test_a_pid_that_cannot_be_asked_about_is_read_as_still_there(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The two ways of being wrong are not symmetrical: believing a live
+    recorder is gone starts a second one on the same directory and the same
+    index, which is the collision adoption exists to prevent."""
+    monkeypatch.setattr("vmd.desktop.services.LIVENESS_SECONDS", 0.0)
+    calls = {"n": 0}
+
+    def unanswerable(pid: int) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return True
+        raise OSError("the process list could not be read")
+
+    recorder = adopted_recorder(tmp_path, unanswerable)
+    recorder.start()
+
+    def asked_again() -> bool:
+        recorder.running  # asking is what starts the next read  # noqa: B018
+        return calls["n"] > 1
+
+    assert wait_until(asked_again)
+    assert recorder.running is True

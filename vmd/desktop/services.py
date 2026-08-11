@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from vmd.background import BackgroundValue
 from vmd.desktop.disk import DiskWatcher
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
@@ -38,6 +39,19 @@ READER_STOP_SECONDS = 2.0
 # it runs on the GUI thread while the operator waits for a Save to finish, and
 # because taskkill /F has already returned by the time it is checked at all.
 ADOPTED_STOP_SECONDS = 2.0
+
+# How often "is that adopted child still there?" is asked again. Asking costs a
+# `tasklist`, which is about 150 ms, and it used to be paid on the GUI thread
+# every time the status line was drawn - which is every heartbeat, for every
+# adopted child. One heartbeat's worth of staleness is the most the answer can
+# be behind, which for a question whose answer changes at most once is nothing.
+LIVENESS_SECONDS = 2.0
+
+# And how old that answer may get before the console stops implying it knows.
+# Several heartbeats: a `tasklist` that has not come back in this long is a
+# machine in trouble, and reporting a child as running on the strength of a
+# check from a quarter of a minute ago is the console inventing health.
+LIVENESS_UNANSWERED_SECONDS = 15.0
 
 # How far the start time recorded in a PID file may differ from the one the
 # operating system reports before the process is treated as a stranger. A second
@@ -334,6 +348,9 @@ class ChildProcess:
         self._alive = alive or _pid_alive
         self._process: subprocess.Popen | None = None
         self._adopted_pid: int | None = None
+        # Whether that adopted PID is still alive, kept off the GUI thread. See
+        # `_watch_adopted`; None whenever nothing has been adopted.
+        self._adopted_alive: BackgroundValue[bool] | None = None
         self._output_thread: threading.Thread | None = None
         # Its own name in the Logs tab, exactly as go2rtc has one, so a line
         # from the recorder is distinguishable from a line about the recorder.
@@ -346,11 +363,58 @@ class ChildProcess:
 
     @property
     def running(self) -> bool:
+        """Whether this child is up. Never waits for the operating system.
+
+        A child this console spawned is a poll() away. An adopted one is a PID
+        and nothing else, and on Windows the only way to ask about a PID is to
+        shell out to `tasklist` - about 150 ms, paid on the GUI thread, on every
+        heartbeat, for every adopted child. So that question is asked on a
+        thread of its own and this answers from what it last said.
+
+        An unanswerable question is deliberately read as "still there". The two
+        ways of being wrong are not symmetrical: believing a live recorder is
+        gone starts a second one on the same directory and the same index, which
+        is the collision adoption exists to prevent.
+        """
         if self._process is not None:
             return self._process.poll() is None
-        if self._adopted_pid is not None:
+        if self._adopted_pid is None:
+            return False
+        watch = self._adopted_alive
+        if watch is None:  # pragma: no cover - adoption always sets one up
             return self._alive(self._adopted_pid)
-        return False
+        reading = watch.get()
+        return True if reading.value is None else bool(reading.value)
+
+    def liveness_age(self) -> float | None:
+        """How long ago it was last confirmed that an adopted child is there.
+
+        None when there is nothing adopted to ask about - which is the ordinary
+        case, and is not the same as "nobody has checked".
+        """
+        watch = self._adopted_alive
+        if self._process is not None or self._adopted_pid is None or watch is None:
+            return None
+        return watch.get().age
+
+    def _watch_adopted(self, pid: int) -> None:
+        """Start asking, off-thread, whether that PID is still there.
+
+        Seeded true: the caller has just checked it synchronously, once, which
+        is a reading and not a guess.
+        """
+        self._forget_adopted()
+        self._adopted_alive = BackgroundValue(
+            read=lambda: self._alive(pid),
+            stale_after=LIVENESS_SECONDS,
+            name=f"whether the adopted {self.label} is still running",
+            seed=True,
+        )
+
+    def _forget_adopted(self) -> None:
+        watch, self._adopted_alive = self._adopted_alive, None
+        if watch is not None:
+            watch.close()
 
     def start(self) -> None:
         if self.running:
@@ -360,9 +424,11 @@ class ChildProcess:
         if adopted is not None and self._alive(adopted) and self._is_ours(adopted, recorded_start):
             logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
             self._adopted_pid = adopted
+            self._watch_adopted(adopted)
             self._announce_adoption(adopted)
             return
         self._adopted_pid = None
+        self._forget_adopted()
 
         command = [
             sys.executable,
@@ -646,6 +712,7 @@ class ChildProcess:
             pid = self._adopted_pid
             if not force:
                 self._adopted_pid = None
+                self._forget_adopted()
                 return
             logger.warning(
                 "stopping the adopted %s (pid %s), because the settings it was "
@@ -674,6 +741,7 @@ class ChildProcess:
                 )
                 return
             self._adopted_pid = None
+            self._forget_adopted()
             return
         process = self._process
         if process is None:
@@ -1296,6 +1364,21 @@ class ConsoleServices:
                 "running": False,
                 "restarts": restarts,
                 "reason": "NOT recording - restarting it",
+            }
+
+        # An adopted recorder is a PID and nothing else, and asking about a PID
+        # is now done off this thread. A check that has not come back in a
+        # quarter of a minute is a machine in trouble, and repeating its last
+        # answer as though it were current is the console inventing health.
+        age = self.recorder.liveness_age()
+        if age is not None and age >= LIVENESS_UNANSWERED_SECONDS:
+            return {
+                "running": True,
+                "restarts": restarts,
+                "reason": (
+                    f"recording - but whether the recorder is still there has "
+                    f"not been answered for {age:.0f} s"
+                ),
             }
 
         reading = self.disk.reading

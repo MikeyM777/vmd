@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_MS = 2000
 
+# How old a link reading may be before the status line says how old it is. The
+# radio is asked every four seconds and an unreachable one takes about twelve to
+# answer, so anything inside that is the ordinary rhythm of a link that is up.
+# Past it, the number on screen is a number from a while ago, and saying so is
+# the difference between "the link is at -63 dBm" and "the link was".
+LINK_STALE_SECONDS = 15.0
+
 
 class ConsoleWindow(QMainWindow):
     def __init__(
@@ -287,10 +294,30 @@ class ConsoleWindow(QMainWindow):
             logger.exception("the radio could not be asked about the link")
             parts.append("link unknown")
         else:
-            signal = link.get("signal_dbm")
-            parts.append(f"link {signal} dBm" if signal is not None else "link -")
+            parts.append(self._link_words(link))
 
         return " · ".join(parts)
+
+    @staticmethod
+    def _link_words(link: dict) -> str:
+        """The link, in the state it is actually in.
+
+        Four states, not two. The radio is read on a thread of its own now -
+        asking it costs about 12 s when it is unreachable, and the window may
+        not stop repainting for that - so the answer here can be a reading
+        nobody has managed to take yet, or one taken a while ago. Neither may be
+        shown as though it were the state of the link now: an operator who reads
+        a signal figure believes the link was up when they read it.
+        """
+        if link.get("checking"):
+            return "link checking"
+        signal = link.get("signal_dbm")
+        if signal is None:
+            return "link -"
+        age = link.get("age_seconds")
+        if isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS:
+            return f"link {signal} dBm ({age:.0f} s ago)"
+        return f"link {signal} dBm"
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Close the window. Deliberately does not stop the children: recording
@@ -307,6 +334,14 @@ class ConsoleWindow(QMainWindow):
                 shutdown()
             except Exception:  # noqa: BLE001 - closing must not fail a close
                 logger.exception("the camera would not be brought to rest")
+        # The radio is read on a thread of its own; let it go rather than leave
+        # it logging in behind a console nobody is looking at.
+        close_radio = getattr(self._radio, "close", None)
+        if close_radio is not None:
+            try:
+                close_radio()
+            except Exception:  # noqa: BLE001 - closing must not fail a close
+                logger.exception("the radio reader would not close")
         if self._index is not None:
             try:
                 self._index.close()

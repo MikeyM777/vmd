@@ -119,13 +119,47 @@ def test_an_unreachable_radio_is_a_sentence_not_a_crash() -> None:
     assert "cannot reach" in str(caught.value)
 
 
-def test_the_service_never_raises(radio: str) -> None:
-    service = RadioService(
-        Settings(radio=RadioSettings(host="192.0.2.99:8", username=USER, password=PASSWORD, enabled=True))
+# -------------------------------------------------- the reading, off the thread
+#
+# The reading used to be taken on whatever thread called status(), which in the
+# console is the thread that draws the window, on a two-second heartbeat. An
+# unreachable radio costs about 12 s of login timeouts before it says so, and
+# nothing repainted while it did - so the console went blind at exactly the
+# moment the link had dropped. Every wait below is bounded independently of the
+# service, so a regression fails the test rather than hanging the suite.
+
+PATIENCE = 15.0
+WEDGE_CEILING = 5.0
+
+
+def until(predicate, timeout: float = PATIENCE) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+def service_for(host: str) -> RadioService:
+    return RadioService(
+        Settings(
+            radio=RadioSettings(host=host, username=USER, password=PASSWORD, enabled=True)
+        )
     )
-    status = service.status()
-    assert status["connected"] is False
-    assert status["reason"]
+
+
+def test_the_service_never_raises(radio: str) -> None:
+    service = service_for("192.0.2.99:8")
+    try:
+        assert until(lambda: service.status().get("checking") is not True)
+        status = service.status()
+        assert status["connected"] is False
+        assert status["reason"]
+    finally:
+        service.close()
 
 
 def test_a_radio_that_is_not_set_up_says_so() -> None:
@@ -134,51 +168,119 @@ def test_a_radio_that_is_not_set_up_says_so() -> None:
     assert "not set up" in service.status()["reason"]
 
 
-def test_the_reading_is_cached_so_every_page_does_not_log_in(radio: str) -> None:
-    service = RadioService(
-        Settings(radio=RadioSettings(host=radio, username=USER, password=PASSWORD, enabled=True))
+def test_it_reads_the_link_without_the_caller_waiting(radio: str) -> None:
+    service = service_for(radio)
+    try:
+        assert until(lambda: service.status().get("connected") is True)
+        assert service.status()["signal_dbm"] == -63
+    finally:
+        service.close()
+
+
+def test_the_reading_is_cached_so_every_heartbeat_does_not_log_in(radio: str) -> None:
+    service = service_for(radio)
+    try:
+        assert until(lambda: service.status().get("connected") is True)
+        # Inside the window it must not touch the radio at all, so a radio that
+        # has started refusing logins cannot change the answer yet.
+        FakeRadio.logged_in = False
+        FakeRadio.accept_login = False
+        for _ in range(20):
+            assert service.status()["connected"] is True
+        # Past the window it goes back to the radio and reports the new failure.
+        assert until(lambda: service.status().get("connected") is False)
+    finally:
+        service.close()
+
+
+def test_a_radio_that_has_not_answered_yet_says_checking_rather_than_nothing() -> None:
+    """A blank reads as "the radio has nothing to report", which is what this
+    console says when the link is fine. It must not be what it says when it has
+    not managed to ask."""
+    wedged = WedgedRadio()
+    service = _service_around(wedged)
+    try:
+        status = service.status()
+        assert status["checking"] is True
+        assert "checking" in status["reason"]
+        assert status["connected"] is False
+    finally:
+        wedged.released.set()
+        service.close()
+
+
+def test_reading_the_radio_does_not_hold_up_the_caller() -> None:
+    import time
+
+    wedged = WedgedRadio()
+    service = _service_around(wedged)
+    try:
+        started = time.monotonic()
+        for _ in range(10):  # twenty seconds of heartbeats
+            service.status()
+        elapsed = time.monotonic() - started
+    finally:
+        wedged.released.set()
+        service.close()
+    assert elapsed < 0.5, f"ten heartbeats cost {elapsed:.2f} s on a wedged radio"
+
+
+def test_a_slow_reading_is_not_started_again_on_every_call() -> None:
+    """A radio that is not answering costs both login timeouts before it says
+    so - longer than the cache window. A cache stamped with the time the read
+    started is expired the moment it is written, so every caller starts another
+    one, and one slow answer becomes a permanent stream of them."""
+    wedged = WedgedRadio()
+    service = _service_around(wedged)
+    try:
+        for _ in range(20):
+            service.status()
+        assert wedged.entered.wait(PATIENCE)
+        import time
+
+        time.sleep(0.2)  # longer than nothing, well inside the wedge
+        assert wedged.calls == 1, f"{wedged.calls} logins were started at once"
+    finally:
+        wedged.released.set()
+        service.close()
+
+
+def test_a_reading_that_has_gone_stale_carries_its_age(radio: str) -> None:
+    """Never a stale value presented as current."""
+    service = service_for(radio)
+    try:
+        assert until(lambda: service.status().get("connected") is True)
+        assert service.status()["age_seconds"] >= 0.0
+    finally:
+        service.close()
+
+
+class WedgedRadio:
+    """A radio that does not answer until the test lets it."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.released = threading.Event()
+        self.calls = 0
+
+    def status(self):
+        self.calls += 1
+        self.entered.set()
+        self.released.wait(WEDGE_CEILING)
+        raise RadioError("cannot reach 10.0.0.9")
+
+
+def _service_around(radio_object) -> RadioService:
+    """A service whose radio is the object handed in, wired the way apply does."""
+    from vmd.background import BackgroundValue
+    from vmd.radio.service import CACHE_SECONDS, _reader
+
+    service = RadioService(Settings())
+    service.radio = radio_object
+    service._reading = BackgroundValue(
+        read=_reader(radio_object), stale_after=CACHE_SECONDS, name="the radio"
     )
-    first = service.status(now=100.0)
-    assert first["connected"] is True
-    # A second read inside the cache window must not touch the radio at all.
-    FakeRadio.logged_in = False
-    FakeRadio.accept_login = False
-    assert service.status(now=101.0) == first
-    # Past the window it goes back to the radio, and reports the new failure.
-    assert service.status(now=200.0)["connected"] is False
-
-
-def test_a_slow_reading_is_still_cached(monkeypatch) -> None:
-    """A read that takes longer than the cache window must still be cached.
-
-    A radio that is not answering costs both login attempts' timeouts before it
-    says so. The console asks for this on its heartbeat, on the thread that
-    draws the window, so a cache stamped with the time the read *started* is
-    already stale when it is written: every heartbeat then makes the same
-    blocking call again and the window stops repainting for as long as the link
-    is down. Nothing here touches a radio or a clock that can move on its own.
-    """
-    ticks = [0.0]
-    monkeypatch.setattr("vmd.radio.service.time.monotonic", lambda: ticks[0])
-
-    class SlowRadio:
-        calls = 0
-
-        def status(self):
-            SlowRadio.calls += 1
-            ticks[0] += 12.0  # both login timeouts, far past CACHE_SECONDS
-            raise RadioError("cannot reach 10.0.0.9")
-
-    service = RadioService(
-        Settings(radio=RadioSettings(host="10.0.0.9", username=USER, password=PASSWORD, enabled=True))
-    )
-    service.radio = SlowRadio()
-
-    first = service.status()
-    assert first["connected"] is False
-    second = service.status()
-    assert second == first
-    assert SlowRadio.calls == 1, "the slow reading was not cached, so the console blocks again"
+    return service
 
 
 def test_the_radio_is_never_reached_through_a_proxy(monkeypatch) -> None:
