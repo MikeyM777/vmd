@@ -7,12 +7,34 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
 from vmd.storage.discovery import SEGMENT_FORMAT
 
 RTSP_SCHEMES = ("rtsp://", "rtsps://")
+
+# How many ffmpegs that never got as far as running may be started for one
+# stream inside this window before the recorder stops starting it.
+#
+# From the deployment laptop: 24 files of zero bytes, one every five seconds -
+# the supervision interval, not the segment length - each one an ffmpeg that
+# exited before it wrote a header. Restarting something two dozen times while it
+# fails identically every time is not supervision, and it buries the one line
+# that says why under a fresh copy of itself every pass.
+#
+# Bounded by a window rather than latched, so that giving up is never permanent:
+# a camera whose firmware is changed, or a folder that becomes writable again,
+# comes back on its own.
+RESTART_WINDOW_SECONDS = 120.0
+RESTART_LIMIT = 5
+
+# The longest a single ffmpeg's stderr may contribute to the log in one pass.
+# ffmpeg does not normally write a great deal at `-loglevel error`, but a stream
+# that is failing on every frame can, and the Logs tab holds five hundred lines.
+LOG_TAIL_BYTES = 8192
+LOG_TAIL_LINES = 10
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +110,7 @@ class SegmentRecorder:
         segment_seconds: int = 300,
         ffmpeg: str | None = None,
         spawn: Callable[..., object] = _default_spawn,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.stream = stream
         self.source_url = source_url
@@ -99,6 +122,19 @@ class SegmentRecorder:
         self._spawn = spawn
         self._process = None
         self._exit_code: int | None = None
+        self._clock = clock or time.monotonic
+        # When each ffmpeg that never got as far as being seen alive was
+        # started; see `held_back`.
+        self._stillbirths: list[float] = []
+        # Whether the ffmpeg now held has ever been seen running. An ffmpeg that
+        # was already gone the first time it was asked never started at all -
+        # which is a different fault from a stream that recorded for an hour and
+        # dropped, and only one of the two is worth retrying every five seconds.
+        self._seen_running = False
+        self._said_held_back = False
+        # How much of ffmpeg's stderr has already been passed on; see
+        # `new_log_lines`.
+        self._log_offset = 0
 
     def build_command(self) -> list[str]:
         command = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -116,7 +152,28 @@ class SegmentRecorder:
             command += ["-re"]
         command += [
             "-i", self.source_url,
-            "-c", "copy",
+            # The video, named rather than assumed, and nothing else.
+            #
+            # `-c copy` copied whatever the source offered, and what this camera
+            # offers is pcm_mulaw audio. MP4 cannot carry it: ffmpeg writes
+            # "Could not find tag for codec pcm_mulaw", refuses the header, and
+            # exits before the first frame. Every five seconds, for a whole day,
+            # leaving 24 files of zero bytes and a console that said "recording".
+            #
+            # Nobody has ever listened to that audio. The video panes pass
+            # --no-audio to libVLC - "never listened to: one less decode, one
+            # less failure" - and this is the same position, held one process
+            # along, where it costs the archive rather than a decode.
+            #
+            # Explicit about the stream it wants as well as the ones it does
+            # not, so the next thing a camera offers that MP4 cannot hold is a
+            # message about a stream that was asked for rather than a silent
+            # loop: `-map 0:v:0` names the first video stream, and a source with
+            # no video at all fails with "matches no streams" instead of
+            # recording an empty container.
+            "-map", "0:v:0",
+            "-c:v", "copy",
+            "-an",
             "-f", "segment",
             "-segment_time", str(self.segment_seconds),
             "-segment_format", "mp4",
@@ -131,10 +188,80 @@ class SegmentRecorder:
         """Where ffmpeg's stderr is appended. Beside the segment directory, not in it."""
         return self.output_dir.parent / f"{self.stream}.ffmpeg.log"
 
+    def new_log_lines(self) -> list[str]:
+        """Whatever ffmpeg has written to its log since this was last asked.
+
+        Its stderr goes to a file rather than to a pipe, and must go on doing
+        so: a pipe nobody reads fills its buffer and blocks ffmpeg for ever,
+        leaving a wedged process that still reports as running. But that file
+        reached nobody. The one explanation of a total failure of recording -
+        "Could not write header (incorrect codec parameters ?)" - sat on the
+        laptop for a whole day while the console said "recording", because
+        nothing ever read it back.
+
+        The file is truncated by every start, so a size smaller than what has
+        already been read means a fresh run rather than an impossible rewind.
+        Bounded at both ends: only the tail of a large file is read, and only
+        the last few lines of that are returned, because this ends up in a
+        500-line ring the operator reads on a laptop.
+        """
+        try:
+            size = self.log_path.stat().st_size
+        except OSError:
+            return []
+        if size < self._log_offset:
+            self._log_offset = 0  # truncated: this is a new run's stderr
+        if size <= self._log_offset:
+            return []
+        start = max(self._log_offset, size - LOG_TAIL_BYTES)
+        try:
+            with open(self.log_path, "rb") as handle:
+                handle.seek(start)
+                data = handle.read(size - start)
+        except OSError:
+            return []
+        self._log_offset = size
+        lines = [
+            line.strip()
+            for line in data.decode("utf-8", "replace").splitlines()
+            if line.strip()
+        ]
+        return lines[-LOG_TAIL_LINES:]
+
+    @property
+    def held_back(self) -> bool:
+        """Has ffmpeg failed to start so often, so recently, that starting it
+        again is no longer worth doing? See RESTART_LIMIT.
+
+        Only runs that were never seen alive count. A stream that recorded for
+        an hour and then dropped is the ordinary life of a radio link and must
+        be restarted every time; one that is dead every time it is looked at has
+        something wrong with it that another attempt will not fix.
+        """
+        cutoff = self._clock() - RESTART_WINDOW_SECONDS
+        self._stillbirths = [at for at in self._stillbirths if at >= cutoff]
+        return len(self._stillbirths) >= RESTART_LIMIT
+
     def start(self) -> None:
         if self.running:
             return
+        if self.held_back:
+            if not self._said_held_back:
+                self._said_held_back = True
+                logger.error(
+                    "ffmpeg for %s has exited before it recorded anything %d "
+                    "times in the last %.0f minutes, so it is not being started "
+                    "again until that has quietened down. It said: %s",
+                    self.stream,
+                    len(self._stillbirths),
+                    RESTART_WINDOW_SECONDS / 60.0,
+                    " | ".join(self.new_log_lines()) or "nothing",
+                )
+            return
+        self._said_held_back = False
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._seen_running = False
+        self._started_at = self._clock()
         self._process = self._spawn(self.build_command(), self.log_path)
 
     def stop(self) -> None:
@@ -170,8 +297,15 @@ class SegmentRecorder:
             return False
         code = self._process.poll()
         if code is None:
+            self._seen_running = True
             return True
         self._exit_code = code
+        if not self._seen_running:
+            # It was already gone the first time anyone looked, so it never
+            # recorded a frame. Counted once - `_seen_running` is only reset by
+            # the next start - and it is what `held_back` is measured on.
+            self._seen_running = True
+            self._stillbirths.append(self._clock())
         return False
 
     @property

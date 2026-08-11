@@ -454,6 +454,8 @@ class RecordingService:
             self._last_retention = 0.0
             self._stuck_deletions = 0
             self._stall_restarts = 0
+            self._empty_segments = 0
+            self._empty_seen: set[str] = set()
             self._stage_failures: dict[str, int] = {}
             self._adopt_orphans()
         except Exception:
@@ -488,6 +490,10 @@ class RecordingService:
         )
         self._last_segment_at = {}
         self._started_at = {}
+        # The last thing said on behalf of each stream, so an ffmpeg that fails
+        # the same way every five seconds is reported once. Cleared with the
+        # recorders, because a fresh recorder's first complaint is news again.
+        self._last_ffmpeg_line: dict[str, str] = {}
 
     def _settings_timestamp(self) -> int | None:
         """When the settings file was last written, or None if there is no file."""
@@ -573,9 +579,83 @@ class RecordingService:
         for recorder in self.recorders:
             self._started_at.setdefault(recorder.stream, now)
         self._stage("supervisor", self.supervisor.tick)
+        self._stage("ffmpeg's own words", self._repeat_what_ffmpeg_said)
+        self._stage("empty segments", self._notice_empty_segments)
         self._stage("indexing", self._index_new_segments, now)
         self._stage("stall check", self._restart_stalled, now)
         self._stage("retention", self._apply_retention, now)
+
+    def _repeat_what_ffmpeg_said(self) -> None:
+        """Put ffmpeg's stderr where the operator can read it.
+
+        This process's own output is pumped into the console's Logs tab, which
+        on that laptop is the only place anything can be read at all. ffmpeg's
+        went to a file beside the recordings and stayed there: when the camera
+        turned out to be sending audio MP4 cannot carry, the two lines that said
+        so exactly - "Could not find tag for codec pcm_mulaw" and "Could not
+        write header" - sat in recordings\\thermal.ffmpeg.log for a whole day
+        while the console reported that it was recording.
+
+        The same line is not repeated: an ffmpeg restarted every five seconds
+        writes the same complaint every five seconds, and five hundred lines of
+        one sentence is the same as no log at all.
+        """
+        for recorder in self.recorders:
+            for line in recorder.new_log_lines():
+                if self._last_ffmpeg_line.get(recorder.stream) == line:
+                    continue
+                self._last_ffmpeg_line[recorder.stream] = line
+                logger.error("%s: ffmpeg: %s", recorder.stream, line)
+
+    def _notice_empty_segments(self) -> None:
+        """Say when files are being written that contain nothing.
+
+        Nothing was indexing these - `find_closed_segments` skips a zero-byte
+        file, and so do the final pass, the orphan sweep and the console's disk
+        reading - which is right, and left the machine in the worst state a
+        fault can reach: 24 files appeared in the recording folder in four
+        minutes, every one of them empty, and nothing anywhere said a word. The
+        console read the folder, found no footage, and reported "NOT recording -
+        nothing has ever been written", which is true and does not say that the
+        recorder is trying every five seconds and failing.
+
+        A file of zero bytes that has a newer file beside it is the signal, and
+        it is not ambiguous: ffmpeg opened it, wrote no header, and moved on.
+        The file ffmpeg currently holds is never counted - on Windows its size
+        in the directory entry stays zero until the handle is closed, so the
+        newest file being empty is the ordinary state of a healthy recorder.
+        """
+        for recorder in self.recorders:
+            try:
+                files = sorted(
+                    (path.stat().st_mtime, path)
+                    for path in recorder.output_dir.glob("*.mp4")
+                )
+            except OSError:
+                continue
+            for _mtime, path in files[:-1]:
+                key = str(path)
+                if key in self._empty_seen:
+                    continue
+                try:
+                    if path.stat().st_size != 0:
+                        continue
+                except OSError:
+                    continue
+                self._empty_seen.add(key)
+                self._empty_segments += 1
+                # Loud the first few times, then rare: this is one line per
+                # broken segment and the Logs tab holds five hundred.
+                if self._empty_segments <= 3 or self._empty_segments % 100 == 0:
+                    logger.error(
+                        "%s: %s was opened and nothing was ever written to it "
+                        "(%d such files so far), so it is not footage and is not "
+                        "indexed. ffmpeg is exiting before it records anything - "
+                        "its own words are in the lines above",
+                        recorder.stream,
+                        path.name,
+                        self._empty_segments,
+                    )
 
     def _stage(self, name: str, work, *args) -> None:
         try:
@@ -632,6 +712,11 @@ class RecordingService:
                 "name": r.stream,
                 "running": r.running,
                 "stalled": r.stream in stalled,
+                # An ffmpeg that exits before it records anything is stopped
+                # rather than started every five seconds for ever, and a stream
+                # in that state is broken rather than merely down: nothing will
+                # start it until whatever is wrong with it changes.
+                "held_back": r.held_back,
                 "restarts": self.supervisor.restarts.get(r.stream, 0),
                 "exit_code": r.exit_code,
             }
@@ -647,8 +732,12 @@ class RecordingService:
             # trustworthy on its own.
             "healthy": (
                 bool(streams)
-                and all(s["running"] and not s["stalled"] for s in streams)
+                and all(
+                    s["running"] and not s["stalled"] and not s["held_back"]
+                    for s in streams
+                )
                 and not self._stuck_deletions
+                and not self._empty_segments
             ),
             "segments": len(segments),
             "used_bytes": used,
@@ -657,6 +746,7 @@ class RecordingService:
             "warning": self._last_warning,
             "stuck_deletions": self._stuck_deletions,
             "stall_restarts": self._stall_restarts,
+            "empty_segments": self._empty_segments,
             "restarts": dict(self.supervisor.restarts),
         }
 

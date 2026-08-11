@@ -183,10 +183,17 @@ def source_for(stream, username: str, password: str) -> str:
     Copied, never re-encoded: the point is a more forgiving reader, not a
     different picture, and transcoding a 4K stream would cost more than it
     saves.
+
+    The video and nothing else. Nothing on this machine has ever listened to the
+    camera's audio: the panes pass --no-audio to libVLC and the recorder passes
+    -an to ffmpeg, because the camera sends pcm_mulaw, which is what MP4 could
+    not carry and what stopped recording for a day. Asking for it here would
+    pull a track across a radio link with five megabits on it so that both ends
+    could throw it away.
     """
     url = with_credentials(stream.url, username, password)
     if getattr(stream, "reader", "auto") == "ffmpeg" and url.startswith(("rtsp://", "rtsps://")):
-        return f"ffmpeg:{url}#video=copy#audio=copy"
+        return f"ffmpeg:{url}#video=copy"
     return url
 
 

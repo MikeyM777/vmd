@@ -16,7 +16,13 @@ import pytest
 from pydantic import ValidationError
 
 from vmd.settings import CameraSettings, Settings, StreamSettings
-from vmd.streaming.go2rtc import Go2rtcService, build_config, find_binary, write_config
+from vmd.streaming.go2rtc import (
+    Go2rtcService,
+    build_config,
+    find_binary,
+    source_for,
+    write_config,
+)
 
 
 class FakeProcess:
@@ -910,3 +916,22 @@ def test_replacing_a_ghost_nobody_can_name_still_leaves_a_picture(tmp_path: Path
 
     assert len(spawned) == 1
     assert svc.running is True
+
+
+def test_the_ffmpeg_reader_does_not_pull_audio_across_the_link(tmp_path: Path) -> None:
+    """Nothing on this machine has ever listened to the camera's audio.
+
+    The panes pass --no-audio to libVLC and the recorder now passes -an to
+    ffmpeg, and this is the third place the same decision belongs: a source
+    string that says `#audio=copy` has go2rtc pull an audio track over a radio
+    link with five megabits on it, decode nothing with it, and hand it to a
+    recorder that throws it away.
+    """
+    stream = StreamSettings(name="thermal", url="rtsp://cam/thermal", enabled=True)
+    stream.reader = "ffmpeg"
+
+    source = source_for(stream, "root", "secret")
+
+    assert source.startswith("ffmpeg:")
+    assert "#video=copy" in source
+    assert "audio" not in source, source

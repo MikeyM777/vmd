@@ -40,10 +40,12 @@ def build(tmp_path, url="rtsp://example/stream", processes=None):
 
 
 def test_command_copies_without_reencoding(tmp_path):
+    """Copied, never re-encoded: this laptop cannot transcode four streams, and
+    the picture the camera sends is the picture worth keeping. The codec is
+    named per stream now - see the audio section at the end of this file."""
     recorder, _ = build(tmp_path)
     command = recorder.build_command()
-    assert "-c" in command
-    assert command[command.index("-c") + 1] == "copy"
+    assert command[command.index("-c:v") + 1] == "copy"
     assert "libx264" not in command
 
 
@@ -251,3 +253,145 @@ def test_the_recorder_runs_the_binary_it_resolved(tmp_path, monkeypatch):
     monkeypatch.setattr(recorder_module, "find_ffmpeg", lambda: r"C:\VMD\bin\ffmpeg.exe")
     recorder = SegmentRecorder("thermal", "rtsp://cam/t", tmp_path)
     assert recorder.build_command()[0] == r"C:\VMD\bin\ffmpeg.exe"
+
+
+# ------------------------------------------------- the audio nobody listens to
+#
+# From the deployment laptop, in recordings\thermal.ffmpeg.log, after a day of a
+# console that said it was recording:
+#
+#   [mp4 @ ...] Could not find tag for codec pcm_mulaw in stream #1, codec not
+#       currently supported in container
+#   [out#0/segment @ ...] Could not write header (incorrect codec parameters ?):
+#       Invalid argument
+#
+# and 24 files of zero bytes, one every five seconds - the supervision interval,
+# not the segment length. The camera sends pcm_mulaw audio, MP4 cannot carry it,
+# and `-c copy` copied everything the source offered. Nothing on this machine
+# has ever listened to that audio: the video panes pass --no-audio to libVLC
+# with the note "never listened to: one less decode, one less failure", and the
+# recorder should have held the same position.
+
+
+def test_the_command_records_no_audio(tmp_path):
+    """The whole of the defect, in one flag."""
+    recorder, _ = build(tmp_path)
+    command = recorder.build_command()
+    assert "-an" in command, "audio is why recording produced nothing for a day"
+
+
+def test_the_command_says_which_stream_it_copies(tmp_path):
+    """Explicit, so the next thing the camera offers that MP4 cannot hold is a
+    message about a stream that was asked for rather than a silent loop."""
+    recorder, _ = build(tmp_path)
+    command = recorder.build_command()
+    assert "-map" in command
+    assert command[command.index("-map") + 1] == "0:v:0"
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert "libx264" not in command
+
+
+def test_what_ffmpeg_said_can_be_read_back_line_by_line(tmp_path):
+    """Its stderr goes to a file - a pipe nobody reads fills and wedges it - and
+    that file reached nobody. The one explanation of a total failure sat on the
+    laptop all day while the console said "recording"."""
+    recorder, _ = build(tmp_path)
+    recorder.log_path.parent.mkdir(parents=True, exist_ok=True)
+    recorder.log_path.write_bytes(b"Could not write header\nInvalid argument\n")
+
+    assert recorder.new_log_lines() == ["Could not write header", "Invalid argument"]
+    assert recorder.new_log_lines() == [], "the same lines must not be said twice"
+
+    recorder.log_path.write_bytes(b"a fresh run\n")  # truncated by the next start
+    assert recorder.new_log_lines() == ["a fresh run"]
+
+
+class Clock:
+    """A hand-wound clock, so no test here waits for real seconds."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class DeadOnArrival:
+    """An ffmpeg that exits before it has written anything."""
+
+    def poll(self):
+        return 1
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    def wait(self, timeout=None):
+        return 1
+
+
+def test_an_ffmpeg_that_dies_on_startup_stops_being_restarted(tmp_path):
+    """Restarting something 24 times in four minutes while it fails identically
+    every time is not supervision. The same rule the detector has had."""
+    clock = Clock()
+    spawned = []
+
+    def spawn(command, log_path=None):
+        spawned.append(command)
+        return DeadOnArrival()
+
+    recorder = SegmentRecorder(
+        stream="thermal",
+        source_url="rtsp://example/stream",
+        output_dir=tmp_path / "thermal",
+        segment_seconds=300,
+        spawn=spawn,
+        clock=clock,
+    )
+    for _ in range(20):
+        clock.advance(5.0)  # the recording service's own pass interval
+        if not recorder.running:
+            recorder.start()
+
+    assert len(spawned) <= recorder_module.RESTART_LIMIT, (
+        f"{len(spawned)} ffmpegs in {20 * 5} seconds, every one of them dead on "
+        "arrival"
+    )
+    assert recorder.held_back is True
+    assert recorder.running is False
+
+    # And giving up is not permanent: whatever is wrong may be fixed while
+    # nobody is watching, and a camera that starts working again must record.
+    clock.advance(recorder_module.RESTART_WINDOW_SECONDS + 1.0)
+    recorder.start()
+    assert len(spawned) == recorder_module.RESTART_LIMIT + 1
+
+
+def test_an_ffmpeg_that_ran_for_a_while_is_always_restarted(tmp_path):
+    """The other half, and the common case on a radio link: a stream that
+    connects, records, and drops an hour later must come back every time."""
+    clock = Clock()
+    spawned = []
+
+    def spawn(command, log_path=None):
+        spawned.append(command)
+        return DeadOnArrival()
+
+    recorder = SegmentRecorder(
+        stream="thermal",
+        source_url="rtsp://example/stream",
+        output_dir=tmp_path / "thermal",
+        segment_seconds=300,
+        spawn=spawn,
+        clock=clock,
+    )
+    for _ in range(10):
+        recorder.start()
+        clock.advance(600.0)  # it recorded for ten minutes, then the link dropped
+        assert recorder.running is False
+
+    assert len(spawned) == 10, "a stream that records must never stop being restarted"
+    assert recorder.held_back is False

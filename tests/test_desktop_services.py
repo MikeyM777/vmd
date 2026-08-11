@@ -2673,3 +2673,74 @@ def test_a_streaming_server_that_is_serving_these_streams_is_still_adopted(
     assert streaming.replaced == []
     assert streaming.started == 0, "a live streaming server must not be duplicated"
     assert services.adopted_streaming is True
+
+
+# --------------------------------------- the answer the recording light reads
+#
+# `state()["recording"]` drives an indicator the operator reads from across the
+# room, on a timer, for months. Two things are therefore required of it: that it
+# means footage is reaching the disk rather than a process having been alive
+# when it was asked - which is what recording_state() is for - and that asking
+# costs nothing, because the thread that asks is the thread that draws.
+
+
+def test_asking_whether_it_is_recording_never_waits_for_the_operating_system(
+    tmp_path: Path,
+) -> None:
+    """An adopted recorder is a PID, and asking about a PID on Windows means
+    shelling out to `tasklist` - about 150 ms. Paid per heartbeat that is the
+    window stuttering; paid per call it is a window that does not repaint.
+
+    The bound here is deliberately far looser than the thing it is measuring:
+    a `tasklist` per call would be twenty seconds, and this fails at one.
+    """
+    pid_file = tmp_path / "recorder.pid"
+    pid_file.write_text("4242", encoding="utf-8")
+    settings = settings_for(tmp_path)
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda c: FakeProcess(),
+        alive=lambda pid: (time.sleep(0.1), True)[1],  # a slow tasklist
+    )
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=tmp_path / "settings.json",
+        streaming=None,
+        recorder=recorder,
+        disk=watching(settings),
+    )
+    services.start()
+    assert recorder.running is True, "it should have adopted the live pid"
+
+    started = time.monotonic()
+    for _ in range(200):
+        assert services.state()["recording"] is True
+    spent = time.monotonic() - started
+
+    assert spent < 1.0, f"200 answers took {spent:.1f}s: the window would not repaint"
+
+
+def test_a_folder_of_empty_files_is_not_recording(tmp_path: Path) -> None:
+    """What the deployment laptop actually had: 24 files, all zero bytes.
+
+    ffmpeg was creating a segment, failing to write a header because the camera
+    sends audio MP4 cannot carry, and exiting - every five seconds, for a day.
+    A file that exists is not footage, and the indicator the operator reads from
+    across the room must not go green for one.
+    """
+    settings = settings_for(tmp_path)
+    directory = Path(settings.storage.root) / "thermal"
+    for path in directory.glob("*.mp4"):
+        path.unlink()
+    for name in ("2026-08-11_08-24-36.mp4", "2026-08-11_08-24-41.mp4"):
+        (directory / name).write_bytes(b"")
+
+    services = recording_console(tmp_path, settings)
+    services.start()
+    services.tick()
+
+    state = services.state()
+    assert services.recorder.running is True, "the process is alive; that is the trap"
+    assert state["recording"] is False
+    assert "not recording" in state["recording_state"]["reason"].lower()

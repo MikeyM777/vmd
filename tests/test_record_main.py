@@ -1338,3 +1338,77 @@ def test_an_orphan_directory_is_still_left_alone_while_a_recorder_owns_it(tmp_pa
         assert [s.path for s in service.index.all()] == []
     finally:
         service.stop()
+
+
+# ------------------------------- what an ffmpeg that never started leaves behind
+#
+# The camera sends pcm_mulaw audio, MP4 cannot carry it, and ffmpeg exited
+# before writing a header - 24 times in four minutes, leaving 24 files of zero
+# bytes. Two of the three failures here are about noticing: an empty file is not
+# a segment, and what ffmpeg said has to reach the one place the operator can
+# read it.
+
+
+def test_empty_segments_are_neither_indexed_nor_passed_over_in_silence(tmp_path, caplog):
+    """24 of these appeared on the laptop in four minutes and nothing said a word.
+
+    Not indexing them was always right - indexed, each would be offered by the
+    Playback timeline as coverage of a minute that was never recorded, and
+    counted by the storage budget as footage worth keeping - but it is also why
+    nothing noticed. A file of zero bytes with a newer file beside it is an
+    ffmpeg that opened it, wrote no header and moved on, and that is a fault to
+    report rather than a file to skip.
+    """
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once()
+    directory = tmp_path / "recordings" / "thermal"
+    # The newest file is the one ffmpeg would have open - on Windows its size
+    # reads as zero until it is closed - so it is never the evidence.
+    for name, size, mtime in (
+        ("2026-08-07_10-00-00.mp4", 2048, 100.0),
+        ("2026-08-07_10-01-00.mp4", 2048, 150.0),
+        ("2026-08-07_10-05-00.mp4", 0, 200.0),
+        ("2026-08-07_10-10-00.mp4", 0, 300.0),
+    ):
+        path = directory / name
+        path.write_bytes(b"x" * size)
+        os.utime(path, (mtime, mtime))
+
+    with caplog.at_level(logging.ERROR):
+        service.run_once(now=1000.0)
+    indexed = [os.path.basename(s.path) for s in service.index.all()]
+    status = service.status(now=1000.0)
+    service.stop()
+
+    assert indexed == ["2026-08-07_10-00-00.mp4"], (
+        "empty files were indexed as though they were recordings"
+    )
+    assert status["empty_segments"] == 1, "the abandoned file was not noticed"
+    assert status["healthy"] is False, "empty segments are not a healthy recorder"
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "2026-08-07_10-05-00.mp4" in said and "thermal" in said, said
+
+
+def test_what_ffmpeg_said_reaches_the_log(tmp_path, caplog):
+    """Its stderr goes to a file, and that file reached nobody. The recorder's
+    own output is pumped into the console's Logs tab, so this is where the
+    camera's real complaint gets there from."""
+    import logging
+
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once()
+    recorder = service.recorders[0]
+    recorder.log_path.parent.mkdir(parents=True, exist_ok=True)
+    recorder.log_path.write_bytes(
+        b"[mp4] Could not find tag for codec pcm_mulaw in stream #1\n"
+        b"Could not write header (incorrect codec parameters ?): Invalid argument\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        service.run_once(now=1000.0)
+    service.stop()
+
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "pcm_mulaw" in said, said
+    assert "Could not write header" in said, said
+    assert "thermal" in said, "the line must say which stream it is about"
