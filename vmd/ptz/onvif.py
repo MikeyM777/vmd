@@ -112,6 +112,29 @@ def _first(pattern: str, text: str) -> str | None:
     return found.group(1).strip() if found else None
 
 
+def _check_answer(text: str, expect: str) -> None:
+    """Raise unless this body is the camera saying it did the thing.
+
+    Three things arrive with a 200 and none of them is success:
+
+    * a SOAP Fault, which is how ONVIF refuses, and which many cameras send
+      with a 200 rather than a 500;
+    * the camera's own web page, because its HTTP server answers every path it
+      does not recognise;
+    * an empty envelope from something that is not the camera at all.
+
+    A `<CommandResponse/>` element named after the request is the only thing
+    that distinguishes the camera having carried the command out.
+    """
+    if re.search(r"<[^>]*Fault[^>]*>", text):
+        raise PtzError(_fault(text) or "the camera refused the command")
+    if expect and expect not in text:
+        raise PtzError(
+            "the camera answered but did not acknowledge the command, so there "
+            "is no telling whether it was carried out"
+        )
+
+
 def _fault(text: str) -> str | None:
     """The camera's own words when it refuses, rather than a status code."""
     for pattern in (r"<[^>]*Text[^>]*>(.*?)</[^>]*Text>", r"<[^>]*faultstring[^>]*>(.*?)</"):
@@ -160,8 +183,20 @@ class OnvifPtz:
         )
         yield "wsse", urllib.request.build_opener(no_proxy)
 
-    def _post(self, path: str, body: str) -> str:
-        """One SOAP call, trying each authentication style until one is accepted."""
+    def _post(self, path: str, body: str, expect: str = "") -> str:
+        """One SOAP call, trying each authentication style until one is accepted.
+
+        `expect` is the name of the response element this request must come
+        back with. It exists because an HTTP 200 from a camera is not the head
+        moving: SOAP carries its own refusal, and a device that will not do
+        what it was asked - no PTZ right on the account, a profile token that
+        is not a PTZ profile, a head on a preset tour - answers with a Fault,
+        which plenty of cameras send with a 200. The camera's own web server
+        also answers 200 with a login page on any path it does not recognise.
+        In every one of those cases the old code returned, `_do` reported
+        `ok: True`, and the console told the operator the command had been
+        sent while the head sat still.
+        """
         attempts = (
             [(self.capability.auth, self._auth_opener)]
             if self._auth_opener is not None
@@ -178,6 +213,10 @@ class OnvifPtz:
             try:
                 with opener.open(request, timeout=TIMEOUT) as response:
                     text = response.read().decode("utf-8", "replace")
+                # Checked before the login style is remembered: a body that is
+                # a fault or a web page is not evidence that this opener is the
+                # one that works.
+                _check_answer(text, expect)
                 self.capability.auth = name
                 self._auth_opener = opener
                 return text
@@ -221,12 +260,32 @@ class OnvifPtz:
         self.capability.available = True
         self.capability.reason = "ready"
 
-        # Presets are optional; a camera without a home position is still steerable.
+        # A media profile is a video stream, not a motor. Every fixed camera
+        # on earth answers GetProfiles, so deciding "available" on that alone
+        # put the arrows on the console for a head that does not exist, and the
+        # operator pressed them and watched nothing happen. GetNodes is the
+        # question about the motor.
+        #
+        # Presets are optional; a camera without a home position is still
+        # steerable.
         try:
             nodes = self._post("/onvif/ptz_service", f'<GetNodes xmlns="{PTZ}"/>')
-            self.capability.supports_home = "HomeSupported>true" in nodes.replace(" ", "")
-        except PtzError:
+        except PtzError as exc:
+            # Not every camera answers GetNodes, and concluding "no PTZ" from
+            # silence would take the arrows away from cameras that have a head.
+            # Unknown is a state, and it is this one.
             self.capability.supports_home = False
+            logger.debug("%s: could not list PTZ nodes: %s", self.host, exc)
+            return self.capability
+
+        self.capability.supports_home = "HomeSupported>true" in nodes.replace(" ", "")
+        if "PTZNode" not in nodes:
+            # It answered, and what it said was that it has no head.
+            self.capability.available = False
+            self.capability.reason = (
+                "the camera answered but listed no PTZ head, so there is nothing "
+                "here to steer"
+            )
         return self.capability
 
     def _profile(self) -> str:
@@ -254,7 +313,7 @@ class OnvifPtz:
             f'<tt:Zoom x="{zoom:.3f}"/>'
             "</Velocity></ContinuousMove>"
         )
-        self._post("/onvif/ptz_service", body)
+        self._post("/onvif/ptz_service", body, expect="ContinuousMoveResponse")
 
     def stop(self) -> None:
         body = (
@@ -262,7 +321,9 @@ class OnvifPtz:
             f"<ProfileToken>{_xml(self._profile())}</ProfileToken>"
             "<PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>"
         )
-        self._post("/onvif/ptz_service", body)
+        # The one command that must never be believed on faith: a stop that was
+        # not carried out is a head left slewing with no key held.
+        self._post("/onvif/ptz_service", body, expect="StopResponse")
 
     def home(self) -> None:
         body = (
@@ -270,7 +331,7 @@ class OnvifPtz:
             f"<ProfileToken>{_xml(self._profile())}</ProfileToken>"
             "</GotoHomePosition>"
         )
-        self._post("/onvif/ptz_service", body)
+        self._post("/onvif/ptz_service", body, expect="GotoHomePositionResponse")
 
     def position(self) -> dict | None:
         """Where the head is now, if the camera will say."""

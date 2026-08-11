@@ -37,6 +37,26 @@ FAULT = """<?xml version="1.0"?>
 <s:Reason><s:Text>Sender not Authorized</s:Text></s:Reason>
 </s:Fault></s:Body></s:Envelope>"""
 
+NO_NODES = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>
+<GetNodesResponse xmlns="http://www.onvif.org/ver20/ptz/wsdl"/>
+</s:Body></s:Envelope>"""
+
+
+def acknowledged(command: str) -> str:
+    """What a camera that carried a command out actually sends back.
+
+    ONVIF answers every request with an element named after it. A camera that
+    did the thing says `ContinuousMoveResponse`; one that answered 200 with an
+    empty body, a login page or a fault did not.
+    """
+    return (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>'
+        f'<{command}Response xmlns="http://www.onvif.org/ver20/ptz/wsdl"/>'
+        "</s:Body></s:Envelope>"
+    )
+
 
 class FakeCamera(BaseHTTPRequestHandler):
     """Answers ONVIF. Accepts only the WS-Security UsernameToken, which is what
@@ -45,6 +65,12 @@ class FakeCamera(BaseHTTPRequestHandler):
 
     requests: list[tuple[str, str]] = []
     accept_wsse = True
+    # What the camera answers a PTZ command with. None means "acknowledge it
+    # properly"; a test that wants a camera which says 200 and does nothing
+    # sets these.
+    command_status = 200
+    command_body: str | None = None
+    nodes_body = NODES
 
     def do_POST(self) -> None:  # noqa: N802
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
@@ -64,13 +90,22 @@ class FakeCamera(BaseHTTPRequestHandler):
         if "GetProfiles" in body:
             self._reply(200, PROFILES)
         elif "GetNodes" in body:
-            self._reply(200, NODES)
+            self._reply(200, type(self).nodes_body)
         elif "GetVideoEncoderConfigurationOptions" in body:
             self._reply(200, ENCODER_OPTIONS)
         elif "GetVideoEncoderConfigurations" in body:
             self._reply(200, ENCODERS)
         else:
-            self._reply(200, OK)
+            command = next(
+                (name for name in ("ContinuousMove", "GotoHomePosition", "Stop") if f"<{name} " in body),
+                "",
+            )
+            if not command:
+                self._reply(200, OK)
+            elif type(self).command_body is not None:
+                self._reply(type(self).command_status, type(self).command_body)
+            else:
+                self._reply(type(self).command_status, acknowledged(command))
 
     def _token_is_valid(self, body: str) -> bool:
         nonce = re.search(r"<Nonce[^>]*>(.*?)</Nonce>", body)
@@ -98,6 +133,9 @@ class FakeCamera(BaseHTTPRequestHandler):
 @pytest.fixture
 def camera() -> Iterator[tuple[str, int]]:
     FakeCamera.requests = []
+    FakeCamera.command_status = 200
+    FakeCamera.command_body = None
+    FakeCamera.nodes_body = NODES
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeCamera)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -415,3 +453,94 @@ def test_an_unreachable_camera_gives_up_quickly(monkeypatch) -> None:
         f"a camera one hop away is given {max(waited)} s to answer; that is a "
         "frozen console every time the link drops"
     )
+
+
+# --------------------------------------------------------------------------
+# A 200 from a camera is not the head moving
+# --------------------------------------------------------------------------
+
+
+def test_a_fault_answered_with_a_two_hundred_is_not_a_move(camera: tuple[str, int]) -> None:
+    """SOAP carries its own refusal, and cameras send it with any status they like.
+
+    A device that will not carry out ContinuousMove - the profile token is not
+    a PTZ profile, the account has no PTZ right, the head is on a preset tour -
+    answers with a Fault. Plenty of them do it with HTTP 200, and until this
+    was checked the console reported the move as sent, the operator held the
+    key and the head did not move, and nothing anywhere said why.
+    """
+    ptz = connected(camera)
+    FakeCamera.command_body = FAULT
+    with pytest.raises(PtzError) as raised:
+        ptz.move(0.5, 0.0, 0.0)
+    assert "Authorized" in str(raised.value)
+
+
+def test_a_web_page_answered_on_the_ptz_path_is_not_a_move(camera: tuple[str, int]) -> None:
+    """The camera's own web server answers on every path it does not know.
+
+    200, a body, no exception - and the only thing it proves is that something
+    on that host is listening. The same shape as adopting a streaming server
+    because a port answered.
+    """
+    ptz = connected(camera)
+    FakeCamera.command_body = "<html><body>Please log in</body></html>"
+    with pytest.raises(PtzError) as raised:
+        ptz.move(0.5, 0.0, 0.0)
+    assert "did not" in str(raised.value), str(raised.value)
+
+
+def test_a_command_the_camera_ignored_is_not_reported_as_sent(camera: tuple[str, int]) -> None:
+    """What the console believes after `move()` returns has to be true."""
+    host, port = camera
+    service = PtzService(Settings(camera=CameraSettings(host=f"{host}:{port}")))
+    service.camera = OnvifPtz(host, USER, PASSWORD, port=port)
+    assert service.move(0.5, 0.0, 0.0)["ok"] is True
+
+    FakeCamera.command_body = OK  # 200, and nothing done
+    result = service.move(0.5, 0.0, 0.0)
+    assert result["ok"] is False
+    assert result["error"]
+
+
+def test_a_stop_the_camera_never_acknowledged_is_not_reported_as_stopped(
+    camera: tuple[str, int],
+) -> None:
+    """The one command in this file that must never be believed on faith.
+
+    A head left slewing with no key held is the failure this whole sender is
+    written around, and "the stop was sent" was being decided by an HTTP status.
+    """
+    ptz = connected(camera)
+    FakeCamera.command_body = OK
+    with pytest.raises(PtzError):
+        ptz.stop()
+
+
+def test_a_camera_that_lists_no_ptz_head_is_not_reported_as_steerable(
+    camera: tuple[str, int],
+) -> None:
+    """Media profiles prove there is a camera, not that it can be pointed.
+
+    Every fixed camera on earth answers GetProfiles. The console showed the
+    arrows, the operator pressed them, and nothing moved - because "available"
+    had been decided by a question about video, not about a motor.
+    """
+    FakeCamera.nodes_body = NO_NODES
+    capability = connected(camera).capability
+    assert capability.available is False
+    assert "steer" in capability.reason or "PTZ" in capability.reason, capability.reason
+
+
+def test_a_camera_that_will_not_answer_getnodes_is_left_unknown_not_refused(
+    camera: tuple[str, int],
+) -> None:
+    """Uncertainty is a state; guessing "no" would take PTZ off a camera that has it.
+
+    Not every camera answers GetNodes, and refusing to steer one that does not
+    would be the same mistake in the other direction.
+    """
+    FakeCamera.nodes_body = FAULT
+    capability = connected(camera).capability
+    assert capability.available is True
+    assert capability.supports_home is False
