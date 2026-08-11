@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRect, QRunnable, QThreadPool, QTimer, Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -342,6 +343,25 @@ class _SaveJob(QRunnable):
         self._signals.done.emit(problems)
 
 
+# Which fault explains which, when more than one is up at once and only one of
+# them can have the room for its sentence.
+#
+# Not the order the chips are drawn in. Everything on this machine reads its
+# pictures from the local streaming server: the recorder, the detector and the
+# Live tab alike. So a streaming server that is down is why footage is not
+# reaching the disk and why nothing is watching for movement, and its sentence
+# is the one that says what to do about all three. `services` is ahead of it
+# because a console that could not ask anything knows nothing at all, and the
+# link is behind because a link fault shows up as a streaming fault long before
+# anyone reads the band. Anything not named here sorts after everything named.
+CAUSE_BEFORE_EFFECT = {
+    name: rank
+    for rank, name in enumerate(
+        ("services", "streaming", "recording", "detection", "link", "camera")
+    )
+}
+
+
 class StatusChip(QFrame):
     """One thing about the system, in the size it deserves.
 
@@ -365,10 +385,30 @@ class StatusChip(QFrame):
         row.setSpacing(SPACE_SNUG)
         self._glyph = QLabel("")
         self._glyph.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        # A WrappedNote, because the longest of these is a whole sentence -
-        # "go2rtc is not installed - run install.bat" - and it is the one that
-        # must not be cut in half.
-        self._words = WrappedNote("")
+        # One line, never two. This was a WrappedNote, on the reasoning that the
+        # longest of these is a whole sentence and a sentence must not be cut in
+        # half - which is right about the sentence and wrong about where it
+        # belongs. A wrapped label given less width than its words takes the
+        # height instead, and the band is across the top of every tab: on a
+        # 1080p panel at 150% scaling the logical screen is 1280 px, four fault
+        # sentences do not fit across it, and the band that should be one line
+        # was taking a quarter of the screen from the pictures. The operator had
+        # faults up most of a day, so that is what he was looking at.
+        #
+        # The full sentence still exists and is still read - `status_text`
+        # carries it into the Logs tab unchanged, and the link's version is in
+        # the Live tab's own panel. What this label promises is height, not
+        # completeness, and `text()` below still answers with the whole thing.
+        self._full = ""
+        self._words = QLabel("")
+        self._words.setWordWrap(False)
+        # Ignored, so the label never demands the width of its sentence. Without
+        # it a chip whose words do not fit pushes the band wider than the window
+        # and the last chip goes off the right-hand edge; with it, the words
+        # shorten and the row keeps its shape.
+        self._words.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         row.addWidget(self._glyph)
         row.addWidget(self._words, 1)
         # Set by the recording dot, which draws its own glyph rather than the
@@ -386,7 +426,7 @@ class StatusChip(QFrame):
         squeezing is the case the wrapping was built for.
         """
         hint = super().sizeHint()
-        text = self._words.text()
+        text = self._full
         if text:
             layout = self.layout()
             margins = layout.contentsMargins()
@@ -402,7 +442,35 @@ class StatusChip(QFrame):
         return hint
 
     def text(self) -> str:
+        """What this chip is saying, whole. What is painted may be shortened to
+        the room there is; what it means never is."""
+        return self._full
+
+    def painted_text(self) -> str:
+        """What is actually on the screen, which is the shortened form when
+        there is not room for the sentence. Separate from `text` so that a test
+        about the words and a test about the room cannot be confused."""
         return self._words.text()
+
+    def _fit_words(self) -> None:
+        """Put as much of the sentence on the screen as there is room for.
+
+        Shortened from the right, with an ellipsis, so what survives is the
+        beginning - which is where these sentences put the part being reported
+        and the state it is in. `detection: NOT running - restarted 9 times...`
+        still says the two things worth glancing at.
+        """
+        room = max(self._words.width(), 1)
+        metrics = self._words.fontMetrics()
+        shown = metrics.elidedText(self._full, Qt.TextElideMode.ElideRight, room)
+        # Only on a change: setting it invalidates the layout, and a layout
+        # invalidated from inside its own resize does not settle.
+        if shown != self._words.text():
+            self._words.setText(shown)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._fit_words()
 
     def glyph(self) -> str:
         return self._glyph.text()
@@ -440,7 +508,8 @@ class StatusChip(QFrame):
             f"background: transparent; color: {words}; "
             f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
         )
-        self._words.setText(text)
+        self._full = text
+        self._fit_words()
         # The sentence just changed, so the width this chip is asking for has
         # changed with it. Without this the layout keeps handing out the room the
         # previous words needed.
@@ -506,9 +575,29 @@ class StatusBand(QFrame):
         row.addStretch(1)
         self._chips: list[StatusChip] = []
 
+        # One line high, and the number does not depend on a word anybody types
+        # into a fault sentence. Measured from the type rather than from the
+        # chips, so it is the same on an empty band, a healthy one and one with
+        # five faults up - which is the whole point: this band sits above the
+        # pictures on every tab, and its height is space taken from them.
+        ruler = QFont(self.font())
+        ruler.setPixelSize(SIZE_BAND)
+        line = QFontMetrics(ruler).height()
+        # The chip's own border, top and bottom, then the band's margins.
+        self.setFixedHeight(line + 2 + 2 * SPACE_HAIR)
+
     def chips(self) -> list[str]:
         """What each chip is saying, for the window and for the tests."""
         return [chip.text() for chip in self._chips if chip.isVisibleTo(self)]
+
+    def glyphs(self) -> list[str]:
+        """The mark beside each chip. What says a part has failed even when the
+        room for its sentence went to a worse one."""
+        return [chip.glyph() for chip in self._chips if chip.isVisibleTo(self)]
+
+    def painted(self) -> list[str]:
+        """What is actually drawn, shortened to the room there is."""
+        return [chip.painted_text() for chip in self._chips if chip.isVisibleTo(self)]
 
     def recording_glyph(self) -> str:
         """The dot itself, for the tests: a circle beats a bar."""
@@ -545,6 +634,20 @@ class StatusBand(QFrame):
         The rule is one rule and it is the honest way round: a chip says its own
         name while there is nothing to add, and says everything the moment there
         is - and "nobody could be asked" counts as something to add.
+
+        One of them, though, and not four. A console with the streaming server
+        down has detection down as well and the link complaining, and four
+        sentences of that do not fit across 1280 logical pixels - which is what
+        a 1080p laptop panel at 150% scaling is. They wrapped, and the band took
+        a quarter of the screen away from the pictures for as long as the faults
+        were up, which on a bad day is all day.
+
+        So the room goes to the worst one, which is also nearly always the one
+        that explains the rest: the streaming server being down is *why*
+        detection is not running. The others keep their glyph, their colour and
+        their border - nothing is hidden, and a second fault is still plainly a
+        fault at a glance - and give up only their sentence, which is in the
+        Logs tab in full, where `status_text` has always put it.
         """
         while len(self._chips) < len(parts):
             chip = StatusChip()
@@ -552,13 +655,42 @@ class StatusBand(QFrame):
             # stay in the order they were given and the space stays at the end.
             self._row.insertWidget(self._row.count() - 1, chip)
             self._chips.append(chip)
+        speaking = self.worst(parts)
         for index, chip in enumerate(self._chips):
             if index < len(parts):
                 glance, words, state = parts[index]
-                chip.show_state(glance if state == "ok" else words, state)
+                chip.show_state(words if index == speaking else glance, state)
                 chip.setVisible(True)
             else:
                 chip.setVisible(False)
+
+    @staticmethod
+    def worst(parts: list[tuple[str, str, str]]) -> int | None:
+        """Which one part gets to say its sentence, or None when all is well.
+
+        A failure outranks a warning. Among equals it is the one that EXPLAINS
+        the others, which is not the order they are drawn in: everything on this
+        machine reads its pictures from the local streaming server, so a
+        streaming server that is down is why footage is not reaching the disk
+        and why nothing is watching for movement. Telling the operator "NOT
+        recording" when the sentence one chip along says `go2rtc is not
+        installed - run install.bat` is telling him the symptom and keeping the
+        cure.
+
+        `muted` never speaks: it is not a fault, and a console that spelled out
+        "detection is switched off" every four seconds would be teaching him to
+        stop reading the band.
+
+        Pure and separate from the drawing, so the rule can be checked without a
+        window.
+        """
+        for wanted in ("alarm", "warn"):
+            standing = [
+                index for index, (_g, _w, state) in enumerate(parts) if state == wanted
+            ]
+            if standing:
+                return min(standing, key=lambda index: (CAUSE_BEFORE_EFFECT.get(parts[index][0], len(CAUSE_BEFORE_EFFECT)), index))
+        return None
 
 
 class ConsoleWindow(QMainWindow):

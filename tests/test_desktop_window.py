@@ -973,18 +973,88 @@ def test_a_healthy_band_says_the_name_of_each_part_and_no_more(
 def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
     qtbot, tmp_path: Path
 ) -> None:
-    """The short form is only ever the healthy form. The moment something is
-    wrong the chip carries the whole sentence, unchanged - those words were
-    chosen for an operator who is not technical, and shortening the one sentence
-    that has to be read would be shortening the wrong one."""
+    """The sentence that has to be read is never shortened - but only one of
+    them gets to be on the band.
+
+    Those words were chosen for an operator who is not technical, so the fault
+    worth reading carries them whole. What changed is the count: with the
+    streaming server down, detection is down too and the link is complaining,
+    and four sentences of that do not fit across a 1280 px logical screen. They
+    wrapped, and the band ate a quarter of the pictures for as long as the
+    faults were up.
+
+    The others keep their glyph and their colour, so a second fault is still
+    plainly a fault, and their sentence is in the Logs tab where the detail
+    belongs.
+    """
     window, _ = build(qtbot, tmp_path, services=SickServices())
     window.heartbeat()
     said = window.band.chips()
     assert "streaming: go2rtc is not installed - run install.bat" in said
-    assert "detection: not running" in said
-    # And the sentence in the band is a sentence the footer would have said.
+    # Detection is broken too, and gave up its sentence to the worse fault.
+    assert "detection" in said
+    assert "detection: not running" not in said
+    # But it did not give up saying that it is broken.
+    assert window.band.glyphs()[said.index("detection")] == window.band.glyphs()[
+        said.index("streaming: go2rtc is not installed - run install.bat")
+    ]
+    # And the sentence in the band is a sentence the footer would have said, in
+    # full - which is also where the one that stood down can still be read.
     for chip in said:
-        assert chip in window.status_text() or chip in ("recording", "link")
+        assert chip in window.status_text() or chip in ("recording", "detection", "link")
+    assert "detection: not running" in window.status_text()
+
+
+def test_the_band_gives_the_room_to_the_worst_fault(qtbot, tmp_path: Path) -> None:
+    """The rule itself, without a window: a failure outranks a warning, and
+    among equals the earliest wins."""
+    from vmd.desktop.window import StatusBand
+
+    assert StatusBand.worst([("a", "A", "ok"), ("b", "B", "muted")]) is None
+    assert StatusBand.worst([("a", "A", "ok"), ("b", "B", "warn")]) == 1
+    # A failure takes it from a warning that came first.
+    assert StatusBand.worst([("a", "A", "warn"), ("b", "B", "alarm")]) == 1
+    # Two failures with nothing to choose between them: the earlier one.
+    assert StatusBand.worst([("a", "A", "alarm"), ("b", "B", "alarm")]) == 0
+    # Switched off is not a fault and never takes the room.
+    assert StatusBand.worst([("a", "A", "muted"), ("b", "B", "muted")]) is None
+
+    # And two failures that DO explain each other go by cause, not by the order
+    # they are drawn in. Everything on this machine reads its pictures from the
+    # local streaming server, so a streaming server that is down is why footage
+    # is not reaching the disk - and its sentence is the one that says what to
+    # do about it. "NOT recording" is the symptom.
+    named = [
+        ("recording", "NOT recording", "alarm"),
+        ("streaming", "streaming: go2rtc is not installed - run install.bat", "alarm"),
+        ("detection", "detection: not running", "alarm"),
+    ]
+    assert StatusBand.worst(named) == 1
+    # A console that could not be asked anything knows nothing at all, and says
+    # so ahead of everything.
+    assert StatusBand.worst([("streaming", "S", "alarm"), ("services", "?", "alarm")]) == 1
+
+
+def test_the_band_is_the_same_height_whatever_is_wrong(qtbot, tmp_path: Path) -> None:
+    """The height of this band is space taken from the pictures on every tab,
+    and it may not depend on how long a fault sentence is. It did: a wrapped
+    label given less width than its words takes the height instead, and the
+    operator had faults up most of a day."""
+    well, _ = build(qtbot, tmp_path / "well", radio=LinkedRadio())
+    well.heartbeat()
+    quiet = well.band.height()
+
+    ill, _ = build(qtbot, tmp_path / "ill", services=SickServices())
+    ill.heartbeat()
+    assert ill.band.height() == quiet
+
+    # And it does not move when the band is squeezed to a laptop panel at 150%
+    # scaling, which is where the wrapping happened.
+    for width in (1280, 1366, 1920):
+        ill.band.resize(width, ill.band.height())
+        ill.band.updateGeometry()
+        assert ill.band.height() == quiet, width
+        assert ill.band.sizeHint().height() == quiet, width
 
 
 def test_the_sentences_themselves_are_unchanged(qtbot, tmp_path: Path) -> None:
