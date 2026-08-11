@@ -1038,3 +1038,144 @@ def test_a_status_path_that_cannot_be_read_at_all_is_not_an_exception(tmp_path: 
     directory.mkdir()
     assert read_detection_status(directory) is None
     assert read_detection_status(tmp_path / "nothing-here.json") is None
+
+
+# --------------------------------------------------- what a save has to reach
+#
+# go2rtc parses its configuration once, at startup, and the detector reads its
+# own settings once. A save that only writes the file changes nothing that is
+# running, on a machine whose operator has a keyboard and no terminal.
+
+
+class RecordingStreaming:
+    """A go2rtc that remembers what it was asked to do."""
+
+    api_port = 1984
+    rtsp_port = 8554
+
+    def __init__(self) -> None:
+        self.applied: list[Settings] = []
+        self.starts = 0
+
+    def apply(self, settings: Settings) -> None:
+        self.applied.append(settings)
+
+    def start(self) -> None:
+        self.starts += 1
+
+    def stop(self) -> None: ...
+
+    @property
+    def running(self) -> bool:
+        return True
+
+
+def test_a_saved_camera_address_reaches_the_streaming_server(tmp_path: Path) -> None:
+    """The address is entered in Settings and nowhere else. go2rtc holds the
+    one it was started with until it is restarted, so without this the corrected
+    camera stays dark until the laptop is rebooted."""
+    streaming = RecordingStreaming()
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=settings_path,
+        streaming=streaming,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+    )
+    services.start()
+
+    changed = settings_for(tmp_path)
+    changed.camera.host = "10.0.0.9"
+    services.apply(changed)
+
+    assert [s.camera.host for s in streaming.applied] == ["10.0.0.9"]
+    assert services.settings is changed
+
+
+def test_a_save_never_stops_the_recorder(tmp_path: Path) -> None:
+    """The oldest requirement in the system. Recording is not a setting."""
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings_for(tmp_path),
+        settings_path=settings_path,
+        streaming=RecordingStreaming(),
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+    )
+    services.start()
+    running = services.recorder._process
+
+    services.apply(settings_for(tmp_path))
+
+    assert services.recorder.running is True
+    assert services.recorder._process is running, "the recorder was restarted by a save"
+
+
+def test_a_save_moves_the_detector_report_with_the_recording_folder(tmp_path: Path) -> None:
+    """The detector writes its per-stream report beside events.db. Left pointing
+    at the old folder the status line would read a file nobody writes again."""
+    services = console_with_detector(tmp_path, lambda c: FakeProcess())
+    services.start()
+
+    moved = settings_for(tmp_path, detect=True)
+    moved.storage.root = tmp_path / "elsewhere"
+    services.apply(moved)
+
+    assert services.detection_status_path == tmp_path / "elsewhere" / DETECTION_STATUS_FILENAME
+
+
+def test_turning_detection_on_and_saving_starts_and_supervises_the_detector(
+    tmp_path: Path,
+) -> None:
+    """Ticked in Settings, and nothing happened: the detector was never
+    supervised, and the status line went on saying detection was off."""
+    services = console_with_detector(tmp_path, lambda c: FakeProcess(), detect=False)
+    services.start()
+    assert services.detecting is False
+    assert services.detector.running is False
+
+    services.apply(settings_for(tmp_path, detect=True))
+
+    assert services.detecting is True
+    assert services.detector.running is True
+    assert "detector" in [entry.name for entry in services.supervisor.managed]
+    assert services.state()["detection"]["running"] is True
+
+
+def test_turning_detection_off_and_saving_stops_the_detector(tmp_path: Path) -> None:
+    services = console_with_detector(tmp_path, lambda c: FakeProcess(), detect=True)
+    services.start()
+    assert services.detector.running is True
+
+    services.apply(settings_for(tmp_path, detect=False))
+
+    assert services.detecting is False
+    assert services.detector.running is False
+    assert "detector" not in [entry.name for entry in services.supervisor.managed]
+    # And the supervisor does not bring back what the operator turned off.
+    services.tick()
+    assert services.detector.running is False
+
+
+def test_a_save_restarts_the_detector_so_it_reads_what_was_saved(tmp_path: Path) -> None:
+    """Sensitivity, the sky line and the ignore mask are read once, when the
+    detector starts. A save that left it running would leave the operator
+    watching a setting that never took effect."""
+    processes: list[FakeProcess] = []
+
+    def spawn(command):
+        processes.append(FakeProcess())
+        return processes[-1]
+
+    services = console_with_detector(tmp_path, spawn, detect=True)
+    services.start()
+    assert len(processes) == 1
+
+    services.apply(settings_for(tmp_path, detect=True))
+
+    assert len(processes) == 2, "the detector kept the settings it started with"
+    assert processes[0].alive is False
+    assert services.detector.running is True

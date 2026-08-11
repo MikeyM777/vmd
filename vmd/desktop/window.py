@@ -96,6 +96,14 @@ class ConsoleWindow(QMainWindow):
         self.settings_tab = self._tab("Settings", build_settings)
         self.logs = self._tab("Logs", lambda: LogsTab(self._buffer))
 
+        # A save has to reach what is running, or it has changed nothing the
+        # operator can see. The Settings tab may be a label saying why it could
+        # not be built, in which case there is nothing to connect and nothing
+        # that could have been saved.
+        saved = getattr(self.settings_tab, "saved", None)
+        if saved is not None:
+            saved.connect(self.settings_saved)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.live, "Live")
         self.tabs.addTab(self.playback, "Playback")
@@ -160,6 +168,35 @@ class ConsoleWindow(QMainWindow):
         self._refresh(self.live)
         if self.tabs.currentWidget() is self.logs:
             self._refresh(self.logs)
+        self.statusBar().showMessage(self.status_text())
+
+    def settings_saved(self, settings) -> None:
+        """Point the running console at what was just written.
+
+        Nothing here re-reads settings.json by itself: go2rtc parses its
+        configuration once at startup, the PTZ and radio services hold the
+        address and password they were built with, and the panes hold the URLs
+        they were given. A save that only wrote the file would leave every one
+        of them on the old settings until the laptop was rebooted - and this
+        operator has no terminal, no second machine, and a camera that has to
+        come back.
+
+        Each part separately: a camera that will not take the change must not
+        cost the radio, and none of them may throw back into the Save button.
+        """
+        for what, target in (
+            ("the streaming server", self._services),
+            ("the camera", self._ptz),
+            ("the radio", self._radio),
+            ("the pictures", self.live),
+        ):
+            apply = getattr(target, "apply", None)
+            if apply is None:
+                continue
+            try:
+                apply(settings)
+            except Exception:  # noqa: BLE001 - the file is saved either way
+                logger.exception("%s would not take the saved settings", what)
         self.statusBar().showMessage(self.status_text())
 
     @staticmethod

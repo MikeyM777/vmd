@@ -22,6 +22,10 @@ class FakeServices:
     def __init__(self) -> None:
         self.ticks = 0
         self.stopped = False
+        self.applied: list = []
+
+    def apply(self, settings) -> None:
+        self.applied.append(settings)
 
     def start(self) -> None: ...
 
@@ -55,6 +59,12 @@ class AngryServices(FakeServices):
 
 
 class FakePtz:
+    def __init__(self) -> None:
+        self.applied: list = []
+
+    def apply(self, settings) -> None:
+        self.applied.append(settings)
+
     def status(self) -> dict:
         return {"available": False, "reason": "no camera address set"}
 
@@ -68,7 +78,18 @@ class FakePtz:
         return {"ok": True}
 
 
+class AngryPtz(FakePtz):
+    def apply(self, settings) -> None:
+        raise OSError("the camera is not answering")
+
+
 class FakeRadio:
+    def __init__(self) -> None:
+        self.applied: list = []
+
+    def apply(self, settings) -> None:
+        self.applied.append(settings)
+
     def status(self) -> dict:
         return {"connected": False, "reason": "the radio is not set up"}
 
@@ -89,13 +110,21 @@ def write_settings(tmp_path: Path) -> Path:
     return path
 
 
-def build(qtbot, tmp_path: Path, services=None, radio=None, make_pane=None, events_path=None):
+def build(
+    qtbot,
+    tmp_path: Path,
+    services=None,
+    radio=None,
+    make_pane=None,
+    events_path=None,
+    ptz=None,
+):
     path = write_settings(tmp_path)
     services = services if services is not None else FakeServices()
     window = ConsoleWindow(
         settings_path=path,
         services=services,
-        ptz=FakePtz(),
+        ptz=ptz if ptz is not None else FakePtz(),
         radio=radio if radio is not None else FakeRadio(),
         index_path=tmp_path / "segments.db",
         make_pane=make_pane or (lambda name: FakeVideoPane()),
@@ -174,6 +203,85 @@ def test_the_status_line_survives_services_that_will_not_answer(
     text = window.status_text()
     assert text
     assert "could not" in text.lower()
+    window.heartbeat()
+
+
+# ----------------------------------------------------------- saving settings
+#
+# Settings is the only interface this operator has: no terminal, no second
+# machine, and a camera 700 m away. A save that writes the file and reaches
+# nothing that is running has changed nothing they can see.
+
+
+def test_saving_reaches_the_streaming_server_the_camera_and_the_radio(
+    qtbot, tmp_path: Path
+) -> None:
+    ptz, radio = FakePtz(), FakeRadio()
+    window, services = build(qtbot, tmp_path, ptz=ptz, radio=radio)
+    settings_tab = window.settings_tab
+    settings_tab.camera_host = "10.0.0.9"
+
+    assert settings_tab.save() is True
+
+    for applied in (services.applied, ptz.applied, radio.applied):
+        assert [s.camera.host for s in applied] == ["10.0.0.9"]
+
+
+def test_saving_a_new_stream_puts_it_on_the_wall(qtbot, tmp_path: Path) -> None:
+    """The panes hold the URLs they were built with. A stream added in Settings
+    and not on the wall is a camera the operator cannot see."""
+    window, _ = build(qtbot, tmp_path)
+    assert window.live.stream_names() == ["thermal"]
+
+    window.settings_tab.add_stream_row("visible", "rtsp://camera/visible")
+    assert window.settings_tab.save() is True
+
+    assert window.live.stream_names() == ["thermal", "visible"]
+
+
+def test_saving_removes_the_pane_of_a_stream_that_is_gone(qtbot, tmp_path: Path) -> None:
+    """A pane still showing a stream nobody records is a picture the operator
+    has no reason to trust."""
+    window, _ = build(qtbot, tmp_path)
+    (row,) = window.settings_tab.stream_rows()
+    row.name_field.setText("infrared")
+
+    assert window.settings_tab.save() is True
+
+    assert window.live.stream_names() == ["infrared"]
+
+
+def test_one_part_refusing_the_save_does_not_cost_the_others(qtbot, tmp_path: Path) -> None:
+    """The camera is at the far end of a radio link and answers when it feels
+    like it. The save itself succeeded; the rest is best effort."""
+    radio = FakeRadio()
+    window, services = build(qtbot, tmp_path, ptz=AngryPtz(), radio=radio)
+
+    assert window.settings_tab.save() is True
+    assert window.settings_tab.message == "Saved."
+    assert len(services.applied) == 1
+    assert len(radio.applied) == 1
+
+
+def test_a_settings_tab_that_would_not_build_leaves_the_window_working(
+    qtbot, tmp_path: Path
+) -> None:
+    """There is nothing to connect to, and nothing that could have been saved.
+    The other three tabs are how the file gets fixed."""
+    path = tmp_path / "settings.json"
+    path.write_text("{ this is not settings", encoding="utf-8")
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+
+    assert isinstance(window.settings_tab, QLabel)
+    assert not isinstance(window.logs, QLabel)
     window.heartbeat()
 
 

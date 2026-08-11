@@ -439,6 +439,15 @@ class _ToolJob(QRunnable):
 
 
 class SettingsTab(QWidget):
+    # What was just written, for whoever is still pointed at the old file.
+    # Nothing in the console re-reads settings.json on its own: go2rtc parses
+    # its configuration once at startup, and the PTZ and radio services hold the
+    # address and password they were built with. Without this signal a save
+    # writes the file and changes nothing that is running, which for an operator
+    # with no terminal and no second machine means the camera they have just
+    # corrected the address of stays dark until the laptop is rebooted.
+    saved = Signal(object)
+
     def __init__(
         self,
         settings_path: str | Path,
@@ -770,6 +779,10 @@ class SettingsTab(QWidget):
 
         self._loaded = settings
         self._set_message("Saved.")
+        try:
+            self.saved.emit(settings)
+        except Exception:  # noqa: BLE001 - the file is written; the rest is not the save
+            logger.exception("the saved settings could not be handed to the console")
         return True
 
     def settings_from_form(self) -> Settings | None:

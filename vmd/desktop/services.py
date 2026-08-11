@@ -685,6 +685,60 @@ class ConsoleServices:
         self._detector_restarts = [at for at in self._detector_restarts if at >= cutoff]
         return len(self._detector_restarts)
 
+    def apply(self, settings: Settings) -> None:
+        """Take settings the operator has just saved.
+
+        go2rtc reads its configuration once, when it starts, so a corrected
+        camera address or a renamed stream reaches nothing until it is
+        restarted. Restarting it is what carries the change to all three
+        consumers at once - the pictures, the recorder and the detector all pull
+        from its local copy - which is why this is the one call that matters
+        here.
+
+        The recorder is deliberately not restarted. It records what go2rtc
+        serves under each stream name, so a new address arrives through go2rtc
+        without touching it, and stopping the recorder to apply a setting is the
+        one thing this system may never do casually.
+
+        The detector is restarted, because unlike the recorder it reads its own
+        settings - sensitivity, the ignore mask, the sky line - once at startup,
+        and stopping detection stops detection and nothing else. A save is an
+        explicit request for what was saved to be what is running.
+        """
+        self.settings = settings
+        # The recording root can move, and the detector's report moves with it.
+        # Left pointing at the old folder, the status line would read a file
+        # nobody writes any more and call detection unknown for ever.
+        self.detection_status_path = Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+
+        if self.streaming is not None:
+            self.streaming.apply(settings)
+            # Whatever is serving video now, this console restarted it.
+            self.adopted_streaming = False
+
+        wanted = self.detector is not None and detection_enabled(settings)
+        if wanted != self.detecting:
+            self.detecting = wanted
+            # A fresh supervisor rather than a mutated one: its restart counts
+            # and back-off belong to a configuration that no longer exists, and
+            # there is no supported way to add or remove a service from the one
+            # already running.
+            managed = [Managed(name="recorder", service=self.recorder)]
+            if self.streaming is not None:
+                managed.insert(0, Managed(name="streaming", service=self.streaming))
+            if wanted:
+                managed.append(Managed(name="detector", service=self.detector))
+            self.supervisor = Supervisor(managed, clock=self._clock)
+            self._detector_restarts.clear()
+
+        if self.detector is not None:
+            try:
+                self.detector.stop()
+                if wanted:
+                    self.detector.start()
+            except Exception:  # noqa: BLE001 - detection is not the picture or the disk
+                logger.exception("the detector would not take the new settings")
+
     def stop(self) -> None:
         self.supervisor.stop_all()
 
