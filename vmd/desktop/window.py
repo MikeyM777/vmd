@@ -296,6 +296,17 @@ class ConsoleWindow(QMainWindow):
         """Close the window. Deliberately does not stop the children: recording
         outlives the interface, which is the point of running it separately."""
         self._timer.stop()
+        # The head first, and before anything slower. A window closed with an
+        # arrow key down owes the camera a stop, and a stop that is not
+        # delivered leaves it slewing towards its own end stop with nobody
+        # watching. Bounded inside, and guarded here because the Live tab may be
+        # a label saying why it could not be built.
+        shutdown = getattr(self.live, "shutdown", None)
+        if shutdown is not None:
+            try:
+                shutdown()
+            except Exception:  # noqa: BLE001 - closing must not fail a close
+                logger.exception("the camera would not be brought to rest")
         if self._index is not None:
             try:
                 self._index.close()

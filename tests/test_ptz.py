@@ -377,3 +377,41 @@ def test_the_camera_is_never_reached_through_a_proxy(monkeypatch) -> None:
             if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies
         ]
         assert routed == [], f"the {name} login would be sent through {routed}"
+
+
+def test_an_unreachable_camera_gives_up_quickly(monkeypatch) -> None:
+    """How long one command costs when there is nothing at the address.
+
+    6 s was the old figure, and with a press and a release either side of it one
+    tap of an arrow key cost 12.36 s against 10.255.255.1. The camera is one
+    radio hop away on a private link - milliseconds of round trip - so a camera
+    that has not begun to answer in a couple of seconds is not answering.
+
+    Measured against a socket that never answers rather than against the
+    constant, so that a timeout which stopped being passed to urllib at all -
+    the way this actually breaks - still fails the test. Bounded well below the
+    old figure, so a return to it fails here rather than in the field.
+    """
+    import time
+    import urllib.error
+    import urllib.request
+
+    waited: list[float] = []
+
+    def never_answers(self, request, timeout=None, **kwargs):
+        waited.append(timeout)
+        time.sleep(min(timeout or 0.0, 0.05))  # the shape of it, not the wait
+        raise urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", never_answers)
+
+    started = time.monotonic()
+    with pytest.raises(PtzError):
+        OnvifPtz("10.255.255.1", USER, PASSWORD).move(0.5, 0.0, 0.0)
+    assert time.monotonic() - started < 1.0
+
+    assert waited, "urllib was never given a timeout at all"
+    assert max(waited) <= 3.0, (
+        f"a camera one hop away is given {max(waited)} s to answer; that is a "
+        "frozen console every time the link drops"
+    )

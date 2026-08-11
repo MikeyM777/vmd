@@ -41,6 +41,7 @@ from vmd.desktop.disk import StoragePanel
 from vmd.desktop.steering import edge_velocity, key_velocity
 from vmd.desktop.style import PALETTE
 from vmd.desktop.video import VideoPane
+from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,12 @@ UNIDENTIFIED_NOTE = (
     "A blank means unidentified, not uncertain: something moved and was "
     "confirmed, but was too small or too dark to name."
 )
+
+# What the steering column says while the camera is sitting on a command. Never
+# a blank: a blank in this box means "the camera did as it was told", and saying
+# that about a command nobody has answered is the kind of quiet lie that has an
+# operator believing the head moved when it did not.
+UNANSWERED_NOTE = "the camera did not answer the last command yet"
 
 
 class SteeringOverlay(QWidget):
@@ -199,6 +206,11 @@ class LiveTab(QWidget):
     ) -> None:
         super().__init__(parent)
         self._ptz = ptz
+        # Every command to the camera goes through here rather than straight out
+        # of the key handler. See PtzCommands: the camera is at the far end of a
+        # radio link, and a key handler is the one place in this program that
+        # must never wait for it.
+        self._commands = PtzCommands(ptz)
         self._make_pane = make_pane
         self._local_url = local_url
         self._events = events
@@ -544,6 +556,9 @@ class LiveTab(QWidget):
                 self._restarts.pop(name, None)
                 self._next_try.pop(name, None)
         self._refresh_events()
+        # The camera answers on its own thread now, so its answer is picked up
+        # here rather than where the key was pressed.
+        self._show_camera_note()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
 
@@ -645,7 +660,8 @@ class LiveTab(QWidget):
         self._zoom = 0.0
         self._last_velocity = None
         self._moving.setText("home")
-        self._report(self._ptz.home())
+        self._commands.home()
+        self._show_camera_note()
 
     def stop_steering(self) -> None:
         """Forget everything held and bring the head to rest."""
@@ -668,18 +684,52 @@ class LiveTab(QWidget):
         self._last_velocity = velocity
 
         if pan == 0.0 and tilt == 0.0 and zoom == 0.0:
-            result = self._ptz.stop()
+            self._commands.stop()
             self._moving.setText("idle")
         else:
-            result = self._ptz.move(pan, tilt, zoom)
+            self._commands.move(pan, tilt, zoom)
             self._moving.setText(f"pan {pan:+.2f}  tilt {tilt:+.2f}  zoom {zoom:+.2f}")
-        self._report(result)
+        self._show_camera_note()
 
-    def _report(self, result) -> None:
+    def _show_camera_note(self) -> None:
+        """Say what the camera last said, or that it has not said anything.
+
+        Three states and not two, because the answer now arrives after the key
+        that asked for it. A command still on the wire is not a command that
+        succeeded, and showing nothing for it would read as one.
+        """
+        waiting = self._commands.unanswered_for()
+        if waiting is not None and waiting >= UNANSWERED_AFTER:
+            self._ptz_note.setText(UNANSWERED_NOTE)
+            return
+        answered = self._commands.last_answer()
+        result = answered.result if answered is not None else None
         if isinstance(result, dict) and result.get("ok") is False:
             self._ptz_note.setText(result.get("error", "the camera refused the command"))
-        else:
+        elif waiting is None:
             self._ptz_note.setText("")
+
+    def camera_note(self) -> str:
+        return self._ptz_note.text()
+
+    def wait_for_camera(self, timeout: float = 5.0) -> bool:
+        """Wait until nothing is queued for the camera or on the wire.
+
+        Bounded, and the answer is a bool rather than an exception: the callers
+        are a closing window, which cannot afford to wait, and the tests, which
+        must fail rather than hang.
+        """
+        return self._commands.wait_until_idle(timeout)
+
+    def shutdown(self) -> None:
+        """Bring the head to rest and let the command sender go.
+
+        Both halves matter and in this order. A window closed with a key down
+        owes the camera a stop, and letting the thread go before delivering it
+        would leave the head slewing with nobody watching.
+        """
+        self.stop_steering()
+        self._commands.close()
 
     # --------------------------------------------------------- keyboard, focus
 
@@ -741,3 +791,8 @@ class LiveTab(QWidget):
         """
         self.stop_steering()
         super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """The tab is going away for good: stop the head, drop the sender."""
+        self.shutdown()
+        super().closeEvent(event)

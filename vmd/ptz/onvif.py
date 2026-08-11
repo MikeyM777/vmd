@@ -27,7 +27,18 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = 6.0
+# How long one SOAP call may take. The camera is one radio hop away on a private
+# link - milliseconds of round trip, not seconds - so a camera that has not begun
+# to answer in this long is not answering at all, and six seconds was only ever
+# spending the operator's time confirming it.
+#
+# It still has to be generous enough for the camera's own SOAP parsing while it
+# is encoding two streams, which is why it is seconds rather than milliseconds.
+# Note what this does *not* multiply by: the three authentication styles are
+# tried one after another only when the camera refuses a login, which it does
+# immediately. A timeout raises PtzError from the first attempt and stops there,
+# so an unreachable camera costs this once per call, not three times.
+TIMEOUT = 2.0
 
 MEDIA = "http://www.onvif.org/ver10/media/wsdl"
 PTZ = "http://www.onvif.org/ver20/ptz/wsdl"

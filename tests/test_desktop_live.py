@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+import threading
+import time
 
+import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
@@ -108,6 +111,73 @@ def build(qtbot, *names: str, events=None, register: bool = True, clock=None):
     return tab, ptz, panes
 
 
+# PTZ commands leave the console on a thread of their own, because a camera at
+# the far end of a radio link takes seconds to answer and the window may not
+# stop repainting while it does. So "what the camera was told" is a question
+# with a moment's delay in it, and every assertion about it waits - bounded, so
+# that a command which never arrives fails the test instead of hanging it.
+COMMAND_TIMEOUT = 10.0
+
+
+def sent(tab, ptz, timeout: float = COMMAND_TIMEOUT) -> list[tuple]:
+    """Everything the camera has actually been told, once telling it is done."""
+    assert tab.wait_for_camera(timeout), "a PTZ command never left the console"
+    return ptz.commands
+
+
+class SlowPtz(FakePtz):
+    """A camera that takes as long to answer as an unreachable one does.
+
+    The wait is bounded by an event the test releases, and by a ceiling of its
+    own, so a console that went back to calling this on the GUI thread fails the
+    test in a couple of seconds rather than hanging the suite.
+    """
+
+    CEILING = 5.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.released = threading.Event()
+        self.entered = threading.Event()
+
+    def _wait(self) -> None:
+        self.entered.set()
+        self.released.wait(self.CEILING)
+
+    def move(self, pan: float, tilt: float, zoom: float) -> dict:
+        self._wait()
+        return super().move(pan, tilt, zoom)
+
+    def stop(self) -> dict:
+        self._wait()
+        return super().stop()
+
+    def home(self) -> dict:
+        self._wait()
+        return super().home()
+
+
+def slow_tab(qtbot, ptz):
+    tab = LiveTab(
+        ptz=ptz,
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    return tab
+
+
+def until(predicate, timeout: float = COMMAND_TIMEOUT) -> bool:
+    """Bounded polling, so a regression fails the test rather than hanging it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return bool(predicate())
+
+
 def test_a_pane_appears_for_every_enabled_stream(qtbot) -> None:
     tab, _, panes = build(qtbot, "thermal", "visible")
     assert set(panes) == {"thermal", "visible"}
@@ -122,19 +192,19 @@ def test_panes_are_pointed_at_the_local_server_not_the_camera(qtbot) -> None:
 def test_arrow_keys_move_the_camera_and_release_stops_it(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     tab.key_down("right", fine=False)
-    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.0, 0.0)
     tab.key_down("up", fine=False)
-    assert ptz.commands[-1] == ("move", 0.5, 0.5, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.5, 0.0)
     tab.key_up("up")
-    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.0, 0.0)
     tab.key_up("right")
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def test_home_is_sent_once(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     tab.go_home()
-    assert ptz.commands == [("home",)]
+    assert sent(tab, ptz) == [("home",)]
 
 
 def test_the_same_velocity_is_not_sent_twice(qtbot) -> None:
@@ -142,7 +212,7 @@ def test_the_same_velocity_is_not_sent_twice(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     tab.key_down("right", fine=False)
     tab.key_down("right", fine=False)
-    assert len(ptz.commands) == 1
+    assert len(sent(tab, ptz)) == 1
 
 
 def test_a_late_stream_is_reported_and_left_alone(qtbot) -> None:
@@ -259,33 +329,33 @@ def test_changing_the_streams_replaces_the_panes(qtbot) -> None:
 def test_a_real_arrow_key_press_moves_the_camera(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyPress(tab, Qt.Key.Key_Right)
-    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.0, 0.0)
     qtbot.keyRelease(tab, Qt.Key.Key_Right)
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def test_shift_held_with_an_arrow_steers_finely(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyPress(tab, Qt.Key.Key_Left, Qt.KeyboardModifier.ShiftModifier)
-    assert ptz.commands[-1] == ("move", -0.08, 0.0, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", -0.08, 0.0, 0.0)
 
 
 def test_the_home_key_sends_home(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyClick(tab, Qt.Key.Key_Home)
-    assert ("home",) in ptz.commands
+    assert ("home",) in sent(tab, ptz)
 
 
 def test_the_zoom_keys_zoom_and_releasing_them_stops(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyPress(tab, Qt.Key.Key_Plus)
-    assert ptz.commands[-1] == ("move", 0.0, 0.0, 0.5)
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.0, 0.5)
     qtbot.keyRelease(tab, Qt.Key.Key_Plus)
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
     qtbot.keyPress(tab, Qt.Key.Key_Minus)
-    assert ptz.commands[-1] == ("move", 0.0, 0.0, -0.5)
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.0, -0.5)
     qtbot.keyRelease(tab, Qt.Key.Key_Minus)
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def send_auto_repeat(tab, kind: QEvent.Type, key: Qt.Key) -> None:
@@ -300,16 +370,16 @@ def test_auto_repeat_neither_repeats_nor_stops_the_movement(qtbot) -> None:
     press would put one request per repeat onto the link."""
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyPress(tab, Qt.Key.Key_Right)
-    assert ptz.commands == [("move", 0.5, 0.0, 0.0)]
+    assert sent(tab, ptz) == [("move", 0.5, 0.0, 0.0)]
 
     for _ in range(5):
         send_auto_repeat(tab, QEvent.Type.KeyRelease, Qt.Key.Key_Right)
         send_auto_repeat(tab, QEvent.Type.KeyPress, Qt.Key.Key_Right)
 
-    assert ptz.commands == [("move", 0.5, 0.0, 0.0)]
+    assert sent(tab, ptz) == [("move", 0.5, 0.0, 0.0)]
 
     qtbot.keyRelease(tab, Qt.Key.Key_Right)
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def test_losing_focus_stops_the_camera(qtbot) -> None:
@@ -317,12 +387,12 @@ def test_losing_focus_stops_the_camera(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     qtbot.keyPress(tab, Qt.Key.Key_Right)
     QApplication.instance().sendEvent(tab, QEvent(QEvent.Type.FocusOut))
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
     # And the key it never saw released is forgotten, so the next press is a
     # fresh movement rather than a diagonal with a ghost.
     qtbot.keyPress(tab, Qt.Key.Key_Up)
-    assert ptz.commands[-1] == ("move", 0.0, 0.5, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.5, 0.0)
 
 
 def test_switching_tabs_stops_a_camera_a_child_widget_started_moving(qtbot) -> None:
@@ -345,16 +415,185 @@ def test_switching_tabs_stops_a_camera_a_child_widget_started_moving(qtbot) -> N
     QApplication.instance().sendEvent(
         tab, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
     )
-    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.0, 0.0)
 
     tabs.setCurrentIndex(1)
 
-    assert ptz.commands[-1] == ("stop",), "the head was left slewing on another tab"
+    assert sent(tab, ptz)[-1] == ("stop",), "the head was left slewing on another tab"
     # And the key it never saw released is forgotten, so coming back to the tab
     # does not start with a ghost held down.
     tabs.setCurrentIndex(0)
     qtbot.keyPress(tab, Qt.Key.Key_Up)
-    assert ptz.commands[-1] == ("move", 0.0, 0.5, 0.0)
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.5, 0.0)
+
+
+# ------------------------------------------------- steering a camera that is slow
+#
+# Measured against a camera at 10.255.255.1: 6.19 s for the press and 6.17 s for
+# the release, so 12.36 s for one tap of an arrow key. All of it on the thread
+# that draws the window, which means no repaint, no supervisor tick and - the
+# reason this is severe rather than annoying - no alarm strip. A perimeter
+# crossing during that freeze is silently missed.
+
+
+def test_a_key_tap_does_not_wait_for_the_camera(qtbot) -> None:
+    """Press and release must return at once, however long the camera takes."""
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    try:
+        started = time.monotonic()
+        tab.key_down("right", fine=False)
+        tab.key_up("right")
+        elapsed = time.monotonic() - started
+    finally:
+        ptz.released.set()
+    assert elapsed < 0.5, f"one tap held the GUI thread for {elapsed:.2f} s"
+
+
+def test_the_alarm_strip_can_still_appear_while_the_camera_is_not_answering(
+    qtbot,
+) -> None:
+    """The whole reason this is severe. A refresh - the heartbeat's own call -
+    must raise the alarm while a PTZ command is still in flight."""
+    ptz = SlowPtz()
+    tab = LiveTab(
+        ptz=ptz,
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
+        events=FakeEvents([movement(1)]),
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    try:
+        tab.refresh()  # the first read only learns what was already there
+        tab.key_down("right", fine=False)
+        assert ptz.entered.wait(5.0), "the command never reached the camera"
+        tab._events.events.append(movement(2))
+        started = time.monotonic()
+        tab.refresh()
+        elapsed = time.monotonic() - started
+    finally:
+        ptz.released.set()
+    assert tab.alarm_visible(), "movement went unannounced while the camera hung"
+    assert elapsed < 0.5, f"the heartbeat blocked for {elapsed:.2f} s"
+
+
+def test_a_stop_is_delivered_even_when_it_arrives_while_a_move_is_in_flight(
+    qtbot,
+) -> None:
+    """The hazard: the head slewing with no key held because the settling call
+    was still on the wire when the operator let go."""
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert ptz.entered.wait(5.0), "the move never reached the camera"
+    tab.key_up("right")
+    ptz.released.set()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    assert ptz.commands[-1] == ("stop",), "the head was left moving with no key held"
+
+
+def test_a_stop_beats_a_move_that_is_still_waiting_to_be_sent(qtbot) -> None:
+    """Commands are coalesced - four taps while one is on the wire must not
+    replay as four - but the one command that must never be coalesced away is
+    the stop."""
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)          # this one goes on the wire
+    assert ptz.entered.wait(5.0)
+    tab.key_down("up", fine=False)             # queued behind it
+    tab.key_up("up")
+    tab.key_up("right")                        # and now a stop is owed
+    ptz.released.set()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    assert ptz.commands[-1] == ("stop",)
+    assert len(ptz.commands) <= 3, f"every keystroke was replayed: {ptz.commands}"
+
+
+def test_a_burst_of_arrows_leaves_the_camera_doing_the_last_one(qtbot) -> None:
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert ptz.entered.wait(5.0)
+    for key in ("up", "down", "left"):
+        tab.key_down(key, fine=False)
+        tab.key_up(key)
+    ptz.released.set()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    # Right is still held, so that is what the camera must end up doing.
+    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+
+
+def test_closing_the_tab_delivers_the_stop_it_owes(qtbot) -> None:
+    """A window closed with a key down must not leave the head slewing."""
+    ptz = FakePtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    tab.shutdown()
+    assert ptz.commands[-1] == ("stop",), "the console closed with the head moving"
+
+
+def test_shutdown_does_not_hang_on_a_camera_that_never_answers(qtbot) -> None:
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert ptz.entered.wait(5.0)
+    try:
+        started = time.monotonic()
+        tab.shutdown()
+        elapsed = time.monotonic() - started
+    finally:
+        ptz.released.set()
+    assert elapsed < 4.0, f"closing the window waited {elapsed:.2f} s on the camera"
+
+
+def test_a_command_the_camera_has_not_answered_is_reported_as_such(qtbot) -> None:
+    """Never a blank that reads as fine: an unanswered command says so."""
+    ptz = SlowPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert ptz.entered.wait(5.0)
+    try:
+        assert until(lambda: (tab.refresh(), "not answer" in tab.camera_note())[1])
+    finally:
+        ptz.released.set()
+
+
+def test_a_refused_command_says_what_the_camera_said(qtbot) -> None:
+    class RefusingPtz(FakePtz):
+        def move(self, pan, tilt, zoom) -> dict:
+            super().move(pan, tilt, zoom)
+            return {"ok": False, "error": "the camera refused the login (401)"}
+
+    ptz = RefusingPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    tab.refresh()
+    assert "401" in tab.camera_note()
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_stop_still_gets_through_after_the_command_thread_has_died(qtbot) -> None:
+    """A stop is the one command that must never be dropped, so losing the
+    thread that sends them must not be the end of it.
+
+    KeyboardInterrupt because it is not an Exception: it goes straight past the
+    guard around each command and ends the thread, which is the only way that
+    thread can be lost.
+    """
+
+    class ExplodingPtz(FakePtz):
+        def move(self, pan, tilt, zoom) -> dict:
+            raise KeyboardInterrupt("the thread is gone")
+
+    ptz = ExplodingPtz()
+    tab = slow_tab(qtbot, ptz)
+    tab.key_down("right", fine=False)
+    assert until(lambda: not tab._commands._thread.is_alive()), "the thread survived"
+    tab.key_up("right")
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    assert ptz.commands[-1] == ("stop",)
 
 
 # ---------------------------------------------------------------- the overlay
@@ -366,14 +605,14 @@ def test_dragging_near_the_right_edge_pans_right_and_release_stops(qtbot) -> Non
     overlay.resize(200, 100)
 
     qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
-    assert ptz.commands[-1][0] == "move"
-    assert ptz.commands[-1][1] > 0.0
+    assert sent(tab, ptz)[-1][0] == "move"
+    assert sent(tab, ptz)[-1][1] > 0.0
 
     qtbot.mouseMove(overlay, QPoint(190, 50))
-    assert ptz.commands[-1][1] > 0.0
+    assert sent(tab, ptz)[-1][1] > 0.0
 
     qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(190, 50))
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def test_the_pointer_does_not_steer_unless_a_button_is_held(qtbot) -> None:
@@ -381,7 +620,7 @@ def test_the_pointer_does_not_steer_unless_a_button_is_held(qtbot) -> None:
     overlay = tab.overlay
     overlay.resize(200, 100)
     qtbot.mouseMove(overlay, QPoint(198, 50))
-    assert ptz.commands == []
+    assert sent(tab, ptz) == []
 
 
 def test_the_pointer_leaving_the_overlay_stops_the_camera(qtbot) -> None:
@@ -389,9 +628,9 @@ def test_the_pointer_leaving_the_overlay_stops_the_camera(qtbot) -> None:
     overlay = tab.overlay
     overlay.resize(200, 100)
     qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
-    assert ptz.commands[-1][0] == "move"
+    assert sent(tab, ptz)[-1][0] == "move"
     QApplication.instance().sendEvent(overlay, QEvent(QEvent.Type.Leave))
-    assert ptz.commands[-1] == ("stop",)
+    assert sent(tab, ptz)[-1] == ("stop",)
 
 
 # ------------------------------------------------------------- state on screen

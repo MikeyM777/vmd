@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from dataclasses import dataclass
 
 from vmd.ptz.encoder import CameraEncoders, fit_to_link
 from vmd.ptz.onvif import OnvifPtz, PtzError
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# How long a closing window will wait for the sender to finish what it is doing.
+# Long enough for one command against a camera that is answering, short enough
+# that closing the console never feels like a hang. The thread is a daemon, so
+# abandoning it costs nothing beyond this point.
+CLOSE_SECONDS = 2.0
+
+# How long a command may be outstanding before the console stops implying the
+# camera is doing what it was asked. Longer than a healthy command takes and
+# shorter than the timeout on an unreachable one, so the operator learns that
+# the camera has gone quiet before the failure itself comes back.
+UNANSWERED_AFTER = 1.5
 
 
 class PtzService:
@@ -158,3 +172,181 @@ class PtzService:
 
     def home(self) -> dict:
         return self._do("home", lambda: self.camera.home())
+
+
+@dataclass(frozen=True)
+class Answered:
+    """One command the camera has finished answering, and what it said."""
+
+    command: tuple
+    result: dict
+
+
+class PtzCommands:
+    """Sends PTZ commands on a thread of its own, keeping only the latest.
+
+    Every one of these crosses a radio link to a camera that answers when it
+    feels like it. Measured against an address with nothing at the far end, one
+    tap of an arrow key cost 12.36 s - 6.19 s for the press and 6.17 s for the
+    release - and all of it was spent inside a Qt key handler. While that ran
+    the window did not repaint, the supervisor did not tick and the alarm strip
+    could not appear, so movement on the perimeter during the freeze was simply
+    missed. That is why this is a thread and not a smaller timeout.
+
+    A latest-value mailbox, not a queue. The operator taps four arrows while one
+    command is on the wire; replaying all four would have the head performing a
+    gesture that finished seconds ago. Only the last one is still true, so only
+    the last one is sent - with one exception that is not an optimisation but
+    the whole safety property of this file:
+
+        A stop is never dropped.
+
+    Coalescing is last-wins, and a stop is only ever superseded by a command the
+    operator asked for afterwards - pressing a key again. Anything already
+    waiting to be sent when a stop arrives is replaced by that stop, and a stop
+    that is still owed when the console closes is delivered before the thread is
+    let go. The head must never be left slewing with no key held, including when
+    the command that started it is still in flight.
+    """
+
+    def __init__(self, ptz, name: str = "ptz") -> None:
+        self._ptz = ptz
+        # Guards the mailbox, the in-flight marker and the last answer alike:
+        # they are read together and must not disagree with each other.
+        self._lock = threading.Lock()
+        self._wanted: tuple | None = None
+        self._sending: tuple | None = None
+        self._sending_since: float | None = None
+        self._answered: Answered | None = None
+        self._wake = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._closing = threading.Event()
+        self._name = name
+        # Not held under `_lock`: starting a thread must never happen while the
+        # sender might be waiting for that same lock.
+        self._threading = threading.Lock()
+        self._thread = self._start_thread()
+
+    # ------------------------------------------------------------- the mailbox
+
+    def submit(self, command: tuple) -> None:
+        """Ask for a command. Returns at once, whatever the camera is doing."""
+        if self._closing.is_set():
+            logger.debug("%s: not sending %s; the sender is closing", self._name, command)
+            return
+        with self._lock:
+            self._wanted = command
+            self._idle.clear()
+        # After the mailbox is filled, so a sender that wakes finds the work.
+        self._ensure_thread()
+        self._wake.set()
+
+    def move(self, pan: float, tilt: float, zoom: float) -> None:
+        self.submit(("move", pan, tilt, zoom))
+
+    def stop(self) -> None:
+        self.submit(("stop",))
+
+    def home(self) -> None:
+        self.submit(("home",))
+
+    # -------------------------------------------------------------- what it is
+
+    def last_answer(self) -> Answered | None:
+        with self._lock:
+            return self._answered
+
+    def unanswered_for(self) -> float | None:
+        """How long the camera has been sitting on a command, or None.
+
+        None means nothing is outstanding - not that everything is well, which
+        is what `last_answer` is for.
+        """
+        with self._lock:
+            if self._sending_since is None:
+                return None
+            return max(0.0, time.monotonic() - self._sending_since)
+
+    def wait_until_idle(self, timeout: float) -> bool:
+        """Wait until nothing is queued or in flight. Bounded, always."""
+        return self._idle.wait(timeout)
+
+    # -------------------------------------------------------------- lifecycle
+
+    def close(self, timeout: float = CLOSE_SECONDS) -> bool:
+        """Deliver whatever is still owed, then let the thread go.
+
+        Bounded, and the thread is a daemon: a camera that never answers costs
+        this much of a closing window and not one second more. `concurrent
+        .futures` is deliberately not used anywhere here - its atexit hook joins
+        worker threads at interpreter exit, which is exactly how a console that
+        had already closed its window went on to hang.
+        """
+        self._closing.set()
+        self._wake.set()
+        thread = self._thread
+        thread.join(timeout)
+        if thread.is_alive():
+            logger.warning(
+                "%s: the camera did not answer in time; letting the sender go", self._name
+            )
+            return False
+        return True
+
+    def _start_thread(self) -> threading.Thread:
+        thread = threading.Thread(target=self._run, name=f"{self._name}-commands", daemon=True)
+        thread.start()
+        return thread
+
+    def _ensure_thread(self) -> None:
+        """Put the sender back if it has been lost.
+
+        Nothing inside `_run` raises - each command is guarded - so this is for
+        what a guard cannot catch. Without it, one lost thread would mean every
+        stop after it was dropped, and a dropped stop is a head that keeps
+        slewing.
+        """
+        with self._threading:
+            if self._closing.is_set() or self._thread.is_alive():
+                return
+            logger.error("%s: the command sender was lost; starting another", self._name)
+            self._thread = self._start_thread()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                command, self._wanted = self._wanted, None
+                self._sending = command
+                self._sending_since = time.monotonic() if command is not None else None
+                if command is None:
+                    self._idle.set()
+            if command is not None:
+                self._deliver(command)
+                continue
+            if self._closing.is_set():
+                return
+            self._wake.wait()
+            self._wake.clear()
+
+    def _deliver(self, command: tuple) -> None:
+        result = self._send(command)
+        with self._lock:
+            self._answered = Answered(command=command, result=result)
+            self._sending = None
+            self._sending_since = None
+
+    def _send(self, command: tuple) -> dict:
+        kind = command[0]
+        try:
+            if kind == "move":
+                return self._ptz.move(command[1], command[2], command[3])
+            if kind == "stop":
+                return self._ptz.stop()
+            if kind == "home":
+                return self._ptz.home()
+        except Exception as exc:  # noqa: BLE001 - the console outlives the camera
+            logger.exception("ptz %s failed unexpectedly", kind)
+            return {"ok": False, "error": str(exc)}
+        logger.error("%s: nothing knows how to send %s", self._name, command)
+        return {"ok": False, "error": f"unknown camera command {kind}"}
