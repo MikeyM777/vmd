@@ -14,11 +14,13 @@ screen to fall back on:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QRect, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -107,6 +109,92 @@ DIM_ALPHA = 0.30
 # compose the whole thing twice over, including the recorder's sentence and the
 # detector's report. Given one, they share it; given none, they ask.
 _UNASKED = object()
+
+# Where the console remembers the shape of its own window, beside settings.json.
+#
+# Beside it and deliberately not in it. settings.json is the operator's
+# configuration: the file he edits, the file worth backing up, the file that
+# gets read out down a phone when something is wrong. Where the window was
+# dragged to last night is none of those. Keeping them in separate files means a
+# Save can never fight a resize, a geometry that has gone wrong can be deleted
+# without touching the camera's address, and `Settings` does not grow five
+# fields it would then have to validate and migrate.
+#
+# It is not the registry either, which is where a Qt program would ordinarily
+# put this. This console ships to an offline machine and is sometimes run from a
+# folder that gets copied; a setting the operator cannot see, cannot delete and
+# cannot carry with the rest of the installation is the wrong kind of memory for
+# it. A small JSON file beside the settings is the seam this codebase already
+# uses everywhere else - streaming.json, detection.json, recording.json.
+WINDOW_FILENAME = "window.json"
+
+# The smallest window this will ever restore to. A file half written by a power
+# cut, or one from a version that spelled these keys differently, reads as zero -
+# and a window with no size is a window that is not there, on a machine with no
+# terminal to start another one from.
+LEAST_WINDOW = (640, 400)
+
+
+def read_window_state(path: str | Path) -> dict | None:
+    """What the console last remembered about its window, if anything.
+
+    Shaped after `read_endpoint` and `read_detection_status`: anything that is
+    not a usable file - missing, unreadable, not JSON, JSON that is not an
+    object - is None, and None means the defaults. None of them may raise. A
+    console that will not open because of a file about window pixels would be
+    the worst trade in this program.
+    """
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def fitted(saved: QRect, screens: list[QRect]) -> QRect:
+    """The remembered window, moved and cut down until it is on a real screen.
+
+    The failure this exists to prevent: a monitor unplugged, a resolution
+    changed, display scaling altered overnight - and the console opens at
+    coordinates that no longer exist. The operator has no terminal, no second
+    machine and no way to drag a window he cannot see. So the rule is
+    safe-but-wrong over faithful-but-invisible: he can move a window that opened
+    in the wrong place, and he can do nothing at all about one that did not
+    open where he can reach it.
+
+    The screen with most of the window on it is the screen it is kept on, so a
+    console the operator put on the second monitor on purpose is not tidied back
+    onto the first every morning. A window that fits where it was left is left
+    exactly there; one hanging over an edge is pulled back inside that same
+    screen; and one that is on no screen at all is put in the middle of the best
+    of them, which is the only position he certainly cannot miss.
+    """
+    if not screens:
+        return saved
+    room = max(screens, key=lambda screen: _overlap(saved, screen))
+    if _overlap(saved, room) > 0 and room.contains(saved):
+        return saved
+
+    width = max(min(saved.width(), room.width()), min(LEAST_WINDOW[0], room.width()))
+    height = max(min(saved.height(), room.height()), min(LEAST_WINDOW[1], room.height()))
+    if _overlap(saved, room) > 0:
+        # Still where he left it, only pulled back inside the edge it was over.
+        x = min(max(saved.x(), room.left()), room.left() + room.width() - width)
+        y = min(max(saved.y(), room.top()), room.top() + room.height() - height)
+        return QRect(x, y, width, height)
+    # On no screen at all: put it where he cannot miss it.
+    return QRect(
+        room.left() + (room.width() - width) // 2,
+        room.top() + (room.height() - height) // 2,
+        width,
+        height,
+    )
+
+
+def _overlap(rect: QRect, screen: QRect) -> int:
+    """How much of the window is actually drawable on this screen, in pixels."""
+    shared = rect.intersected(screen)
+    return shared.width() * shared.height() if shared.isValid() else 0
 
 
 def _dimmed(colour: str, alpha: float = DIM_ALPHA) -> str:
@@ -468,6 +556,7 @@ class ConsoleWindow(QMainWindow):
         self.resize(1440, 900)
 
         self._settings_path = Path(settings_path)
+        self._geometry_path = self._settings_path.parent / WINDOW_FILENAME
         self._services = services
         self._ptz = ptz
         self._radio = radio
@@ -586,6 +675,77 @@ class ConsoleWindow(QMainWindow):
         state = self._ask_state()
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
+
+        # Last, after the tabs exist. A size restored before them is a size the
+        # layouts have not been consulted about, and the one it would be clamped
+        # to is whatever the four tabs together turn out to need.
+        self._restore_geometry()
+
+    def _restore_geometry(self) -> None:
+        """Open where he left it, the size he left it, on a screen that exists.
+
+        The only unfinished thing in this console that cost him something every
+        single day: it opened at a default size every morning, and resizing it
+        was the first thing he did. Nothing here may raise - a remembered window
+        is a kindness, and a kindness that stops the console opening is not one.
+        """
+        state = read_window_state(self._geometry_path)
+        if not state:
+            return
+        try:
+            saved = QRect(
+                int(state["x"]), int(state["y"]), int(state["width"]), int(state["height"])
+            )
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "the remembered window could not be read; opening at the usual size"
+            )
+            return
+        try:
+            screens = [screen.availableGeometry() for screen in QGuiApplication.screens()]
+            self.setGeometry(fitted(saved, screens))
+            if state.get("maximised"):
+                # The state, not `showMaximized`: this runs while the window is
+                # still being built and nothing has shown it yet, and a window
+                # that showed itself here would appear before `main` was ready
+                # for it. Set this way it opens maximised on the first `show`,
+                # and leaves the fullscreen bit - which is not this console's to
+                # set - exactly as it found it.
+                self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+        except Exception:  # noqa: BLE001 - the console opens either way
+            logger.exception("the remembered window could not be restored")
+
+    def _remember_geometry(self) -> None:
+        """Write down the shape of the window, for tomorrow morning.
+
+        The size under a maximised or fullscreen window rather than the screen
+        it is filling, so that un-maximising tomorrow gives back the window he
+        actually chose rather than one the size of the display.
+        """
+        covering = self.isMaximized() or self.isFullScreen()
+        rect = self.normalGeometry() if covering else self.geometry()
+        if rect.width() <= 0 or rect.height() <= 0:
+            rect = self.geometry()
+        try:
+            self._geometry_path.write_text(
+                json.dumps(
+                    {
+                        "x": rect.x(),
+                        "y": rect.y(),
+                        "width": rect.width(),
+                        "height": rect.height(),
+                        "maximised": bool(self.isMaximized()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            # A full disk, a folder that has gone, a file somebody made
+            # read-only. Every one of those is a real state on this machine and
+            # none of them is a reason a window will not shut.
+            logger.warning(
+                "the window's size and position could not be remembered", exc_info=True
+            )
 
     def _movement_reader(self):
         """The movement list, readable from a thread that is not this one.
@@ -1061,6 +1221,10 @@ class ConsoleWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Close the window. Deliberately does not stop the children: recording
         outlives the interface, which is the point of running it separately."""
+        # First, before anything slower and before anything that can fail: the
+        # window is the shape it is right now, and everything below this line is
+        # about letting something go.
+        self._remember_geometry()
         self._timer.stop()
         self._blink.stop()
         # A save that is still restarting a child is holding a reference to this

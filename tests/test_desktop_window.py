@@ -1712,3 +1712,183 @@ def test_show_me_costs_nothing_when_the_playback_tab_could_not_be_built(
 
     assert caplog.records, "nothing was said about a console that could not go"
     window.close()
+
+
+# --------------------------------------------------- remembering the window
+#
+# The only unfinished thing in this console that costs him something every
+# single day: it opened at a default size every morning and he resized it every
+# morning. On a dedicated always-on machine that is the first thing he does and
+# the first thing that says nobody finished this.
+
+
+def remembered(tmp_path: Path) -> Path:
+    from vmd.desktop.window import WINDOW_FILENAME
+
+    return tmp_path / WINDOW_FILENAME
+
+
+def test_the_window_remembers_the_size_and_place_it_was_left_in(
+    qtbot, tmp_path: Path
+) -> None:
+    window, _ = build(qtbot, tmp_path)
+    window.resize(1180, 640)
+    window.move(140, 96)
+    window.close()
+
+    again, _ = build(qtbot, tmp_path)
+    assert again.size().width() == 1180
+    assert again.size().height() == 640
+    assert (again.pos().x(), again.pos().y()) == (140, 96)
+    again.close()
+
+
+def test_a_window_that_was_maximised_opens_maximised(qtbot, tmp_path: Path) -> None:
+    """And it is set on the window rather than shown, because this runs while
+    the window is still being built and nothing has shown it yet."""
+    from PySide6.QtCore import Qt as _Qt
+
+    window, _ = build(qtbot, tmp_path)
+    window.setWindowState(window.windowState() | _Qt.WindowState.WindowMaximized)
+    window.close()
+
+    again, _ = build(qtbot, tmp_path)
+    assert again.windowState() & _Qt.WindowState.WindowMaximized, (
+        "the window forgot that it was maximised"
+    )
+    again.close()
+
+
+def test_the_window_is_not_remembered_in_the_operators_settings(
+    qtbot, tmp_path: Path
+) -> None:
+    """settings.json is his configuration - what he edits, what is worth backing
+    up, what gets read out over the phone. Where the window was dragged to last
+    night is none of those, and a Save must never be able to fight a resize."""
+    path = write_settings(tmp_path)
+    before = path.read_text(encoding="utf-8")
+
+    window, _ = build(qtbot, tmp_path)
+    window.resize(1180, 640)
+    window.close()
+
+    assert path.read_text(encoding="utf-8") == before, "settings.json was rewritten"
+    assert remembered(tmp_path).exists(), "nothing was remembered anywhere"
+
+
+def test_a_remembered_place_that_no_longer_exists_is_brought_back_on_screen(
+    qtbot, tmp_path: Path
+) -> None:
+    """A monitor unplugged, a resolution changed, display scaling altered: the
+    saved coordinates are somewhere nothing can draw. An invisible window with
+    no way back is worse than a window in the wrong place, so the wrong place
+    wins."""
+    import json as _json
+
+    from PySide6.QtGui import QGuiApplication
+
+    remembered(tmp_path).write_text(
+        _json.dumps({"x": 99999, "y": 99999, "width": 1180, "height": 640}),
+        encoding="utf-8",
+    )
+    window, _ = build(qtbot, tmp_path)
+    # The size he chose is still his; only the place it could not be drawn moved.
+    assert (window.width(), window.height()) == (1180, 640)
+    where = window.geometry()
+    assert any(
+        screen.availableGeometry().intersects(where)
+        for screen in QGuiApplication.screens()
+    ), f"the window opened at {where}, which is on no screen this machine has"
+    window.close()
+
+
+def test_a_remembered_window_bigger_than_the_screen_is_cut_down_to_it(
+    qtbot, tmp_path: Path
+) -> None:
+    import json as _json
+
+    from PySide6.QtGui import QGuiApplication
+
+    remembered(tmp_path).write_text(
+        _json.dumps({"x": 0, "y": 0, "width": 40000, "height": 30000}),
+        encoding="utf-8",
+    )
+    window, _ = build(qtbot, tmp_path)
+    room = QGuiApplication.primaryScreen().availableGeometry()
+    assert (window.width(), window.height()) == (room.width(), room.height())
+    window.close()
+
+
+def test_a_remembered_window_that_cannot_be_read_costs_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """A half-written file, a file from another version, a file somebody has
+    edited. None of them may be the reason the console will not open."""
+    remembered(tmp_path).write_text("this is not json", encoding="utf-8")
+    window, _ = build(qtbot, tmp_path)
+    assert (window.width(), window.height()) == (1440, 900), "it did not open as usual"
+    window.close()
+
+
+def test_a_folder_that_will_not_take_the_file_does_not_stop_the_close(
+    qtbot, tmp_path: Path, caplog
+) -> None:
+    """A full disk is one of the states this console exists to report. It may
+    not also be the reason the window will not shut."""
+    window, _ = build(qtbot, tmp_path)
+    window._geometry_path = tmp_path / "no such folder" / "window.json"
+    with caplog.at_level("WARNING", logger="vmd.desktop.window"):
+        window.close()
+    assert caplog.records, "nothing was said about a window that could not be remembered"
+
+
+# The clamp itself, against screens this machine does not have to own. The
+# fixture is the one that broke it in the field: a saved window on a second
+# monitor that is no longer plugged in.
+
+
+def test_a_window_wholly_on_a_screen_that_is_gone_lands_on_one_that_is_not() -> None:
+    from PySide6.QtCore import QRect
+
+    from vmd.desktop.window import fitted
+
+    laptop = QRect(0, 0, 1920, 1040)
+    where = fitted(QRect(2100, 300, 1200, 800), [laptop])
+    assert laptop.contains(where), f"{where} is not on {laptop}"
+
+
+def test_a_window_mostly_on_a_screen_that_is_still_there_is_left_where_it_is() -> None:
+    """Overlapping the edge by a few pixels is not a lost window, and shoving it
+    every morning would be the console tidying up after an operator who put it
+    there on purpose."""
+    from PySide6.QtCore import QRect
+
+    from vmd.desktop.window import fitted
+
+    laptop = QRect(0, 0, 1920, 1040)
+    where = fitted(QRect(700, 200, 1000, 700), [laptop])
+    assert where == QRect(700, 200, 1000, 700)
+
+
+def test_the_screen_with_most_of_the_window_on_it_is_the_one_it_is_kept_on() -> None:
+    from PySide6.QtCore import QRect
+
+    from vmd.desktop.window import fitted
+
+    laptop = QRect(0, 0, 1920, 1040)
+    second = QRect(1920, 0, 2560, 1400)
+    where = fitted(QRect(3000, 100, 1200, 800), [laptop, second])
+    assert second.contains(where), f"{where} left the screen it was on"
+
+
+def test_a_remembered_window_with_no_size_at_all_is_given_one() -> None:
+    """Zero is what a half-written file and an older version both look like, and
+    a window with no size is a window that is not there."""
+    from PySide6.QtCore import QRect
+
+    from vmd.desktop.window import fitted
+
+    laptop = QRect(0, 0, 1920, 1040)
+    where = fitted(QRect(10, 10, 0, 0), [laptop])
+    assert where.width() > 0 and where.height() > 0
+    assert laptop.contains(where)
