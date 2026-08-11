@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -13,6 +15,39 @@ from vmd.storage.discovery import SEGMENT_FORMAT
 RTSP_SCHEMES = ("rtsp://", "rtsps://")
 
 logger = logging.getLogger(__name__)
+
+
+def _project_root() -> Path:
+    """Where bin\\ lives: beside the executable when frozen, else the package parent."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[2]
+
+
+def find_tool(name: str, project_root: Path | None = None) -> str:
+    """A command-line tool: the copy in bin\\ first, then whatever is on PATH.
+
+    INSTALL.md tells whoever prepares the offline machine to copy ffmpeg.exe
+    into `C:\\VMD\\bin\\`, exactly as go2rtc lives there - and nothing looked
+    for it, because the recorder ran the bare name and let PATH resolve it. On
+    the deployment laptop, following the instructions as written meant recording
+    never started at all, with no message saying why.
+
+    The bare name is returned when there is no bundled copy, which is how it
+    resolves on a development machine with ffmpeg installed system-wide, and
+    which keeps a missing tool failing the way it always did: at spawn, with the
+    tool's own name in the error.
+    """
+    root = project_root or _project_root()
+    for candidate in (root / "bin" / f"{name}.exe", root / "bin" / name):
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which(name)
+    return found or name
+
+
+def find_ffmpeg(project_root: Path | None = None) -> str:
+    return find_tool("ffmpeg", project_root)
 
 
 def _default_spawn(command: list[str], log_path: Path | None = None):
@@ -51,14 +86,16 @@ class SegmentRecorder:
         source_url: str,
         output_dir: str | Path,
         segment_seconds: int = 300,
-        ffmpeg: str = "ffmpeg",
+        ffmpeg: str | None = None,
         spawn: Callable[..., object] = _default_spawn,
     ) -> None:
         self.stream = stream
         self.source_url = source_url
         self.output_dir = Path(output_dir)
         self.segment_seconds = segment_seconds
-        self.ffmpeg = ffmpeg
+        # Resolved rather than assumed: the offline install puts ffmpeg.exe in
+        # bin\ beside go2rtc, and PATH alone never looked there. See find_tool.
+        self.ffmpeg = ffmpeg or find_ffmpeg()
         self._spawn = spawn
         self._process = None
         self._exit_code: int | None = None

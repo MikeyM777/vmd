@@ -134,3 +134,39 @@ def test_a_service_that_throws_on_stop_does_not_block_other_stops():
     assert exploding.stops == 1
     assert healthy.stops == 1
     assert healthy.running is False
+
+
+def test_a_child_started_elsewhere_still_counts_its_death_as_a_restart():
+    """These are usually started directly, once, before the first tick.
+
+    The console brings the recorder, the detector and go2rtc up itself and then
+    hands them here to be kept alive. Counting only the starts this object had
+    performed meant the first death of each was recorded as a first start, so
+    `restarts` still read zero after every child had been killed and brought
+    back - and that number is the one anyone looks at to find out whether
+    something is flapping.
+    """
+    service = FakeService()
+    service.start()  # the console starts it; the supervisor never saw it happen
+    supervisor, clock = build({"recorder": service})
+
+    supervisor.tick()  # sees it alive
+    assert supervisor.restarts["recorder"] == 0
+
+    service.running = False
+    clock.advance(3.0)
+    supervisor.tick()  # brings it back
+    assert supervisor.restarts["recorder"] == 1
+
+    service.running = False
+    clock.advance(3.0)
+    supervisor.tick()
+    assert supervisor.restarts["recorder"] == 2
+
+
+def test_a_child_that_was_never_alive_is_started_not_restarted():
+    """A first start is not a restart, however many ticks it took to get there."""
+    service = FakeService(alive=False)
+    supervisor, _ = build({"recorder": service})
+    supervisor.tick()
+    assert supervisor.restarts["recorder"] == 0

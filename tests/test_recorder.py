@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from vmd.storage import recorder as recorder_module
 from vmd.storage.recorder import SegmentRecorder
 
 
@@ -198,3 +199,55 @@ def test_stop_keeps_running_true_when_kill_raises_oserror(tmp_path):
     recorder.stop()
     # Death could not be confirmed, so the handle is kept deliberately.
     assert recorder.running is True
+
+
+def test_ffmpeg_is_found_where_the_install_instructions_put_it(tmp_path, monkeypatch):
+    """INSTALL.md says to copy ffmpeg.exe into C:\\VMD\\bin\\ for the offline
+    machine, exactly as go2rtc lives there - and nothing looked. The recorder
+    ran the bare name and let PATH resolve it, so following the instructions as
+    written meant recording never started, with nothing on screen saying why.
+    """
+    from vmd.storage.recorder import find_tool
+
+    monkeypatch.setattr(recorder_module.shutil, "which", lambda name: None)
+    bundled = tmp_path / "bin" / "ffmpeg.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"")
+
+    assert find_tool("ffmpeg", project_root=tmp_path) == str(bundled)
+
+
+def test_the_bundled_copy_wins_over_one_on_the_path(tmp_path, monkeypatch):
+    """The bundled copy is the version that was carried over and tested."""
+    from vmd.storage.recorder import find_tool
+
+    monkeypatch.setattr(
+        recorder_module.shutil, "which", lambda name: r"C:\somewhere\else\ffmpeg.exe"
+    )
+    bundled = tmp_path / "bin" / "ffmpeg.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"")
+
+    assert find_tool("ffmpeg", project_root=tmp_path) == str(bundled)
+
+
+def test_ffmpeg_on_the_path_still_works(tmp_path, monkeypatch):
+    """How it resolves on a development machine, and it must keep resolving."""
+    from vmd.storage.recorder import find_tool
+
+    monkeypatch.setattr(recorder_module.shutil, "which", lambda name: r"C:\tools\ffmpeg.exe")
+    assert find_tool("ffmpeg", project_root=tmp_path) == r"C:\tools\ffmpeg.exe"
+
+
+def test_a_missing_ffmpeg_still_fails_by_its_own_name(tmp_path, monkeypatch):
+    """Nowhere at all: the bare name, so the spawn fails saying "ffmpeg"."""
+    from vmd.storage.recorder import find_tool
+
+    monkeypatch.setattr(recorder_module.shutil, "which", lambda name: None)
+    assert find_tool("ffmpeg", project_root=tmp_path) == "ffmpeg"
+
+
+def test_the_recorder_runs_the_binary_it_resolved(tmp_path, monkeypatch):
+    monkeypatch.setattr(recorder_module, "find_ffmpeg", lambda: r"C:\VMD\bin\ffmpeg.exe")
+    recorder = SegmentRecorder("thermal", "rtsp://cam/t", tmp_path)
+    assert recorder.build_command()[0] == r"C:\VMD\bin\ffmpeg.exe"

@@ -57,6 +57,15 @@ class Supervisor:
         now = self._clock()
         for entry in self.managed:
             if entry.service.running:
+                # Seeing it alive counts as having seen it start, whoever
+                # started it. Most of these are started once directly - the
+                # console brings the recorder, the detector and go2rtc up before
+                # the first tick - and counting only the starts this object
+                # performed meant the first death was recorded as a first start
+                # instead of a restart. `restarts` then read zero after every
+                # child had died and come back, which is the one number anyone
+                # looks at to find out whether something is flapping.
+                self._started_once.add(entry.name)
                 started_at = self._up_since.get(entry.name)
                 if started_at is not None and now - started_at >= self._stable_after:
                     self.failures[entry.name] = 0

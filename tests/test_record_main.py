@@ -4,6 +4,8 @@ import os
 import subprocess
 import time
 
+import pytest
+
 from vmd import record_main as record_main_module
 from vmd.record_main import RecordingService, main, parse_args
 from vmd.settings import Settings, StreamSettings
@@ -494,10 +496,16 @@ def test_retention_reclaims_the_events_whose_footage_it_deleted(tmp_path):
     reader = EventStore(root / "events.db")
     try:
         kept = reader.recent()
-        assert [(e.stream, e.started) for e in kept] == [
-            ("thermal", oldest + 600),
-            ("visible", oldest - 60),
-        ], "only the thermal events under the deleted footage should have gone"
+        # Which rows survived, not what order they come back in: `recent()`
+        # answers in insertion order, because this machine's clock is set by
+        # hand and an event stamped before the rows already in the table must
+        # not sort itself off the end of the alarm's window.
+        assert sorted((e.stream, e.started) for e in kept) == sorted(
+            [
+                ("thermal", oldest + 600),
+                ("visible", oldest - 60),
+            ]
+        ), "only the thermal events under the deleted footage should have gone"
     finally:
         reader.close()
 
@@ -870,3 +878,77 @@ def test_moving_the_folder_never_applies_retention_to_the_wrong_one(tmp_path):
         assert service.index.all() == []
     finally:
         service.stop()
+
+
+def test_consecutive_segments_never_claim_the_same_second_twice(tmp_path):
+    """Measured on a real run: 20 of 20 pairs overlapped, mean 0.463 s.
+
+    `start` is read out of the filename, which carries whole seconds; the close
+    time carries the fraction as well. ffmpeg shuts one file and opens the next
+    in the same instant, so that fraction was counted in both. Seeking survived
+    it - it takes the first match - but the index is what a gap detector, a
+    total duration and a coverage figure are all computed from, and the error
+    accumulated once per segment.
+    """
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    names = [
+        "2026-08-07_10-00-00.mp4",
+        "2026-08-07_10-00-30.mp4",
+        "2026-08-07_10-01-00.mp4",
+        "2026-08-07_10-01-30.mp4",
+    ]
+    from vmd.storage.discovery import parse_segment_start
+
+    for index, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * 2048)
+        # Closed 30.463 s after it opened, which is what a 30 s target really
+        # produces: the segmenter cuts at the next keyframe.
+        closed = parse_segment_start(name) + 30.463
+        os.utime(path, (closed, closed))
+
+    try:
+        service.run_once(now=parse_segment_start(names[-1]) + 600)
+        segments = service.index.all()
+        assert len(segments) >= 3, [s.path for s in segments]
+        for earlier, later in zip(segments, segments[1:]):
+            assert earlier.end <= later.start, (
+                f"{os.path.basename(earlier.path)} runs "
+                f"{earlier.end - later.start:.3f}s into "
+                f"{os.path.basename(later.path)}"
+            )
+        assert all(s.end > s.start for s in segments), "a segment covering nothing"
+    finally:
+        service.stop()
+
+
+def test_a_segment_with_no_successor_keeps_its_measured_end(tmp_path):
+    """The last of a run, and the one whose successor was never written.
+
+    A recorder that died mid-run leaves a segment with nothing after it. There
+    is no boundary to clamp against and none should be invented: its close time
+    is the truth about how much footage it holds.
+    """
+    from vmd.storage.discovery import parse_segment_start
+
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    name = "2026-08-07_10-00-00.mp4"
+    start = parse_segment_start(name)
+    path = directory / name
+    path.write_bytes(b"x" * 2048)
+    os.utime(path, (start + 12.75, start + 12.75))
+
+    service.stop()  # no ffmpeg left, so this file is finished and indexable
+
+    reopened = SegmentIndex(tmp_path / "recordings" / "segments.db")
+    try:
+        segment = reopened.all()[0]
+        # Absolute tolerance: these are epoch seconds in the billions, where
+        # approx's default relative tolerance would swallow a whole half-minute.
+        assert segment.end == pytest.approx(start + 12.75, abs=0.01)
+    finally:
+        reopened.close()

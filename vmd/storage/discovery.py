@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import datetime
 from pathlib import Path
 
@@ -21,6 +22,26 @@ def parse_segment_start(filename: str) -> float | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def segment_starts(directory: str | Path) -> list[float]:
+    """Every segment start this directory holds, in order.
+
+    Includes the file ffmpeg currently has open. That file is not indexable, but
+    its name says when the one before it stopped, which is the only thing here
+    that knows where a segment's coverage really ends.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    starts = [parse_segment_start(path.name) for path in directory.glob("*.mp4")]
+    return sorted(start for start in starts if start is not None)
+
+
+def next_segment_start(starts: list[float], start: float) -> float | None:
+    """The first start after this one, from a sorted list, or None if it is last."""
+    index = bisect.bisect_right(starts, start)
+    return starts[index] if index < len(starts) else None
 
 
 def find_closed_segments(
