@@ -18,7 +18,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
-uv run python -m vmd.desktop %*
+REM  --no-sync --frozen --offline: starting the console must never be a network
+REM  operation. Plain "uv run" re-checks the lock and syncs, so any drift sends
+REM  it to PyPI - and this laptop has no network, so that is a hang at the one
+REM  moment nobody here can recover from. install.bat is where dependencies are
+REM  allowed to change.
+uv run --offline --frozen --no-sync python -m vmd.desktop %*
 set RESULT=%ERRORLEVEL%
 
 if %RESULT% NEQ 0 (

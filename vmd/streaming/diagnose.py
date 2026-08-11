@@ -12,10 +12,10 @@ from __future__ import annotations
 import re
 import socket
 import subprocess
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from vmd.settings import Settings
-from vmd.streaming.go2rtc import build_config, find_binary
+from vmd.streaming.go2rtc import build_config, find_binary, probe_target
 
 PROBE_TIMEOUT = 15
 PATH_TIMEOUT = 6
@@ -31,6 +31,47 @@ COMMON_PATHS = [
     "/cam/realmonitor?channel=1&subtype=0", "/cam/realmonitor?channel=2&subtype=0",
     "/axis-media/media.amp", "/media/video1", "/videoMain", "/onvif1", "/onvif2",
 ]
+
+
+def secrets_of(settings: Settings) -> list[str]:
+    """Every form of every password that could appear in these lines.
+
+    Both forms, because they are genuinely different strings. The operator types
+    the password into its own field and `with_credentials` percent-encodes it
+    into the RTSP URL, so `p@ss:w/rd` travels as `p%40ss%3Aw%2Frd` - and a
+    redaction that only knew the typed form matched nothing at all and wrote the
+    real password into a report meant to be sent to someone else.
+
+    Longest first so that a password which contains another one is masked whole
+    rather than leaving a tail behind.
+    """
+    values: set[str] = set()
+    for secret in (settings.camera.password, settings.radio.password):
+        if not secret:
+            continue
+        values.add(secret)
+        values.add(quote(secret, safe=""))
+    return sorted(values, key=len, reverse=True)
+
+
+def redact(lines: list[str], settings: Settings) -> list[str]:
+    """Take the passwords back out of everything on the way to the operator.
+
+    Applied to the whole output rather than to the one line that builds a URL,
+    because the URL is not the only thing that carries it: ffprobe is run
+    against the credentialed address and routinely echoes it back inside its own
+    error text, which this then prints six lines of. Redacting at the exit is
+    the only place that covers both, and anything added later.
+    """
+    secrets = secrets_of(settings)
+    if not secrets:
+        return lines
+    cleaned = []
+    for line in lines:
+        for secret in secrets:
+            line = line.replace(secret, "****")
+        cleaned.append(line)
+    return cleaned
 
 
 def _with_path(base_url: str, path: str) -> str:
@@ -109,13 +150,21 @@ def try_path(base_url: str, path: str) -> tuple[bool, str]:
 
 def find_paths(settings: Settings, on_progress=None) -> list[str]:
     """Try the common RTSP paths and report which ones give video."""
+    return redact(_find_paths(settings, on_progress), settings)
+
+
+def _find_paths(settings: Settings, on_progress=None) -> list[str]:
     camera = settings.camera
     enabled = [s for s in camera.streams if s.enabled and s.url]
     if not enabled:
         return ["No stream is configured, so there is no address to work from."]
 
     config = build_config(settings, 1984, 8554)
-    base = config["streams"].get(enabled[0].name, enabled[0].url)
+    # probe_target, because a stream set to the ffmpeg reader is stored as
+    # "ffmpeg:rtsp://...#video=copy" - which has no host, so this tool used to
+    # refuse to run at all on exactly the stream that had been switched to
+    # ffmpeg because it was the one giving trouble.
+    base = probe_target(config["streams"].get(enabled[0].name, enabled[0].url))
     parsed = urlsplit(base)
     if not parsed.hostname:
         return ["The configured address has no host in it."]
@@ -153,7 +202,16 @@ def find_paths(settings: Settings, on_progress=None) -> list[str]:
 
 
 def diagnose(settings: Settings) -> list[str]:
-    """Plain lines, in the order someone would work through them."""
+    """Plain lines, in the order someone would work through them.
+
+    Redacted on the way out: these lines are shown in the Settings tab and are
+    also what "Save a report" writes into a file meant to be sent to somebody
+    else, and the password is the one thing in here that must not travel.
+    """
+    return redact(_diagnose(settings), settings)
+
+
+def _diagnose(settings: Settings) -> list[str]:
     lines: list[str] = []
     camera = settings.camera
 
@@ -173,13 +231,17 @@ def diagnose(settings: Settings) -> list[str]:
 
     for stream in enabled:
         url = config["streams"].get(stream.name, stream.url)
-        parsed = urlsplit(url)
+        # What go2rtc is given is not always a URL: the ffmpeg reader wraps it.
+        # Probing needs the address inside; the operator needs to see the whole
+        # thing, so the two are kept apart rather than one standing in for the
+        # other.
+        target = probe_target(url)
+        parsed = urlsplit(target)
         lines.append("")
         lines.append(f"[{stream.name}]")
         lines.append(f"  typed : {stream.url}")
         if url != stream.url:
-            shown = url.replace(camera.password, "****") if camera.password else url
-            lines.append(f"  sent  : {shown}")
+            lines.append(f"  sent  : {url}")
         elif camera.password:
             lines.append("  sent  : unchanged - this address already carries a login,")
             lines.append("          or it is not an rtsp:// address")
@@ -202,7 +264,7 @@ def diagnose(settings: Settings) -> list[str]:
                     "-rtsp_transport", "tcp", "-timeout", "5000000",
                     "-show_entries", "stream=codec_name,width,height,avg_frame_rate",
                     "-of", "default=noprint_wrappers=1",
-                    url,
+                    target,
                 ],
                 capture_output=True, text=True, timeout=PROBE_TIMEOUT, check=False,
             )
@@ -218,7 +280,7 @@ def diagnose(settings: Settings) -> list[str]:
             lines.append("  [ok] The camera is sending video:")
             for line in probe.stdout.strip().splitlines():
                 lines.append(f"       {line}")
-            mbps = measure_bitrate(url)
+            mbps = measure_bitrate(target)
             verdict = link_verdict(mbps, settings.bitrate.ceiling_kbps / 1000)
             if verdict:
                 lines.append(f"     {verdict.strip()}")

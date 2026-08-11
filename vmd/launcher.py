@@ -51,7 +51,17 @@ def main(argv: list[str] | None = None) -> int:
             "  Double-click install.bat once; it sets everything up."
         )
 
-    command = [uv, "run", "python", "-m", "vmd.desktop", *args]
+    # --no-sync --frozen --offline, because starting the console must not be a
+    # network operation. `uv run` on its own re-checks the lock file and syncs,
+    # so any drift - a pulled commit, a touched pyproject.toml - sends it to
+    # PyPI. On this laptop there is no network at all, so that is a hang or a
+    # refusal at the one moment a non-technical operator cannot recover from.
+    # install.bat and the Update button are where dependencies are allowed to
+    # change; this is not.
+    command = [
+        uv, "run", "--offline", "--frozen", "--no-sync",
+        "python", "-m", "vmd.desktop", *args,
+    ]
     try:
         # Run in the project directory so settings.json, recordings and bin\
         # all resolve the way every other part of the system expects.

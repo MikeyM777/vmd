@@ -9,6 +9,7 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -66,6 +67,35 @@ class StreamSettings(Model):
     name: str
     url: str
     enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _only_a_camera_or_a_file(cls, value: str) -> str:
+        """Refuse anything that is not an RTSP address or a file on this machine.
+
+        This box is typed into by hand and its contents are handed straight to
+        go2rtc's source parser, which is far larger than "a camera": the bundled
+        binary also understands `exec:` (run this command line), and `ring:`,
+        `wyze:`, `tapo:`, `nest:`, `hass:`, `ngrok:` and `http(s):`, several of
+        which call out to a vendor's cloud. One pasted line would turn an
+        air-gapped console into a cloud client or an arbitrary-command runner,
+        and nothing downstream would object because passing an unknown scheme
+        through untouched is exactly what the URL builder is supposed to do.
+
+        A bare path is allowed - the recorder genuinely supports reading a local
+        file, and that is how it is tested without a camera. A Windows path is a
+        bare path too, even though `C:\\...` parses as a one-letter scheme.
+        """
+        text = value.strip()
+        if not text:
+            return value
+        scheme = urlsplit(text).scheme.lower()
+        if scheme in ("", "rtsp", "rtsps") or len(scheme) == 1:
+            return value
+        raise ValueError(
+            f"a stream address must start with rtsp:// or rtsps:// (this one starts "
+            f"with {scheme}:). Enter the camera's RTSP address."
+        )
 
     # --- detection, per stream ---------------------------------------------
     #
@@ -256,15 +286,33 @@ def load_settings(path: str | Path) -> Settings:
     """Load settings. A missing file means first run and yields defaults."""
     path = Path(path)
     if not path.exists():
-        return Settings()
+        return _with_absolute_root(Settings(), path)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SettingsError(f"settings file could not be read: {path}: {exc}") from exc
     try:
-        return Settings.model_validate(raw)
+        settings = Settings.model_validate(raw)
     except ValidationError as exc:
         raise SettingsError(f"invalid settings in {path}:\n{exc}") from exc
+    return _with_absolute_root(settings, path)
+
+
+def _with_absolute_root(settings: Settings, settings_path: Path) -> Settings:
+    """Anchor a relative recording folder to the settings file, not the shell.
+
+    `root` defaults to the relative "recordings", and three separate processes
+    resolve it: the console, the recorder it starts, and anything run by hand.
+    Both launchers pin the working directory, so today they agree - but a
+    console started any other way would fill a second recordings tree somewhere
+    else on the disk, and the operator would have no way to find the footage
+    that went into it. Resolving against the file that named it means every
+    process reaches the same folder however it was started.
+    """
+    root = Path(settings.storage.root)
+    if not root.is_absolute():
+        settings.storage.root = (settings_path.parent / root).resolve()
+    return settings
 
 
 def save_settings(settings: Settings, path: str | Path) -> None:

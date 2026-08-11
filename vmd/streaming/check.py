@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from vmd.settings import SettingsError, load_settings
-from vmd.streaming.go2rtc import build_config, find_binary
+from vmd.streaming.go2rtc import build_config, find_binary, probe_target
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -85,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     for stream in camera.streams:
         if not (stream.enabled and stream.url):
             continue
-        parsed = urlsplit(config["streams"][stream.name])
+        # The ffmpeg reader stores its source as "ffmpeg:rtsp://...#video=copy",
+        # which has no host - so without unwrapping it this loop silently
+        # skipped the very stream someone was here to test.
+        target = probe_target(config["streams"][stream.name])
+        parsed = urlsplit(target)
         host, port = parsed.hostname, parsed.port or 554
         if not host:
             continue
@@ -107,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
                     "-rtsp_transport", "tcp", "-timeout", "5000000",
                     "-show_entries", "stream=codec_name,width,height",
                     "-of", "default=noprint_wrappers=1",
-                    config["streams"][stream.name],
+                    target,
                 ],
                 capture_output=True, text=True, timeout=25, check=False,
             )
@@ -160,7 +164,6 @@ def check_streaming_server(settings) -> None:
         binary=binary,
         api_port=1984,
         rtsp_port=8554,
-        webrtc_port=8555,
     )
     try:
         service.start()
@@ -171,7 +174,7 @@ def check_streaming_server(settings) -> None:
             print(f"        exit code: {service._exit_code}")
             return
         print(f"   [ok] Running on {service.api_base}")
-        print(f"        api {service.api_port}, rtsp {service.rtsp_port}, webrtc {service.webrtc_port}")
+        print(f"        api {service.api_port}, rtsp {service.rtsp_port}")
         time.sleep(4)
         sources = service.sources()
         if not sources:

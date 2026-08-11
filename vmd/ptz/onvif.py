@@ -135,9 +135,19 @@ class OnvifPtz:
         realm = f"{self.base}/"
         manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
         manager.add_password(None, realm, self.username, self.password)
-        yield "digest", urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(manager))
-        yield "basic", urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(manager))
-        yield "wsse", urllib.request.build_opener()
+        # An empty ProxyHandler on every one of them. Without it urllib honours
+        # http_proxy, https_proxy and, on Windows, whatever proxy is configured
+        # in the registry - which would send this camera's password to a machine
+        # that is not the camera. The camera is at the far end of a private radio
+        # link; there is no proxy between here and it, and there must not be.
+        no_proxy = urllib.request.ProxyHandler({})
+        yield "digest", urllib.request.build_opener(
+            no_proxy, urllib.request.HTTPDigestAuthHandler(manager)
+        )
+        yield "basic", urllib.request.build_opener(
+            no_proxy, urllib.request.HTTPBasicAuthHandler(manager)
+        )
+        yield "wsse", urllib.request.build_opener(no_proxy)
 
     def _post(self, path: str, body: str) -> str:
         """One SOAP call, trying each authentication style until one is accepted."""

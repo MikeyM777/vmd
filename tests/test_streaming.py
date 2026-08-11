@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from vmd.settings import CameraSettings, Settings, StreamSettings
 from vmd.streaming.go2rtc import Go2rtcService, build_config, find_binary, write_config
@@ -50,6 +51,17 @@ def settings_with(*streams: tuple[str, str, bool]) -> Settings:
     )
 
 
+def unvalidated_stream(name: str, url: str) -> StreamSettings:
+    """A stream carrying a source the operator is no longer allowed to type.
+
+    `exec:` is how the integration test manufactures a camera out of ffmpeg, and
+    it is also the reason StreamSettings now refuses everything but rtsp and a
+    local path - go2rtc's `exec:` runs a command line. The test harness may
+    build one; the Settings tab may not, which is the whole point.
+    """
+    return StreamSettings.model_construct(name=name, url=url, enabled=True)
+
+
 def service(settings: Settings, tmp_path: Path, spawned: list) -> Go2rtcService:
     def spawn(command: list[str]) -> FakeProcess:
         spawned.append(command)
@@ -78,6 +90,31 @@ def test_everything_listens_on_loopback_only() -> None:
     config = build_config(settings_with(("thermal", "rtsp://cam/t", True)), 1984, 8554)
     assert config["api"]["listen"].startswith("127.0.0.1:")
     assert config["rtsp"]["listen"].startswith("127.0.0.1:")
+
+
+def test_nothing_in_the_config_reaches_out_of_this_machine() -> None:
+    """Listening on loopback says nothing about what the server dials.
+
+    Left with a WebRTC listener, go2rtc gathers ICE candidates from its
+    compiled-in defaults - Google's, Cloudflare's and Amazon's STUN servers.
+    That is outbound traffic from a machine that is supposed to be air-gapped,
+    for a transport nothing here uses: every video pane plays rtsp://127.0.0.1
+    through VLC, and the browser console this was built for no longer exists.
+    """
+    config = build_config(settings_with(("thermal", "rtsp://cam/t", True)), 1984, 8554)
+    assert config["webrtc"]["listen"] == "", "a WebRTC listener means outbound STUN"
+    assert config["webrtc"]["ice_servers"] == []
+    # And nothing already running on this machine may drive the streaming
+    # server from a web page: the wildcard was for the console page that is gone.
+    assert config["api"].get("origin") != "*"
+
+
+def test_the_config_names_no_host_outside_this_machine() -> None:
+    """A blunt read of the whole document, so a future key cannot smuggle one in."""
+    settings = settings_with(("thermal", "rtsp://10.0.0.5/ch1", True))
+    text = json.dumps(build_config(settings, 1984, 8554))
+    for outside in ("stun:", "turn:", "google", "cloudflare", "amazonaws", "0.0.0.0"):
+        assert outside not in text.lower(), f"{outside} appears in the go2rtc config"
 
 
 def test_config_is_written_as_valid_json(tmp_path: Path) -> None:
@@ -247,7 +284,7 @@ def test_a_real_stream_reaches_a_browser_playable_url(tmp_path: Path) -> None:
         "-c:v libx264 -preset ultrafast -tune zerolatency -g 15 -f rtsp {output}"
     )
     svc = Go2rtcService(
-        settings_with(("thermal", source, True)),
+        Settings(camera=CameraSettings(streams=[unvalidated_stream("thermal", source)])),
         config_path=tmp_path / "go2rtc.json",
         binary=binary,
         api_port=api_port,
@@ -307,14 +344,47 @@ def test_a_url_with_its_own_credentials_is_left_alone() -> None:
 
 
 def test_non_rtsp_sources_are_untouched() -> None:
-    settings = Settings(
-        camera=CameraSettings(
-            username="admin",
-            password="x",
-            streams=[StreamSettings(name="t", url="exec:ffmpeg -i thing {output}", enabled=True)],
-        )
+    """The URL builder must leave a scheme it does not understand exactly alone.
+
+    Still the right behaviour at this layer - splicing credentials into a source
+    that has nowhere to put them would corrupt it - even though the settings
+    model now refuses to let such a source be typed in the first place.
+    """
+    from vmd.streaming.go2rtc import with_credentials
+
+    assert with_credentials("exec:ffmpeg -i thing {output}", "admin", "x") == (
+        "exec:ffmpeg -i thing {output}"
     )
-    assert build_config(settings, 1984, 8554)["streams"]["t"] == "exec:ffmpeg -i thing {output}"
+
+
+def test_a_stream_address_may_only_be_a_camera_or_a_file() -> None:
+    """One paste into the address box must not turn this into a cloud client.
+
+    go2rtc's source parser understands far more than RTSP: `exec:` runs a
+    command line, and `ring:`, `wyze:`, `tapo:`, `hass:` and `http(s):` reach
+    out to a vendor's servers. On a machine that is deliberately air-gapped,
+    those are not features, and nothing downstream would object - passing an
+    unknown scheme through untouched is what the URL builder is for.
+    """
+    for refused in (
+        "exec:ffmpeg -i thing {output}",
+        "ring:whatever",
+        "wyze:whatever",
+        "http://api.example.com/stream",
+        "https://api.example.com/stream",
+        "hass:camera.front",
+        "ngrok:1234",
+    ):
+        with pytest.raises(ValidationError):
+            StreamSettings(name="t", url=refused)
+
+    # What the operator really types, and what the recorder is tested with,
+    # both still load.
+    assert StreamSettings(name="t", url="rtsp://10.0.0.5:554/ch1").url
+    assert StreamSettings(name="t", url="rtsps://10.0.0.5:322/ch1").url
+    assert StreamSettings(name="t", url=r"C:\footage\clip.mp4").url
+    assert StreamSettings(name="t", url="/footage/clip.mp4").url
+    assert StreamSettings(name="t", url="").url == ""
 
 
 def test_a_dead_server_is_restarted(tmp_path: Path) -> None:

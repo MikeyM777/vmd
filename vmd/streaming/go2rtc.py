@@ -1,13 +1,18 @@
-"""Runs go2rtc, which turns the camera's RTSP into something a browser can play.
+"""Runs go2rtc, which holds the one connection this system makes to the camera.
 
-The camera speaks RTSP and no browser has ever played RTSP. go2rtc sits between
-them: it holds one connection to the camera and re-serves it as WebRTC and as
-fragmented MP4, so several browser tabs cost the camera and the radio link
-nothing extra. On a 5 Mb/s link shared with recording, that is the difference
-between working and not.
+It sits between the camera and everything on this machine that wants the
+picture: it opens a single RTSP connection across the radio link and re-serves
+it on loopback, so the console's video panes and the recorder together still
+cost the camera and the link one stream. On a 5 Mb/s link shared with recording,
+that is the difference between working and not.
 
-This module owns the process and the config file. It deliberately does not own
-what the page plays - the page picks WebRTC or MP4 for itself.
+Only the RTSP re-publisher is used. WebRTC and the fragmented-MP4 path existed
+for the browser console, which no longer exists - the desktop console plays
+rtsp://127.0.0.1 through VLC - and WebRTC is switched off in the config because
+go2rtc's defaults would otherwise have it talking to public STUN servers from a
+machine that is meant to be air-gapped.
+
+This module owns the process and the config file.
 """
 
 from __future__ import annotations
@@ -131,12 +136,31 @@ def source_for(stream, username: str, password: str) -> str:
     return url
 
 
-def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port: int = 8555) -> dict:
+def probe_target(source: str) -> str:
+    """The plain address inside a go2rtc source string.
+
+    `source_for` wraps a stream in `ffmpeg:...#video=copy#audio=copy` when the
+    operator picks the ffmpeg reader. That string is a go2rtc instruction, not a
+    URL, so anything that hands it to `urlsplit` gets no host back - which is how
+    both diagnostic tools came to answer "this address has no host in it" for
+    exactly the stream that had been switched to ffmpeg because it was the one
+    misbehaving. Unwrapping it here keeps the wrapper in one place.
+    """
+    if source.startswith("ffmpeg:"):
+        # The options are appended by source_for after a '#'; nothing that can
+        # legally appear before it survives quoting, because with_credentials
+        # percent-encodes the credentials.
+        return source[len("ffmpeg:") :].split("#", 1)[0]
+    return source
+
+
+def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
     """The go2rtc config for the streams the operator has enabled.
 
-    Everything listens on loopback only. This machine is air-gapped and the
-    console is for the person sitting at it; a streaming server reachable from
-    the network is not a feature here, it is a hole.
+    Everything listens on loopback only, and nothing reaches outward. This
+    machine is air-gapped and the console is for the person sitting at it; a
+    streaming server reachable from the network is not a feature here, it is a
+    hole, and one that dials out is worse.
     """
     streams = {
         stream.name: source_for(stream, settings.camera.username, settings.camera.password)
@@ -144,24 +168,25 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int, webrtc_port:
         if stream.enabled and stream.url
     }
     return {
-        "api": {
-            "listen": f"127.0.0.1:{api_port}",
-            # The console runs on a different port, so its WebSocket to this
-            # server is cross-origin and go2rtc refuses it with a 403 unless
-            # told otherwise. That WebSocket is the WebRTC signalling channel -
-            # without it there is no low-latency video. Both ends are bound to
-            # loopback on an offline machine, so the only thing that can reach
-            # this is something already running on it.
-            "origin": "*",
-        },
-        # The RTSP listener is not for anyone else to connect to; go2rtc uses it
-        # internally when a source has to be re-published. Loopback, always.
+        # No `origin` wildcard. It was here for the browser console's WebSocket,
+        # which was cross-origin because the page came from a different port.
+        # There is no page any more - the console is a desktop application and
+        # VLC pulls RTSP from the loopback listener below - so the only thing a
+        # wildcard still does is let anything else on this machine drive the
+        # streaming server through a web page.
+        "api": {"listen": f"127.0.0.1:{api_port}"},
+        # The RTSP listener is what the console's VLC panes and the recorder
+        # both read. Loopback, always.
         "rtsp": {"listen": f"127.0.0.1:{rtsp_port}"},
-        # WebRTC needs a listener to offer host candidates from. Loopback only:
-        # the browser is on this machine and nothing else may reach the video.
-        # Port 0 means "do not offer WebRTC at all", which is the fallback when
-        # go2rtc will not start with it.
-        "webrtc": {"listen": f"127.0.0.1:{webrtc_port}" if webrtc_port else ""},
+        # Off, and explicitly so. Nothing in the desktop console speaks WebRTC:
+        # every pane plays rtsp://127.0.0.1. Left enabled, go2rtc's compiled-in
+        # defaults have it gathering ICE candidates from Google's, Cloudflare's
+        # and Amazon's STUN servers - outbound traffic from a machine that is
+        # supposed to be air-gapped, for a transport nothing here uses. An empty
+        # listen turns the module off; the empty `ice_servers` is belt and
+        # braces, so that a future build which honours one but not the other
+        # still cannot dial out.
+        "webrtc": {"listen": "", "ice_servers": []},
         "log": {"level": "warn"},
         "streams": streams,
     }
@@ -203,7 +228,6 @@ class Go2rtcService:
         endpoint_path: Path | None = None,
         api_port: int = 1984,
         rtsp_port: int = 8554,
-        webrtc_port: int = 8555,
         spawn=None,
     ) -> None:
         self.settings = settings
@@ -214,7 +238,6 @@ class Go2rtcService:
         self.endpoint_path = Path(endpoint_path) if endpoint_path else self.config_path.parent / "streaming.json"
         self.api_port = api_port
         self.rtsp_port = rtsp_port
-        self.webrtc_port = webrtc_port
         self.binary = binary
         self._spawn = spawn or _default_spawn
         self._process: subprocess.Popen | None = None
@@ -289,16 +312,17 @@ class Go2rtcService:
 
         # Ports are checked rather than assumed. A leftover go2rtc from a previous
         # run, or anything else on the machine, must not be able to leave the
-        # console with no video at all.
+        # console with no video at all: go2rtc exits if any port it was told to
+        # bind is taken, which is what a third listener once did here.
         self.api_port = free_port(self.api_port)
         self.rtsp_port = free_port(self.rtsp_port)
-        self.webrtc_port = free_port(self.webrtc_port)
 
-        if not self._launch(with_webrtc=True):
-            # WebRTC is the fast path, not the only one. If go2rtc will not come
-            # up with it, come up without it and serve MP4 rather than nothing.
-            logger.warning("go2rtc would not start with WebRTC enabled; retrying without it")
-            self._launch(with_webrtc=False)
+        # One attempt, because there is now only one configuration to try. The
+        # second attempt existed to come up with WebRTC disabled after a first
+        # try with it enabled had failed; WebRTC is disabled outright now, so
+        # retrying the identical config would only spend another second of the
+        # console's heartbeat failing the same way.
+        self._launch()
 
     def stop(self) -> None:
         self._clear_endpoint()
@@ -321,7 +345,7 @@ class Go2rtcService:
                     return
         self._process = None
 
-    def _launch(self, with_webrtc: bool) -> bool:
+    def _launch(self) -> bool:
         """Spawn go2rtc and confirm it is still alive a moment later.
 
         A process that exits immediately is the failure that matters here, and
@@ -329,12 +353,7 @@ class Go2rtcService:
         "running", which is what the console actually claims on screen.
         """
         write_config(
-            build_config(
-                self.settings,
-                self.api_port,
-                self.rtsp_port,
-                self.webrtc_port if with_webrtc else 0,
-            ),
+            build_config(self.settings, self.api_port, self.rtsp_port),
             self.config_path,
         )
         try:
@@ -358,10 +377,7 @@ class Go2rtcService:
 
         self._write_endpoint()
         logger.info(
-            "go2rtc started on %s for %s%s",
-            self.api_base,
-            ", ".join(self.stream_names),
-            "" if with_webrtc else " (WebRTC disabled)",
+            "go2rtc started on %s for %s", self.api_base, ", ".join(self.stream_names)
         )
         return True
 
@@ -373,7 +389,6 @@ class Go2rtcService:
         payload = {
             "api_port": self.api_port,
             "rtsp_port": self.rtsp_port,
-            "webrtc_port": self.webrtc_port,
             "streams": {name: self.local_rtsp_url(name) for name in self.stream_names},
         }
         try:

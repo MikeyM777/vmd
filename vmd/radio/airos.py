@@ -129,6 +129,11 @@ class AirOsRadio:
         context.verify_mode = ssl.CERT_NONE
         jar = http.cookiejar.CookieJar()
         return urllib.request.build_opener(
+            # No proxy, ever. urllib otherwise honours http_proxy, https_proxy
+            # and the Windows registry's proxy settings, which would post this
+            # radio's password to whatever they name. The radio is a cable away
+            # on the operator's desk; nothing may sit between.
+            urllib.request.ProxyHandler({}),
             urllib.request.HTTPSHandler(context=context),
             urllib.request.HTTPCookieProcessor(jar),
         )

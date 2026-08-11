@@ -355,3 +355,25 @@ def test_stop_and_home_with_no_camera_say_so_instead_of_raising() -> None:
     service = PtzService(Settings())
     assert service.stop() == {"ok": False, "error": "no camera address set"}
     assert service.home() == {"ok": False, "error": "no camera address set"}
+
+
+def test_the_camera_is_never_reached_through_a_proxy(monkeypatch) -> None:
+    """The same rule as the radio: no proxy may stand between us and the camera.
+
+    urllib picks up http_proxy, https_proxy and the Windows registry unless it
+    is told not to, and every one of these openers carries the camera's login.
+    """
+    import urllib.request
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    for name, opener in OnvifPtz("10.0.0.5", USER, PASSWORD)._openers():
+        # An empty ProxyHandler registers no methods, so build_opener leaves it
+        # out of `handlers` entirely - what matters is that it displaced the
+        # default one that would have been built from the environment.
+        routed = [
+            handler.proxies
+            for handler in opener.handlers
+            if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies
+        ]
+        assert routed == [], f"the {name} login would be sent through {routed}"

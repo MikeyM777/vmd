@@ -86,3 +86,39 @@ def test_detect_free_bytes_on_real_path(tmp_path):
 
 def test_detect_free_bytes_returns_none_for_bad_path(tmp_path):
     assert detect_free_bytes(tmp_path / "does" / "not" / "exist") is None
+
+
+def test_a_relative_recording_folder_is_anchored_to_the_settings_file(tmp_path, monkeypatch):
+    """Three processes read this file; all three must reach the same folder.
+
+    `root` defaults to the relative "recordings", so a console or a recorder
+    started from anywhere but the project directory would quietly fill a second
+    tree beside whatever the shell happened to be sitting in - and the operator
+    would have no way to find the footage that went into it.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "settings.json").write_text(
+        json.dumps({"storage": {"root": "recordings"}}), encoding="utf-8"
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    settings = load_settings(project / "settings.json")
+    assert settings.storage.root.is_absolute()
+    assert settings.storage.root == (project / "recordings").resolve()
+
+
+def test_an_absolute_recording_folder_is_left_exactly_as_chosen(tmp_path):
+    chosen = tmp_path / "D_drive" / "footage"
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"storage": {"root": str(chosen)}}), encoding="utf-8"
+    )
+    assert load_settings(tmp_path / "settings.json").storage.root == chosen
+
+
+def test_a_first_run_with_no_file_still_gets_an_absolute_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = load_settings(tmp_path / "nothing-here.json")
+    assert settings.storage.root == (tmp_path / "recordings").resolve()

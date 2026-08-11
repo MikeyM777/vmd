@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.request
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -178,3 +179,24 @@ def test_a_slow_reading_is_still_cached(monkeypatch) -> None:
     second = service.status()
     assert second == first
     assert SlowRadio.calls == 1, "the slow reading was not cached, so the console blocks again"
+
+
+def test_the_radio_is_never_reached_through_a_proxy(monkeypatch) -> None:
+    """urllib honours http_proxy and, on Windows, the registry's proxy settings.
+
+    The radio is a cable away on the operator's desk. A proxy variable picked up
+    from the environment would post its password to whatever that names, and on
+    an air-gapped machine that is traffic that should not exist at all.
+    """
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    opener = AirOsRadio("10.0.0.9", USER, PASSWORD)._build_opener()
+    # An empty ProxyHandler registers no methods, so build_opener leaves it out
+    # of `handlers` entirely - what matters is that it displaced the default one
+    # that would have been built from the environment.
+    routed = [
+        handler.proxies
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies
+    ]
+    assert routed == [], f"the radio would be reached through {routed}"
