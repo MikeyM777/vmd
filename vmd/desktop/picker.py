@@ -57,7 +57,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.style import PALETTE
+from vmd.desktop.live import WrappedNote
+from vmd.desktop.style import PALETTE, SIZE_SMALL, SPACE_SNUG, SPACE_STEP
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,45 @@ CLOSE_WAIT_MS = 3000
 # A press and a release this far apart, or less, in the preview's own dots, is a
 # click rather than a drag. Nobody releases the mouse on the dot they pressed.
 CLICK_SLOP = 4
+
+# How many frames to decode before keeping one.
+#
+# It was ONE, and one frame off a live RTSP stream is routinely black, green or
+# half-decoded: the decoder has not necessarily had a complete keyframe when the
+# first picture comes out of it. ffmpeg exits 0 and writes a valid JPEG, so
+# every guard below passed and the operator was handed a black rectangle to draw
+# a sky line on - which is worse than the honest refusal, because there is
+# nothing to act on.
+#
+# Twenty, with `-update 1` so each frame is written over the last and what
+# survives is the twentieth. Twenty is past the first keyframe on any sane GOP -
+# this camera is asked for one a second and sends 15 to 25 frames a second - and
+# at those rates it is between one and one and a half seconds of stream. That
+# matters: this crosses the radio link the live picture is already using, and
+# the budget for a still is about a second, not several.
+FRAMES_TO_DECODE = 20
+
+# How much variation a picture must have before it is a picture.
+#
+# The unit is one standard deviation of brightness, measured on a grid of
+# samples across the frame, out of 255.
+#
+# The number is deliberately low, and it is low because of the thermal head.
+# A heat camera looking at a cold, flat perimeter at 700 m genuinely produces a
+# low-contrast picture, and refusing a real thermal frame would be far worse
+# than showing a dim one: it would take away the only way to place a sky line on
+# the view that most needs one. So this is not a "looks dull" threshold. It is a
+# "there is nothing here at all" threshold: a blank or half-decoded frame comes
+# out under 1 even after JPEG, because every sample is the same value, while any
+# real frame - including a flat thermal one, which still carries sensor noise
+# across every pixel - is several times this.
+BLANK_STANDARD_DEVIATION = 2.0
+
+# How many samples that measurement is taken from. Read on a grid across the
+# full-size frame rather than from a scaled-down copy: scaling averages, and
+# averaging is precisely what would erase the noise that tells a real flat
+# thermal picture apart from a blank one.
+BLANK_SAMPLES = 64
 
 
 class FrameUnavailable(RuntimeError):
@@ -375,13 +415,49 @@ def _without_secrets(text: str, settings) -> str:
     return text
 
 
+def blankness(image: QImage) -> float:
+    """How much brightness varies across this picture, in levels out of 255.
+
+    Sampled on a grid of the full-size frame rather than from a scaled copy,
+    because scaling averages and averaging is exactly what would erase the
+    sensor noise that tells a real, flat thermal picture apart from a blank one.
+    """
+    width, height = image.width(), image.height()
+    if width <= 0 or height <= 0:
+        return 0.0
+    across = min(BLANK_SAMPLES, width)
+    down = min(BLANK_SAMPLES, height)
+    values: list[int] = []
+    for row in range(down):
+        y = row * height // down
+        for column in range(across):
+            x = column * width // across
+            values.append(QColor(image.pixel(x, y)).lightness())
+    if not values:
+        return 0.0
+    mean = sum(values) / len(values)
+    return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+
+
+def is_blank(image: QImage) -> bool:
+    """Whether this is a picture at all, rather than a rectangle of one colour."""
+    return blankness(image) < BLANK_STANDARD_DEVIATION
+
+
 def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
     """One frame from the named view, as the bytes of a picture.
 
     ffmpeg rather than anything richer, because it is already on this machine -
     the offline install puts it beside go2rtc - and it is what everything else
-    here reads a stream with. One frame and out: this crosses the radio link the
-    live picture is also using, and the operator is looking at a still.
+    here reads a stream with. A second of stream and out: this crosses the radio
+    link the live picture is also using, and the operator is looking at a still.
+
+    Twenty frames, and the twentieth is the one kept. Taking the first decoded
+    frame off a live stream is what produced the black rectangle the operator
+    was being asked to draw on: the decoder has not necessarily had a whole
+    keyframe by then, ffmpeg exits 0, and a valid JPEG of nothing passes every
+    guard below. `-update 1` writes each frame over the same file, so the cost
+    of the nineteen that are thrown away is the second of stream, not disk.
     """
     address = _address_of(settings, stream)
     with tempfile.TemporaryDirectory(prefix="vmd-frame-") as folder:
@@ -391,7 +467,9 @@ def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
                 [
                     _ffmpeg(), "-hide_banner", "-loglevel", "error",
                     "-rtsp_transport", "tcp", "-timeout", "5000000",
-                    "-i", address, "-frames:v", "1", "-f", "image2", "-y", str(target),
+                    "-i", address,
+                    "-frames:v", str(FRAMES_TO_DECODE), "-update", "1",
+                    "-f", "image2", "-y", str(target),
                 ],
                 capture_output=True, text=True, timeout=seconds, check=False,
             )
@@ -427,6 +505,19 @@ def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
                 "on. Type the numbers in instead, or press \"Test the camera\" "
                 "to find out why it is quiet."
             )
+        # What it said even when it worked. A grab that "succeeded" into a black
+        # frame used to leave no trace anywhere at all, which is why that fault
+        # took several rounds to find: ffmpeg's own complaints about a stream it
+        # only half decoded are the first thing anyone would want to read, and
+        # they were being thrown away on the one path where nothing else was
+        # written down either.
+        said = (run.stderr or "").strip().splitlines()
+        if said:
+            logger.info(
+                "ffmpeg while fetching a frame from %s: %s",
+                stream,
+                _without_secrets("; ".join(said[:3]), settings),
+            )
         return target.read_bytes()
 
 
@@ -461,15 +552,14 @@ class PickerDialog(QDialog):
         self._pool.setMaxThreadCount(1)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10)
-        outer.setSpacing(8)
+        outer.setContentsMargins(SPACE_STEP, SPACE_STEP, SPACE_STEP, SPACE_STEP)
+        outer.setSpacing(SPACE_STEP)
 
-        self.instructions = QLabel(
+        self.instructions = WrappedNote(
             "Click the picture to put the sky line where the ground stops. "
             "Drag a box over anything you want ignored - a tree that sways, a "
             "flag, a road."
         )
-        self.instructions.setWordWrap(True)
         outer.addWidget(self.instructions)
 
         self.picker = FramePicker()
@@ -479,13 +569,12 @@ class PickerDialog(QDialog):
         self.picker.region_drawn.connect(self._region_drawn)
 
         middle = QHBoxLayout()
-        middle.setSpacing(8)
+        middle.setSpacing(SPACE_STEP)
         middle.addWidget(self.picker, 1)
 
         side = QVBoxLayout()
-        side.setSpacing(6)
-        self.horizon_label = QLabel("")
-        self.horizon_label.setWordWrap(True)
+        side.setSpacing(SPACE_SNUG)
+        self.horizon_label = WrappedNote("")
         self.clear_horizon_button = QPushButton("Take the sky line off")
         self.clear_horizon_button.clicked.connect(self._clear_horizon)
         self.regions_label = QLabel("Patches that are ignored:")
@@ -493,9 +582,10 @@ class PickerDialog(QDialog):
         self.regions_list.currentRowChanged.connect(self.picker.select_region)
         self.remove_button = QPushButton("Delete the selected patch")
         self.remove_button.clicked.connect(self._remove_region)
-        self.size_label = QLabel("")
-        self.size_label.setWordWrap(True)
-        self.size_label.setStyleSheet(f"color: {PALETTE['muted']};")
+        self.size_label = WrappedNote("")
+        self.size_label.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
         for widget in (
             self.horizon_label,
             self.clear_horizon_button,
@@ -509,8 +599,7 @@ class PickerDialog(QDialog):
         middle.addLayout(side)
         outer.addLayout(middle)
 
-        self.problem_label = QLabel("")
-        self.problem_label.setWordWrap(True)
+        self.problem_label = WrappedNote("")
         self.problem_label.setStyleSheet(f"color: {PALETTE['warn']};")
         outer.addWidget(self.problem_label)
 
@@ -591,6 +680,18 @@ class PickerDialog(QDialog):
             self._failed(
                 "What came back from the camera was not a picture, so there is "
                 "nothing to draw on. Type the numbers in instead."
+            )
+            return
+        if is_blank(image):
+            # A valid JPEG of nothing. It happens when a stream is still coming
+            # up, and it is the worst kind of failure this dialog has, because
+            # nothing about it looks like a failure: the operator drags a sky
+            # line onto a black rectangle and it is saved as a real setting that
+            # quietly throws away everything above it.
+            self._failed(
+                "The picture that came back is blank, so there is nothing to "
+                "draw on. The camera may still be starting up - try again in a "
+                "moment, or type the numbers in instead."
             )
             return
         self.picker.set_frame(image)

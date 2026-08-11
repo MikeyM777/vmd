@@ -340,3 +340,78 @@ def test_the_real_pane_still_starts_a_file_at_the_beginning_by_default(
     where = pane._player.get_time() / 1000.0
     pane.stop()
     assert where < 10.0, f"nothing asked for a seek and libVLC is at {where:.1f} s"
+
+
+@pytest.fixture
+def a_stream_that_starts_black(tmp_path: Path):
+    """A synthetic RTSP source whose first second fades up out of black.
+
+    This is the fault as the field saw it: a stream that is perfectly healthy
+    and whose FIRST decoded frame is black. `fade=t=in:st=0:d=1` makes frame one
+    pure black and everything past a second the full test pattern, which is
+    exactly the window `-frames:v 1` fell into and `-frames:v 20` steps over.
+    """
+    binary = find_binary()
+    if binary is None or shutil.which("ffmpeg") is None:
+        pytest.skip("needs go2rtc and ffmpeg")
+
+    api, rtsp = free_port(), free_port()
+    config = tmp_path / "black-first.json"
+    config.write_text(
+        json.dumps(
+            {
+                "api": {"listen": f"127.0.0.1:{api}"},
+                "rtsp": {"listen": f"127.0.0.1:{rtsp}"},
+                "webrtc": {"listen": ""},
+                "log": {"level": "warn"},
+                "streams": {
+                    "thermal": (
+                        "exec:ffmpeg -hide_banner -re -f lavfi "
+                        "-i testsrc=size=640x512:rate=15 "
+                        "-vf fade=t=in:st=0:d=1 -c:v libx264 "
+                        "-preset ultrafast -tune zerolatency -g 15 -f rtsp {output}"
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [str(binary), "-c", str(config)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(3)
+    try:
+        yield f"rtsp://127.0.0.1:{rtsp}/thermal"
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+@pytest.mark.integration
+def test_the_grab_gets_a_picture_and_not_the_black_first_frame(
+    a_stream_that_starts_black: str,
+) -> None:
+    """The operator's own report: thermal playing in the Live tab, PTZ working,
+    and the picker a black rectangle. Against `-frames:v 1` this fails, which is
+    the point of testing it against a real stream rather than a mock."""
+    from PySide6.QtGui import QImage
+
+    from vmd.desktop.picker import blankness, grab_frame, is_blank
+    from vmd.settings import CameraSettings, Settings, StreamSettings
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="127.0.0.1",
+            streams=[
+                StreamSettings(name="thermal", url=a_stream_that_starts_black)
+            ],
+        )
+    )
+    data = grab_frame(settings, "thermal")
+    image = QImage()
+    assert image.loadFromData(data), "what came back was not a picture at all"
+    assert not is_blank(image), (
+        f"the grab kept a blank frame; it measures {blankness(image):.2f}"
+    )

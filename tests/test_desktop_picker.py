@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QPoint, QSize, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter
 
 from vmd.desktop.picker import (
     FrameUnavailable,
@@ -47,7 +47,17 @@ def a_frame(width: int = 1280, height: int = 720) -> bytes:
     """
     if (width, height) not in _MADE:
         image = QImage(width, height, QImage.Format.Format_RGB32)
+        # A gradient and not a flat fill. A rectangle of one colour is exactly
+        # what the dialog now refuses - it is what a half-decoded first frame
+        # off a live stream looks like - so a flat fixture would be testing the
+        # drawing against a picture the console is right to reject.
         image.fill(0x203040)
+        painter = QPainter(image)
+        sky = QLinearGradient(0, 0, 0, height)
+        sky.setColorAt(0.0, QColor(20, 24, 32))
+        sky.setColorAt(1.0, QColor(190, 195, 205))
+        painter.fillRect(0, 0, width, height, sky)
+        painter.end()
         # Held in a name: a QByteArray passed straight into QBuffer is a Python
         # temporary, and Qt keeps the pointer after Python has freed it.
         store = QByteArray()
@@ -510,3 +520,149 @@ def test_the_grab_never_puts_the_password_in_what_it_says(monkeypatch) -> None:
     said = str(caught.value)
     assert settings.camera.password not in said
     assert quote(settings.camera.password, safe="") not in said
+
+
+# ------------------------------------------------------- a picture of nothing
+#
+# The fault as it reached the operator: thermal video playing in the Live tab,
+# PTZ working, and the picker still a black rectangle. Taking the FIRST decoded
+# frame off a live RTSP stream gets whatever the decoder had before it had a
+# whole keyframe, ffmpeg exits 0, and a valid JPEG of nothing passed every guard
+# in the fetch. A black rectangle presented as a photograph is worse than the
+# refusal, because there is nothing to act on - and a sky line dragged onto it
+# is saved as a real setting that quietly throws away everything above it.
+
+
+def flat(level: int, width: int = 320, height: int = 240) -> QImage:
+    """A rectangle of exactly one colour: a half-decoded frame."""
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    image.fill(QColor(level, level, level))
+    return image
+
+
+def flat_thermal(width: int = 640, height: int = 512) -> QImage:
+    """A real thermal frame of a cold, flat scene at 700 m.
+
+    This is the picture the guard must NOT refuse: almost no contrast, a slow
+    gradient across the frame, and the fixed-pattern noise a heat camera puts on
+    every pixel. Refusing it would take the picture away from the one view that
+    most needs a sky line drawn on it.
+    """
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    for y in range(height):
+        base = 78 + (y * 6) // max(height - 1, 1)  # six levels top to bottom
+        for x in range(0, width, 4):
+            shade = base + ((x * 7 + y * 3) % 5) - 2  # a couple of levels of noise
+            for step in range(4):
+                if x + step < width:
+                    image.setPixel(x + step, y, QColor(shade, shade, shade).rgb())
+    return image
+
+
+def test_a_frame_of_one_colour_is_not_a_picture() -> None:
+    from vmd.desktop.picker import is_blank
+
+    assert is_blank(flat(0)), "a black rectangle is not a picture"
+    assert is_blank(flat(128)), "nor is a grey one"
+    assert is_blank(flat(255))
+
+
+def test_a_genuinely_flat_thermal_frame_is_still_a_picture() -> None:
+    """The threshold's whole reason for being where it is. A heat camera looking
+    at a cold perimeter is low-contrast on purpose, and refusing a real thermal
+    frame would be far worse than showing a dim one."""
+    from vmd.desktop.picker import blankness, is_blank
+
+    frame = flat_thermal()
+    assert not is_blank(frame), (
+        f"a real flat thermal frame was refused; it measures {blankness(frame):.2f}"
+    )
+
+
+def test_a_blank_picture_is_refused_in_words_rather_than_shown(qtbot) -> None:
+    """And nothing the operator already had is touched."""
+    from PySide6.QtCore import QBuffer, QByteArray
+
+    store = QByteArray()
+    buffer = QBuffer(store)
+    buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+    flat(0, 640, 512).save(buffer, "PNG")
+    buffer.close()
+    black = bytes(store)
+
+    dialog = a_dialog(qtbot, grab=lambda: black, horizon=340, regions=[(1, 2, 3, 4)])
+    qtbot.waitUntil(lambda: bool(dialog.problem_text()), timeout=5000)
+
+    assert "blank" in dialog.problem_text().lower()
+    assert dialog.picker.has_frame() is False, "a blank frame may not be drawn on"
+    assert dialog.horizon() == 340, "nothing the operator had may change"
+    assert dialog.regions() == [(1, 2, 3, 4)]
+
+
+def test_the_fetch_decodes_past_the_first_frame(monkeypatch, tmp_path: Path) -> None:
+    """`-frames:v 1` is the bug itself, in the one place it can be pinned down
+    without a camera: what the console asks ffmpeg for."""
+    from vmd.desktop import picker as picker_module
+
+    asked: list[list[str]] = []
+
+    class Ran:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        asked.append(list(command))
+        Path(command[command.index("-y") + 1]).write_bytes(b"not empty")
+        return Ran()
+
+    monkeypatch.setattr(picker_module, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(picker_module.subprocess, "run", fake_run)
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/thermal")],
+        )
+    )
+    picker_module.grab_frame(settings, "thermal")
+
+    command = asked[0]
+    frames = int(command[command.index("-frames:v") + 1])
+    assert frames > 1, "one frame off a live stream is routinely black"
+    # And each one written over the last, so what survives is the final frame
+    # rather than a numbered sequence.
+    assert "-update" in command
+
+
+def test_what_ffmpeg_said_is_written_down_even_when_it_worked(
+    monkeypatch, tmp_path: Path, caplog
+) -> None:
+    """A grab that "succeeded" into a black frame left no trace anywhere, which
+    is why that fault took several rounds to find."""
+    import logging
+
+    from vmd.desktop import picker as picker_module
+
+    class Ran:
+        returncode = 0
+        stdout = ""
+        stderr = "[rtsp @ 0000] max delay reached. need to consume packet"
+
+    def fake_run(command, **kwargs):
+        Path(command[command.index("-y") + 1]).write_bytes(b"not empty")
+        return Ran()
+
+    monkeypatch.setattr(picker_module, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(picker_module.subprocess, "run", fake_run)
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/thermal")],
+        )
+    )
+    with caplog.at_level(logging.INFO, logger="vmd.desktop.picker"):
+        picker_module.grab_frame(settings, "thermal")
+
+    assert any("max delay reached" in record.message for record in caplog.records)
