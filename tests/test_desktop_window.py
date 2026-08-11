@@ -485,3 +485,48 @@ def test_a_status_line_from_services_that_only_say_yes_or_no_still_reads(
     window, _ = build(qtbot, tmp_path)
     text = window.status_text()
     assert "recording" in text.lower()
+
+
+# ---------------------------------------- a save that could not be applied
+#
+# The operator presses Save, reads "Saved." and walks away. If a child would
+# not restart, what is running is not what was saved, and the one place that
+# can still be said is the line under the button they just pressed.
+
+
+class RefusingServices(FakeServices):
+    def __init__(self) -> None:
+        super().__init__()
+        self.applied: list = []
+
+    def apply(self, settings) -> list[str]:
+        self.applied.append(settings)
+        return ["the recorder did not restart, so recording is still using the old settings"]
+
+
+class QuietServices(FakeServices):
+    def apply(self, settings) -> list[str]:
+        return []
+
+
+def test_a_save_that_could_not_be_applied_says_so_where_it_was_pressed(
+    qtbot, tmp_path: Path
+) -> None:
+    window, services = build(qtbot, tmp_path, services=RefusingServices())
+    settings = load_settings(window._settings_path)
+    window.settings_tab._set_message("Saved.")
+
+    window.settings_saved(settings)
+
+    assert services.applied == [settings]
+    message = window.settings_tab.message
+    assert message != "Saved."
+    assert "did not restart" in message
+    assert "Saved" in message, "the file really was written; say both things"
+
+
+def test_a_save_that_worked_still_reads_as_saved(qtbot, tmp_path: Path) -> None:
+    window, _ = build(qtbot, tmp_path, services=QuietServices())
+    window.settings_tab._set_message("Saved.")
+    window.settings_saved(load_settings(window._settings_path))
+    assert window.settings_tab.message == "Saved."

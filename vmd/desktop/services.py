@@ -34,6 +34,11 @@ TREE_STOP_SECONDS = 10.0
 # and the reader is a daemon thread that costs nothing if it is abandoned.
 READER_STOP_SECONDS = 2.0
 
+# How long a forced stop waits for an adopted child to disappear. Short, because
+# it runs on the GUI thread while the operator waits for a Save to finish, and
+# because taskkill /F has already returned by the time it is checked at all.
+ADOPTED_STOP_SECONDS = 2.0
+
 # The longest single line kept from a child. A child in a restart loop, or an
 # ffmpeg dumping a binary probe, can write a great deal without a newline, and
 # the ring buffer's capacity is no defence against one line that is a megabyte.
@@ -107,6 +112,96 @@ def recordable(settings: Settings) -> bool:
     of a machine part way through being configured.
     """
     return any(stream.enabled and stream.url for stream in settings.camera.streams)
+
+
+# --------------------------------------------------------- what is "material"
+#
+# Each child reads settings.json once, when it starts, and holds what it read
+# for as long as it lives. So a saved setting reaches a running child only by
+# restarting it - and restarting a child costs a gap in what it was doing, which
+# for the recorder is a gap in the footage. Both halves of that matter: a save
+# the operator made must take effect, and a save that changed nothing that child
+# reads must cost nothing at all. Clicking Save twice must not cost two
+# recording gaps.
+#
+# So each child has a fingerprint of exactly the settings it reads. Same
+# fingerprint, no restart. Anything not listed here is either read by the
+# console itself (the radio, the camera's PTZ address, the link ceiling) or read
+# live from somewhere other than settings.json.
+
+
+def streaming_fingerprint(settings: Settings) -> tuple:
+    """What go2rtc's configuration is made of - see `build_config`.
+
+    The credentials and, per stream, its name, address, tick and reader. The
+    camera's `host` is deliberately absent: it is where the PTZ and the radio
+    services are pointed, and it appears nowhere in go2rtc's config, which
+    addresses each stream by its own URL. Restarting the video for it would cost
+    the picture, and through go2rtc the recorder's source, for nothing.
+    """
+    return (
+        settings.camera.username,
+        settings.camera.password,
+        tuple(
+            (stream.name, stream.url, stream.enabled, stream.reader)
+            for stream in settings.camera.streams
+        ),
+    )
+
+
+def recorder_fingerprint(settings: Settings) -> tuple:
+    """What `vmd.record_main` reads at startup and never re-reads.
+
+    The folder, the segment length, every retention rule, and which streams it
+    is to record. The retention rules are in here even though changing one costs
+    a recording gap: the operator who lowers the budget has explicitly asked for
+    less footage to be kept, and a budget that quietly does not apply until the
+    laptop is rebooted is a disk that fills.
+    """
+    storage = settings.storage
+    return (
+        str(storage.root),
+        storage.segment_seconds,
+        storage.budget_gb,
+        storage.budget_enabled,
+        storage.retention_days,
+        storage.warn_at_fraction,
+        tuple(
+            (stream.name, stream.url, stream.enabled)
+            for stream in settings.camera.streams
+        ),
+    )
+
+
+def detector_fingerprint(settings: Settings) -> tuple:
+    """What `vmd.detect_main` reads at startup and never re-reads.
+
+    The master switches, and per stream everything that shapes what it reports:
+    whether it is watched at all, how touchy, whether it is the heat camera,
+    whether to name what moved, the sky line and the ignore mask. The recording
+    root as well, because events.db lives in it.
+    """
+    detection = settings.detection
+    return (
+        str(settings.storage.root),
+        detection.enabled,
+        detection.classify,
+        detection.min_travel_px,
+        tuple(
+            (
+                stream.name,
+                stream.url,
+                stream.enabled,
+                stream.detect,
+                stream.sensitivity,
+                stream.thermal,
+                stream.classify,
+                stream.horizon_y,
+                tuple(region.as_tuple() for region in stream.ignore_regions),
+            )
+            for stream in settings.camera.streams
+        ),
+    )
 
 
 def read_child_output(stream, emit: Callable[[str], None]) -> None:
@@ -222,6 +317,7 @@ class ChildProcess:
         pid_path: str | Path | None = None,
         spawn=None,
         kill_tree=None,
+        alive=None,
     ) -> None:
         self.settings_path = Path(settings_path)
         self.pid_path = (
@@ -229,6 +325,7 @@ class ChildProcess:
         )
         self._spawn = spawn or _default_spawn
         self._kill_tree = kill_tree or _taskkill_tree
+        self._alive = alive or _pid_alive
         self._process: subprocess.Popen | None = None
         self._adopted_pid: int | None = None
         self._output_thread: threading.Thread | None = None
@@ -246,7 +343,7 @@ class ChildProcess:
         if self._process is not None:
             return self._process.poll() is None
         if self._adopted_pid is not None:
-            return _pid_alive(self._adopted_pid)
+            return self._alive(self._adopted_pid)
         return False
 
     def start(self) -> None:
@@ -254,7 +351,7 @@ class ChildProcess:
             return
 
         adopted = self._read_pid()
-        if adopted is not None and _pid_alive(adopted):
+        if adopted is not None and self._alive(adopted):
             logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
             self._adopted_pid = adopted
             self._announce_adoption(adopted)
@@ -282,6 +379,49 @@ class ChildProcess:
         self._write_pid()
         self._read_output(self._process)
         logger.info("%s started", self.label)
+
+    def restart(self, why: str) -> bool:
+        """Stop this child - adopted or not - and start a fresh one.
+
+        Returns whether it is running afterwards, so that a Save can tell the
+        operator the truth rather than reporting settings as live when they are
+        not. Every line it writes goes to the Logs tab, which on this machine is
+        the only place the operator can read anything: the restart is
+        deliberate, and a gap in the footage that nobody explained looks exactly
+        like a fault.
+        """
+        self._child_logger.warning(
+            "%s: restarting it because %s. It was still running the settings "
+            "that have just been replaced, so there is a short gap while it "
+            "comes back.",
+            self.label,
+            why,
+        )
+        try:
+            self.stop(force=True)
+        except Exception:  # noqa: BLE001 - a Save must not throw back into the button
+            logger.exception("the %s would not stop", self.label)
+        if self.running:
+            self._child_logger.error(
+                "%s: it would not stop, so the settings you saved are NOT in effect",
+                self.label,
+            )
+            return False
+        try:
+            self.start()
+        except Exception:  # noqa: BLE001 - the file is saved either way
+            logger.exception("the %s would not start", self.label)
+        if not self.running:
+            self._child_logger.error(
+                "%s: it did not come back after being restarted. It is NOT "
+                "running and the settings you saved are NOT in effect.",
+                self.label,
+            )
+            return False
+        self._child_logger.info(
+            "%s: running again, with the settings you saved", self.label
+        )
+        return True
 
     def _announce_adoption(self, pid: int) -> None:
         """Say that this child's output cannot be shown, rather than showing none.
@@ -364,7 +504,7 @@ class ChildProcess:
         except OSError:
             logger.warning("could not write %s", self.pid_path, exc_info=True)
 
-    def stop(self) -> None:
+    def stop(self, force: bool = False) -> None:
         """Stop a child this object started, and everything it started.
 
         The whole tree, not just the process we spawned. The recorder starts an
@@ -389,11 +529,50 @@ class ChildProcess:
         cleanly anyway, and the only work skipped is a final indexing pass, which
         the next recorder redoes when it adopts the files left on disk.
 
-        An adopted child is left alone: it belongs to a window that is gone, and
-        stopping it here would stop recording - or detection - because someone
-        closed a second window.
+        An adopted child is left alone unless `force` is given: it belongs to a
+        window that is gone, and stopping it here would stop recording - or
+        detection - because someone closed a second window.
+
+        `force` is what a settings change uses, and the distinction is the whole
+        point. Adoption exists so that recording survives *the window closing*,
+        which is a passive event the operator did not intend as a configuration
+        change. A Save is the opposite: an explicit instruction whose entire
+        purpose is to change how the system runs. A child running settings the
+        operator has just replaced is not a child worth protecting, and a brief
+        gap is a far smaller harm than a system that silently ignores its
+        operator.
         """
         if self._process is None and self._adopted_pid is not None:
+            pid = self._adopted_pid
+            if not force:
+                self._adopted_pid = None
+                return
+            logger.warning(
+                "stopping the adopted %s (pid %s), because the settings it was "
+                "started with have been replaced",
+                self.label,
+                pid,
+            )
+            self._kill_tree(pid)
+            # Bounded, and short. taskkill /F has already returned by the time
+            # this runs, so in practice the first check is the only one; the
+            # loop is here because this decides whether a second child may be
+            # started on the same directory, and that must never be guessed.
+            deadline = time.monotonic() + ADOPTED_STOP_SECONDS
+            while self._alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if self._alive(pid):
+                # Deliberately keeps `_adopted_pid`, so `running` stays True and
+                # nothing starts a second one on top of it. Two children on one
+                # recording directory is the exact collision adoption exists to
+                # prevent, and it is worse than a setting that did not apply.
+                logger.error(
+                    "the adopted %s (pid %s) would not stop, so nothing was "
+                    "started in its place and the settings you saved are NOT in effect",
+                    self.label,
+                    pid,
+                )
+                return
             self._adopted_pid = None
             return
         process = self._process
@@ -751,26 +930,26 @@ class ConsoleServices:
         """
         self._restarted_at.pop(name, None)
 
-    def apply(self, settings: Settings) -> None:
-        """Take settings the operator has just saved.
+    def apply(self, settings: Settings) -> list[str]:
+        """Take settings the operator has just saved, and make them true.
 
-        go2rtc reads its configuration once, when it starts, so a corrected
-        camera address or a renamed stream reaches nothing until it is
-        restarted. Restarting it is what carries the change to all three
-        consumers at once - the pictures, the recorder and the detector all pull
-        from its local copy - which is why this is the one call that matters
-        here.
+        Returns the problems, as plain sentences, so that a Save which could not
+        be applied says so rather than reporting the new settings as live. An
+        empty list means everything the operator changed is now what is running.
 
-        The recorder is deliberately not restarted. It records what go2rtc
-        serves under each stream name, so a new address arrives through go2rtc
-        without touching it, and stopping the recorder to apply a setting is the
-        one thing this system may never do casually.
+        Each child reads settings.json once, at startup, so a saved setting
+        reaches a running child only by restarting it - and a restart costs a
+        gap in what that child was doing, which for the recorder is a gap in the
+        footage. So each child is restarted when, and only when, the settings it
+        actually reads have changed; see the fingerprints above for exactly
+        which those are on each side of the boundary.
 
-        The detector is restarted, because unlike the recorder it reads its own
-        settings - sensitivity, the ignore mask, the sky line - once at startup,
-        and stopping detection stops detection and nothing else. A save is an
-        explicit request for what was saved to be what is running.
+        A child that was adopted from an earlier console is restarted too. See
+        `ChildProcess.stop`: adoption exists so recording survives the window
+        closing, not so that it survives the operator changing its
+        configuration.
         """
+        previous = self.settings
         self.settings = settings
         # The recording root can move, and the detector's report moves with it.
         # Left pointing at the old folder, the status line would read a file
@@ -780,10 +959,24 @@ class ConsoleServices:
         # question rather than one to wait out the poll interval for.
         self.disk.apply(settings)
 
+        problems: list[str] = []
+
         if self.streaming is not None:
-            self.streaming.apply(settings)
-            # Whatever is serving video now, this console restarted it.
-            self.adopted_streaming = False
+            if streaming_fingerprint(previous) != streaming_fingerprint(settings):
+                try:
+                    self.streaming.apply(settings)
+                except Exception:  # noqa: BLE001 - the file is saved either way
+                    logger.exception("the streaming server would not take the new settings")
+                    problems.append(
+                        "the streaming server would not restart, so the live "
+                        "picture is still on the old settings"
+                    )
+                # Whatever is serving video now, this console restarted it.
+                self.adopted_streaming = False
+            else:
+                # Not a restart, but it must not be left holding the object the
+                # operator replaced: `stream_names` and the status line read it.
+                self.streaming.settings = settings
 
         wanted = self.detector is not None and detection_enabled(settings)
         recording = recordable(settings)
@@ -798,28 +991,65 @@ class ConsoleServices:
             self._forget_restarts("detector")
             self._forget_restarts("recorder")
 
-        # A recorder that now has something to record, or has just lost the last
-        # thing it had. Nothing else here starts or stops it: see `apply`'s note
-        # about not restarting a working recorder to apply a setting.
-        try:
-            if recording and not self.recorder.running:
-                self.recorder.start()
-            elif not recording and self.recorder.running:
-                logger.info(
-                    "no stream is ticked to record with an address any more; "
-                    "stopping the recorder"
-                )
-                self.recorder.stop()
-        except Exception:  # noqa: BLE001 - the file is saved either way
-            logger.exception("the recorder would not take the new settings")
+        problems.extend(self._apply_to_recorder(previous, settings, recording))
+        problems.extend(self._apply_to_detector(previous, settings, wanted))
+        return problems
 
-        if self.detector is not None:
-            try:
-                self.detector.stop()
-                if wanted:
-                    self.detector.start()
-            except Exception:  # noqa: BLE001 - detection is not the picture or the disk
-                logger.exception("the detector would not take the new settings")
+    def _apply_to_recorder(
+        self, previous: Settings, settings: Settings, recording: bool
+    ) -> list[str]:
+        """Start, stop or restart the recorder, whichever the save asks for."""
+        try:
+            if not recording:
+                if self.recorder.running:
+                    logger.info(
+                        "no stream is ticked to record with an address any more; "
+                        "stopping the recorder"
+                    )
+                    self.recorder.stop(force=True)
+                return []
+            if not self.recorder.running:
+                self.recorder.start()
+                if not self.recorder.running:
+                    return ["the recorder did not start, so nothing is being recorded"]
+                return []
+            if recorder_fingerprint(previous) == recorder_fingerprint(settings):
+                return []
+            if not self.recorder.restart("the recording settings changed"):
+                return [
+                    "the recorder did not restart, so recording is still using "
+                    "the settings you replaced"
+                ]
+        except Exception:  # noqa: BLE001 - a Save must not throw back into the button
+            logger.exception("the recorder would not take the new settings")
+            return ["the recorder would not take the new settings"]
+        return []
+
+    def _apply_to_detector(
+        self, previous: Settings, settings: Settings, wanted: bool
+    ) -> list[str]:
+        if self.detector is None:
+            return []
+        try:
+            if not wanted:
+                self.detector.stop(force=True)
+                return []
+            if not self.detector.running:
+                self.detector.start()
+                if not self.detector.running:
+                    return ["the detector did not start, so nothing is being watched"]
+                return []
+            if detector_fingerprint(previous) == detector_fingerprint(settings):
+                return []
+            if not self.detector.restart("the movement-detection settings changed"):
+                return [
+                    "the detector did not restart, so movement detection is "
+                    "still using the settings you replaced"
+                ]
+        except Exception:  # noqa: BLE001 - detection is not the picture or the disk
+            logger.exception("the detector would not take the new settings")
+            return ["the detector would not take the new settings"]
+        return []
 
     def stop(self) -> None:
         self.supervisor.stop_all()

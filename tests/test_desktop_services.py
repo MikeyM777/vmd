@@ -24,8 +24,11 @@ from vmd.desktop.services import (
     _creation_flags,
     _default_spawn,
     _taskkill_tree,
+    detector_fingerprint,
     read_detection_status,
     recordable,
+    recorder_fingerprint,
+    streaming_fingerprint,
 )
 from vmd.settings import CameraSettings, Settings, StorageSettings, StreamSettings
 
@@ -1101,7 +1104,13 @@ class RecordingStreaming:
 def test_a_saved_camera_address_reaches_the_streaming_server(tmp_path: Path) -> None:
     """The address is entered in Settings and nowhere else. go2rtc holds the
     one it was started with until it is restarted, so without this the corrected
-    camera stays dark until the laptop is rebooted."""
+    camera stays dark until the laptop is rebooted.
+
+    The address that reaches go2rtc is the stream's own URL: that is what
+    `build_config` puts in the config file. `camera.host` is where the PTZ and
+    the radio are pointed and appears nowhere in it, so changing that alone must
+    not cost the picture - and through go2rtc, the recorder's source - a restart.
+    """
     streaming = RecordingStreaming()
     settings_path = tmp_path / "settings.json"
     services = ConsoleServices(
@@ -1114,12 +1123,19 @@ def test_a_saved_camera_address_reaches_the_streaming_server(tmp_path: Path) -> 
     )
     services.start()
 
-    changed = settings_for(tmp_path)
-    changed.camera.host = "10.0.0.9"
-    services.apply(changed)
+    corrected = settings_for(tmp_path)
+    corrected.camera.streams[0].url = "rtsp://10.0.0.9/t"
+    services.apply(corrected)
 
-    assert [s.camera.host for s in streaming.applied] == ["10.0.0.9"]
-    assert services.settings is changed
+    assert [s.camera.streams[0].url for s in streaming.applied] == ["rtsp://10.0.0.9/t"]
+    assert services.settings is corrected
+
+    moved_ptz = corrected.model_copy(deep=True)
+    moved_ptz.camera.host = "10.0.0.9"
+    services.apply(moved_ptz)
+
+    assert len(streaming.applied) == 1, "the video was restarted for a PTZ address"
+    assert streaming.settings is moved_ptz, "but it must still hold what was saved"
 
 
 def test_a_save_never_stops_the_recorder(tmp_path: Path) -> None:
@@ -1202,7 +1218,9 @@ def test_a_save_restarts_the_detector_so_it_reads_what_was_saved(tmp_path: Path)
     services.start()
     assert len(processes) == 1
 
-    services.apply(settings_for(tmp_path, detect=True))
+    touchier = settings_for(tmp_path, detect=True)
+    touchier.camera.streams[0].sensitivity = "high"
+    services.apply(touchier)
 
     assert len(processes) == 2, "the detector kept the settings it started with"
     assert processes[0].alive is False
@@ -1450,3 +1468,382 @@ def test_entering_a_stream_and_saving_starts_the_recorder(tmp_path: Path) -> Non
 
     assert services.recorder.running is True
     assert "recorder" in [entry.name for entry in services.supervisor.managed]
+
+
+# ---------------------------------- applying a save to a child that was adopted
+#
+# ChildProcess.stop() deliberately leaves an adopted child alone, so that
+# recording survives THE WINDOW CLOSING - a passive event the operator did not
+# intend as a configuration change. A Save is the opposite: an explicit
+# instruction whose whole purpose is to change how the system runs. A child
+# running settings the operator has just replaced is not a child worth
+# protecting, and a brief gap is a far smaller harm than a system that silently
+# ignores its operator.
+
+
+class AdoptedChild:
+    """A child inherited from an earlier console: a live PID and no process."""
+
+    def __init__(self, tmp_path: Path, cls, pid_name: str, spawn=None):
+        self.pid_path = tmp_path / pid_name
+        self.pid_path.write_text("4242", encoding="utf-8")
+        self.killed: list[int] = []
+        self.spawned: list = []
+        self.living = {4242}
+        self.child = cls(
+            tmp_path / "settings.json",
+            pid_path=self.pid_path,
+            spawn=spawn or (lambda c: (self.spawned.append(c), FakeProcess())[1]),
+            kill_tree=self._kill,
+            alive=lambda pid: pid in self.living,
+        )
+
+    def _kill(self, pid: int) -> bool:
+        self.killed.append(pid)
+        self.living.discard(pid)
+        return True
+
+
+def test_an_adopted_detector_is_restarted_when_the_settings_it_read_change(
+    tmp_path: Path,
+) -> None:
+    """The QA finding: Save restarted the detector so settings took effect, and
+    that restart did nothing at all when the detector had been adopted. The
+    operator saw "Saved." and the old configuration kept running."""
+    adopted = AdoptedChild(tmp_path, DetectorProcess, "detector.pid")
+    adopted.child.start()
+    assert adopted.child.running is True
+    assert adopted.spawned == [], "it was adopted, not started"
+
+    changed = settings_for(tmp_path, detect=True)
+    changed.camera.streams[0].sensitivity = "high"
+    assert adopted.child.restart("the movement-detection settings changed") is True
+
+    assert adopted.killed == [4242], "the adopted detector was left running"
+    assert len(adopted.spawned) == 1, "no fresh detector was started"
+    assert adopted.child.running is True
+
+
+def test_an_adopted_recorder_is_restarted_the_same_way(tmp_path: Path) -> None:
+    adopted = AdoptedChild(tmp_path, RecorderProcess, "recorder.pid")
+    adopted.child.start()
+    assert adopted.child.restart("the recording settings changed") is True
+    assert adopted.killed == [4242]
+    assert len(adopted.spawned) == 1
+
+
+def test_closing_the_window_still_leaves_an_adopted_child_alone(tmp_path: Path) -> None:
+    """The other half of the decision, and the reason adoption exists at all."""
+    adopted = AdoptedChild(tmp_path, RecorderProcess, "recorder.pid")
+    adopted.child.start()
+    adopted.child.stop()
+    assert adopted.killed == [], "closing a window is not a configuration change"
+
+
+def test_an_adopted_child_that_will_not_die_is_reported_not_replaced(
+    tmp_path: Path,
+) -> None:
+    """Starting a second recorder on the same directory is the exact collision
+    adoption exists to prevent. If the old one will not go, say so."""
+    adopted = AdoptedChild(tmp_path, RecorderProcess, "recorder.pid")
+    adopted.child.start()
+    adopted.child._kill_tree = lambda pid: False  # taskkill refused
+    adopted.living = {4242}
+
+    assert adopted.child.restart("the recording settings changed") is False
+    assert adopted.spawned == [], "a second recorder must never be started on top"
+
+
+def test_a_restart_says_which_child_and_why_in_plain_language(
+    tmp_path: Path, caplog
+) -> None:
+    adopted = AdoptedChild(tmp_path, RecorderProcess, "recorder.pid")
+    adopted.child.start()
+    with caplog.at_level(logging.INFO):
+        adopted.child.restart("the recordings folder changed")
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "recorder" in said
+    assert "the recordings folder changed" in said
+    assert "gap" in said.lower(), "the operator must know the gap was deliberate"
+
+
+def test_a_restart_that_fails_says_the_saved_settings_are_not_in_effect(
+    tmp_path: Path, caplog
+) -> None:
+    adopted = AdoptedChild(
+        tmp_path, RecorderProcess, "recorder.pid", spawn=lambda c: DeadOnArrival()
+    )
+    adopted.child.start()
+    with caplog.at_level(logging.ERROR):
+        assert adopted.child.restart("the recording settings changed") is False
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "not in effect" in said.lower() or "not running" in said.lower()
+
+
+# ------------------------------------------------------------ what is material
+
+
+def test_material_settings_are_the_ones_each_child_reads_at_startup(
+    tmp_path: Path,
+) -> None:
+    """Which settings force which child to restart, spelled out and tested on
+    both sides of the boundary."""
+    base = settings_for(tmp_path, detect=True)
+
+    def changed(**edit):
+        copy = base.model_copy(deep=True)
+        for path, value in edit.items():
+            target = copy
+            parts = path.split(".")
+            for part in parts[:-1]:
+                target = getattr(target, part)
+            setattr(target, parts[-1], value)
+        return copy
+
+    # go2rtc parses its config once: the credentials and each stream's name,
+    # address, tick and reader are in that config and nothing else is.
+    assert streaming_fingerprint(changed(**{"camera.username": "root"})) != streaming_fingerprint(base)
+    assert streaming_fingerprint(changed(**{"camera.host": "10.0.0.9"})) == streaming_fingerprint(base)
+    assert streaming_fingerprint(changed(**{"storage.budget_gb": 5.0})) == streaming_fingerprint(base)
+    assert streaming_fingerprint(changed(**{"radio.host": "10.0.0.3"})) == streaming_fingerprint(base)
+
+    # The recorder reads the folder, the segment length and every retention rule
+    # once, at startup, and the set of streams it is to record.
+    assert recorder_fingerprint(changed(**{"storage.root": tmp_path / "moved"})) != recorder_fingerprint(base)
+    assert recorder_fingerprint(changed(**{"storage.segment_seconds": 60})) != recorder_fingerprint(base)
+    assert recorder_fingerprint(changed(**{"storage.budget_gb": 5.0})) != recorder_fingerprint(base)
+    assert recorder_fingerprint(changed(**{"storage.retention_days": 3})) != recorder_fingerprint(base)
+    # ...and nothing else. Detection and the radio are not its business, and
+    # neither is which client go2rtc uses to read the camera.
+    assert recorder_fingerprint(changed(**{"detection.classify": True})) == recorder_fingerprint(base)
+    assert recorder_fingerprint(changed(**{"radio.host": "10.0.0.3"})) == recorder_fingerprint(base)
+    assert recorder_fingerprint(changed(**{"camera.host": "10.0.0.9"})) == recorder_fingerprint(base)
+
+    # The detector reads sensitivity, the sky line, the ignore mask and the
+    # classifier switches once, at startup.
+    assert detector_fingerprint(changed(**{"detection.classify": True})) != detector_fingerprint(base)
+    assert detector_fingerprint(changed(**{"detection.min_travel_px": 12.0})) != detector_fingerprint(base)
+    assert detector_fingerprint(changed(**{"storage.root": tmp_path / "moved"})) != detector_fingerprint(base)
+    assert detector_fingerprint(changed(**{"storage.budget_gb": 5.0})) == detector_fingerprint(base)
+    assert detector_fingerprint(changed(**{"radio.password": "x"})) == detector_fingerprint(base)
+
+    sensitive = base.model_copy(deep=True)
+    sensitive.camera.streams[0].sensitivity = "high"
+    assert detector_fingerprint(sensitive) != detector_fingerprint(base)
+    assert recorder_fingerprint(sensitive) == recorder_fingerprint(base)
+    assert streaming_fingerprint(sensitive) == streaming_fingerprint(base)
+
+
+def test_a_save_that_changes_nothing_material_restarts_nothing(tmp_path: Path) -> None:
+    """Clicking Save twice must not cost two recording gaps."""
+    settings = settings_for(tmp_path, detect=True)
+    settings_path = tmp_path / "settings.json"
+    streaming = RecordingStreaming()
+    recorder_spawns: list = []
+    detector_spawns: list = []
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=streaming,
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: (recorder_spawns.append(c), FakeProcess())[1],
+        ),
+        detector=DetectorProcess(
+            settings_path,
+            pid_path=tmp_path / "detector.pid",
+            spawn=lambda c: (detector_spawns.append(c), FakeProcess())[1],
+        ),
+        clock=Clock(),
+        now=lambda: 1_000_000.0,
+        disk=watching(settings),
+    )
+    services.start()
+    assert len(recorder_spawns) == 1 and len(detector_spawns) == 1
+
+    same = settings_for(tmp_path, detect=True)
+    assert services.apply(same) == []
+    assert services.apply(same) == []
+
+    assert len(recorder_spawns) == 1, "two Saves cost two recording gaps"
+    assert len(detector_spawns) == 1, "the detector was restarted for nothing"
+    assert streaming.applied == [], "go2rtc was restarted for nothing"
+
+
+def test_a_save_that_moves_the_recordings_folder_restarts_the_recorder(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path, detect=True)
+    settings_path = tmp_path / "settings.json"
+    recorder_spawns: list = []
+    detector_spawns: list = []
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=RecordingStreaming(),
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: (recorder_spawns.append(c), FakeProcess())[1],
+        ),
+        detector=DetectorProcess(
+            settings_path,
+            pid_path=tmp_path / "detector.pid",
+            spawn=lambda c: (detector_spawns.append(c), FakeProcess())[1],
+        ),
+        clock=Clock(),
+        now=lambda: 1_000_000.0,
+        disk=watching(settings),
+    )
+    services.start()
+
+    moved = settings_for(tmp_path, detect=True)
+    moved.storage.root = tmp_path / "elsewhere"
+    assert services.apply(moved) == []
+
+    assert len(recorder_spawns) == 2, "the recorder kept writing to the old folder"
+    assert len(detector_spawns) == 2, "the detector kept writing events to the old folder"
+
+
+def test_a_save_that_only_changes_the_radio_leaves_every_child_alone(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path, detect=True)
+    settings_path = tmp_path / "settings.json"
+    streaming = RecordingStreaming()
+    spawns: list = []
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=streaming,
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: (spawns.append(c), FakeProcess())[1],
+        ),
+        detector=DetectorProcess(
+            settings_path,
+            pid_path=tmp_path / "detector.pid",
+            spawn=lambda c: (spawns.append(c), FakeProcess())[1],
+        ),
+        clock=Clock(),
+        now=lambda: 1_000_000.0,
+        disk=watching(settings),
+    )
+    services.start()
+    assert len(spawns) == 2
+
+    changed = settings_for(tmp_path, detect=True)
+    changed.radio.host = "10.0.0.3"
+    assert services.apply(changed) == []
+
+    assert len(spawns) == 2
+    assert streaming.applied == []
+    assert services.settings is changed
+
+
+def test_a_deliberate_restart_is_not_read_as_flapping(tmp_path: Path) -> None:
+    """Four Saves in two minutes is an operator setting the system up, not a
+    recorder that will not stay up."""
+    clock = Clock()
+    settings = settings_for(tmp_path)
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        clock=clock,
+        disk=watching(settings),
+    )
+    services.start()
+    services.tick()
+
+    for seconds in (60, 120, 180, 240):
+        moved = settings_for(tmp_path)
+        moved.storage.segment_seconds = seconds
+        services.apply(moved)
+        services.tick()
+
+    state = services.state()
+    assert state["recording_state"]["restarts"] == 0, "a Save is not a death"
+    assert state["recording"] is True
+
+
+def test_a_restart_that_fails_is_reported_back_to_the_save(tmp_path: Path) -> None:
+    """The console must say so rather than reporting the new settings as live."""
+    settings = settings_for(tmp_path)
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: FakeProcess(),
+        ),
+        clock=Clock(),
+        disk=watching(settings),
+    )
+    services.start()
+    services.recorder._spawn = lambda c: DeadOnArrival()  # it will not come back
+
+    moved = settings_for(tmp_path)
+    moved.storage.root = tmp_path / "elsewhere"
+    problems = services.apply(moved)
+
+    assert problems, "a failed restart reported as success is the worst answer"
+    assert any("recorder" in problem for problem in problems)
+
+
+def test_the_recorders_in_flight_segment_is_indexed_after_a_forced_restart(
+    tmp_path: Path,
+) -> None:
+    """Verified rather than assumed, because the answer is not the obvious one.
+
+    Killing the recorder tree leaves the segment ffmpeg had open on disk.
+    `_adopt_orphans` does NOT cover it: it deliberately skips directories
+    belonging to a currently configured recorder. What covers it is the next
+    recorder's ordinary indexing pass, once that recorder has written a newer
+    file beside it - so the file is not lost, but it is not indexed at the
+    moment of the restart either.
+    """
+    from vmd.record_main import RecordingService
+
+    settings = settings_for(tmp_path)
+    directory = settings.storage.root / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+
+    closed = directory / "2026-08-11_10-00-00.mp4"
+    closed.write_bytes(b"\0" * 4096)
+    os.utime(closed, (now - 600, now - 600))
+    # What ffmpeg had open when taskkill /T reached it.
+    in_flight = directory / "2026-08-11_10-05-00.mp4"
+    in_flight.write_bytes(b"\0" * 2048)
+    os.utime(in_flight, (now - 300, now - 300))
+
+    service = RecordingService(
+        settings, spawn=lambda *a, **k: FakeProcess(), settle_seconds=1.0
+    )
+    try:
+        adopted = {Path(s.path).name for s in service.index.all()}
+        assert in_flight.name not in adopted, (
+            "if this ever passes, _adopt_orphans has changed and this note is stale"
+        )
+
+        # The fresh recorder starts writing.
+        fresh = directory / "2026-08-11_10-10-00.mp4"
+        fresh.write_bytes(b"\0" * 512)
+        os.utime(fresh, (now, now))
+        service.run_once(now=now)
+
+        indexed = {Path(s.path).name for s in service.index.all()}
+        assert in_flight.name in indexed, "the segment lost to the restart is unindexed"
+        assert closed.name in indexed
+    finally:
+        service.stop()

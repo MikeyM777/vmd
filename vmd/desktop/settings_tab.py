@@ -786,6 +786,16 @@ class SettingsTab(QWidget):
             logger.exception("the saved settings could not be handed to the console")
         return True
 
+    def report_after_save(self, text: str) -> None:
+        """Replace "Saved." with what the console could not make true.
+
+        The file was written; that is what "Saved." means and it is not a lie.
+        But a child that would not restart is still running the settings the
+        operator just replaced, and this line is the only place on this machine
+        where that can be said to them.
+        """
+        self._set_message(text)
+
     def settings_from_form(self) -> Settings | None:
         """The form as a Settings, or None with `self.message` saying why not."""
         problem = self._problem()

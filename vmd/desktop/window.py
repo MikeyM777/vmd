@@ -189,6 +189,7 @@ class ConsoleWindow(QMainWindow):
         Each part separately: a camera that will not take the change must not
         cost the radio, and none of them may throw back into the Save button.
         """
+        problems: list[str] = []
         for what, target in (
             ("the streaming server", self._services),
             ("the camera", self._ptz),
@@ -199,10 +200,42 @@ class ConsoleWindow(QMainWindow):
             if apply is None:
                 continue
             try:
-                apply(settings)
+                answered = apply(settings)
             except Exception:  # noqa: BLE001 - the file is saved either way
                 logger.exception("%s would not take the saved settings", what)
+                # Only the children are reported back to the operator. The
+                # camera and the radio are at the far end of a radio link and
+                # answer when they feel like it; the save itself succeeded and
+                # the next heartbeat asks them again. A child that would not
+                # restart is different: nothing asks it again, and what is
+                # running is not what was saved.
+                if target is self._services:
+                    problems.append("the child processes would not take the saved settings")
+            else:
+                # The services answer with the plain sentences describing what
+                # could not be applied; the others answer with nothing.
+                if isinstance(answered, list):
+                    problems.extend(str(problem) for problem in answered)
+        self._report_save(problems)
         self.statusBar().showMessage(self.status_text())
+
+    def _report_save(self, problems: list[str]) -> None:
+        """Say, under the button that was just pressed, what did not take effect.
+
+        The file really was written, so "Saved." is not a lie - but on its own
+        it is the wrong half of the truth when a child would not restart, and
+        the operator has no terminal, walks away, and believes the system is
+        running what they typed.
+        """
+        if not problems:
+            return
+        report = getattr(self.settings_tab, "report_after_save", None)
+        if report is None:
+            return
+        try:
+            report("Saved, but " + "; ".join(problems) + ".")
+        except Exception:  # noqa: BLE001 - the save is done either way
+            logger.exception("the save result could not be shown")
 
     @staticmethod
     def _refresh(tab: QWidget) -> None:
