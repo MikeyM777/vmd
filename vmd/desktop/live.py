@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -41,7 +41,20 @@ from PySide6.QtWidgets import (
 
 from vmd.desktop.disk import StoragePanel
 from vmd.desktop.steering import edge_velocity, key_velocity
-from vmd.desktop.style import PALETTE
+from vmd.desktop.style import (
+    MONO,
+    PALETTE,
+    SIZE_BAND,
+    SIZE_BODY,
+    SIZE_HEADING,
+    SIZE_SMALL,
+    SPACE_GROUP,
+    SPACE_ROOM,
+    SPACE_SNUG,
+    SPACE_STEP,
+    SPACE_TIGHT,
+    WEIGHT_VALUE,
+)
 from vmd.desktop.video import VideoPane
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
 from vmd.radio.panel import LinkPanel
@@ -78,6 +91,27 @@ ARROWS: dict[int, str] = {
 }
 ZOOM_IN_KEYS = {int(Qt.Key.Key_Plus), int(Qt.Key.Key_Equal)}
 ZOOM_OUT_KEYS = {int(Qt.Key.Key_Minus), int(Qt.Key.Key_Underscore)}
+
+# The number keys that choose which view fills the wall: 1 is everything, 2 is
+# the first stream, 3 the second, and so on for as many as the camera has.
+#
+# Digits and nothing else, because every other key on this tab is already
+# steering: the arrows pan and tilt, + and - zoom, Home recentres, and Shift is
+# the fine modifier. A letter would collide the first time somebody adds one.
+# They are read in `keyPressEvent` beside the steering keys rather than as Qt
+# shortcuts, so that pressing one while an arrow is held cannot swallow the
+# release of that arrow - a swallowed release is a head that goes on slewing
+# with nobody watching, which is the one failure this tab may never have.
+VIEW_KEYS: dict[int, int] = {
+    int(getattr(Qt.Key, f"Key_{digit}")): digit - 1 for digit in range(1, 10)
+}
+
+# What the button showing every view at once is called.
+ALL_VIEWS = "All"
+
+# What the wall says when the camera has no views set up at all. A black
+# rectangle is not an answer to "why is there no picture?".
+NO_VIEWS_NOTE = "No pictures. Add a camera view in Settings."
 
 # How many rows of movement the side column shows. The list is a glance, not an
 # archive - the archive is Playback, where the same events are marks on the day.
@@ -126,6 +160,25 @@ UNIDENTIFIED_NOTE = (
 # that about a command nobody has answered is the kind of quiet lie that has an
 # operator believing the head moved when it did not.
 UNANSWERED_NOTE = "the camera did not answer the last command yet"
+
+# What the movement list says before anything has moved. An empty table is a
+# black rectangle with a header on it, and a black rectangle is not an answer to
+# "has anything happened?" - the operator cannot tell it apart from a list that
+# failed to load. The words say which of the two it is.
+NOTHING_YET = "Nothing has moved yet."
+
+# How wide the side column is, as a share of the tab and between two stops.
+#
+# It was 340 px on every screen, which is a fifth of a 1366 laptop panel and a
+# twelfth of a 4K one. The sentences in it are word-wrapped, so a column that
+# does not grow with the window means the same paragraph is four lines on the
+# laptop and four lines on the 4K screen with a third of the width wasted beside
+# it. The floor is the width the longest storage and link sentences were written
+# against; the ceiling is where a wrapped sentence stops being a column and
+# starts being a page.
+SIDE_MIN_WIDTH = 300
+SIDE_MAX_WIDTH = 420
+SIDE_FRACTION = 0.22
 
 
 class WrappedNote(QLabel):
@@ -176,6 +229,112 @@ class WrappedNote(QLabel):
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)
         self.fit()
+
+
+class ViewChooser(QWidget):
+    """Which view fills the wall: everything, or one of them alone.
+
+    DESIGN.md's segmented control - flush buttons in a bordered group, the
+    active one raised and heavier. It is a thing the operator changes all day
+    from two metres back, so which one is active has to be readable without
+    reading: the chosen button is the only one drawn in the ink colour on the
+    raised surface, and the rest are muted on the panel.
+
+    Every button refuses focus. Clicking one must not take the keyboard away
+    from the tab, because the tab is what steers the camera - and a button that
+    took focus would leave the operator's next arrow key going nowhere until
+    they clicked back on the picture.
+    """
+
+    chosen = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._row = QHBoxLayout(self)
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(0)
+        self._buttons: list[QPushButton] = []
+        self._views: list[str] = [""]
+        self._chosen = ""
+        self._row.addStretch(1)
+        self.set_views([])
+
+    def views(self) -> list[str]:
+        """Every view this control offers, in order. "" is all of them."""
+        return list(self._views)
+
+    def chosen_view(self) -> str:
+        return self._chosen
+
+    def labels(self) -> list[str]:
+        return [button.text() for button in self._buttons]
+
+    def set_views(self, names: list[str]) -> None:
+        """Offer one button per stream, plus the one that shows them all.
+
+        The buttons come from the streams that are actually configured, not
+        from a fixed list of two: a camera calls its views whatever it likes,
+        and a console offering "visible only" on a machine with no visible
+        stream would be offering a black rectangle.
+        """
+        self._views = [""] + list(names)
+        while len(self._buttons) < len(self._views):
+            button = QPushButton()
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            index = len(self._buttons)
+            button.clicked.connect(lambda _checked=False, i=index: self._pick(i))
+            self._row.insertWidget(index, button)
+            self._buttons.append(button)
+        for index, button in enumerate(self._buttons):
+            if index < len(self._views):
+                name = self._views[index]
+                button.setText(ALL_VIEWS if not name else name)
+                button.setVisible(True)
+            else:
+                button.setVisible(False)
+        if self._chosen not in self._views:
+            self._chosen = ""
+        self._draw()
+
+    def choose(self, view: str, announce: bool = True) -> None:
+        """Show this view. An unknown one falls back to showing everything."""
+        if view not in self._views:
+            view = ""
+        changed = view != self._chosen
+        self._chosen = view
+        self._draw()
+        if changed and announce:
+            self.chosen.emit(view)
+
+    def choose_at(self, index: int) -> bool:
+        """Pick by position, for the number keys. False if there is no such
+        view, so that a key nobody has a stream for does nothing at all."""
+        if not 0 <= index < len(self._views):
+            return False
+        self.choose(self._views[index])
+        return True
+
+    def _pick(self, index: int) -> None:
+        self.choose_at(index)
+
+    def _draw(self) -> None:
+        for index, button in enumerate(self._buttons):
+            active = index < len(self._views) and self._views[index] == self._chosen
+            button.setStyleSheet(
+                f"QPushButton {{ background: "
+                f"{PALETTE['raised'] if active else PALETTE['surface']}; "
+                f"color: {PALETTE['ink'] if active else PALETTE['muted']}; "
+                f"border: 1px solid {PALETTE['line']}; "
+                # The chosen one carries a bar in the accent, the same mark the
+                # tab bar uses for the page you are on. One vocabulary for "this
+                # is where you are", and DESIGN.md's one permitted amber.
+                f"border-bottom: 2px solid "
+                f"{PALETTE['accent'] if active else PALETTE['line']}; "
+                f"font-size: {SIZE_BODY}px; "
+                f"font-weight: {WEIGHT_VALUE if active else 400}; "
+                f"padding: {SPACE_SNUG}px {SPACE_GROUP}px; }}"
+                f"QPushButton:hover {{ color: {PALETTE['ink']}; }}"
+            )
 
 
 class SteeringOverlay(QWidget):
@@ -235,7 +394,7 @@ class SteeringOverlay(QWidget):
 
 
 class LiveTab(QWidget):
-    """Video wall, steering, and what moved.
+    """Video wall, view modes, steering, and what moved.
 
     `make_pane`, `local_url` and `events` are injected so the whole tab can be
     tested with fakes: one needs a display and a stream, one needs a running
@@ -246,6 +405,11 @@ class LiveTab(QWidget):
     what a console started with --no-services has, and it must cost nothing but
     the list.
     """
+
+    # The operator chose a different view. The window turns this into a line in
+    # settings.json, because the tab does not own that file - and because a
+    # choice that does not survive the night is not a choice, it is a chore.
+    view_changed = Signal(str)
 
     def __init__(
         self,
@@ -319,13 +483,12 @@ class LiveTab(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(8)
-        outer.addWidget(self._build_alarm_strip())
+        outer.setContentsMargins(SPACE_STEP, SPACE_STEP, SPACE_STEP, SPACE_STEP)
+        outer.setSpacing(SPACE_STEP)
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(SPACE_STEP)
         outer.addLayout(layout, 1)
 
         # The splitter cannot hold the overlay: it turns every child widget into
@@ -335,34 +498,80 @@ class LiveTab(QWidget):
         wall_layout = QVBoxLayout(self._wall_area)
         wall_layout.setContentsMargins(0, 0, 0, 0)
         self._wall = QSplitter(Qt.Orientation.Horizontal)
+        # A handle wide enough to be grabbed. It was a hairline, which between
+        # two near-black pictures is both invisible and unusable.
+        self._wall.setHandleWidth(SPACE_SNUG)
         wall_layout.addWidget(self._wall)
         self.overlay = SteeringOverlay(self, self._wall_area)
         self.overlay.setGeometry(self._wall_area.rect())
         self.overlay.raise_()
         self._wall_area.installEventFilter(self)
-        layout.addWidget(self._wall_area, 1)
+
+        # The alarm strip belongs to the pictures, so it lives in their column
+        # and not across the whole tab. Below them, which is DESIGN.md's rule -
+        # an alarm is the moment the picture matters most, and the notice about
+        # it may neither cover the picture nor push it down the screen. Outside
+        # the wall area rather than inside it, because the steering overlay
+        # covers everything in there and would swallow the Acknowledge button.
+        pictures = QVBoxLayout()
+        pictures.setContentsMargins(0, 0, 0, 0)
+        pictures.setSpacing(SPACE_SNUG)
+        self.views = ViewChooser()
+        self.views.chosen.connect(self._view_chosen)
+        pictures.addWidget(self.views)
+        # Shown in place of the wall when the camera has no views set up. A
+        # black rectangle with nothing in it is the one thing an operator
+        # cannot diagnose.
+        self._no_views = WrappedNote(NO_VIEWS_NOTE)
+        self._no_views.setStyleSheet(f"color: {PALETTE['muted']};")
+        self._no_views.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_views.setVisible(False)
+        pictures.addWidget(self._no_views)
+        pictures.addWidget(self._wall_area, 1)
+        pictures.addWidget(self._build_alarm_strip())
+        layout.addLayout(pictures, 1)
 
         side = QWidget()
         self._side_layout = QVBoxLayout(side)
+        self._side_layout.setContentsMargins(0, 0, 0, 0)
+        self._side_layout.setSpacing(SPACE_ROOM)
         self._moving = QLabel("idle")
+        # What the head is doing is a reading, not a caption: it is the one line
+        # in this box that changes, and it is set in the same monospace figures
+        # as every other number in the console so that a velocity does not
+        # jitter as it counts.
+        self._moving.setStyleSheet(
+            f"font-family: {MONO}; font-size: {SIZE_BODY}px; "
+            f"font-weight: {WEIGHT_VALUE}; color: {PALETTE['ink']};"
+        )
         self._ptz_note = WrappedNote("")
-
-        self._streams_box = QGroupBox("Streams")
-        self._streams_layout = QVBoxLayout(self._streams_box)
-        self._side_layout.addWidget(self._streams_box)
+        self._ptz_note.setStyleSheet(f"color: {PALETTE['warn']};")
 
         # Steering, link, storage, recent movement: the column order the design
         # gives. Steering is above the two panels rather than below them because
         # the column scrolls now, and what it holds is not only a list of keys -
         # it is where the camera says it did not answer the last command. That
         # sentence must not be the one below the fold.
+        #
+        # The keys are one wrapped caption and not three lines of their own,
+        # because they are read once and then never again, while the two lines
+        # under them - what the head is doing, and whether the camera answered -
+        # are read all day. Three permanent lines of instruction above them
+        # inverted that.
         steering_box = QGroupBox("Steering")
         steering_layout = QVBoxLayout(steering_box)
-        steering_layout.addWidget(QLabel("Arrow keys pan and tilt. Shift for fine."))
-        steering_layout.addWidget(QLabel("+ and - zoom. Home recentres."))
-        steering_layout.addWidget(QLabel("Drag near an edge of the picture to slew."))
+        steering_layout.setSpacing(SPACE_SNUG)
         steering_layout.addWidget(self._moving)
         steering_layout.addWidget(self._ptz_note)
+        self._keys_note = WrappedNote(
+            "Arrow keys pan and tilt. Shift for fine. "
+            "+ and - zoom. Home recentres. "
+            "Drag near an edge of the picture to slew."
+        )
+        self._keys_note.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
+        steering_layout.addWidget(self._keys_note)
         self._side_layout.addWidget(steering_box)
 
         # Both panels are built here rather than injected so the tab owns its
@@ -375,8 +584,11 @@ class LiveTab(QWidget):
         self._storage_panel = StoragePanel(storage) if storage is not None else None
         if self._storage_panel is not None:
             self._side_layout.addWidget(self._storage_panel)
+        # No stretch after it: the movement list takes whatever the column has
+        # left. It used to share the leftover with a stretch, which is why the
+        # bottom of a 1080p column was four hundred pixels of empty grey next to
+        # a list squeezed into a box the size of five rows.
         self._side_layout.addWidget(self._build_movement_box(), 1)
-        self._side_layout.addStretch(1)
 
         # The column scrolls rather than squeezing. It carries five boxes now -
         # streams, link, storage, movement, steering - and on a laptop screen
@@ -389,10 +601,33 @@ class LiveTab(QWidget):
         self._side = QScrollArea()
         self._side.setWidget(side)
         self._side.setWidgetResizable(True)
-        self._side.setFixedWidth(340)
+        self._side.setFixedWidth(SIDE_MIN_WIDTH)
         self._side.setFrameShape(QFrame.Shape.NoFrame)
         self._side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._side)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Give the column a share of the tab rather than a number.
+
+        Still a fixed width once chosen, because that is what stops the video
+        from squeezing it - but the number is now a share of the window between
+        two stops instead of the same 340 px on a 1366 laptop panel and on a 4K
+        screen. Set here and not in a size policy because the column is a scroll
+        area, and a scroll area with an expanding policy takes room from the
+        pictures, which are the point of the tab.
+        """
+        super().resizeEvent(event)
+        self._side.setFixedWidth(self.column_width(self.width()))
+
+    @staticmethod
+    def column_width(width: int) -> int:
+        """How wide the side column is on a tab this wide.
+
+        Pure, and separate from the resize that applies it, so the rule can be
+        checked at sizes no machine running the tests has a screen for - a
+        window asked to be 3840 px wide on a 1080p desk is quietly given 1684.
+        """
+        return max(SIDE_MIN_WIDTH, min(SIDE_MAX_WIDTH, int(width * SIDE_FRACTION)))
 
     def clipped(self) -> list[str]:
         """Any sentence in the side column too short for the words in it.
@@ -402,7 +637,13 @@ class LiveTab(QWidget):
         then each panel about its own.
         """
         cut: list[str] = []
-        for label in (self._ptz_note, self._movement_note):
+        for label in (
+            self._ptz_note,
+            self._movement_note,
+            self._keys_note,
+            self._movement_empty,
+            self._alarm_label,
+        ):
             if not label.text() or not label.isVisibleTo(self):
                 continue
             if label.height() < label.heightForWidth(max(label.width(), 1)):
@@ -432,10 +673,25 @@ class LiveTab(QWidget):
             f"background: {PALETTE['alarm']}; color: {PALETTE['bg']};"
         )
         row = QHBoxLayout(self._alarm)
-        row.setContentsMargins(12, 8, 12, 8)
-        self._alarm_label = QLabel("")
-        self._alarm_label.setWordWrap(True)
-        self._alarm_label.setStyleSheet(f"background: transparent; color: {PALETTE['bg']};")
+        row.setContentsMargins(SPACE_ROOM, SPACE_STEP, SPACE_ROOM, SPACE_STEP)
+        row.setSpacing(SPACE_ROOM)
+        # The glyph as well as the colour and the words: DESIGN.md's rule that
+        # no state is ever carried by colour alone, and the thing that makes
+        # this strip readable from across the room rather than merely red.
+        glyph = QLabel("■")
+        glyph.setStyleSheet(
+            f"background: transparent; color: {PALETTE['bg']}; "
+            f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
+        )
+        row.addWidget(glyph)
+        # A WrappedNote rather than a plain word-wrapped label: this is the one
+        # sentence on the tab that must never be drawn through the line under
+        # it, and a word-wrapped QLabel claims it can live in one line.
+        self._alarm_label = WrappedNote("")
+        self._alarm_label.setStyleSheet(
+            f"background: transparent; color: {PALETTE['bg']}; "
+            f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
+        )
         row.addWidget(self._alarm_label, 1)
         acknowledge = QPushButton("Acknowledge")
         acknowledge.clicked.connect(self.acknowledge)
@@ -446,19 +702,42 @@ class LiveTab(QWidget):
     def _build_movement_box(self) -> QWidget:
         box = QGroupBox("Recent movement")
         layout = QVBoxLayout(box)
+        layout.setSpacing(SPACE_SNUG)
         self._movement = QTableWidget(0, 4)
         self._movement.setHorizontalHeaderLabels(["Time", "Stream", "What", "Confidence"])
         self._movement.verticalHeader().setVisible(False)
         self._movement.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._movement.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._movement.setShowGrid(False)
+        self._movement.setAlternatingRowColors(False)
         self._movement.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
+        self._movement.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self._movement, 1)
+        # Shown in the table's place while there is nothing in it. An empty
+        # table is a black rectangle, and a black rectangle is indistinguishable
+        # from a list that failed to load - which is the wrong thing to leave an
+        # operator guessing about on the one panel that reports intruders.
+        self._movement_empty = WrappedNote(NOTHING_YET)
+        self._movement_empty.setStyleSheet(
+            f"color: {PALETTE['muted']}; padding: {SPACE_ROOM}px;"
+        )
+        self._movement_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._movement_empty, 1)
+        self._show_movement_or_not()
         self._movement_note = WrappedNote(UNIDENTIFIED_NOTE)
-        self._movement_note.setStyleSheet(f"color: {PALETTE['muted']};")
+        self._movement_note.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
         layout.addWidget(self._movement_note)
         return box
+
+    def _show_movement_or_not(self) -> None:
+        """Whichever of the list and the empty state has something to say."""
+        empty = self._movement.rowCount() == 0
+        self._movement.setVisible(not empty)
+        self._movement_empty.setVisible(empty)
 
     def _refresh_events(self) -> None:
         """Read the movement list, raise the alarm on anything new.
@@ -514,6 +793,7 @@ class LiveTab(QWidget):
             ]
             for column, text in enumerate(cells):
                 self._movement.setItem(row, column, QTableWidgetItem(text))
+        self._show_movement_or_not()
 
     def _raise_alarm(self, event) -> None:
         clock = datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S")
@@ -531,7 +811,11 @@ class LiveTab(QWidget):
         self._alarm_stream = stream
         for name, frame in self._frames.items():
             frame.setStyleSheet(
-                f"border: 3px solid {PALETTE['alarm']};" if name == stream else ""
+                f"QFrame#videoFrame {{ border: 3px solid {PALETTE['alarm']}; "
+                f"background: {PALETTE['well']}; }}"
+                if name == stream
+                else f"QFrame#videoFrame {{ border: 1px solid {PALETTE['line_strong']}; "
+                f"background: {PALETTE['well']}; }}"
             )
 
     # -- what the tests and the window read ---------------------------------
@@ -606,9 +890,10 @@ class LiveTab(QWidget):
         for frame in self._frames.values():
             frame.setParent(None)
         self._frames.clear()
-        for label in self._labels.values():
-            self._streams_layout.removeWidget(label)
-            label.setParent(None)
+        # No loop over the labels: each one is a child of the frame above its
+        # own picture now, and it went when the frame did. Touching one here is
+        # a use-after-free through shiboken, which is a raised RuntimeError in
+        # the middle of applying the settings the operator just saved.
         self._labels.clear()
 
         for stream in settings.camera.streams:
@@ -621,21 +906,37 @@ class LiveTab(QWidget):
             # outline: a VideoPane is only required to show, stop and report a
             # state, and libVLC draws over anything the widget paints anyway.
             frame = QFrame()
+            frame.setObjectName("videoFrame")
             frame_layout = QVBoxLayout(frame)
-            frame_layout.setContentsMargins(3, 3, 3, 3)
+            frame_layout.setContentsMargins(0, 0, 0, 0)
+            frame_layout.setSpacing(0)
+            # The name of the view and what it is doing, on the picture it is
+            # about. They used to be a list in the side column, three feet of
+            # screen away from the black rectangle they were describing, which
+            # is the one arrangement that makes "which of these two is the one
+            # that failed?" a question at all.
+            #
+            # Above the pane and not over it. libVLC draws into the pane's own
+            # window handle and paints over anything the widget itself draws, so
+            # a caption composited onto the picture would only be visible when
+            # there was no picture. A sibling in the same layout is neither
+            # between the pane and its parent nor inside it.
+            label = QLabel()
+            label.setContentsMargins(SPACE_SNUG, SPACE_TIGHT, SPACE_SNUG, SPACE_TIGHT)
+            self._labels[stream.name] = label
+            frame_layout.addWidget(label)
             if isinstance(pane, QWidget):
-                frame_layout.addWidget(pane)
+                frame_layout.addWidget(pane, 1)
             self._frames[stream.name] = frame
             self._wall.addWidget(frame)
-            label = QLabel()
-            self._labels[stream.name] = label
-            self._streams_layout.addWidget(label)
-            url = self._local_url(stream.name)
-            if url:
-                pane.show(url)
-                self._set_status(stream.name, pane.state)
-            else:
-                self._set_status(stream.name, "stopped")
+            self._set_status(stream.name, "stopped")
+        # The buttons come from the streams that exist, so a view nobody has a
+        # stream for is never on offer. The saved choice is applied after them,
+        # and one naming a stream that has since been removed falls back to
+        # showing everything rather than to a black rectangle.
+        self.views.set_views(list(self._panes))
+        self.views.choose(settings.wall_view, announce=False)
+        self._apply_view(force=True)
         # An alarm raised before the streams changed is still unacknowledged.
         self._outline(self._alarm_stream)
         self.overlay.raise_()
@@ -648,11 +949,76 @@ class LiveTab(QWidget):
         if self._storage_panel is not None:
             self._storage_panel.refresh()
 
+    # ------------------------------------------------------------- view modes
+
+    def chosen_view(self) -> str:
+        """The stream filling the wall, or "" for all of them side by side."""
+        return self.views.chosen_view()
+
+    def show_view(self, view: str) -> None:
+        """Show this view, exactly as pressing its button would."""
+        self.views.choose(view)
+
+    def shown_streams(self) -> list[str]:
+        """The views actually on the wall right now."""
+        return [name for name, frame in self._frames.items() if frame.isVisibleTo(self)]
+
+    def _view_chosen(self, view: str) -> None:
+        self._apply_view()
+        self.view_changed.emit(view)
+
+    def _apply_view(self, force: bool = False) -> None:
+        """Show what was chosen, and stop what is not being looked at.
+
+        Stopping is the whole point of the mode, not a tidy-up after it. libVLC
+        decoding a stream nobody can see costs this laptop real processor time
+        for nothing - it is a dedicated machine with one job and no headroom to
+        spare - and the operator who asked for one view asked precisely because
+        two were too much for it.
+
+        Bringing one back is `show(url)`, the same call `apply` makes, so a view
+        switched away from and back to is a fresh start rather than a paused
+        one. That matters on a live stream: what a paused decoder would resume
+        into is a picture of a minute ago.
+        """
+        chosen = self.views.chosen_view()
+        for name, frame in self._frames.items():
+            wanted = not chosen or name == chosen
+            # `force` is for the pass straight after the panes were built, when
+            # every frame is already visible and nothing has changed - but
+            # nothing has been started either.
+            if frame.isVisibleTo(self) == wanted and not force:
+                continue
+            frame.setVisible(wanted)
+            pane = self._panes.get(name)
+            if pane is None:
+                continue
+            if wanted:
+                url = self._local_url(name)
+                if url:
+                    pane.show(url)
+                    self._set_status(name, pane.state)
+                    # A stream brought back is not a stream that failed, so the
+                    # backoff that was counting its failures starts again.
+                    self._restarts.pop(name, None)
+                    self._next_try.pop(name, None)
+            else:
+                pane.stop()
+                self._set_status(name, "stopped")
+        self._no_views.setVisible(not self._frames)
+        self._wall_area.setVisible(bool(self._frames))
+        self.overlay.raise_()
+
     def refresh(self) -> None:
         """Read every pane's state. Restart only what has actually failed.
 
         Late is a report, not a trigger. The pane is left exactly as it is."""
         for name, pane in self._panes.items():
+            # A view the operator has switched away from is stopped on purpose.
+            # Reading its state here would report it as stopped, which is true,
+            # and restarting it would undo the thing the mode exists to do.
+            if not self._frames[name].isVisibleTo(self):
+                continue
             state = pane.state
             self._set_status(name, state)
             if state == "failed":
@@ -736,7 +1102,16 @@ class LiveTab(QWidget):
         if state == "failed" and self._restarts.get(name, 0) >= GIVING_UP_AFTER:
             words = GIVEN_UP_WORDS
         label.setText(f"{name}  -  {words}")
-        label.setStyleSheet(f"color: {STATE_COLOURS.get(state, PALETTE['muted'])};")
+        # The instrument label from DESIGN.md: a tag on a plate at the top of
+        # the picture, in the same monospace as every other reading, coloured by
+        # the state it is reporting. The colour is never the only signal - the
+        # state is spelled out in the words beside it.
+        label.setStyleSheet(
+            f"background: {PALETTE['surface']}; "
+            f"color: {STATE_COLOURS.get(state, PALETTE['muted'])}; "
+            f"font-family: {MONO}; font-size: {SIZE_HEADING}px; "
+            f"font-weight: {WEIGHT_VALUE};"
+        )
 
     # --------------------------------------------------------------- steering
 
@@ -859,6 +1234,14 @@ class LiveTab(QWidget):
             self.zoom(-1)
         elif key == int(Qt.Key.Key_Home):
             self.go_home()
+        elif key in VIEW_KEYS and self.views.choose_at(VIEW_KEYS[key]):
+            # Nothing about the held keys is touched. A number pressed while an
+            # arrow is down changes what is on the wall and leaves the head
+            # doing exactly what it was doing, and the release of that arrow
+            # still arrives at `keyReleaseEvent` and still stops it. A shortcut
+            # that swallowed the release would leave the camera slewing with
+            # nobody watching, which is the failure this tab may never have.
+            pass
         else:
             super().keyPressEvent(event)
             return

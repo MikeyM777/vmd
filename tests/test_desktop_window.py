@@ -978,3 +978,36 @@ def test_nothing_pulses_behind_a_window_nobody_is_looking_at(
     assert window._blink.isActive() is False
     window.close()
     assert window._blink.isActive() is False
+
+
+def test_the_view_the_operator_chose_survives_a_restart(qtbot, tmp_path: Path) -> None:
+    """An operator who wants thermal alone wants it tomorrow too. A choice that
+    does not survive the night is not a choice, it is a chore."""
+    window, _ = build(qtbot, tmp_path)
+    window.live.show_view("thermal")
+    assert load_settings(window._settings_path).wall_view == "thermal"
+
+    # Opened again against the file that was just written, rather than through
+    # `build`, which writes a fresh settings.json over it.
+    reopened = ConsoleWindow(
+        settings_path=window._settings_path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(reopened)
+    assert reopened.live.chosen_view() == "thermal"
+    assert reopened.live.shown_streams() == ["thermal"]
+
+
+def test_a_settings_file_that_cannot_be_written_still_changes_the_wall(
+    qtbot, tmp_path: Path
+) -> None:
+    """A full disk is one of the things this console exists to report, and it
+    may not cost the operator the view they just asked for."""
+    window, _ = build(qtbot, tmp_path)
+    window._settings_path = tmp_path / "no-such-folder" / "settings.json"
+    window.live.show_view("thermal")
+    assert window.live.chosen_view() == "thermal"

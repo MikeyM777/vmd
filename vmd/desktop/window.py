@@ -50,7 +50,7 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
-from vmd.settings import Settings, load_settings
+from vmd.settings import Settings, load_settings, save_settings
 from vmd.storage.index import SegmentIndex
 
 logger = logging.getLogger(__name__)
@@ -364,6 +364,7 @@ class ConsoleWindow(QMainWindow):
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
+            tab.view_changed.connect(self.view_changed)
             return tab
 
         def build_playback() -> QWidget:
@@ -508,6 +509,29 @@ class ConsoleWindow(QMainWindow):
         """Nothing pulses behind a window nobody is looking at."""
         self._blink.stop()
         super().hideEvent(event)
+
+    def view_changed(self, view: str) -> None:
+        """Remember which view the operator is looking at, for tomorrow.
+
+        Read from the file and written back to it, rather than written from
+        anything held in memory: the Settings tab may have half-typed edits on
+        screen, and a view change is not the moment to commit them. Only this
+        one field moves.
+
+        Guarded end to end. A settings file that cannot be written is a real
+        state on this machine - a full disk is one of the things this console
+        exists to report - and it may not cost the operator the view they just
+        asked for. The view is already on the wall; this is only the memory of
+        it.
+        """
+        try:
+            settings = load_settings(self._settings_path)
+            if settings.wall_view == view:
+                return
+            settings.wall_view = view
+            save_settings(settings, self._settings_path)
+        except Exception:  # noqa: BLE001 - the wall changed either way
+            logger.exception("which view is on the wall could not be remembered")
 
     def settings_saved(self, settings) -> None:
         """Point the running console at what was just written.

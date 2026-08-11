@@ -1073,3 +1073,177 @@ def test_the_link_panel_is_not_squeezed_by_the_rest_of_the_column(qtbot) -> None
     tab.show()
     QApplication.processEvents()
     assert tab._link_panel.clipped() == [], "half a sentence is worse than none"
+
+
+# ------------------------------------------------------------ the view modes
+#
+# Both pictures side by side, or one of them filling the wall. The browser
+# console had this and the desktop one lost it, and the operator changes it all
+# day - so the tests here are about the two things that make it usable rather
+# than merely present: what is actually decoding, and what happens to a camera
+# that is mid-slew when the mode changes.
+
+
+def test_the_wall_offers_every_view_the_camera_has_and_no_others(qtbot) -> None:
+    """A camera calls its views whatever it likes. Offering a fixed "visible
+    only" on a machine with no visible stream would be offering a black
+    rectangle."""
+    two, _, _ = build(qtbot, "thermal", "visible")
+    assert two.views.labels() == ["All", "thermal", "visible"]
+
+    one, _, _ = build(qtbot, "thermal")
+    assert one.views.labels() == ["All", "thermal"]
+
+
+def test_choosing_one_view_fills_the_wall_with_it(qtbot) -> None:
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    assert tab.shown_streams() == ["thermal", "visible"]
+
+    tab.show_view("visible")
+    assert tab.shown_streams() == ["visible"]
+    assert tab.chosen_view() == "visible"
+
+    tab.show_view("")
+    assert tab.shown_streams() == ["thermal", "visible"]
+
+
+def test_a_view_nobody_is_looking_at_actually_stops(qtbot) -> None:
+    """The point of the mode, not a tidy-up after it. This laptop has one job
+    and no headroom, and libVLC decoding a picture nobody can see costs it real
+    processor time for nothing."""
+    tab, _, panes = build(qtbot, "thermal", "visible")
+    assert panes["visible"].url is not None
+
+    tab.show_view("thermal")
+    assert panes["visible"].url is None, "a hidden view has to stop, not play into nothing"
+    assert panes["thermal"].url is not None
+
+    tab.show_view("visible")
+    assert panes["visible"].url is not None, "switching back has to bring it up again"
+
+
+def test_a_stopped_view_is_not_mistaken_for_a_failed_one(qtbot) -> None:
+    """`refresh` restarts what failed. A view the operator switched away from
+    has not failed, and restarting it every two seconds would undo the mode."""
+    tab, _, panes = build(qtbot, "thermal", "visible")
+    tab.show_view("thermal")
+    started = panes["visible"].restarts
+    for _ in range(5):
+        tab.refresh()
+    assert panes["visible"].url is None
+    assert panes["visible"].restarts == started
+
+
+def test_the_number_keys_choose_the_view(qtbot) -> None:
+    """Digits, because every other key on this tab is already steering."""
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    qtbot.keyClick(tab, Qt.Key.Key_2)
+    assert tab.chosen_view() == "thermal"
+    qtbot.keyClick(tab, Qt.Key.Key_3)
+    assert tab.chosen_view() == "visible"
+    qtbot.keyClick(tab, Qt.Key.Key_1)
+    assert tab.chosen_view() == ""
+
+
+def test_a_number_key_with_no_view_behind_it_does_nothing(qtbot) -> None:
+    tab, _, _ = build(qtbot, "thermal")
+    qtbot.keyClick(tab, Qt.Key.Key_9)
+    assert tab.chosen_view() == ""
+
+
+def test_changing_the_view_while_an_arrow_is_held_still_stops_the_camera(
+    qtbot,
+) -> None:
+    """The hazard the shortcuts had to be designed around. A head left slewing
+    because a shortcut swallowed a key release is a hazard, not an
+    inconvenience - and it is the failure this tab has already paid for once."""
+    tab, ptz, _ = build(qtbot, "thermal", "visible")
+    qtbot.keyPress(tab, Qt.Key.Key_Right)
+    assert sent(tab, ptz)[-1][0] == "move"
+
+    qtbot.keyClick(tab, Qt.Key.Key_2)
+    assert tab.chosen_view() == "thermal"
+    # Still moving: the operator asked for a different picture, not for the
+    # camera to stop.
+    assert sent(tab, ptz)[-1][0] == "move"
+
+    qtbot.keyRelease(tab, Qt.Key.Key_Right)
+    assert sent(tab, ptz)[-1] == ("stop",)
+
+
+def test_the_view_buttons_never_take_the_keyboard_off_the_camera(qtbot) -> None:
+    """A button that took focus would leave the next arrow key going nowhere
+    until the operator clicked back on the picture."""
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    for button in tab.views._buttons:
+        assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_the_view_is_remembered_and_a_view_that_is_gone_is_not(qtbot) -> None:
+    """An operator who wants thermal alone wants it tomorrow too - and a saved
+    view whose stream has since been removed falls back to showing everything,
+    which is the state that cannot hide anything."""
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    remembered = settings_with("thermal", "visible")
+    remembered.wall_view = "visible"
+    tab.apply(remembered)
+    assert tab.chosen_view() == "visible"
+    assert tab.shown_streams() == ["visible"]
+
+    gone = settings_with("thermal")
+    gone.wall_view = "visible"
+    tab.apply(gone)
+    assert tab.chosen_view() == ""
+    assert tab.shown_streams() == ["thermal"]
+
+
+def test_a_camera_with_no_views_says_so_rather_than_showing_black(qtbot) -> None:
+    tab, _, _ = build(qtbot)
+    assert tab.shown_streams() == []
+    assert tab._no_views.isVisibleTo(tab), "a black rectangle is not an explanation"
+
+
+def test_the_movement_list_says_when_nothing_has_moved(qtbot) -> None:
+    """An empty table is a black rectangle with a header on it, and a black
+    rectangle is indistinguishable from a list that failed to load."""
+    events = FakeEvents()
+    tab, _, _ = build(qtbot, "thermal", events=events)
+    tab.refresh()
+    assert tab.recent_rows() == []
+    assert tab._movement_empty.isVisibleTo(tab)
+    assert tab._movement.isVisibleTo(tab) is False
+
+    events.events.append(movement(1, stream="thermal", started=1_770_000_123.0))
+    tab.refresh()
+    assert tab._movement.isVisibleTo(tab)
+    assert tab._movement_empty.isVisibleTo(tab) is False
+
+
+def test_the_side_column_grows_with_the_window(qtbot) -> None:
+    """It was 340 px on a 1366 laptop panel and 340 px on a 4K screen, which is
+    the same paragraph wrapped to four lines with a third of the width wasted
+    beside it."""
+    tab, _, _ = build(qtbot, "thermal")
+    # The rule, at sizes no machine running this has a screen for: a window
+    # asked to be 3840 px wide on a 1080p desk is quietly given 1684.
+    narrow = LiveTab.column_width(1366)
+    wide = LiveTab.column_width(3840)
+    assert wide > narrow
+    assert 300 <= narrow <= 420 and 300 <= wide <= 420
+
+    # And that a real resize actually applies it. Shown, because Qt holds a
+    # resize event back until a widget is on screen.
+    tab.show()
+    tab.setGeometry(0, 0, 1366, 768)
+    QApplication.processEvents()
+    assert tab._side.maximumWidth() == LiveTab.column_width(tab.width())
+
+
+def test_each_picture_is_labelled_on_the_picture(qtbot) -> None:
+    """The name and the state used to be a list in the side column, three feet
+    of screen away from the black rectangle they described."""
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    label = tab._labels["thermal"]
+    frame = tab._frames["thermal"]
+    parent = label.parentWidget()
+    assert parent is frame, "the label belongs to the picture it is about"

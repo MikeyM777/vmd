@@ -269,6 +269,22 @@ class Settings(Model):
             raise ValueError("video_buffer_ms must be between 0 and 5000")
         return value
 
+    # Which of the camera's views the Live tab is showing: the name of one
+    # stream, or empty for all of them side by side.
+    #
+    # A new field and not `video_mode`, which is a different question wearing a
+    # similar name - `video_mode` is how the picture is carried (webrtc, mp4),
+    # a transport left over from the browser console, and overloading it would
+    # make one word mean two things in a file the operator can be asked to read
+    # over the phone.
+    #
+    # A stream NAME and not a number, because a camera calls its views whatever
+    # it likes and this file outlives any particular order they were listed in:
+    # saved as position 1, a stream added above it silently changes which view
+    # the console comes back to. A name that no longer exists falls back to
+    # showing everything, which is the state that cannot hide anything.
+    wall_view: str = ""
+
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
