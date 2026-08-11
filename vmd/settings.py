@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class SettingsError(Exception):
@@ -67,6 +74,14 @@ class StreamSettings(Model):
     name: str
     url: str
     enabled: bool = True
+
+    # A blank name is deliberately not refused here. It is an identifier - the
+    # go2rtc stream id, the folder segments are filed under, the value events
+    # are attributed to - and a stream with no name is one nothing downstream
+    # can address. But the settings window builds a StreamSettings for a row
+    # the operator has only just added and has not typed into yet, so refusing
+    # it at this level makes an empty row unconstructible; the window refuses a
+    # nameless stream on the way to being saved, which is the right seam.
 
     @field_validator("url")
     @classmethod
@@ -163,6 +178,34 @@ class CameraSettings(Model):
     password: str = ""
     streams: list[StreamSettings] = Field(default_factory=list)
 
+    @field_validator("streams")
+    @classmethod
+    def _names_are_distinct(cls, value: list[StreamSettings]) -> list[StreamSettings]:
+        """Two streams cannot share a name, because nothing downstream could tell.
+
+        go2rtc serves one stream under a name, the recorder files segments
+        under it, the detector attributes events to it and the Live tab picks a
+        view by it. Two streams called ch1 means the second camera's footage
+        and the second camera's events are filed as the first camera's - so the
+        operator watches a perimeter that is not the one on the screen, and
+        every part of the system agrees with him.
+        """
+        seen: set[str] = set()
+        for stream in value:
+            key = stream.name.strip().casefold()
+            if not key:
+                # A row the operator has not filled in yet. Refused on the way
+                # to being saved, by the window, where it can be pointed at.
+                continue
+            if key in seen:
+                raise ValueError(
+                    f"two streams are both called {stream.name!r}. The name is how "
+                    f"the recordings, the events and the live picture are told "
+                    f"apart, so each one needs its own."
+                )
+            seen.add(key)
+        return value
+
 
 class RadioSettings(Model):
     """Ubiquiti airOS radio. Optional: bitrate control falls back to video statistics."""
@@ -193,6 +236,39 @@ class StorageSettings(Model):
     def _days_positive(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError("retention_days must be greater than 0, or null to disable")
+        return value
+
+    @field_validator("warn_at_fraction")
+    @classmethod
+    def _fraction_can_actually_fire(cls, value: float) -> float:
+        """A fraction above 1 is the disk warning switched off in disguise.
+
+        The rule is `used >= warn_at_fraction * budget`, and the retention sweep
+        keeps `used` under the budget - so anything above 1 is a threshold that
+        can never be reached. The one thing that tells the operator the disk is
+        filling would be gone, and the settings file it went missing in would
+        look entirely ordinary. Zero is refused at the other end for the mirror
+        reason: a warning that is always on is one nobody reads.
+        """
+        if not 0 < value <= 1:
+            raise ValueError(
+                "warn_at_fraction must be more than 0 and at most 1 - it is the "
+                "share of the budget at which the disk warning appears, so "
+                "anything above 1 is a warning that can never appear"
+            )
+        return value
+
+    @field_validator("segment_seconds")
+    @classmethod
+    def _segments_have_a_length(cls, value: int) -> int:
+        """It is handed to ffmpeg as -segment_time, where 0 is not a length.
+
+        Recording is one process away from the console and reports only that it
+        is running, so a segment length that ffmpeg cannot act on is a day of
+        files nobody looks at until somebody needs the footage.
+        """
+        if value <= 0:
+            raise ValueError("segment_seconds must be greater than 0")
         return value
 
     @property
@@ -237,6 +313,30 @@ class BitrateSettings(Model):
     floor_kbps: int = 1000
     ceiling_kbps: int = 5000
     manual_kbps: int = 3000
+
+    @field_validator("floor_kbps", "ceiling_kbps", "manual_kbps")
+    @classmethod
+    def _a_bitrate_is_a_rate(cls, value: int) -> int:
+        """Zero is not a low bitrate; it is the camera told to send nothing.
+
+        `fit_to_link` caps every encoder on the camera to fit inside the
+        ceiling, and the camera keeps what it is told. A zero here is a live
+        picture that never comes back, applied to the camera rather than to
+        this file.
+        """
+        if value <= 0:
+            raise ValueError("a bitrate must be greater than 0 kb/s")
+        return value
+
+    @model_validator(mode="after")
+    def _the_range_is_a_range(self) -> "BitrateSettings":
+        if self.floor_kbps > self.ceiling_kbps:
+            raise ValueError(
+                f"the bitrate floor ({self.floor_kbps} kb/s) is above the ceiling "
+                f"({self.ceiling_kbps} kb/s), which is two instructions that cannot "
+                f"both be obeyed"
+            )
+        return self
 
 
 class Settings(Model):

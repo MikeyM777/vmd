@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from pydantic import ValidationError
+
 from vmd.settings import (
     Settings,
     SettingsError,
@@ -122,3 +124,85 @@ def test_a_first_run_with_no_file_still_gets_an_absolute_folder(tmp_path, monkey
     monkeypatch.chdir(tmp_path)
     settings = load_settings(tmp_path / "nothing-here.json")
     assert settings.storage.root == (tmp_path / "recordings").resolve()
+
+
+# --------------------------------------------------------------------------
+# Numbers that parse, and mean nothing
+# --------------------------------------------------------------------------
+
+
+def test_a_disk_warning_that_can_never_fire_is_refused():
+    """`warn_at_fraction` above 1 is a warning that is switched off in disguise.
+
+    The rule is `used >= warn_at_fraction * budget`, and used can never exceed
+    the budget the retention sweep keeps it under. Above 1 the warning never
+    fires - so the one thing that tells the operator the disk is filling is
+    gone, and the settings file it went missing in looks perfectly normal.
+    """
+    from vmd.settings import StorageSettings
+
+    with pytest.raises(ValidationError):
+        StorageSettings(warn_at_fraction=1.5)
+    with pytest.raises(ValidationError):
+        StorageSettings(warn_at_fraction=0.0)
+    assert StorageSettings(warn_at_fraction=1.0).warn_at_fraction == 1.0
+
+
+def test_a_segment_length_of_zero_is_refused():
+    """It is handed to ffmpeg as -segment_time, where it is not a length at all."""
+    from vmd.settings import StorageSettings
+
+    with pytest.raises(ValidationError):
+        StorageSettings(segment_seconds=0)
+    with pytest.raises(ValidationError):
+        StorageSettings(segment_seconds=-60)
+
+
+def test_a_bitrate_floor_above_the_ceiling_is_refused():
+    """The pair has to be readable as a range or neither number means anything.
+
+    The ceiling is what every encoder on the camera is capped to fit inside.
+    A floor above it is two instructions that cannot both be obeyed, and
+    nothing downstream would say which one it chose.
+    """
+    from vmd.settings import BitrateSettings
+
+    with pytest.raises(ValidationError):
+        BitrateSettings(floor_kbps=6000, ceiling_kbps=5000)
+    with pytest.raises(ValidationError):
+        BitrateSettings(ceiling_kbps=0)
+
+
+def test_two_streams_with_the_same_name_are_refused():
+    """Nothing downstream can tell them apart, and none of it says so.
+
+    Every consumer keys on the name: go2rtc serves one stream under it, the
+    recorder files segments under it, the detector attributes events to it and
+    the Live tab picks a view by it. Two streams called ch1 means the second
+    camera's footage and the second camera's events are filed as the first
+    camera's, and the operator is looking at a perimeter that is not the one
+    on the screen.
+    """
+    from vmd.settings import CameraSettings, StreamSettings
+
+    with pytest.raises(ValidationError) as raised:
+        CameraSettings(
+            streams=[
+                StreamSettings(name="ch1", url="rtsp://10.0.0.2/one"),
+                StreamSettings(name="ch1", url="rtsp://10.0.0.2/two"),
+            ]
+        )
+    assert "ch1" in str(raised.value)
+
+
+def test_a_settings_file_with_a_meaningless_number_says_which_one(tmp_path):
+    """Loading has to fail with a sentence, not a traceback: nothing restarts
+    the detector on its own, and the operator has no terminal."""
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"storage": {"warn_at_fraction": 4.0}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SettingsError) as raised:
+        load_settings(path)
+    assert "warn_at_fraction" in str(raised.value)
