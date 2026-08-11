@@ -7,10 +7,12 @@ disk filling - which was the first requirement this system was given.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -25,6 +27,38 @@ logger = logging.getLogger(__name__)
 # How long the recorder tree gets to disappear after taskkill has been told to
 # end it. It is already a forced kill, so this is only the time the kernel needs.
 TREE_STOP_SECONDS = 10.0
+
+# How long stop() will wait for a child's output reader to notice the pipe has
+# ended. Short, because stop() runs on the GUI thread while the window closes,
+# and the reader is a daemon thread that costs nothing if it is abandoned.
+READER_STOP_SECONDS = 2.0
+
+# The longest single line kept from a child. A child in a restart loop, or an
+# ffmpeg dumping a binary probe, can write a great deal without a newline, and
+# the ring buffer's capacity is no defence against one line that is a megabyte.
+CHILD_LINE_LIMIT = 2000
+
+# How much is taken off a child's pipe at a time. Small enough that a line is
+# logged while it still matters, large enough not to syscall per byte.
+CHILD_READ_CHUNK = 8192
+
+# Where the detector publishes what each stream is doing, beside events.db in
+# the recording root. The name is repeated here rather than imported for the
+# same reason `detection_enabled` repeats its rule: importing `vmd.detect_main`
+# would pull cv2, numpy and eventually the classifier's weights into the
+# window's process, which must open on a laptop where none of that is installed.
+DETECTION_STATUS_FILENAME = "detection.json"
+
+# How old that file may be before the console stops believing it. The detector
+# rewrites it every `interval` seconds - five by default - so thirty seconds is
+# six missed writes: long enough that a laptop busy encoding four streams, or a
+# write that lost a rename race with a reader, does not make the console cry
+# wolf, and short enough that a wedged detector is reported within a handful of
+# heartbeats rather than minutes. A detector told to report less often is given
+# four of its own intervals instead, so raising --interval cannot silently turn
+# this into "permanently stale".
+DETECTION_STATUS_STALE_SECONDS = 30.0
+DETECTION_STATUS_STALE_INTERVALS = 4
 
 # How a detector that will not stay up is recognised: more than this many
 # restarts inside this window and the console stops calling it detection. Two
@@ -45,6 +79,95 @@ def detection_enabled(settings: Settings) -> bool:
     if not settings.detection.enabled:
         return False
     return any(stream.enabled and stream.detect for stream in settings.camera.streams)
+
+
+def read_child_output(stream, emit: Callable[[str], None]) -> None:
+    """Read a child's pipe to the end, handing whole lines to `emit`.
+
+    Bytes rather than text, and decoded here on purpose. A child writes things
+    that are not valid UTF-8 more often than not: ffmpeg puts filenames in the
+    machine's own code page, and any chunk can end half way through a multi-byte
+    character. Decoding with `replace` turns both into a readable line instead of
+    a UnicodeDecodeError that ends the reader and takes the Logs tab silent for
+    the rest of the run.
+
+    Chunked rather than `for line in stream`, because a line-oriented reader
+    accumulates whatever the child writes until a newline arrives - and a child
+    that never sends one has the console holding all of it. `CHILD_LINE_LIMIT`
+    caps that, so the memory this can hold is bounded by the limit and not by
+    the child, which is what makes the ring buffer's capacity mean anything.
+
+    A child that dies mid-line still said something: whatever is left when the
+    pipe ends is emitted rather than dropped, because a half-written line is
+    usually the most interesting thing the child ever said.
+    """
+    # read1 where it exists (a buffered pipe, a BytesIO) so a partial chunk is
+    # returned as soon as it arrives; read() on a buffered stream would block
+    # until the whole chunk was filled, which for a quiet child is for ever.
+    read = getattr(stream, "read1", None) or stream.read
+    pending = bytearray()
+    # True while the tail of an over-long line is being thrown away: it has
+    # already been reported as truncated, and the rest is not worth holding.
+    discarding = False
+
+    while True:
+        try:
+            data = read(CHILD_READ_CHUNK)
+        except (OSError, ValueError):
+            # The pipe was closed under us - the ordinary end of a child that
+            # was killed. Not a failure worth a traceback.
+            return
+        if not data:
+            break
+        pending.extend(data)
+
+        while True:
+            end = pending.find(b"\n")
+            if end < 0:
+                break
+            line = bytes(pending[:end])
+            del pending[: end + 1]
+            if discarding:
+                discarding = False
+                continue
+            _emit_line(line, emit)
+
+        if len(pending) > CHILD_LINE_LIMIT:
+            _emit_line(bytes(pending[:CHILD_LINE_LIMIT]), emit, truncated=True)
+            pending.clear()
+            discarding = True
+
+    if pending and not discarding:
+        _emit_line(bytes(pending), emit)
+
+
+def _emit_line(raw: bytes, emit: Callable[[str], None], truncated: bool = False) -> None:
+    text = raw.decode("utf-8", "replace").rstrip()
+    if len(text) > CHILD_LINE_LIMIT:
+        text = text[:CHILD_LINE_LIMIT]
+        truncated = True
+    if truncated:
+        text += " ... (line truncated)"
+    if not text.strip():
+        return
+    emit(text)
+
+
+def child_log_level(text: str) -> int:
+    """How loudly to repeat one line from a child.
+
+    The children log with `%(levelname)s` in the format, so the word is in the
+    line and can be honoured - which is what makes the Logs tab's "warnings and
+    errors" button work on the children as well as on the console itself. The
+    two extra words are go2rtc's: "401 Unauthorized" is the line this whole
+    change exists for, and it is not tagged as an error by anything.
+    """
+    upper = text.upper()
+    if "CRITICAL" in upper or "ERROR" in upper or "TRACEBACK" in upper:
+        return logging.ERROR
+    if "WARN" in upper or "UNAUTHORIZED" in upper or "401" in upper:
+        return logging.WARNING
+    return logging.INFO
 
 
 class ChildProcess:
@@ -80,6 +203,15 @@ class ChildProcess:
         self._kill_tree = kill_tree or _taskkill_tree
         self._process: subprocess.Popen | None = None
         self._adopted_pid: int | None = None
+        self._output_thread: threading.Thread | None = None
+        # Its own name in the Logs tab, exactly as go2rtc has one, so a line
+        # from the recorder is distinguishable from a line about the recorder.
+        self._child_logger = logging.getLogger(self.label or "child")
+
+    @property
+    def output_thread(self) -> threading.Thread | None:
+        """The reader for this child's pipe, for anyone who has to wait on it."""
+        return self._output_thread
 
     @property
     def running(self) -> bool:
@@ -97,11 +229,17 @@ class ChildProcess:
         if adopted is not None and _pid_alive(adopted):
             logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
             self._adopted_pid = adopted
+            self._announce_adoption(adopted)
             return
         self._adopted_pid = None
 
         command = [
             sys.executable,
+            # Unbuffered. Python block-buffers stdout when it is a pipe, so
+            # without this the operator watches an empty Logs tab while the
+            # child fills eight kilobytes - which for a recorder saying one line
+            # a minute is most of an hour.
+            "-u",
             "-m",
             self.module,
             "--settings",
@@ -114,7 +252,73 @@ class ChildProcess:
             self._process = None
             return
         self._write_pid()
+        self._read_output(self._process)
         logger.info("%s started", self.label)
+
+    def _announce_adoption(self, pid: int) -> None:
+        """Say that this child's output cannot be shown, rather than showing none.
+
+        An adopted child was started by a console that has since closed, and its
+        pipes went with it - there is nothing here to read. Silence in the Logs
+        tab would read as "the recorder has nothing to say", which is the
+        opposite of the truth and the wrong thing to act on.
+        """
+        self._child_logger.warning(
+            "%s: adopted from an earlier run (pid %s) - it is running and recording, "
+            "but its output goes to the console that started it, so no further "
+            "output from it can be shown here",
+            self.label,
+            pid,
+        )
+
+    def _read_output(self, process) -> None:
+        """Pump this child's pipe into the log, on a daemon thread.
+
+        A thread rather than anything cleverer because the read has to block:
+        there is no portable non-blocking read of a pipe on Windows, selectors
+        do not take pipe handles, and asyncio would mean an event loop inside a
+        Qt application. One thread per child, blocked on a read almost always,
+        costs a stack and nothing else.
+
+        Daemon, because these children outlive the window on purpose and their
+        readers must not hold the interpreter open behind a console that closed.
+        A pipe nobody reads eventually fills and blocks the child, so this is
+        not optional once stdout is a pipe.
+        """
+        stream = getattr(process, "stdout", None)
+        if stream is None:
+            return
+
+        def pump() -> None:
+            try:
+                read_child_output(stream, self._log_line)
+            except Exception:  # noqa: BLE001 - a reader must never take the console with it
+                logger.debug("the %s output reader stopped", self.label, exc_info=True)
+            finally:
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001 - closing must not fail a close
+                    pass
+
+        thread = threading.Thread(target=pump, name=f"{self.label}-log", daemon=True)
+        self._output_thread = thread
+        thread.start()
+
+    def _log_line(self, text: str) -> None:
+        self._child_logger.log(child_log_level(text), "%s: %s", self.label, text)
+
+    def wait_for_output(self, timeout: float = READER_STOP_SECONDS) -> bool:
+        """Wait for this child's reader to reach the end of the pipe.
+
+        Bounded always, and its answer is a bool rather than an exception: the
+        caller is either a closing window, which cannot afford to wait, or a
+        test, which must fail rather than hang.
+        """
+        thread = self._output_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     def _read_pid(self) -> int | None:
         try:
@@ -187,6 +391,13 @@ class ChildProcess:
                     logger.error("the %s did not stop; leaving it tracked", self.label)
                     return
         self._process = None
+        # The reader ends by itself when the pipe does. Waited on briefly so
+        # that the last thing a dying child said still reaches the Logs tab,
+        # and never for longer than that: this runs on the GUI thread while the
+        # window closes, and the reader is a daemon that costs nothing if it is
+        # left behind.
+        self.wait_for_output(READER_STOP_SECONDS)
+        self._output_thread = None
 
 
 class RecorderProcess(ChildProcess):
@@ -277,13 +488,104 @@ def _creation_flags() -> int:
 
 
 def _default_spawn(command: list[str]) -> subprocess.Popen:
+    """Start a child with its mouth open.
+
+    DEVNULL was the defect, and an invisible one: everything still ran, and the
+    operator simply never learned why. This machine is offline and has no
+    terminal, so the Logs tab is the only place a child can be heard at all.
+
+    stderr is merged into stdout because `logging.basicConfig` writes to stderr
+    and `print` writes to stdout, and both are things the children say that the
+    operator needs. Two pipes would need two readers and would interleave badly.
+
+    bufsize=0 makes `process.stdout` a raw pipe, whose read returns what has
+    arrived rather than waiting to fill a buffer - the difference between a line
+    appearing when it is written and appearing eight kilobytes later.
+    """
     return subprocess.Popen(
         command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        bufsize=0,
         creationflags=_creation_flags(),
     )
+
+
+def read_detection_status(path: str | Path) -> dict | None:
+    """What the detector last published about each stream, if anything.
+
+    Shaped after `read_endpoint`, which is the same idea for the streaming
+    server: anything that is not a usable status file - missing, unreadable, not
+    JSON, JSON that is not an object, an object written by an older version
+    without the key this needs - is None, and the console reports that as
+    unknown. None of them may raise. This is called from the status line, on a
+    timer, on the one machine the operator is watching.
+    """
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("streams"), list):
+        return None
+    return payload
+
+
+def detection_status_fresh(status: dict, now: float) -> bool:
+    """Is that file recent enough to believe? Stale means unknown, not healthy.
+
+    A detector that wedged an hour ago left a file saying every stream was fine.
+    Repeating that is worse than saying nothing, because it is the answer the
+    operator would have wanted to hear.
+
+    A file dated in the future is treated the same way. The laptop's clock is
+    set by hand and gets set wrong, and a timestamp from next week is a clock
+    that moved rather than a detector that is well.
+    """
+    try:
+        written_at = float(status["written_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    try:
+        interval = float(status.get("interval") or 0.0)
+    except (TypeError, ValueError):
+        interval = 0.0
+    limit = max(
+        DETECTION_STATUS_STALE_SECONDS, DETECTION_STATUS_STALE_INTERVALS * interval
+    )
+    return -limit <= (now - written_at) <= limit
+
+
+def stream_reason(streams: list[dict], known: bool) -> str:
+    """One line naming the streams that are not being watched, and why.
+
+    Never one health flag. Detection continuing on the thermal while the visible
+    is unreachable is a normal Tuesday on a 700 m radio link, and a console that
+    called that "detection failed" would be teaching its operator to ignore the
+    line that one day says something true - which is the same mistake as
+    reporting detection nobody asked for as a fault.
+
+    The reasons are the detector's own words, because they were written to be
+    read by an operator on a hill rather than by a developer with the source
+    open.
+    """
+    if not known:
+        return "detecting - no recent per-stream report, so which streams are watched is unknown"
+    if not streams:
+        return "detecting - no stream has reported yet"
+
+    watching = [stream["stream"] for stream in streams if stream.get("opened")]
+    blind = [stream for stream in streams if not stream.get("opened")]
+    if not blind:
+        return "detecting on " + ", ".join(watching)
+
+    trouble = "; ".join(
+        f"{stream['stream']} NOT detecting - {stream.get('reason') or 'no reason given'}"
+        for stream in blind
+    )
+    if watching:
+        return "detecting on " + ", ".join(watching) + "; " + trouble
+    return "detecting, but no stream is open: " + trouble
 
 
 class ConsoleServices:
@@ -297,6 +599,7 @@ class ConsoleServices:
         recorder: RecorderProcess,
         detector: DetectorProcess | None = None,
         clock: Callable[[], float] = time.monotonic,
+        now: Callable[[], float] = time.time,
     ) -> None:
         self.settings = settings
         self.settings_path = Path(settings_path)
@@ -305,6 +608,14 @@ class ConsoleServices:
         self.detector = detector
         self.adopted_streaming = False
         self._clock = clock
+        # Two clocks, deliberately. `clock` is monotonic and measures how long
+        # ago this console restarted the detector; `now` is wall clock and is
+        # the only kind that can be compared with a timestamp written by another
+        # process, which is what the detector's status file carries.
+        self._now = now
+        self.detection_status_path = (
+            Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+        )
 
         # Detection nobody asked for is not supervised at all. `vmd.detect_main`
         # prints "nothing to detect" and exits 0 when no stream is ticked, so a
@@ -337,6 +648,14 @@ class ConsoleServices:
             endpoint = read_endpoint(self.settings_path.parent / "streaming.json")
             if endpoint and is_live(endpoint):
                 logger.info("a streaming server is already running; adopting it")
+                # Same as an adopted recorder: its output belongs to whoever
+                # started it. Saying so beats a Logs tab where the one line that
+                # explains a stuck picture - go2rtc's "401 Unauthorized" - is
+                # simply absent, which reads as nothing having gone wrong.
+                logging.getLogger("go2rtc").warning(
+                    "go2rtc: adopted from an earlier run - it is serving video, but its "
+                    "output goes to whatever started it and cannot be shown here"
+                )
                 self.streaming.api_port = int(endpoint.get("api_port", self.streaming.api_port))
                 self.streaming.rtsp_port = int(endpoint.get("rtsp_port", self.streaming.rtsp_port))
                 self.adopted_streaming = True
@@ -400,6 +719,11 @@ class ConsoleServices:
         restarts inside a couple of minutes is reported as not running, and it
         overrides `running`: catching the process during the half-second it is
         alive is not detection.
+
+        Underneath all three sits the per-stream state the detector publishes,
+        which is a different question from whether the process is up: a detector
+        watching the thermal while the visible is unreachable is running, and is
+        also not watching everything it was asked to.
         """
         enabled = detection_enabled(self.settings)
         if self.detector is None:
@@ -408,6 +732,8 @@ class ConsoleServices:
                 "running": False,
                 "restarts": 0,
                 "reason": "not started by this console",
+                "streams": [],
+                "streams_known": False,
             }
         if not enabled:
             return {
@@ -415,9 +741,12 @@ class ConsoleServices:
                 "running": False,
                 "restarts": 0,
                 "reason": "off - no stream has detection enabled",
+                "streams": [],
+                "streams_known": False,
             }
 
         restarts = self._recent_detector_restarts()
+        streams, streams_known = self.detected_stream_states()
         minutes = DETECTION_FLAP_WINDOW / 60.0
         if restarts > DETECTION_FLAP_LIMIT:
             return {
@@ -428,17 +757,41 @@ class ConsoleServices:
                     f"NOT running - restarted {restarts} times "
                     f"in the last {minutes:.0f} minutes"
                 ),
+                "streams": streams,
+                "streams_known": streams_known,
             }
         if self.detector.running:
             return {
                 "enabled": True,
                 "running": True,
                 "restarts": restarts,
-                "reason": "detecting",
+                "reason": stream_reason(streams, streams_known),
+                "streams": streams,
+                "streams_known": streams_known,
             }
         return {
             "enabled": True,
             "running": False,
             "restarts": restarts,
             "reason": "NOT running - restarting it",
+            "streams": streams,
+            "streams_known": streams_known,
         }
+
+    def detected_stream_states(self) -> tuple[list[dict], bool]:
+        """What each stream is doing, and whether that is known at all.
+
+        The second half of the answer is the point. A console that could not
+        read the detector's report, or read one written before lunch, has to say
+        it does not know - anything else is the console inventing health it was
+        never told about.
+        """
+        status = read_detection_status(self.detection_status_path)
+        if status is None or not detection_status_fresh(status, self._now()):
+            return [], False
+        streams = [
+            stream
+            for stream in status["streams"]
+            if isinstance(stream, dict) and stream.get("stream")
+        ]
+        return streams, True

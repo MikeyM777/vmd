@@ -36,6 +36,10 @@ stream_logger = logging.getLogger("go2rtc")
 
 BINARY_NAMES = ("go2rtc.exe", "go2rtc")
 
+# The longest single line kept from go2rtc. Matches the limit the console puts
+# on the recorder and the detector, for the same reason.
+MAX_LINE_CHARS = 2000
+
 
 def find_binary(project_root: Path | None = None) -> Path | None:
     """The go2rtc binary: beside the program first, then anywhere on PATH.
@@ -414,6 +418,12 @@ class Go2rtcService:
 
         A pipe nobody reads eventually fills and blocks the child, so this is not
         optional once stdout is a pipe.
+
+        Every line is tagged with "go2rtc", because the Logs tab shows the
+        message and not the logger it came from, and "401 Unauthorized" from
+        nowhere is a line the operator cannot act on. Lines are also cut to a
+        length: go2rtc does not normally write a line a megabyte long, but the
+        ring buffer's capacity is no defence against one that does.
         """
         stream = getattr(process, "stdout", None)
         if stream is None:
@@ -422,15 +432,15 @@ class Go2rtcService:
         def pump() -> None:
             try:
                 for line in stream:
-                    text = line.rstrip()
+                    text = line.rstrip()[:MAX_LINE_CHARS]
                     if not text:
                         continue
                     self._recent.append(text)
                     lowered = text.lower()
                     if "err" in lowered or "unauthorized" in lowered or "401" in lowered:
-                        stream_logger.warning("%s", text)
+                        stream_logger.warning("go2rtc: %s", text)
                     else:
-                        stream_logger.info("%s", text)
+                        stream_logger.info("go2rtc: %s", text)
             except Exception:  # noqa: BLE001 - the pump must never take the console with it
                 logger.debug("go2rtc output pump stopped", exc_info=True)
 

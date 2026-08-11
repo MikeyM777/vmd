@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import logging
 import shutil
 import socket
 import time
@@ -345,3 +347,61 @@ def test_a_death_is_explained_with_the_exit_code(tmp_path: Path) -> None:
     svc._process = None
     reason = svc.status().reason
     assert "stopped" in reason and "exit 1" in reason
+
+
+# ------------------------------------------------- what go2rtc says out loud
+#
+# The camera answers "401 Unauthorized" and go2rtc is the only thing that
+# repeats it. That line reaching the operator's Logs tab, tagged so they know
+# what said it, is the whole reason its output is piped rather than discarded.
+
+
+class TalkingProcess(FakeProcess):
+    """A go2rtc whose stdout is under the test's control, as Popen's would be."""
+
+    def __init__(self, output: str = "") -> None:
+        super().__init__()
+        self.stdout = io.StringIO(output)
+
+
+def talking_service(tmp_path: Path, process: TalkingProcess) -> Go2rtcService:
+    return Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        spawn=lambda command: process,
+    )
+
+
+def wait_for_pump(predicate, timeout: float = 5.0) -> bool:
+    """Bounded, always: a pump that never runs must fail the test, not hang it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_go2rtc_s_own_words_reach_the_log_tagged_with_its_name(tmp_path: Path, caplog) -> None:
+    """"401 Unauthorized" from nowhere is a line the operator cannot act on."""
+    caplog.set_level(logging.INFO, logger="go2rtc")
+    svc = talking_service(tmp_path, TalkingProcess("[rtsp] 401 Unauthorized\n"))
+    svc.start()
+
+    assert wait_for_pump(lambda: any("401" in record.getMessage() for record in caplog.records))
+    said = [r for r in caplog.records if "401" in r.getMessage()][0]
+    assert "go2rtc" in said.getMessage(), "the line must name what said it"
+    assert said.levelno >= logging.WARNING, "a refused login is not routine chatter"
+
+
+def test_one_enormous_go2rtc_line_is_cut_rather_than_kept_whole(tmp_path: Path, caplog) -> None:
+    """The ring buffer's capacity is no defence against a single line that is
+    half a megabyte long."""
+    caplog.set_level(logging.INFO, logger="go2rtc")
+    svc = talking_service(tmp_path, TalkingProcess("y" * 500_000 + "\n"))
+    svc.start()
+
+    assert wait_for_pump(lambda: any("yyy" in record.getMessage() for record in caplog.records))
+    longest = max(len(r.getMessage()) for r in caplog.records if "yyy" in r.getMessage())
+    assert longest < 5000, "one line held whole is the bug"
