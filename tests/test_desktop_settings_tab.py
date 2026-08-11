@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLineEdit
 
-from vmd.desktop.settings_tab import SettingsTab
+from vmd.desktop.settings_tab import PROBE_NAME, SettingsTab
 from vmd.settings import (
     CameraSettings,
     IgnoreRegion,
@@ -680,3 +680,93 @@ def test_reordering_the_streams_carries_each_ones_detection_with_it(
     after = _detection_of(path)
     assert list(after) == ["three", "two", "one"]
     assert after == before
+
+
+# ----------------------------------------------- the folder the footage goes in
+#
+# The single most likely mistake a non-technical operator can make during setup.
+# Pointed at a drive letter with nothing behind it, the form said "Saved." with
+# no validation at all, the Logs tab filled with a traceback through pathlib
+# ending "FileNotFoundError: [WinError 3]", and the Playback tab was replaced by
+# "The Playback tab could not be opened: [WinError 3] The system cannot find the
+# path specified: 'Q:\\'".
+
+
+def test_a_recordings_folder_on_a_drive_that_is_not_there_is_refused_in_words(
+    qtbot, tmp_path
+) -> None:
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.storage_root = "Q:\\not-a-drive\\vmd"
+
+    assert tab.save() is False
+    assert "Q:" in tab.message
+    assert tab.message != "Saved."
+    assert "traceback" not in tab.message.lower()
+    assert not (tmp_path / "settings.json").exists(), "a refused save writes nothing"
+
+
+def test_a_recordings_folder_that_is_really_a_file_is_refused(qtbot, tmp_path) -> None:
+    a_file = tmp_path / "notes.txt"
+    a_file.write_text("hello", encoding="utf-8")
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.storage_root = str(a_file)
+
+    assert tab.save() is False
+    assert "folder" in tab.message.lower()
+
+
+def test_a_recordings_folder_that_does_not_exist_yet_is_made_rather_than_refused(
+    qtbot, tmp_path
+) -> None:
+    """First run: the folder has never existed. The recorder would make it, so
+    refusing here would refuse the ordinary case."""
+    wanted = tmp_path / "footage" / "vmd"
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.storage_root = str(wanted)
+
+    assert tab.save() is True, tab.message
+    assert tab.message == "Saved."
+    assert wanted.is_dir()
+
+
+def test_a_relative_recordings_folder_is_judged_beside_the_settings_file(
+    qtbot, tmp_path
+) -> None:
+    """"recordings" is the default and it is relative. It is anchored to the
+    settings file everywhere else, and must be here too or the check would test
+    a folder beside whatever shell started the console."""
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.storage_root = "recordings"
+
+    assert tab.save() is True, tab.message
+    assert (tmp_path / "recordings").is_dir()
+
+
+def test_a_recordings_folder_that_cannot_be_written_to_is_refused(qtbot, tmp_path) -> None:
+    """It exists and it is a folder, and footage still cannot go in it."""
+    root = tmp_path / "readonly"
+    root.mkdir()
+    # Something already occupying the probe's name that cannot be written over.
+    (root / PROBE_NAME).mkdir()
+
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.storage_root = str(root)
+
+    assert tab.save() is False
+    assert "written" in tab.message.lower()
+    assert str(root) in tab.message

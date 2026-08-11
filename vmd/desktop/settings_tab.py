@@ -57,6 +57,11 @@ StreamRow = tuple[str, str, bool, str]
 
 READERS = ["auto", "ffmpeg"]
 
+# The file `storage_problem` writes and removes to find out whether footage can
+# actually be written to the chosen folder. A name nothing else uses, and one
+# that sorts away from the recordings.
+PROBE_NAME = ".vmd-write-test"
+
 # The rectangle itself, kept on the list item rather than parsed back out of the
 # words shown to the operator. The words are for reading; the numbers are the
 # setting, and re-deriving one from the other is how a patch quietly moves.
@@ -413,6 +418,52 @@ class StreamRowWidget(QWidget):
             ],
         )
         return payload
+
+
+def storage_problem(root, beside: Path) -> str:
+    """Why this folder cannot hold the recordings, in one plain sentence.
+
+    Pointing the recordings at a drive letter with nothing behind it is the most
+    likely mistake a non-technical operator can make while setting this up, and
+    it used to be accepted silently: the form said "Saved.", the Logs tab filled
+    with a traceback through pathlib ending "FileNotFoundError: [WinError 3]",
+    and the Playback tab was replaced by an apology quoting the same error.
+
+    Made rather than merely checked, because "it does not exist yet" is the
+    ordinary first-run state - the recorder creates it - and refusing that would
+    refuse the common case. What is actually being asked is the useful question:
+    can this machine write footage there. So it is created and written to, with
+    a probe file that is removed again.
+
+    `beside` anchors a relative folder to the settings file, exactly as
+    `load_settings` does, so that "recordings" means the same folder here as it
+    does to the recorder however the console was started.
+    """
+    root = Path(root)
+    if not root.is_absolute():
+        root = Path(beside) / root
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return (
+            f'The recordings folder "{root}" could not be made: {_why(exc)}. '
+            f"Choose a folder on a drive this machine can write to."
+        )
+    probe = root / PROBE_NAME
+    try:
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError as exc:
+        return (
+            f'Nothing can be written to the recordings folder "{root}": {_why(exc)}. '
+            f"Choose a folder this machine can write to."
+        )
+    return ""
+
+
+def _why(exc: OSError) -> str:
+    """The operating system's own words, without the code and the traceback."""
+    return (exc.strerror or str(exc)).rstrip(". ")
 
 
 def _region_box(what: str) -> QSpinBox:
@@ -794,6 +845,14 @@ class SettingsTab(QWidget):
     def save(self) -> bool:
         settings = self.settings_from_form()
         if settings is None:
+            return False
+
+        # Checked here and not in `settings_from_form`, because that is also
+        # what the camera tools read the form through and none of them writes
+        # anything to the disk.
+        problem = storage_problem(settings.storage.root, self.settings_path.parent)
+        if problem:
+            self._set_message(problem)
             return False
 
         try:
