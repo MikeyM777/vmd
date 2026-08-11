@@ -173,9 +173,13 @@ This has never been exercised against a real airOS device.
 
 ## One question only you can answer
 
-The deleted `mockup/console.html` is still in the public repository's history
-(commits `fa2f4a0` and `a1d89ab`) and contains `ubnt` / `ubnt-link-2026` as the
-radio login, and `admin` / `Str0ngPass!42` for the camera.
+The deleted `mockup/console.html` is still in this public repository's history
+(commits `fa2f4a0` and `a1d89ab`). It carries a radio login and a camera login
+that were written into the mockup as examples.
 
-They look like invented placeholders. **If either is a real password, it is
-public and must be changed.** Tell me and I will rewrite the history as well.
+They look like invented placeholders. **If either is a password you actually
+use, it is public and must be changed.** Look at those two commits, tell me,
+and I will rewrite the history as well.
+
+They are not repeated here on purpose: writing them into a second file that is
+also public would make the problem worse rather than smaller.
