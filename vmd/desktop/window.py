@@ -26,6 +26,7 @@ from vmd.desktop.logs import LogBuffer, LogsTab, attach
 from vmd.desktop.playback import PlaybackTab
 from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.video import VideoPane
+from vmd.radio.panel import STALE_AFTER_SECONDS
 from vmd.settings import Settings, load_settings
 from vmd.storage.index import SegmentIndex
 
@@ -38,7 +39,11 @@ HEARTBEAT_MS = 2000
 # answer, so anything inside that is the ordinary rhythm of a link that is up.
 # Past it, the number on screen is a number from a while ago, and saying so is
 # the difference between "the link is at -63 dBm" and "the link was".
-LINK_STALE_SECONDS = 15.0
+#
+# One number, shared with the panel in the Live tab's side column: a bar calling
+# a reading current while the panel beside it calls the same reading old would
+# be the console arguing with itself.
+LINK_STALE_SECONDS = STALE_AFTER_SECONDS
 
 
 class ConsoleWindow(QMainWindow):
@@ -91,6 +96,13 @@ class ConsoleWindow(QMainWindow):
                 # services are handed in and one without a disk watcher must
                 # cost the storage lines and nothing else.
                 storage=getattr(services, "disk", None),
+                # The same cached reading the status line asks about the link,
+                # drawn in full in the right column. The bar is the glance and
+                # the panel is the detail: signal against what it means,
+                # throughput against the capacity that explains the stuttering.
+                # It reads the service's answer and never the radio, because
+                # asking the radio costs about 12 s when it is unreachable.
+                radio=radio,
             )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.

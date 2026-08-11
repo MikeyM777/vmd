@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -42,6 +43,7 @@ from vmd.desktop.steering import edge_velocity, key_velocity
 from vmd.desktop.style import PALETTE
 from vmd.desktop.video import VideoPane
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
+from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -201,6 +203,7 @@ class LiveTab(QWidget):
         local_url: Callable[[str], str | None],
         events=None,
         storage=None,
+        radio=None,
         clock: Callable[[], float] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -218,6 +221,11 @@ class LiveTab(QWidget):
         # has no folder to watch. It must cost the storage lines and nothing
         # else - the pictures and the steering are not downstream of the disk.
         self._storage = storage
+        # The RadioService, or None for the same reason. It answers from what it
+        # last read and never waits, which is the only reason this may be asked
+        # on the same heartbeat that draws the window: an unreachable radio
+        # costs about 12 s of login timeouts.
+        self._radio = radio
         self._panes: dict[str, VideoPane] = {}
         self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
@@ -284,7 +292,6 @@ class LiveTab(QWidget):
         layout.addWidget(self._wall_area, 1)
 
         side = QWidget()
-        side.setFixedWidth(340)
         self._side_layout = QVBoxLayout(side)
         self._moving = QLabel("idle")
         self._ptz_note = QLabel("")
@@ -293,15 +300,12 @@ class LiveTab(QWidget):
         self._streams_box = QGroupBox("Streams")
         self._streams_layout = QVBoxLayout(self._streams_box)
         self._side_layout.addWidget(self._streams_box)
-        # Storage sits above the movement list, as the design's column order has
-        # it. The panel is built here rather than injected so the tab owns its
-        # own column; what it reads is injected, because reading it touches the
-        # filesystem and that must never happen on this thread.
-        self._storage_panel = StoragePanel(storage) if storage is not None else None
-        if self._storage_panel is not None:
-            self._side_layout.addWidget(self._storage_panel)
-        self._side_layout.addWidget(self._build_movement_box(), 1)
 
+        # Steering, link, storage, recent movement: the column order the design
+        # gives. Steering is above the two panels rather than below them because
+        # the column scrolls now, and what it holds is not only a list of keys -
+        # it is where the camera says it did not answer the last command. That
+        # sentence must not be the one below the fold.
         steering_box = QGroupBox("Steering")
         steering_layout = QVBoxLayout(steering_box)
         steering_layout.addWidget(QLabel("Arrow keys pan and tilt. Shift for fine."))
@@ -310,8 +314,35 @@ class LiveTab(QWidget):
         steering_layout.addWidget(self._moving)
         steering_layout.addWidget(self._ptz_note)
         self._side_layout.addWidget(steering_box)
+
+        # Both panels are built here rather than injected so the tab owns its
+        # own column; what they read is injected, because one touches the
+        # filesystem and the other the radio, and neither may happen on this
+        # thread.
+        self._link_panel = LinkPanel(radio) if radio is not None else None
+        if self._link_panel is not None:
+            self._side_layout.addWidget(self._link_panel)
+        self._storage_panel = StoragePanel(storage) if storage is not None else None
+        if self._storage_panel is not None:
+            self._side_layout.addWidget(self._storage_panel)
+        self._side_layout.addWidget(self._build_movement_box(), 1)
         self._side_layout.addStretch(1)
-        layout.addWidget(side)
+
+        # The column scrolls rather than squeezing. It carries five boxes now -
+        # streams, link, storage, movement, steering - and on a laptop screen
+        # that is more than fits. A Qt layout short of room does not shrink a
+        # word-wrapped sentence to fit: it gives the box less height than it
+        # asked for and lays the next line over the tail of the last one, so the
+        # sentence saying the link is full is drawn through the middle of the
+        # line beneath it and neither can be read. Scrolling costs a bar the
+        # operator will rarely need; squeezing costs the words.
+        self._side = QScrollArea()
+        self._side.setWidget(side)
+        self._side.setWidgetResizable(True)
+        self._side.setFixedWidth(340)
+        self._side.setFrameShape(QFrame.Shape.NoFrame)
+        self._side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self._side)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._wall_area and event.type() == QEvent.Type.Resize:
@@ -463,6 +494,12 @@ class LiveTab(QWidget):
             return []
         return self._storage_panel.lines()
 
+    def link_lines(self) -> list[tuple[str, str]]:
+        """What the link panel is saying, or nothing when there is no panel."""
+        if self._link_panel is None:
+            return []
+        return self._link_panel.lines()
+
     def movement_note(self) -> str:
         return self._movement_note.text()
 
@@ -536,8 +573,11 @@ class LiveTab(QWidget):
         self._outline(self._alarm_stream)
         self.overlay.raise_()
         # A saved budget or a saved folder changes what the storage lines say
-        # about the reading already taken, so redraw them now rather than at the
-        # next heartbeat.
+        # about the reading already taken, and a saved radio address changes
+        # what the link panel is describing, so redraw both now rather than at
+        # the next heartbeat.
+        if self._link_panel is not None:
+            self._link_panel.refresh()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
 
@@ -559,6 +599,8 @@ class LiveTab(QWidget):
         # The camera answers on its own thread now, so its answer is picked up
         # here rather than where the key was pressed.
         self._show_camera_note()
+        if self._link_panel is not None:
+            self._link_panel.refresh()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
 

@@ -95,6 +95,16 @@ class FakeRadio:
         return {"connected": False, "reason": "the radio is not set up"}
 
 
+def test_the_live_tab_is_given_the_radio_so_the_link_has_a_panel(
+    qtbot, tmp_path: Path
+) -> None:
+    """The link is the bottleneck of this system, and the console showed one
+    number off the radio, in the status bar. The panel is the detail; the bar is
+    the glance, and it is unchanged."""
+    window, _ = build(qtbot, tmp_path, radio=FakeRadio())
+    assert window.live.link_lines(), "the Live tab's side column has no link in it"
+
+
 class AngryRadio:
     def status(self) -> dict:
         raise OSError("the radio refused the connection")

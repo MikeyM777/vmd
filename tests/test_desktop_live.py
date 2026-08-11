@@ -972,3 +972,104 @@ def test_a_live_tab_with_no_storage_watcher_still_works(qtbot) -> None:
     tab.refresh()
     assert tab.storage_lines() == []
     assert set(panes) == {"thermal"}
+
+
+# ------------------------------------------------------------------- the link
+#
+# The link is the bottleneck of this whole system: one camera at the far end of
+# a Ubiquiti hop of more than 15 km carrying about 5 Mb/s. The console parsed
+# nine figures off the radio and showed one of them, in the status bar. The
+# design's side column - "steering, zoom, link, storage, recent movement" - had
+# no link in it at all.
+
+
+class CachedRadio:
+    """A radio service that answers from a cache, as the real one does."""
+
+    def __init__(self, status: dict | None = None) -> None:
+        self._status = status or {
+            "connected": True,
+            "signal_dbm": -63,
+            "noise_dbm": -96,
+            "rx_mbps": 4.2,
+            "rx_capacity_mbps": 18.0,
+            "device": "LOCO-north",
+            "age_seconds": 1.0,
+        }
+        self.asked = 0
+
+    def status(self) -> dict:
+        self.asked += 1
+        return dict(self._status)
+
+
+def test_the_live_tab_shows_the_link(qtbot) -> None:
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        radio=CachedRadio(),
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    assert any("-63 dBm" in text for text, _ in tab.link_lines()), tab.link_lines()
+
+
+def test_the_live_tab_redraws_the_link_on_a_refresh(qtbot) -> None:
+    radio = CachedRadio({"connected": False, "checking": True})
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        radio=radio,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    assert any("hecking" in text for text, _ in tab.link_lines())
+    radio._status = {"connected": True, "signal_dbm": -84, "age_seconds": 1.0}
+    tab.refresh()
+    assert any("-84 dBm" in text for text, _ in tab.link_lines())
+    assert any(colour == PALETTE["alarm"] for _, colour in tab.link_lines())
+
+
+def test_a_live_tab_with_no_radio_still_works(qtbot) -> None:
+    """--no-services opens a console with no radio service. It must cost the
+    link lines and nothing else."""
+    tab, _, panes = build(qtbot, "thermal")
+    tab.refresh()
+    assert tab.link_lines() == []
+    assert set(panes) == {"thermal"}
+
+
+def test_the_link_panel_is_not_squeezed_by_the_rest_of_the_column(qtbot) -> None:
+    """The column now carries streams, link, storage, movement and steering. On
+    a laptop screen that is more than fits, and a Qt layout short of room does
+    not shrink a wrapped sentence - it lays the next line over the tail of it.
+    The sentence that gets cut is the three-line one saying the link is full,
+    which is the whole reason the panel is there."""
+    busy = {
+        "connected": True,
+        "signal_dbm": -84,
+        "noise_dbm": -96,
+        "ccq": 612.0,
+        "tx_mbps": 0.5,
+        "rx_mbps": 17.6,
+        "tx_capacity_mbps": 24.0,
+        "rx_capacity_mbps": 18.0,
+        "distance_m": 15400,
+        "uptime_s": 84231,
+        "device": "LOCO-north",
+        "age_seconds": 1.0,
+    }
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        radio=CachedRadio(busy),
+    )
+    qtbot.addWidget(tab)
+    tab.resize(1280, 720)
+    tab.apply(settings_with("thermal", "visible"))
+    tab.show()
+    QApplication.processEvents()
+    assert tab._link_panel.clipped() == [], "half a sentence is worse than none"
