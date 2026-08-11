@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
+
+from vmd.desktop.libvlc import RECORDING, RESTART, VlcUnavailable, prepare
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +90,49 @@ VLC_OPTIONS = [
 ]
 
 
+def _import_vlc() -> Any:
+    import vlc  # imported here so the module imports without libVLC present
+
+    return vlc
+
+
+def load_vlc(
+    prepare: Callable[[], Any] = prepare,
+    import_vlc: Callable[[], Any] = _import_vlc,
+) -> Any:
+    """Find VLC, then import python-vlc against what was found.
+
+    The order is the whole point: python-vlc looks for the library once, while
+    it is being imported, and lives with whatever it concluded for the rest of
+    the process. By the time it runs it is being told where to look.
+
+    Whatever comes back out is turned into one sentence. python-vlc answers a
+    library it cannot load with `sys.exit(1)` - inside a widget's constructor,
+    at start-up, where `SystemExit` walks straight past the guard that keeps the
+    console open when there is no video. A missing picture must never be a
+    missing window.
+    """
+    found = prepare()
+    where = f" in {found.folder}" if found is not None else " on this machine"
+    try:
+        return import_vlc()
+    # SystemExit is python-vlc's own answer to a library it cannot load, and it
+    # is not an Exception: it walks straight past the guard that keeps the
+    # console open when there is no video, and takes the whole window with it.
+    except (SystemExit, ImportError, OSError) as exc:
+        logger.exception("the VLC%s would not load", where)
+        raise VlcUnavailable(
+            f"The VLC{where} would not start. Install VLC for Windows again. "
+            f"{RESTART} {RECORDING}"
+        ) from exc
+
+
 class VlcVideoPane(QWidget):
     """A widget libVLC draws into."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        import vlc  # imported here so the module imports without libVLC present
+        vlc = load_vlc()
 
         self.setStyleSheet("background: #050607;")
         self._vlc = vlc

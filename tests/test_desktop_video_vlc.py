@@ -84,6 +84,65 @@ def test_the_real_pane_plays_a_real_stream(qtbot, synthetic_stream: str) -> None
     assert pane.state == "stopped"
 
 
+def test_the_pane_is_told_where_vlc_is_before_it_imports_it() -> None:
+    """The search has to happen first or it has not happened at all: python-vlc
+    goes looking at import, once, and keeps whatever it decided."""
+    from vmd.desktop.video import load_vlc
+
+    order: list[str] = []
+
+    def prepare():
+        order.append("looked")
+        return None
+
+    def imports():
+        order.append("imported")
+        return "the vlc module"
+
+    assert load_vlc(prepare=prepare, import_vlc=imports) == "the vlc module"
+    assert order == ["looked", "imported"]
+
+
+def test_python_vlc_calling_it_a_day_does_not_take_the_console_with_it() -> None:
+    """python-vlc answers a library it cannot load with `sys.exit(1)`, at import,
+    from inside the constructor of a widget. That is not an exception - it walks
+    straight past the guard that keeps the console open when there is no video,
+    and the window never appears at all."""
+    from vmd.desktop.libvlc import VlcUnavailable
+    from vmd.desktop.video import load_vlc
+
+    def gives_up():
+        raise SystemExit(1)
+
+    with pytest.raises(VlcUnavailable) as raised:
+        load_vlc(prepare=lambda: None, import_vlc=gives_up)
+
+    said = str(raised.value)
+    assert "VLC" in said
+    assert "console again" in said
+    # And what it says is still a sentence, not what the library said on its
+    # way out - which is the wording this whole change exists to stop showing.
+    assert "libvlc.dll" not in said
+    assert said.endswith(".")
+
+
+def test_a_pane_that_cannot_find_vlc_says_so_instead_of_naming_a_file(qtbot) -> None:
+    """What the operator reads when the search comes up empty - the sentence the
+    field report was missing."""
+    from vmd.desktop.app import pane_factory
+    from vmd.desktop.libvlc import VlcUnavailable
+
+    def no_vlc():
+        raise VlcUnavailable("VLC is not installed on this machine. Do this instead.")
+
+    pane = pane_factory(build=no_vlc)("thermal")
+    qtbot.addWidget(pane)
+
+    assert "VLC is not installed on this machine" in pane.text()
+    assert "libvlc.dll" not in pane.text()
+    assert pane.state == "stopped"
+
+
 class _StubPlayer:
     """Stands in for the libVLC player so the reporting can be driven by hand."""
 
