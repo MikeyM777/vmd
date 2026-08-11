@@ -181,6 +181,25 @@ def _segment_files(root: Path) -> list[tuple[float, int]]:
     return files
 
 
+def recorded_bytes(root) -> int | None:
+    """How much footage is in this folder right now, or None if it cannot be read.
+
+    The one question in this file that is asked from a button press rather than
+    from the watcher, and the rule at the top of the file still holds: it is a
+    directory walk, so it does not go on the heartbeat and it does not go in the
+    panel. It is here because the Save button has to be able to say how much
+    footage lowering the budget is about to delete, and that is this number.
+
+    None rather than zero when the folder cannot be read. Nothing can be said
+    about what would be deleted if the folder cannot be looked at, and a zero
+    would say "nothing" - which is the one answer that must not be guessed.
+    """
+    try:
+        return sum(size for _mtime, size in _segment_files(Path(root)))
+    except OSError:
+        return None
+
+
 def _growth_rate(
     files: list[tuple[float, int]], now: float, settings: Settings
 ) -> tuple[float, bool]:
@@ -276,7 +295,7 @@ def storage_lines(
             colour = PALETTE["warn"]
         lines.append(
             (
-                f"Budget: {_bytes(used)} of {_bytes(budget)} used ({fraction * 100:.0f}%)",
+                f"Budget: {bytes_in_words(used)} of {bytes_in_words(budget)} used ({fraction * 100:.0f}%)",
                 colour,
             )
         )
@@ -300,7 +319,7 @@ def storage_lines(
     else:
         lines.append(
             (
-                f"Budget: off - {_bytes(used)} recorded and never deleted to make room.",
+                f"Budget: off - {bytes_in_words(used)} recorded and never deleted to make room.",
                 PALETTE["ink"],
             )
         )
@@ -321,7 +340,7 @@ def storage_lines(
         colour = PALETTE["alarm"]
     elif free < still_wanted + margin:
         colour = PALETTE["warn"]
-    lines.append((f"Drive: {_bytes(free)} free", colour))
+    lines.append((f"Drive: {bytes_in_words(free)} free", colour))
     lines.append(
         (f"{_left(free, rate, reading.rate_is_estimate)} before the drive is full.", colour)
     )
@@ -352,7 +371,8 @@ def _duration(seconds: float) -> str:
     return f"{seconds / DAY:.0f} days"
 
 
-def _bytes(count: float) -> str:
+def bytes_in_words(count: float) -> str:
+    """A number of bytes in the largest unit that keeps it readable."""
     if count >= 1024**4:
         return f"{count / 1024**4:.1f} TB"
     if count >= 1024**3:

@@ -920,3 +920,91 @@ def test_no_button_on_a_stream_row_is_clipped_by_its_own_label(
         if control.width() < control.minimumSizeHint().width()
     ]
     assert cut == [], f"cut off: {cut}"
+
+
+# ------------------------------------------------ lowering the disk budget
+#
+# The only irreversible destructive action in the interface, and it looks like
+# an ordinary text field. Typing 10 where 100 was meant has retention delete
+# about 90 GB of footage on its next pass - permanently, with no question asked
+# and no line anywhere saying it was about to happen.
+
+
+def with_footage(tmp_path: Path, megabytes: int = 3) -> Path:
+    """A recordings folder with real segments in it, laid out as the recorder
+    lays them out: one folder per stream."""
+    root = tmp_path / "recordings"
+    (root / "thermal").mkdir(parents=True, exist_ok=True)
+    for n in range(megabytes):
+        (root / "thermal" / f"{n:04d}.mp4").write_bytes(b"0" * 1024 * 1024)
+    return root
+
+
+def budgeted(root: Path, budget_gb: float) -> Settings:
+    from vmd.settings import StorageSettings
+
+    return Settings(storage=StorageSettings(root=root, budget_gb=budget_gb))
+
+
+def test_lowering_the_budget_says_what_it_will_delete_before_deleting_it(
+    qtbot, tmp_path: Path
+) -> None:
+    root = with_footage(tmp_path)
+    tab, path = build(qtbot, tmp_path, budgeted(root, 1.0))
+
+    tab.budget_gb = "0.001"  # about one megabyte, against three on disk
+    assert tab.save() is False, "the budget was lowered with no warning at all"
+    assert "cannot be undone" in tab.message, tab.message
+    assert "Save again" in tab.message, tab.message
+    assert "MB" in tab.message, tab.message
+    assert load_settings(path).storage.budget_gb == 1.0, "it wrote anyway"
+
+
+def test_he_can_go_ahead_and_lower_it(qtbot, tmp_path: Path) -> None:
+    """This is a real thing he needs to be able to do. Warned, not refused."""
+    root = with_footage(tmp_path)
+    tab, path = build(qtbot, tmp_path, budgeted(root, 1.0))
+
+    tab.budget_gb = "0.001"
+    assert tab.save() is False
+    assert tab.save() is True
+    assert load_settings(path).storage.budget_gb == 0.001
+
+
+def test_correcting_the_number_asks_again(qtbot, tmp_path: Path) -> None:
+    """The second figure is a different amount of footage."""
+    root = with_footage(tmp_path)
+    tab, path = build(qtbot, tmp_path, budgeted(root, 1.0))
+
+    tab.budget_gb = "0.001"
+    assert tab.save() is False
+    tab.budget_gb = "0.002"
+    assert tab.save() is False, "a different number went through unasked"
+
+
+def test_an_ordinary_save_is_never_made_to_ask_twice(qtbot, tmp_path: Path) -> None:
+    """Only the case that destroys something asks. Everything else saves on the
+    first press, as every other setting on this page does."""
+    root = with_footage(tmp_path)
+
+    tab, path = build(qtbot, tmp_path, budgeted(root, 1.0))
+    tab.camera_host = "10.0.0.2"
+    assert tab.save() is True, tab.message
+
+    # Raising it deletes nothing.
+    tab.budget_gb = "2"
+    assert tab.save() is True, tab.message
+
+    # And lowering it to something the folder is still inside deletes nothing.
+    tab.budget_gb = "1"
+    assert tab.save() is True, tab.message
+
+
+def test_a_budget_lowered_on_an_empty_folder_saves_straight_away(
+    qtbot, tmp_path: Path
+) -> None:
+    root = tmp_path / "recordings"
+    root.mkdir()
+    tab, path = build(qtbot, tmp_path, budgeted(root, 100.0))
+    tab.budget_gb = "10"
+    assert tab.save() is True, tab.message

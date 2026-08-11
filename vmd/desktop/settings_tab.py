@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vmd.desktop.disk import bytes_in_words, recorded_bytes
 from vmd.desktop.live import WrappedNote
 from vmd.desktop.style import (
     FORM_MAX_WIDTH,
@@ -640,6 +641,9 @@ class SettingsTab(QWidget):
         # form's fields written over it, so nothing off-screen is lost.
         self._loaded = Settings()
         self._rows: list[StreamRowWidget] = []
+        # The folder and budget the operator has already been warned about, so
+        # that the second press of Save goes ahead. See `_budget_warning`.
+        self._warned_about: tuple[str, float] | None = None
         self._tools = tools
         # One at a time, and never on the UI thread: finding the right path
         # probes two dozen addresses and takes up to a minute. A console that
@@ -1070,6 +1074,11 @@ class SettingsTab(QWidget):
             self._set_message(problem)
             return False
 
+        warning = self._budget_warning(settings)
+        if warning:
+            self._set_message(warning)
+            return False
+
         try:
             save_settings(settings, self.settings_path)
         except OSError as exc:
@@ -1083,6 +1092,54 @@ class SettingsTab(QWidget):
         except Exception:  # noqa: BLE001 - the file is written; the rest is not the save
             logger.exception("the saved settings could not be handed to the console")
         return True
+
+    def _budget_warning(self, settings: Settings) -> str:
+        """Say what lowering the budget is about to delete, once, before it does.
+
+        This is the only irreversible destructive action in the whole interface
+        and it looks like an ordinary text field. Typing 10 where 100 was meant
+        has retention delete about 90 GB of footage on its next pass -
+        permanently, with no question asked and no line anywhere saying it is
+        about to happen.
+
+        Two presses of Save, not a dialog. A modal over a console can be
+        dismissed by a stray keypress from somebody steering the camera, and it
+        arrives on top of the one screen this operator has; two presses cannot
+        be dismissed by accident and cost him one extra click on the day he
+        really does mean it - which he will, because this is a real thing he
+        needs to be able to do.
+
+        Only the case that destroys something asks. Raising the budget, leaving
+        it alone, and lowering it to something the folder is still inside all
+        save on the first press, as every other setting does.
+        """
+        storage = settings.storage
+        if not storage.budget_enabled:
+            return ""
+        if storage.budget_gb >= self._loaded.storage.budget_gb:
+            return ""
+
+        root = Path(storage.root)
+        if not root.is_absolute():
+            root = self.settings_path.parent / root
+        used = recorded_bytes(root)
+        # Nothing can be said about what would be deleted if the folder cannot
+        # be looked at - and a folder that cannot be read is already a sentence
+        # of its own from `storage_problem`, one line above this.
+        if used is None or used <= storage.budget_bytes:
+            return ""
+
+        # Asked once per number. Correcting the number he mistyped re-arms it,
+        # which is right: the second figure is a different amount of footage.
+        asked = (str(root), storage.budget_gb)
+        if self._warned_about == asked:
+            return ""
+        self._warned_about = asked
+        return (
+            f"This will delete about {bytes_in_words(used - storage.budget_bytes)} "
+            f"of the oldest footage, and it cannot be undone. "
+            f"Press Save again to go ahead."
+        )
 
     def report_after_save(self, text: str) -> None:
         """Replace "Saved." with what the console could not make true.
