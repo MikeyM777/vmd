@@ -989,6 +989,80 @@ def test_a_healthy_band_says_the_name_of_each_part_and_no_more(
     assert window.band.chips() == ["recording", "streaming", "detection", "link"]
 
 
+def test_no_chip_ever_shows_a_healthy_word_inside_a_faulted_box(
+    qtbot, tmp_path: Path
+) -> None:
+    """The worst thing the review of this console found.
+
+    Only one chip gets to say its sentence - four sentences do not fit across a
+    1280 px logical screen - and the others fall back to a glance word. The
+    glance word was the part's NAME, and a part's name is the word for its
+    healthy state. So a console with the recorder stopped, the detector stopped
+    and the radio dead drew three alarm-red boxes reading `recording`,
+    `detection`, `link`.
+
+    Colour cannot carry that on its own. `DESIGN.md` says so as a rule, and this
+    is the case the rule was written for: at two metres, at night, in a hurry,
+    the word is what is legible and the colour is what is peripheral. A red box
+    saying `recording`, about a console that is not recording, is the one fact
+    this entire system exists to guarantee, printed backwards.
+    """
+    window, _ = build(qtbot, tmp_path, services=SickServices(), radio=AngryRadio())
+    window.heartbeat()
+
+    healthy = {"recording", "streaming", "detection", "link", "camera", "services"}
+    for glance, _words, state in window.status_parts():
+        if state in ("alarm", "warn"):
+            assert glance not in healthy, f"{glance!r} is the healthy word for a {state}"
+
+    # And on the screen, not only in the tuple: at least one box is faulted, and
+    # nothing legible in the band claims otherwise.
+    said = window.band.chips()
+    assert said
+    for chip, state in zip(said, [part[2] for part in window.status_parts()]):
+        if state in ("alarm", "warn"):
+            assert chip not in healthy, chip
+
+
+def test_the_band_and_the_link_panel_never_disagree_about_the_same_radio(
+    qtbot, tmp_path: Path
+) -> None:
+    """His own radio, on the day this was found: -66 dBm, which is inside the
+    healthy signal band, and 88% of the airtime spent. The panel said `FULL` in
+    red. The chip above it stayed a quiet green, because the chip reasoned about
+    the signal and the signal was fine.
+
+    The thing that was full is the thing the whole system runs through. Two
+    views of one radio that disagree are worse than one view, because now he has
+    to decide which of his console's opinions to believe - so there is one view
+    now, and both draw what it says.
+    """
+    from vmd.radio.panel import link_summary
+
+    class BusyRadio:
+        def apply(self, settings) -> None: ...
+
+        def status(self) -> dict:
+            return {
+                "connected": True,
+                "age_seconds": 1.0,
+                "signal_dbm": -66.0,
+                "airtime_percent": 88.0,
+                "rx_mbps": 10.7,
+            }
+
+    window, _ = build(qtbot, tmp_path, radio=BusyRadio())
+    window.heartbeat()
+
+    panel = link_summary(BusyRadio().status())
+    assert panel["state"] == "alarm", "the fixture no longer describes a full link"
+
+    link = [part for part in window.status_parts() if "link" in part[0]]
+    assert link, window.status_parts()
+    assert link[0][2] == panel["state"], "the band is calmer than the panel below it"
+    assert "full" in link[0][0], link[0]
+
+
 def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
     qtbot, tmp_path: Path
 ) -> None:
@@ -1010,17 +1084,28 @@ def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
     window.heartbeat()
     said = window.band.chips()
     assert "streaming: go2rtc is not installed - run install.bat" in said
-    # Detection is broken too, and gave up its sentence to the worse fault.
-    assert "detection" in said
+    # Detection is broken too, and gave up its sentence to the worse fault - but
+    # what it fell back to is a word that says it is broken. It used to fall back
+    # to its own name, which is the word for the healthy case: an alarm-red box
+    # reading "detection", about a detector that had stopped.
+    assert "no detection" in said
+    assert "detection" not in said, "the healthy word, inside the red box"
     assert "detection: not running" not in said
-    # But it did not give up saying that it is broken.
-    assert window.band.glyphs()[said.index("detection")] == window.band.glyphs()[
+    # And it did not give up its glyph or its colour.
+    assert window.band.glyphs()[said.index("no detection")] == window.band.glyphs()[
         said.index("streaming: go2rtc is not installed - run install.bat")
     ]
     # And the sentence in the band is a sentence the footer would have said, in
     # full - which is also where the one that stood down can still be read.
     for chip in said:
-        assert chip in window.status_text() or chip in ("recording", "detection", "link")
+        # A chip that stood down shows a glance word instead of its sentence,
+        # and the glance word for a faulted part is not in the status line
+        # because the status line carries sentences.
+        from vmd.desktop.window import TROUBLE_WORDS
+
+        glance = {"recording", "streaming", "detection", "link", "camera", "services"}
+        glance |= set(TROUBLE_WORDS.values())
+        assert chip in window.status_text() or chip in glance
     assert "detection: not running" in window.status_text()
 
 
@@ -1138,12 +1223,25 @@ def test_the_link_chip_and_the_link_panel_read_the_same_bands(
     marginal would be the console arguing with itself."""
     from vmd.desktop.window import _link_state
 
-    assert _link_state({"signal_dbm": -63.0, "age_seconds": 1.0}) == "ok"
-    assert _link_state({"signal_dbm": -72.0, "age_seconds": 1.0}) == "warn"
-    assert _link_state({"signal_dbm": -84.0, "age_seconds": 1.0}) == "alarm"
+    # `connected` is in every one of these now, and that is not a detail: the
+    # chip asks `link_summary` rather than reasoning about the signal itself, so
+    # a payload that never said the link was up is a payload describing a link
+    # that is down. `RadioService.status` always says. A fixture that did not
+    # was testing a reading no radio produces.
+    def reading(**kwargs) -> dict:
+        return {"connected": True, "age_seconds": 1.0, **kwargs}
+
+    assert _link_state(reading(signal_dbm=-63.0)) == "ok"
+    assert _link_state(reading(signal_dbm=-72.0)) == "warn"
+    assert _link_state(reading(signal_dbm=-84.0)) == "alarm"
     # A reading nobody has taken for a while may never be drawn in the colour
     # that means "the link is fine right now".
-    assert _link_state({"signal_dbm": -63.0, "age_seconds": 400.0}) == "muted"
+    assert _link_state(reading(signal_dbm=-63.0, age_seconds=400.0)) == "muted"
+    # And the thing the signal alone could not see. His own radio: a signal
+    # inside the healthy band, and 88% of the airtime spent. The panel called
+    # that FULL in red while this chip stayed green, about the one link the
+    # whole system runs through.
+    assert _link_state(reading(signal_dbm=-66.0, airtime_percent=88.0)) == "alarm"
 
 
 def test_the_dot_pulses_only_while_footage_is_reaching_the_disk(

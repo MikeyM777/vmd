@@ -269,6 +269,10 @@ HEADLINE_FULL = "FULL"
 HEADLINE_BUSY = "BUSY"
 HEADLINE_FAIR = "FAIR"
 HEADLINE_GOOD = "GOOD"
+# It answered and said nothing useful. Its own state, because "the radio is not
+# answering" and "the radio is answering nonsense" send somebody to two
+# different places.
+HEADLINE_NO_FIGURES = "NO FIGURES"
 
 
 def link_summary(link: dict) -> dict:
@@ -363,7 +367,14 @@ def link_summary(link: dict) -> dict:
         state, headline = "warn", HEADLINE_FAIR
         note = "Working, with little margin left for rain or a mast that moved."
     elif signal_state == "muted" and use_state == "muted":
-        state, headline, note = "muted", HEADLINE_CHECKING, "The radio reported no figures."
+        # It answered, and said nothing about how the link is doing. A warning
+        # and not a quiet state, which is what `link_lines` has always called it
+        # and what this summary got wrong: the two views of one radio may not
+        # disagree, and a chip drawing "nothing to report" over a radio that
+        # refused to report is the same defect as the healthy word in the red
+        # box, one layer down.
+        state, headline = "warn", HEADLINE_NO_FIGURES
+        note = "The radio answered but did not say how strong the link is."
     else:
         state, headline, note = "ok", HEADLINE_GOOD, ""
 

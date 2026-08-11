@@ -253,50 +253,78 @@ def _doubled_words(streams: list[str]) -> str:
 
 
 def _link_state(link: dict) -> str:
-    """The link, in the bands `vmd/radio/panel.py` reads the signal against.
+    """The link, in the state the panel below it has already worked out.
 
-    The thresholds are that module's - it is where they are explained and where
-    they were chosen - so the chip and the panel below it can never disagree
-    about whether the same reading is healthy.
+    This used to reason about the signal here, from the panel's thresholds, so
+    that the two could not disagree about a signal reading. They still cannot -
+    but they disagreed about the LINK, because the signal is not the only thing
+    that decides whether a link is in trouble. On his own radio, at -66 dBm with
+    88% of the airtime spent, the panel said `FULL` in red and the chip above it
+    stayed a quiet green, because -66 is inside the healthy signal band. The
+    thing that was full is the thing the whole system runs through.
 
-    Three states have no signal figure at all, and they are not the same state -
-    which is what this used to get wrong. It fell through to `muted` whenever
-    `signal_dbm` was not a number, and a radio that has been asked and has
-    REFUSED is exactly that case, so the one failure at the far end of a 700 m
-    link was drawn in the same ink as one still being checked: no box, no
-    colour, nothing to glance at. A radio that has refused is a fault and now
-    reads as one.
+    Two views of one radio that disagree are worse than one view, because now
+    the operator has to decide which of his console's opinions to believe. So
+    there is one view: `link_summary` decides, both draw what it says.
     """
-    from vmd.radio.panel import SIGNAL_HEALTHY_DBM, SIGNAL_MARGINAL_DBM
+    from vmd.radio.panel import link_summary
 
-    if link.get("checking"):
-        return "muted"
-    signal = link.get("signal_dbm")
-    if isinstance(signal, (int, float)) and not isinstance(signal, bool):
-        age = link.get("age_seconds")
-        stale = isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS
-        if signal < SIGNAL_MARGINAL_DBM:
-            return "alarm"
-        if signal < SIGNAL_HEALTHY_DBM:
-            return "warn"
-        # A reading nobody has taken for a while may not be drawn in the colour
-        # that means "the link is fine right now", which is the one thing it
-        # cannot say. The panel below applies the same rule to the same reading.
-        return "muted" if stale else "ok"
+    return link_summary(link)["state"]
 
-    # No signal figure. Whether that is a fault turns on whether anybody has
-    # managed to ask: `RadioService.status` puts an age only on a reading it
-    # actually took, so no age means there is no radio configured or none has
-    # answered yet. Neither is a fault and neither is drawn as one, which is the
-    # rule `radio/panel.py:link_lines` applies to the same reading.
-    if not isinstance(link.get("age_seconds"), (int, float)):
-        return "muted"
-    if not link.get("connected"):
-        return "alarm"
-    # Answered, and did not say how strong the link is. The panel calls that a
-    # warning; a chip calling it nothing would be the console arguing with
-    # itself one line further down the screen.
-    return "warn"
+
+def _link_glance(link: dict) -> str:
+    """What the link chip says when it is not the one telling the whole story.
+
+    The bug this exists for: a chip that has given up its sentence fell back to
+    its own NAME, and its name is the healthy word. A dead radio therefore drew
+    as an alarm-red box containing the word `link`. Colour said fault, word said
+    fine, and at two metres in a hurry the word is what is legible.
+
+    Healthy stays the bare noun - `DESIGN.md`'s rule, and a chip that is loud
+    about good news is a chip nobody reads. Anything else takes the panel's own
+    headline, so the band and the panel say the same word about the same radio.
+    """
+    from vmd.radio.panel import HEADLINE_NO_LINK, link_summary
+
+    summary = link_summary(link)
+    if summary["state"] in ("ok", "muted"):
+        return "link"
+    headline = summary["headline"]
+    return "no link" if headline == HEADLINE_NO_LINK else f"link {headline.lower()}"
+
+
+# What each part of the band is called when it is NOT well.
+#
+# The worst thing the review of this console found, and it is a one-word bug
+# with a whole-system consequence. A chip that is not the one speaking falls
+# back to a glance word, and the glance word was the part's name: `recording`,
+# `detection`, `link`. Those are the words for the healthy case. So a console
+# with the recorder stopped, the detector stopped and the radio dead drew three
+# alarm-red boxes reading `recording`, `detection`, `link` - the healthiest
+# words it owns, inside the reddest boxes it draws, about the one fact this
+# entire system exists to guarantee.
+#
+# Colour alone cannot carry it. `DESIGN.md` says so as a rule, and this is the
+# case that rule was written for: at two metres, in a hurry, at night, the word
+# is what is legible and the colour is what is peripheral. They have to agree.
+#
+# `muted` is not in here on purpose - detection switched off is not a fault, and
+# a console that shouted `no detection` at a deliberate setting would teach him
+# to stop reading the band.
+TROUBLE_WORDS = {
+    "services": "no services",
+    "recording": "NOT recording",
+    "streaming": "no pictures",
+    "detection": "no detection",
+    "camera": "sent twice",
+}
+
+
+def _glance_word(name: str, state: str) -> str:
+    """The short word a chip shows when another chip is doing the talking."""
+    if state in ("ok", "muted"):
+        return name
+    return TROUBLE_WORDS.get(name, name)
 
 
 # What `ConsoleServices.on_progress` is set back to once a save is done. A
@@ -1308,7 +1336,7 @@ class ConsoleWindow(QMainWindow):
             is_recording = bool(state.get("recording"))
             parts.append(
                 (
-                    "recording",
+                    _glance_word("recording", "ok" if is_recording else "alarm"),
                     recording.get("reason")
                     or ("recording" if is_recording else "NOT recording"),
                     "ok" if is_recording else "alarm",
@@ -1316,7 +1344,11 @@ class ConsoleWindow(QMainWindow):
             )
             streaming = state.get("streaming")
             parts.append(
-                ("streaming", f"streaming: {streaming}", _streaming_state(streaming))
+                (
+                    _glance_word("streaming", _streaming_state(streaming)),
+                    f"streaming: {streaming}",
+                    _streaming_state(streaming),
+                )
             )
             # `.get` twice: the services are handed in, and a state without a
             # word about detection must produce a status line, not a KeyError
@@ -1324,7 +1356,7 @@ class ConsoleWindow(QMainWindow):
             detection = state.get("detection") or {}
             parts.append(
                 (
-                    "detection",
+                    _glance_word("detection", _detection_state(detection)),
                     f"detection: {detection.get('reason', 'unknown')}",
                     _detection_state(detection),
                 )
@@ -1334,14 +1366,14 @@ class ConsoleWindow(QMainWindow):
             link = self._radio.status()
         except Exception:  # noqa: BLE001
             logger.exception("the radio could not be asked about the link")
-            parts.append(("link", "link unknown", "alarm"))
+            parts.append(("no link", "link unknown", "alarm"))
         else:
             # The signal figure is not in the glance word on purpose. A reading
             # inside the healthy band is the same news every four seconds, and
             # the Live tab's link panel carries it in full - with what it means
             # beside it - one tab away, for the moment somebody wants the
             # number rather than the reassurance.
-            parts.append(("link", self._link_words(link), _link_state(link)))
+            parts.append((_link_glance(link), self._link_words(link), _link_state(link)))
 
         # And whether that link is carrying anything twice. Last, beside the
         # link it is about, and only when there is something to say: a chip that
@@ -1357,7 +1389,7 @@ class ConsoleWindow(QMainWindow):
             except Exception:  # noqa: BLE001 - the band must go on being drawn
                 logger.exception("what the link is carrying could not be read")
         if doubled:
-            parts.append(("camera", _doubled_words(doubled), "warn"))
+            parts.append((_glance_word("camera", "warn"), _doubled_words(doubled), "warn"))
 
         return parts
 
