@@ -839,3 +839,142 @@ def test_a_link_reading_that_has_gone_stale_says_how_old_it_is() -> None:
     stale = ConsoleWindow._link_words({"signal_dbm": -63, "age_seconds": 41.0})
     assert fresh == "link -63 dBm"
     assert "41" in stale and "ago" in stale
+
+
+# ------------------------------------------------- the band, and the red dot
+#
+# The state of the whole system used to be one grey sentence in an eleven-pixel
+# footer: the least prominent thing on the screen, and the most important. It is
+# now a band of chips across the top of every tab, and the recording one is a
+# dot that pulses. These tests are about what that band claims, because a
+# console that says "recording" while nothing is being written is the exact lie
+# that made the owner stop believing this window.
+
+
+class NotRecordingServices(FakeServices):
+    """Footage is not reaching the disk, whatever any process is doing."""
+
+    def state(self) -> dict:
+        state = super().state()
+        state["recording"] = False
+        state["recording_state"] = {"running": False, "reason": "NOT recording"}
+        return state
+
+
+class SickServices(FakeServices):
+    def state(self) -> dict:
+        return {
+            "recording": True,
+            "streaming": "go2rtc is not installed - run install.bat",
+            "restarts": {},
+            "detection": {"enabled": True, "running": False, "reason": "not running"},
+        }
+
+
+def test_the_band_says_exactly_what_the_status_line_says(qtbot, tmp_path: Path) -> None:
+    """Re-placed, not rewritten. The words were chosen for an operator who is
+    not technical, and moving them out of the footer may not change one of
+    them."""
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    assert window.band.chips() == window.status_text().split(" · ")
+
+
+def test_the_band_knows_which_of_its_chips_is_the_bad_one(qtbot, tmp_path: Path) -> None:
+    """A wall of four identical grey sentences is what it replaced. Each part
+    now carries the state it is reporting, so the one that is wrong can be the
+    one that is red."""
+    healthy, _ = build(qtbot, tmp_path / "well", services=FakeServices())
+    states = dict((text, state) for text, state in healthy.status_parts())
+    assert states["streaming: streaming"] == "ok"
+
+    sick, _ = build(qtbot, tmp_path / "ill", services=SickServices())
+    states = dict((text, state) for text, state in sick.status_parts())
+    assert states["streaming: go2rtc is not installed - run install.bat"] == "alarm"
+
+
+def test_detection_that_nobody_switched_on_is_not_drawn_as_a_fault(
+    qtbot, tmp_path: Path
+) -> None:
+    """Off is not a failure. A console that painted "nobody ticked the box" in
+    alarm red would teach its operator to ignore the chip that one day says
+    something true."""
+    from vmd.desktop.window import _detection_state
+
+    assert _detection_state({"enabled": False, "running": False}) == "muted"
+    assert _detection_state({"enabled": True, "running": True}) == "ok"
+    assert _detection_state({"enabled": True, "running": False}) == "alarm"
+
+
+def test_the_link_chip_and_the_link_panel_read_the_same_bands(
+    qtbot, tmp_path: Path
+) -> None:
+    """One set of thresholds, in the module where they are explained. A chip
+    calling -84 dBm healthy while the panel under it calls the same reading
+    marginal would be the console arguing with itself."""
+    from vmd.desktop.window import _link_state
+
+    assert _link_state({"signal_dbm": -63.0, "age_seconds": 1.0}) == "ok"
+    assert _link_state({"signal_dbm": -72.0, "age_seconds": 1.0}) == "warn"
+    assert _link_state({"signal_dbm": -84.0, "age_seconds": 1.0}) == "alarm"
+    # A reading nobody has taken for a while may never be drawn in the colour
+    # that means "the link is fine right now".
+    assert _link_state({"signal_dbm": -63.0, "age_seconds": 400.0}) == "muted"
+
+
+def test_the_dot_pulses_only_while_footage_is_reaching_the_disk(
+    qtbot, tmp_path: Path
+) -> None:
+    """The dot follows `recording`, which is whether anything was written - not
+    whether a process was alive at the instant the console looked."""
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    assert window.recording_now() is True
+    assert window.band.recording_glyph() == "●"
+
+    bright = window.band.recording_colour()
+    window._beat()
+    assert window.band.recording_colour() != bright, "the dot has to actually move"
+    window._beat()
+    assert window.band.recording_colour() == bright
+
+
+def test_not_recording_is_a_still_bar_and_not_merely_a_missing_dot(
+    qtbot, tmp_path: Path
+) -> None:
+    """Somebody glancing over has to be able to tell "not recording" from "I
+    looked away on the dim beat"."""
+    window, _ = build(qtbot, tmp_path, services=NotRecordingServices())
+    window.heartbeat()
+    assert window.recording_now() is False
+    assert window.band.recording_glyph() == "■"
+    still = window.band.recording_colour()
+    window._show_recording()
+    assert window.band.recording_colour() == still
+    assert window._blink.isActive() is False, "nothing may pulse while nothing is written"
+
+
+def test_services_that_cannot_be_asked_leave_the_dot_saying_not_recording(
+    qtbot, tmp_path: Path
+) -> None:
+    """The safe way round. A dot that keeps pulsing because nobody could be
+    asked is exactly the lie this indicator exists to stop telling."""
+    window, _ = build(qtbot, tmp_path, services=AngryServices())
+    window.heartbeat()
+    assert window.recording_now() is False
+    assert window.band.recording_glyph() == "■"
+
+
+def test_nothing_pulses_behind_a_window_nobody_is_looking_at(
+    qtbot, tmp_path: Path
+) -> None:
+    """One timer for the whole console, and it stops when the window goes away.
+    This runs for months on a laptop that is never rebooted."""
+    window, _ = build(qtbot, tmp_path)
+    window.show()
+    window.heartbeat()
+    assert window._blink.isActive() is True
+    window.hide()
+    assert window._blink.isActive() is False
+    window.close()
+    assert window._blink.isActive() is False
