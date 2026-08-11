@@ -39,6 +39,76 @@ function Write-Info($text) { Write-Host "      $text" -ForegroundColor Gray }
 function Write-Bad($text)  { Write-Host "      $text" -ForegroundColor Red }
 function Write-Warn($text) { Write-Host "      $text" -ForegroundColor Yellow }
 
+# --- running something and keeping what it said ------------------------------
+#
+# Native stderr is merged into the output on purpose: it is where winget, uv and
+# PyInstaller put the one sentence that explains a failure, and it is also the
+# only stream Start-Transcript cannot see on its own - an unmerged native error
+# goes straight to the console window and is missing from the file the operator
+# is asked to send.
+#
+# Merging is what turns those lines into ErrorRecords, and under
+# $ErrorActionPreference = 'Stop' the first one terminates the script. That is
+# not theoretical: `& $cacheGen ... 2>&1 | Out-Null` in this installer meant
+# VLC's plugin index was never actually rebuilt, because vlc-cache-gen reports
+# its progress on stderr and the first line of it threw. So the preference is
+# lowered for exactly the length of the call and put back afterwards.
+#
+# The merged lines are flattened back to plain text before they are shown. Left
+# as ErrorRecords they print red, and uv reports its ordinary progress on
+# stderr - so a completely normal `uv sync` would fill the screen with red on a
+# machine where nothing at all is wrong. That is the same cry-wolf failure this
+# installer is being fixed for, in a different place.
+function Invoke-Logged($file, [string[]]$arguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $file @arguments 2>&1 |
+            ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ }
+            } | Out-Host
+        return $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previous }
+}
+
+# The same merge, but the output is handed back instead of printed, split into
+# the two streams it came from. Used where the output is evidence rather than
+# something to show: `import vlc` prints fifty kilobytes of harmless "stale
+# plugins cache" lines to stderr, and putting those on the screen of somebody
+# who has never used a terminal is its own kind of false alarm.
+# For a program whose output nobody wants and whose failure is expected: only
+# its exit code comes back.
+#
+# The preference is lowered rather than the stream redirected, because
+# redirecting is not enough and looks as though it is. `& taskkill ... 2>$null
+# | Out-Null` still ends the script under $ErrorActionPreference = 'Stop':
+# PowerShell raises NativeCommandError for the stderr of a piped native command
+# before the redirection can discard it. Verified by running it - it does not
+# reproduce in an interactive session, only in `powershell -File`, which is how
+# install.bat runs every one of these scripts.
+function Invoke-Quiet($file, [string[]]$arguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        & $file @arguments 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previous }
+}
+
+function Invoke-Captured($file, [string[]]$arguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $all = & $file @arguments 2>&1
+        $code = $LASTEXITCODE
+        $out = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
+            ForEach-Object { [string]$_ })
+        $err = @($all | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+            ForEach-Object { $_.ToString() })
+        return [pscustomobject]@{ Code = $code; Out = $out; Err = $err }
+    } finally { $ErrorActionPreference = $previous }
+}
+
 # --- where things are --------------------------------------------------------
 
 function Get-ProjectRoot { Split-Path -Parent $PSScriptRoot }
@@ -260,4 +330,342 @@ function Get-File($url, $destination, $label, $MinimumBytes = 0) {
         Remove-Item $destination -Force -ErrorAction SilentlyContinue
         return $false
     } finally { $ProgressPreference = $previous }
+}
+
+# --- getting out of our own way ----------------------------------------------
+#
+# Found by running the installer on a machine where the recorder was already
+# running, which on the deployment laptop is every machine, every time - that is
+# what the autostart tasks are for.
+#
+# `uv sync` decides the environment needs recreating, deletes .venv, and stops
+# partway through with "Access is denied" on .venv\Scripts\python.exe because
+# the recorder is running out of it. What is left is not a virtual environment
+# and not a deletable one either: every later uv command answers
+#
+#     Project virtual environment directory `...\.venv` cannot be used because
+#     it is not a compatible environment but cannot be recreated because it is
+#     not a virtual environment
+#
+# and the only way out is to delete .venv by hand, which is not a thing the
+# person installing this can be asked to do. Re-running install.bat, the advice
+# the installer itself gives, fails in exactly the same way every time.
+#
+# So the processes running out of this folder are stopped first. Matched by full
+# path, never by name, for the same reason scripts\build_exe.ps1 matches that
+# way: "python" and "ffmpeg" are common names and somebody else's are not ours
+# to end. The console is started again at the end of the install, and the
+# recorder with it.
+# Only the programs this project itself starts, named one by one. Not "anything
+# running from under the project folder": a developer with the test suite
+# running would have it killed underneath them, and on this machine that is
+# exactly what happened the first time. Nothing in this list is something a
+# person is in the middle of.
+function Get-ProjectRuntimeProcesses($root) {
+    $wanted = @(
+        (Join-Path $root 'VMD.exe')
+        (Join-Path $root '.venv\Scripts\python.exe')
+        (Join-Path $root '.venv\Scripts\pythonw.exe')
+        (Join-Path $root 'bin\ffmpeg.exe')
+        (Join-Path $root 'bin\go2rtc.exe')
+    )
+    # The interpreter under bin\python\ is matched by prefix, because its exact
+    # path carries a CPython version that changes.
+    $pythonDir = (Join-Path $root 'bin\python').TrimEnd('\') + '\'
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Id -ne $PID -and $_.Path -and (
+            ($wanted -contains $_.Path) -or
+            ($_.Path.StartsWith($pythonDir, 'OrdinalIgnoreCase') -and $_.ProcessName -eq 'python')
+        )
+    })
+}
+
+function Stop-ProjectProcesses($root) {
+    $stopped = @()
+    foreach ($process in (Get-ProjectRuntimeProcesses $root)) {
+        # /T as well as /F: VMD.exe starts uv, uv starts python, and python is
+        # the one holding the environment open. Ending only the parent leaves
+        # the child owning the file that has to be deleted.
+        #
+        # A process that refuses to die is reported, not thrown. Windows says
+        # "could not be terminated" about processes that are already on their
+        # way out, and an installer that fell over at that would be a worse
+        # false alarm than the one it is here to remove.
+        $null = Invoke-Quiet 'taskkill' @('/F', '/T', '/PID', "$($process.Id)")
+        $stopped += $process.ProcessName
+    }
+    if ($stopped.Count -gt 0) { Start-Sleep -Milliseconds 800 }
+    # Whatever is still standing after that, said plainly. This is the value the
+    # caller should act on, not the list above.
+    $left = @(Get-ProjectRuntimeProcesses $root | ForEach-Object { $_.ProcessName })
+    return [pscustomobject]@{ Stopped = @($stopped | Sort-Object -Unique); StillRunning = @($left | Sort-Object -Unique) }
+}
+
+# --- the transcript ----------------------------------------------------------
+#
+# "It says VLC can't be installed although it's already on the laptop, and
+# other things." That sentence is why this exists. The one named problem could
+# be found by reading the script; the other things could not be found at all,
+# because nothing kept a record of what the installer saw, and the person
+# standing at the laptop cannot be asked to read a console window back.
+#
+# So every installer writes what it did to bin\logs\, and the summary ends by
+# naming the file. bin\logs\ is already excluded from the offline copy by
+# scripts\offline_kit.ps1, so a log never travels to the deployment laptop by
+# accident.
+
+function Get-LogDir($root) {
+    $dir = Join-Path $root 'bin\logs'
+    try { New-Item -ItemType Directory -Force -Path $dir | Out-Null } catch { }
+    return $dir
+}
+
+# Every form of every password that could end up in a log, longest first, the
+# same rule vmd\streaming\diagnose.py follows and for the same reason: the
+# operator types the password into its own field, and anything that builds an
+# RTSP URL percent-encodes it, so `p@ss` also travels as `p%40ss` and a
+# redaction that only knew the typed form would match nothing at all.
+function Get-SettingsSecrets($root) {
+    $file = Join-Path $root 'settings.json'
+    if (-not (Test-Path $file)) { return @() }
+    try { $settings = ConvertFrom-Json (Get-Content $file -Raw -ErrorAction Stop) }
+    catch { return @() }
+    $values = @{}
+    foreach ($section in @('camera', 'radio')) {
+        $secret = $null
+        try { $secret = $settings.$section.password } catch { }
+        # Two characters or fewer is not a password worth masking, and masking
+        # it would replace half the innocent text in the file.
+        if (($secret -is [string]) -and $secret.Length -ge 3) {
+            $values[$secret] = $true
+            $values[[Uri]::EscapeDataString($secret)] = $true
+        }
+    }
+    return @($values.Keys | Sort-Object -Property Length -Descending)
+}
+
+# Applied to the finished file rather than to each line on its way out, because
+# a transcript records things this script never chose to print - the header, the
+# command line it was started with, whatever a tool echoed back at it.
+function Protect-LogFile($path, $root) {
+    if (-not $path -or -not (Test-Path $path)) { return }
+    try { $text = Get-Content $path -Raw -ErrorAction Stop } catch { return }
+    if (-not $text) { return }
+    $before = $text
+    foreach ($secret in (Get-SettingsSecrets $root)) { $text = $text.Replace($secret, '********') }
+    # Credentials carried inside a URL are masked whether or not they are in
+    # settings.json - a proxy address, an RTSP address a tool echoed back - for
+    # the same reason: this file exists to be sent to somebody else.
+    $text = [regex]::Replace($text,
+        '(?<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@:]+:[^\s/@]+@',
+        '${scheme}********:********@')
+    if ($text -ne $before) {
+        try { Set-Content -Path $path -Value $text -Encoding UTF8 -NoNewline } catch { }
+    }
+}
+
+function Start-VmdTranscript($root, $name) {
+    $path = Join-Path (Get-LogDir $root) $name
+    try {
+        Start-Transcript -Path $path -Force | Out-Null
+        $script:VmdTranscript = $path
+        return $path
+    } catch {
+        # A missing log is a worse install experience, never a failed one.
+        $script:VmdTranscript = $null
+        return $null
+    }
+}
+
+# Safe to call twice: the second call does nothing. That matters because the
+# installer stops the transcript deliberately before handing the window over to
+# the console, and again in the finally that catches a crash.
+function Stop-VmdTranscript($root) {
+    if (-not $script:VmdTranscript) { return $null }
+    $path = $script:VmdTranscript
+    $script:VmdTranscript = $null
+    try { Stop-Transcript | Out-Null } catch { }
+    Protect-LogFile $path $root
+    return $path
+}
+
+# --- is VLC here, and is it the one 64-bit Python can load? ------------------
+#
+# The old answer was Test-Path "$env:ProgramFiles\VideoLAN\VLC\libvlc.dll", one
+# narrow question that says "not installed" about a VLC in a custom directory, a
+# per-user VLC under %LOCALAPPDATA%, or a VLC whose folder the operator chose
+# themselves. That is the reported failure: the installer telling somebody VLC
+# is missing while they are looking at it in their Start menu.
+#
+# None of what follows is the authority, and it is important that it is not
+# treated as one. The only question that matters is whether the 64-bit Python in
+# this project can load libVLC, and the installer asks that directly once the
+# environment exists. What this does is narrow it down beforehand and, when the
+# answer is no, be able to say why - which of the two very different failures it
+# is. python-vlc's own search (site-packages\vlc.py, find_lib) reads
+# HKLM\Software\VideoLAN\VLC then HKCU, then falls back to
+# %ProgramFiles%\VideoLan\VLC, so those come first here.
+
+# The PE header, rather than which Program Files folder it sits in. A 32-bit VLC
+# installed into a 64-bit path is unusual but perfectly possible, and being
+# wrong about this produces exactly the advice that does not help.
+function Get-PeMachine($file) {
+    try { $stream = [IO.File]::OpenRead($file) } catch { return 0 }
+    try {
+        $buffer = New-Object byte[] 4
+        $stream.Position = 0x3C
+        if ($stream.Read($buffer, 0, 4) -ne 4) { return 0 }
+        $peOffset = [BitConverter]::ToInt32($buffer, 0)
+        if ($peOffset -le 0 -or $peOffset -gt ($stream.Length - 6)) { return 0 }
+        $stream.Position = $peOffset
+        $header = New-Object byte[] 6
+        if ($stream.Read($header, 0, 6) -ne 6) { return 0 }
+        if ($header[0] -ne 0x50 -or $header[1] -ne 0x45) { return 0 }   # "PE"
+        return [BitConverter]::ToUInt16($header, 4)
+    } catch { return 0 } finally { $stream.Dispose() }
+}
+
+function Get-DllBits($file) {
+    switch (Get-PeMachine $file) {
+        0x8664  { return 64 }   # x64
+        0xAA64  { return 64 }   # ARM64
+        0x014C  { return 32 }   # x86
+        default { return 0 }
+    }
+}
+
+function Get-RegistryString($key, $name) {
+    try {
+        $item = Get-ItemProperty -Path $key -Name $name -ErrorAction Stop
+        $value = $item.$name
+        if (($value -is [string]) -and $value.Trim()) { return $value.Trim() }
+    } catch { }
+    return $null
+}
+
+function Get-VlcInstall {
+    $places = New-Object System.Collections.ArrayList
+
+    # The two keys python-vlc reads, in the order it reads them.
+    foreach ($key in @('HKLM:\SOFTWARE\VideoLAN\VLC', 'HKCU:\SOFTWARE\VideoLAN\VLC')) {
+        $dir = Get-RegistryString $key 'InstallDir'
+        if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the VideoLAN key in the registry' }) }
+    }
+    # The 32-bit view of the same key. A 64-bit process cannot see it through
+    # the name above, which is precisely how a 32-bit VLC becomes invisible.
+    $dir = Get-RegistryString 'HKLM:\SOFTWARE\WOW6432Node\VideoLAN\VLC' 'InstallDir'
+    if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the 32-bit VideoLAN key in the registry' }) }
+    # What Add or remove programs knows, which is where a custom install
+    # directory is recorded.
+    foreach ($key in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player')) {
+        $dir = Get-RegistryString $key 'InstallLocation'
+        if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the uninstall entry in the registry' }) }
+    }
+    # The ordinary places, including the per-user install winget will choose on
+    # a machine where it cannot write to Program Files.
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432,
+                        (Join-Path $env:LOCALAPPDATA 'Programs'), $env:LOCALAPPDATA)) {
+        if ($base) { [void]$places.Add(@{ Dir = (Join-Path $base 'VideoLAN\VLC'); Source = 'the usual folder' }) }
+    }
+    # And anywhere on PATH, which is what a portable copy looks like.
+    foreach ($part in ($env:Path -split ';')) {
+        if ($part.Trim()) { [void]$places.Add(@{ Dir = $part.Trim(); Source = 'a folder on PATH' }) }
+    }
+
+    $found = $null
+    $only32 = $null
+    $seen = @{}
+    foreach ($place in $places) {
+        $dir = $place.Dir
+        $key = $dir.TrimEnd('\').ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $dll = Join-Path $dir 'libvlc.dll'
+        # Whatever the registry says, the file has to actually be there. A key
+        # left behind by an uninstall is a false pass, and a false pass is worse
+        # than a false failure: it sends the operator looking for a problem
+        # somewhere else entirely.
+        if (-not (Test-Path $dll)) { continue }
+        $bits = Get-DllBits $dll
+        if ($bits -eq 64) {
+            $found = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 64; Source = $place.Source }
+            break
+        }
+        if (($bits -eq 32) -and (-not $only32)) {
+            $only32 = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 32; Source = $place.Source }
+        }
+    }
+
+    $result = [pscustomobject]@{
+        Found  = [bool]$found
+        Dir    = $null
+        Dll    = $null
+        Source = $null
+        # A 32-bit VLC and nothing else is its own failure and needs its own
+        # sentence: it is the one that looks most like "VLC is missing" to
+        # somebody who can see VLC on their own screen.
+        Only32 = ((-not $found) -and [bool]$only32)
+        Dir32  = $null
+    }
+    if ($found) {
+        $result.Dir = $found.Dir
+        $result.Dll = $found.Dll
+        $result.Source = $found.Source
+    }
+    if ($only32) { $result.Dir32 = $only32.Dir }
+    return $result
+}
+
+# --- winget ------------------------------------------------------------------
+#
+# winget returns non-zero for several reasons that are not failures, and the
+# installer used to judge the result by re-testing a file path instead of
+# reading the code. The one that matters most is 0x8A15002B, which is what
+# `winget install` gives back when the package is already there at an equal or
+# newer version - a success being reported as a failure, on the machine where
+# everything is already fine.
+#
+# 0x8A15002B and 0x8A150014 were confirmed by running winget on the development
+# machine. The rest are from winget's published return codes and are here to
+# turn a bare hexadecimal number into a sentence, not to be relied on: anything
+# not in the table falls through to "winget said no", and the real verdict comes
+# from looking for the thing afterwards.
+#
+# Keyed by the hexadecimal form, which is the form winget's own documentation
+# uses and therefore the form worth having in a log somebody will search.
+$script:WINGET_MEANING = @{
+    '0x00000000' = 'installed'
+    '0x8A15002B' = 'already installed, and up to date'
+    '0x8A150008' = 'the download failed'
+    '0x8A15000B' = "winget's list of packages could not be read"
+    '0x8A150010' = 'winget has no installer for this machine'
+    '0x8A150011' = 'the download did not match its checksum'
+    '0x8A150014' = 'winget does not know that package'
+    '0x8A150019' = 'winget needs administrator rights for this'
+}
+# The two codes that mean the machine is already in the state we wanted.
+$script:WINGET_BENIGN = @('0x00000000', '0x8A15002B')
+
+function Invoke-Winget([string[]]$arguments) {
+    if (-not (Test-Have 'winget')) {
+        return [pscustomobject]@{
+            Ran = $false; Ok = $false; Code = 'not run'
+            Reason = 'winget is not on this machine'
+        }
+    }
+    $code = Invoke-Logged 'winget' $arguments
+    # PowerShell hands winget's code back as a negative number and winget writes
+    # it as an unsigned hexadecimal. Same value; only one of them is searchable.
+    $text = '0x{0:X8}' -f [uint32]($code -band 0xFFFFFFFFL)
+    $meaning = $script:WINGET_MEANING[$text]
+    if (-not $meaning) { $meaning = "winget stopped with $text" }
+    return [pscustomobject]@{
+        Ran = $true
+        Ok = ($script:WINGET_BENIGN -contains $text)
+        Code = $text
+        Reason = $meaning
+    }
 }

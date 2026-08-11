@@ -135,24 +135,23 @@ function Set-NeverSleep {
       would be worse - and claiming the lid is handled on a machine where the
       setting does not exist would be worse still.
     #>
-    $sleepOff = $false
+    # Invoke-Quiet, not a redirection: under $ErrorActionPreference = 'Stop' the
+    # stderr of a piped native command is a terminating error whatever it is
+    # redirected to, so one powercfg that had something to say used to abandon
+    # the two calls after it and the catch reported all three as not done. Each
+    # exit code is read separately, which is what makes "it managed two of
+    # three" sayable. See the note on Invoke-Quiet in scripts\_common.ps1.
+    $sleepOff = $true
+    foreach ($setting in @('standby-timeout-ac', 'hibernate-timeout-ac', 'disk-timeout-ac')) {
+        if ((Invoke-Quiet 'powercfg' @('/change', $setting, '0')) -ne 0) { $sleepOff = $false }
+    }
+    # Closing the lid is the one that catches people out: it suspends the
+    # machine, ffmpeg stops, and the perimeter is unwatched while the laptop
+    # looks switched on. 0 is "do nothing".
     $lidOff = $false
-    try {
-        powercfg /change standby-timeout-ac 0   2>&1 | Out-Null
-        powercfg /change hibernate-timeout-ac 0 2>&1 | Out-Null
-        powercfg /change disk-timeout-ac 0      2>&1 | Out-Null
-        $sleepOff = $true
-    } catch { }
-    try {
-        # Closing the lid is the one that catches people out: it suspends the
-        # machine, ffmpeg stops, and the perimeter is unwatched while the laptop
-        # looks switched on. 0 is "do nothing".
-        powercfg /setacvalueindex SCHEME_CURRENT $LID_SUBGROUP $LID_ACTION 0 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            powercfg /setactive SCHEME_CURRENT 2>&1 | Out-Null
-            $lidOff = $true
-        }
-    } catch { }
+    if ((Invoke-Quiet 'powercfg' @('/setacvalueindex', 'SCHEME_CURRENT', $LID_SUBGROUP, $LID_ACTION, '0')) -eq 0) {
+        $lidOff = ((Invoke-Quiet 'powercfg' @('/setactive', 'SCHEME_CURRENT')) -eq 0)
+    }
     return @{ Sleep = $sleepOff; Lid = $lidOff }
 }
 

@@ -7,6 +7,8 @@
 #  code changes what the exe runs, with nothing to rebuild.
 # =============================================================================
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+. (Join-Path $PSScriptRoot '_common.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
@@ -31,7 +33,13 @@ try {
     if ($running) {
         Write-Host "Closing the console that is already running." -ForegroundColor Gray
         foreach ($process in $running) {
-            & taskkill /F /T /PID $process.Id 2>&1 | Out-Null
+            # Invoke-Quiet rather than a redirection. Under
+            # $ErrorActionPreference = 'Stop', the stderr of a piped native
+            # command becomes a terminating NativeCommandError, and neither
+            # 2>&1 nor 2>$null prevents it - so a taskkill against a process
+            # that was already on its way out failed the whole build. See the
+            # note on Invoke-Quiet in scripts\_common.ps1.
+            $null = Invoke-Quiet 'taskkill' @('/F', '/T', '/PID', "$($process.Id)")
         }
         Start-Sleep -Milliseconds 400
         # taskkill walks the tree Windows knows about. If anything survived it -

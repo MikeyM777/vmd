@@ -20,6 +20,32 @@
 #  Everything except VLC is inside the project folder, so the folder is the
 #  install. That is what makes the offline laptop possible at all.
 #
+#  ---------------------------------------------------------------------------
+#  Two rules this file is held to
+#  ---------------------------------------------------------------------------
+#
+#  1. Never say something is wrong without having checked that it is.
+#
+#     An installer that cries wolf is worse than one that fails loudly, because
+#     the operator learns to ignore it and then misses the message that
+#     mattered. Every claim below is either a thing this script just observed,
+#     or it is not printed. In particular the verdict on VLC is not reached in
+#     step 3 - it cannot be, because the only test that settles it needs the
+#     Python environment that step 9 builds - so step 3 reports what it can see
+#     and says so, and step 9 decides.
+#
+#  2. Nothing computed in the elevated window may be read in this one.
+#
+#     The machine-wide half runs as a second, elevated process. Its variables
+#     die with it. Anything this window needs to know afterwards is either
+#     looked up again here, or read out of bin\logs\install-packages.json,
+#     which that window writes on its way out. That file also carries the
+#     absolute path of the uv it installed, because "elevated" can mean a
+#     different Windows account, and a uv installed into somebody else's
+#     profile is invisible from here.
+#
+#  Everything printed is also written to bin\logs\install.log.
+#
 #  Switches, all of them for scripts and tests rather than for people:
 #    -NoLaunch      finish without opening the console.
 #    -NoAutostart   skip creating the scheduled tasks.
@@ -35,6 +61,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Set again in _common.ps1, and repeated here so that somebody reading only this
+# file can see it. Under PowerShell 7.4 and later, 'Stop' also applies to the
+# exit code of an ordinary program, and winget returns non-zero for entirely
+# benign reasons - "already installed" among them. install.bat launches Windows
+# PowerShell 5.1, where this does not arise, but right-clicking this file and
+# choosing "Run with PowerShell" uses whichever PowerShell is default. Native
+# exit codes are read explicitly wherever they matter.
+$PSNativeCommandUseErrorActionPreference = $false
+
 . (Join-Path $PSScriptRoot '_common.ps1')
 
 $root   = Get-ProjectRoot
@@ -43,11 +79,108 @@ $binDir = Join-Path $root 'bin'
 $doPackages = -not $SkipPackages
 $doProject  = -not $PackagesOnly
 
-Set-StepTotal 12
+# The elevated half and this half must not write to the same transcript: the
+# first one to hold it keeps the file open, and the second would silently get
+# no log at all - on exactly the run where a log is most wanted.
+$logName = if ($PackagesOnly) { 'install-admin.log' } else { 'install.log' }
+$logPath = Start-VmdTranscript $root $logName
+$handoff = Join-Path (Get-LogDir $root) 'install-packages.json'
+
+# --- what the summary at the end is built out of -----------------------------
+#
+# Three groups, decided as each step happens rather than guessed at the end:
+#
+#   good      installed, and checked to be working.
+#   optional  missing, and the system still does its job without it. The live
+#             picture is the clearest example: the console opens, the recorder
+#             records, and the video pane says so in place of the picture.
+#   broken    the system must not be relied on until this is fixed.
+#
+# Write-Bad used to be used for all three, which is how "VLC is not installed"
+# ended up in the same colour as an environment that would not build.
+$findings = New-Object System.Collections.ArrayList
+function Add-Good($what)                     { [void]$findings.Add(@{ Level = 'good';     What = $what; Fix = @() }) }
+function Add-Optional($what, [string[]]$fix) { [void]$findings.Add(@{ Level = 'optional'; What = $what; Fix = $fix }) }
+function Add-Broken($what, [string[]]$fix)   { [void]$findings.Add(@{ Level = 'broken';   What = $what; Fix = $fix }) }
+
+# Defined here rather than beside the step that prints it, because the steps
+# that end the run early print it too, and a function is only callable after
+# PowerShell has read it.
+function Write-Summary {
+    $good     = @($findings | Where-Object { $_.Level -eq 'good' })
+    $optional = @($findings | Where-Object { $_.Level -eq 'optional' })
+    $broken   = @($findings | Where-Object { $_.Level -eq 'broken' })
+
+    Write-Host ""
+    Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    Write-Host "  INSTALLED AND WORKING" -ForegroundColor Green
+    Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    if ($good.Count -eq 0) { Write-Host "    (nothing yet)" -ForegroundColor DarkGray }
+    foreach ($item in $good) { Write-Host "    - $($item.What)" -ForegroundColor Green }
+
+    Write-Host ""
+    Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    Write-Host "  MISSING, BUT THE SYSTEM STILL DOES ITS JOB WITHOUT IT" -ForegroundColor Yellow
+    Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    if ($optional.Count -eq 0) {
+        Write-Host "    Nothing. Everything that could be installed was." -ForegroundColor Green
+    }
+    foreach ($item in $optional) {
+        Write-Host "    - $($item.What)" -ForegroundColor Yellow
+        foreach ($line in $item.Fix) { Write-Host "        $line" -ForegroundColor Gray }
+    }
+
+    Write-Host ""
+    Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    if ($broken.Count -eq 0) {
+        Write-Host "  BROKEN - MUST BE FIXED BEFORE THE SYSTEM IS USED" -ForegroundColor Green
+        Write-Host "  ==============================================================" -ForegroundColor DarkGray
+        Write-Host "    Nothing. This system can be used." -ForegroundColor Green
+    } else {
+        Write-Host "  BROKEN - MUST BE FIXED BEFORE THE SYSTEM IS USED" -ForegroundColor Red
+        Write-Host "  ==============================================================" -ForegroundColor DarkGray
+        foreach ($item in $broken) {
+            Write-Host "    - $($item.What)" -ForegroundColor Red
+            foreach ($line in $item.Fix) { Write-Host "        $line" -ForegroundColor Gray }
+        }
+    }
+    Write-Host ""
+}
+
+function Write-LogHint {
+    if (-not $logPath) {
+        Write-Host "  This run could not be written to a file, so there is no log to send." -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "  Everything this installer printed is saved in:" -ForegroundColor Gray
+    Write-Host "    $logPath" -ForegroundColor White
+    $adminLog = Join-Path (Get-LogDir $root) 'install-admin.log'
+    if ((-not $PackagesOnly) -and (Test-Path $adminLog)) {
+        Write-Host "    $adminLog" -ForegroundColor White
+        Write-Host "    (the second file is the window that asked for permission)" -ForegroundColor DarkGray
+    }
+    Write-Host "  If anything above looks wrong, send that file. It is the whole story," -ForegroundColor Gray
+    Write-Host "  and passwords are taken out of it before it is written." -ForegroundColor Gray
+}
+
+# Used for the failures that end the run. Prints the log path, because a person
+# who has just been told the install stopped is exactly the person who needs to
+# know which file to send.
+function Stop-Installer($code) {
+    Write-Host ""
+    Write-LogHint
+    Write-Host ""
+    Stop-VmdTranscript $root | Out-Null
+    exit $code
+}
+
+try {
 
 Write-Host ""
 Write-Host "  VMD installer" -ForegroundColor White
 Write-Host "  $root" -ForegroundColor DarkGray
+
+Set-StepTotal $(if ($PackagesOnly) { 3 } else { 12 })
 
 # A prepared offline copy carries a VLC installer, which nothing else puts
 # there. Running this script on such a folder is the mistake somebody makes on
@@ -75,23 +208,6 @@ function Update-PathFromRegistry {
     $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
 }
 
-function Install-Package($id, $command, $label) {
-    if (Test-Have $command) {
-        Write-Ok "$label is already installed."
-        return $true
-    }
-    Write-Info "$label is missing. Installing it with winget - this can take a few minutes."
-    winget install --id $id --exact --silent `
-        --accept-source-agreements --accept-package-agreements | Out-Host
-    Update-PathFromRegistry
-    if (Test-Have $command) {
-        Write-Ok "$label installed."
-        return $true
-    }
-    Write-Bad "$label still is not runnable after installing it."
-    return $false
-}
-
 # =============================================================================
 #  One permission prompt, not five
 # =============================================================================
@@ -103,16 +219,25 @@ function Install-Package($id, $command, $label) {
 # unelevated, which is what we want anyway - the console, the settings file and
 # the recordings should belong to the person using the laptop, not to
 # Administrator.
+$packages = $null       # what the elevated window reported, or $null
+$elevatedCode = $null   # what it exited with, or $null if it never ran
+
 if ($doPackages -and $doProject -and -not (Test-Admin)) {
+    # Any note left by a previous run would be read as this run's answer.
+    Remove-Item $handoff -Force -ErrorAction SilentlyContinue
     Write-Host ""
     Write-Info "Windows is about to ask for permission, once."
     Write-Info "A second window will open, install VLC and uv, and close by itself."
     Write-Info "Click Yes when Windows asks. Then this window carries on."
     try {
-        Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList @(
+        # -PassThru, because the exit code of that window is the only thing it
+        # can tell us directly, and ignoring it meant this window went on to
+        # print "Already checked." about steps that had failed.
+        $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', $PSCommandPath, '-PackagesOnly'
         )
+        $elevatedCode = $child.ExitCode
         Update-PathFromRegistry
         $doPackages = $false
     } catch {
@@ -121,72 +246,161 @@ if ($doPackages -and $doProject -and -not (Test-Admin)) {
         # steps below say plainly what is missing.
         Write-Warn "Permission was not given, so the installer will ask again per item."
     }
+    if (Test-Path $handoff) {
+        try { $packages = ConvertFrom-Json (Get-Content $handoff -Raw -ErrorAction Stop) }
+        catch { $packages = $null }
+    }
+    if ($null -eq $packages -and -not $doPackages) {
+        Write-Warn "The window that asked for permission left no record of what it did."
+        Write-Info "Nothing is assumed about it. Everything below is checked here instead."
+    }
 }
 
 # =============================================================================
 #  1. winget
 # =============================================================================
 Write-Step "Checking the Windows package manager"
+$haveWinget = Test-Have 'winget'
 if ($doPackages) {
-    if (-not (Test-Have 'winget')) {
-        Write-Bad "winget is not available on this machine."
-        Write-Info "It ships with 'App Installer'. Install that from the Microsoft Store,"
-        Write-Info "reopen this installer, and it will carry on:"
-        Write-Info "  https://apps.microsoft.com/detail/9nblggh4nns1"
-        exit 1
+    if ($haveWinget) { Write-Ok "winget is available." }
+} elseif ($packages) {
+    # Asked again here rather than trusted: winget is per-account, and the
+    # window that just closed may not have been this account.
+    if ($haveWinget) { Write-Ok "winget is available." }
+    elseif ($packages.WingetOk) {
+        Write-Ok "winget is available to the administrator account, which is where it was needed."
     }
+} elseif ($haveWinget) {
     Write-Ok "winget is available."
-} else {
-    Write-Ok "Already checked."
+}
+if (-not $haveWinget -and -not ($packages -and $packages.WingetOk)) {
+    # Not fatal on its own. winget is only needed for uv and VLC; ffmpeg,
+    # go2rtc and the detector weights are ordinary downloads. Whether this
+    # matters is decided in step 2, by whether uv can be found at all.
+    Write-Warn "winget is not available on this account."
+    Write-Info "It ships with 'App Installer'. Install that from the Microsoft Store"
+    Write-Info "and run this installer again:"
+    Write-Info "  https://apps.microsoft.com/detail/9nblggh4nns1"
 }
 
 # =============================================================================
 #  2. uv
 # =============================================================================
 Write-Step "Checking uv (brings Python and the libraries with it)"
+$uvWinget = $null
 if ($doPackages) {
-    $null = Install-Package 'astral-sh.uv' 'uv' 'uv'
+    if (Test-Have 'uv') {
+        Write-Ok "uv is already installed."
+    } else {
+        Write-Info "uv is missing. Installing it with winget - this can take a few minutes."
+        $uvWinget = Invoke-Winget @('install', '--id', 'astral-sh.uv', '--exact', '--silent',
+                                    '--accept-source-agreements', '--accept-package-agreements')
+        Update-PathFromRegistry
+        # The exit code is read, and then the machine is looked at anyway. Both,
+        # because either alone is wrong: a benign code with nothing on disk is a
+        # false pass, and a non-zero code with a working uv is the false failure
+        # this file exists to stop printing.
+        if (Test-Have 'uv') {
+            if ($uvWinget.Ok) { Write-Ok "uv installed ($($uvWinget.Reason))." }
+            else { Write-Ok "uv is installed and runnable, although winget reported: $($uvWinget.Reason)." }
+        } elseif ($uvWinget.Ran) {
+            Write-Bad "uv is not runnable after installing it - winget said: $($uvWinget.Reason)"
+        } else {
+            Write-Bad "uv could not be installed, because $($uvWinget.Reason)."
+        }
+    }
 } else {
     Update-PathFromRegistry
     if (Test-Have 'uv') { Write-Ok "uv is available." }
 }
-$haveUv = Test-Have 'uv'
+
+# Where uv actually is, asked in every place it could be, in the order that
+# gives the most useful answer.
+$uvLocal  = Join-Path $binDir 'uv.exe'
+$uvSource = (Get-Command uv -ErrorAction SilentlyContinue).Source
+if ((-not $uvSource) -and $packages -and $packages.UvPath -and (Test-Path $packages.UvPath)) {
+    # winget installs uv into the profile of whoever answered the permission
+    # prompt. On a laptop where the operator is a standard user and an
+    # administrator's password was typed at that prompt, uv lands in the
+    # administrator's profile and is invisible from here - which used to end the
+    # install with "Cannot continue without uv" moments after installing uv.
+    Write-Info "uv was installed under another Windows account. Using the copy it left."
+    $uvSource = $packages.UvPath
+}
+if ((-not $uvSource) -and (Test-Path $uvLocal)) { $uvSource = $uvLocal }
+if (-not $uvSource) {
+    # Said here rather than left to silence. Whether it is fatal is decided a
+    # few lines below, once the elevated half has had its say.
+    Write-Bad "uv could not be found on this account, on PATH or in bin\."
+}
+
+if ($PackagesOnly) {
+    # The elevated half is done. Its findings have to be written down here,
+    # because in a moment this process and everything it knows will be gone.
+    $vlcState = Get-VlcInstall
+    $report = [ordered]@{
+        Finished  = $true
+        When      = (Get-Date).ToString('s')
+        Account   = $env:USERNAME
+        WingetOk  = [bool](Test-Have 'winget')
+        UvPath    = $uvSource
+        UvWinget  = $(if ($uvWinget) { $uvWinget.Reason } else { 'not run' })
+        VlcFound  = [bool]$vlcState.Found
+        VlcDir    = $vlcState.Dir
+        VlcOnly32 = [bool]$vlcState.Only32
+        VlcDir32  = $vlcState.Dir32
+        VlcWinget = $null
+    }
+}
+
+$haveUv = [bool]$uvSource
 
 # =============================================================================
 #  3. VLC
 # =============================================================================
 # The console draws its live video with libVLC, which comes with the ordinary
-# VLC media player. It is not put on PATH by its installer, so presence is read
-# off the file it actually needs rather than off a command name. The 64-bit
-# build is the one that matters: a 32-bit VLC cannot be loaded by 64-bit Python,
-# and that mismatch is the one failure that looks like VLC being missing when it
-# is plainly installed.
+# VLC media player. It is not put on PATH by its installer, and it is not always
+# in Program Files either, so this asks the registry keys python-vlc itself
+# reads, the uninstall entries, the ordinary folders and PATH - and then checks
+# that libvlc.dll is really there rather than trusting a key.
+#
+# What it does NOT do is reach a verdict. It cannot: the only test that settles
+# the question is whether the 64-bit Python in this project can load libVLC, and
+# that Python does not exist until step 9. So this step reports what it can see
+# and says who decides. Printing a conclusion here that step 9 may contradict is
+# how an installer teaches an operator to ignore it.
 Write-Step "Checking VLC (draws the live picture in the console)"
-$vlcDir   = Join-Path $env:ProgramFiles 'VideoLAN\VLC'
-$vlcDll   = Join-Path $vlcDir 'libvlc.dll'
-$vlc32Dll = Join-Path ${env:ProgramFiles(x86)} 'VideoLAN\VLC\libvlc.dll'
-$haveVlc  = Test-Path $vlcDll
+$vlc = Get-VlcInstall
+$vlcWinget = $null
 
 if ($doPackages) {
-    if ($haveVlc) {
-        Write-Ok "VLC is already installed."
+    if ($vlc.Found) {
+        Write-Ok "VLC is already here: $($vlc.Dir)"
+        Write-Info "Found through $($vlc.Source). Nothing to install."
     } else {
-        Write-Info "VLC is missing. Installing it with winget."
-        winget install --id VideoLAN.VLC --exact --silent `
-            --accept-source-agreements --accept-package-agreements | Out-Host
-        Update-PathFromRegistry
-        $haveVlc = Test-Path $vlcDll
-        if ($haveVlc) { Write-Ok "VLC installed." }
-        elseif (Test-Path $vlc32Dll) {
-            Write-Bad "Only the 32-bit VLC is installed, which the console cannot use."
-            Write-Info "Uninstall it and install the 64-bit VLC from https://www.videolan.org/vlc/"
+        if ($vlc.Only32) {
+            Write-Info "The VLC on this machine is the 32-bit build, in $($vlc.Dir32)."
+            Write-Info "64-bit Python cannot load a 32-bit libVLC, so the 64-bit build is"
+            Write-Info "needed as well. Installing it with winget."
+        } else {
+            Write-Info "No VLC found yet. Installing it with winget."
         }
-        else {
-            # Not fatal: everything except the live picture works without it, and
-            # the console says so in the video pane rather than refusing to open.
-            Write-Bad "VLC is still not installed."
-            Write-Info "Install it later from https://www.videolan.org/vlc/ - take the 64-bit"
-            Write-Info "Windows installer. Everything except the live picture works without it."
+        $vlcWinget = Invoke-Winget @('install', '--id', 'VideoLAN.VLC', '--exact', '--silent',
+                                     '--accept-source-agreements', '--accept-package-agreements')
+        Update-PathFromRegistry
+        $vlc = Get-VlcInstall
+        if ($vlc.Found) {
+            Write-Ok "VLC is here now: $($vlc.Dir)"
+        } elseif ($vlcWinget.Ok) {
+            # winget is content and the file is not there. Say both halves.
+            Write-Info "winget reported: $($vlcWinget.Reason) - but no 64-bit libvlc.dll was found yet."
+            Write-Info "Step 9 asks Python directly, which is the answer that counts."
+        } elseif (-not $vlcWinget.Ran) {
+            Write-Info "VLC could not be installed, because $($vlcWinget.Reason)."
+            Write-Info "It can be installed by hand later from https://www.videolan.org/vlc/"
+        } else {
+            Write-Info "winget did not install VLC: $($vlcWinget.Reason)"
+            Write-Info "Step 9 asks Python directly, which is the answer that counts."
         }
     }
 
@@ -198,33 +412,77 @@ if ($doPackages) {
     # hang to somebody who has never seen it before. Regenerating the index once
     # here, while we still have the permission to write into Program Files, is
     # the only chance to fix it rather than explain it.
-    $cacheGen = Join-Path $vlcDir 'vlc-cache-gen.exe'
-    if ($haveVlc -and (Test-Path $cacheGen) -and (Test-Admin)) {
-        try {
-            & $cacheGen (Join-Path $vlcDir 'plugins') 2>&1 | Out-Null
-            Write-Ok "VLC's plugin index refreshed, so the console starts faster."
-        } catch {
-            Write-Info "Could not refresh VLC's plugin index. Harmless - the first start is just slow."
+    #
+    # This used to be `& $cacheGen ... 2>&1 | Out-Null` inside a try, which
+    # could never work: vlc-cache-gen writes to stderr, the merge turns that
+    # into a terminating error under $ErrorActionPreference = 'Stop', and the
+    # catch printed "harmless" about work that had not happened. It is run
+    # properly now, and the result is read off the file it is supposed to write.
+    if ($vlc.Found -and (Test-Admin)) {
+        $cacheGen = Join-Path $vlc.Dir 'vlc-cache-gen.exe'
+        $pluginDir = Join-Path $vlc.Dir 'plugins'
+        if ((Test-Path $cacheGen) -and (Test-Path $pluginDir)) {
+            $cacheFile = Join-Path $pluginDir 'plugins.dat'
+            $before = $null
+            if (Test-Path $cacheFile) { $before = (Get-Item $cacheFile).LastWriteTimeUtc }
+            $null = Invoke-Captured $cacheGen @($pluginDir)
+            $after = $null
+            if (Test-Path $cacheFile) { $after = (Get-Item $cacheFile).LastWriteTimeUtc }
+            if ($after -and ($null -eq $before -or $after -gt $before)) {
+                Write-Ok "VLC's plugin index was rebuilt, so the console starts faster."
+            } else {
+                Write-Info "VLC's plugin index was left alone. Harmless - the first start is just slow."
+            }
         }
     }
 } else {
-    if ($haveVlc) { Write-Ok "VLC is installed." }
-    else { Write-Warn "VLC is not installed, so the console will show no live picture." }
+    # The parent window, after the elevated one has closed. Its answer died with
+    # it, so the question is asked again here rather than carried across.
+    if ($vlc.Found) {
+        Write-Ok "VLC is installed: $($vlc.Dir)"
+    } elseif ($vlc.Only32) {
+        Write-Info "The only VLC found is the 32-bit build, in $($vlc.Dir32)."
+        Write-Info "Step 9 asks Python whether it can use it, which is the answer that counts."
+    } else {
+        Write-Info "No VLC found on disk from this account."
+        if ($packages -and $packages.VlcFound) {
+            Write-Info "The window that asked for permission did find one, in $($packages.VlcDir)."
+        }
+        Write-Info "Step 9 asks Python directly, which is the answer that counts."
+    }
 }
 
 if ($PackagesOnly) {
-    # The elevated half is done. Everything after this belongs to the person
-    # who will actually use the laptop, not to Administrator.
+    # Re-read, because the install above may have changed it.
+    $vlcState = Get-VlcInstall
+    $report.VlcFound  = [bool]$vlcState.Found
+    $report.VlcDir    = $vlcState.Dir
+    $report.VlcOnly32 = [bool]$vlcState.Only32
+    $report.VlcDir32  = $vlcState.Dir32
+    $report.VlcWinget = $(if ($vlcWinget) { $vlcWinget.Reason } else { 'not run' })
+    try {
+        ($report | ConvertTo-Json -Depth 4) | Set-Content $handoff -Encoding UTF8
+    } catch {
+        Write-Warn "Could not write $handoff - the other window will check for itself."
+    }
     Write-Host ""
     Write-Ok "Machine-wide components done. This window closes now."
-    Start-Sleep -Seconds 2
+    Write-Host ""
+    Write-LogHint
+    Start-Sleep -Seconds 3
+    Stop-VmdTranscript $root | Out-Null
     exit 0
 }
 
 if (-not $haveUv) {
-    Write-Bad "Cannot continue without uv."
+    Write-Host ""
+    Write-Bad "Cannot continue without uv - it is what brings Python and every library."
     Write-Info "Install it by hand with:  winget install --id astral-sh.uv -e"
-    exit 1
+    Write-Info "then run install.bat again."
+    if ($elevatedCode -and $elevatedCode -ne 0) {
+        Write-Info "The window that asked for permission stopped with code $elevatedCode."
+    }
+    Stop-Installer 1
 }
 
 # =============================================================================
@@ -278,17 +536,30 @@ if (Test-Path $ffmpeg) {
         }
     }
     if ($haveFfmpeg) { Write-Ok "ffmpeg installed to bin\ffmpeg.exe" }
-    else {
-        Write-Bad "Could not put ffmpeg in bin\. Nothing can be recorded without it."
-        Write-Info "Fetch it by hand from https://www.gyan.dev/ffmpeg/builds/ (release essentials),"
-        Write-Info "and copy ffmpeg.exe into:  $binDir"
-    }
+    else { Write-Bad "Could not put ffmpeg in bin\. Nothing can be recorded without it." }
 }
 # An ffmpeg already on PATH from an earlier release of this installer still
 # works, and saying so avoids a warning that contradicts a working machine.
+$ffmpegElsewhere = $false
 if (-not $haveFfmpeg -and (Test-Have 'ffmpeg')) {
     Write-Info "There is an ffmpeg on PATH from somewhere else; recording will use that."
     $haveFfmpeg = $true
+    $ffmpegElsewhere = $true
+}
+if ($haveFfmpeg -and -not $ffmpegElsewhere) {
+    Add-Good "ffmpeg, in bin\ffmpeg.exe - the recorder can record"
+} elseif ($haveFfmpeg) {
+    Add-Good "ffmpeg, found on PATH outside this folder - the recorder can record"
+    Add-Optional "ffmpeg is not inside bin\, so it will not travel to the offline laptop" @(
+        "Only matters if this folder is going to a machine with no internet.",
+        "Put a copy of ffmpeg.exe in $binDir before running offline-kit.bat."
+    )
+} else {
+    Add-Broken "ffmpeg is missing, so nothing can be recorded - and recording is the product" @(
+        "Download the release essentials zip from https://www.gyan.dev/ffmpeg/builds/",
+        "Open it and drag ffmpeg.exe into:  $binDir",
+        "Then run install.bat again."
+    )
 }
 
 # =============================================================================
@@ -314,16 +585,22 @@ if (Test-Path $go2rtc) {
             New-Item -ItemType Directory -Force -Path $binDir | Out-Null
             Expand-Archive -Path $zip -DestinationPath $binDir -Force
             if (Test-Path $go2rtc) { Write-Ok "go2rtc installed to bin\go2rtc.exe" }
-            else { Write-Bad "The download unpacked but go2rtc.exe is not in bin\." }
+            else { Write-Info "The download unpacked but go2rtc.exe is not in bin\." }
         } catch {
-            Write-Bad "The go2rtc download unpacked badly: $($_.Exception.Message)"
+            Write-Info "The go2rtc download unpacked badly: $($_.Exception.Message)"
         } finally { Remove-Item $zip -Force -ErrorAction SilentlyContinue }
-    } else {
-        # A missing streamer does not invalidate the rest of the install: only
-        # the live picture needs it. Say so and carry on.
-        Write-Info "Everything else still installs. Fetch it later from:"
-        Write-Info "  https://github.com/AlexxIT/go2rtc/releases/latest"
     }
+}
+if (Test-Path $go2rtc) {
+    Add-Good "go2rtc, in bin\go2rtc.exe - the console can be given a stream to show"
+} else {
+    # A missing streamer does not invalidate the rest of the install: only the
+    # live picture needs it, and recording goes straight to the camera.
+    Add-Optional "go2rtc is missing, so the console will show no live picture" @(
+        "Recording is not affected - it reads the camera directly.",
+        "Download go2rtc_win64.zip from https://github.com/AlexxIT/go2rtc/releases/latest",
+        "and drag go2rtc.exe into:  $binDir"
+    )
 }
 
 # =============================================================================
@@ -347,11 +624,16 @@ if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
     Write-Info "Downloading yolo11n.pt (5.4 MB)."
     if (Get-File 'https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt' $weights 'the detector weights' (4MB)) {
         Write-Ok "yolo11n.pt downloaded."
-    } else {
-        Write-Bad "Without this file, movement is still detected but never named."
-        Write-Info "Download it by hand to $weights from"
-        Write-Info "  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt"
     }
+}
+if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
+    Add-Good "the detector's weights (yolo11n.pt) - movement gets named"
+} else {
+    Add-Optional "yolo11n.pt is missing, so movement is detected but never named" @(
+        "Recording and detection still work; the events just say 'movement'.",
+        "Download https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
+        "and save it as:  $weights"
+    )
 }
 
 # =============================================================================
@@ -369,20 +651,44 @@ if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
 # is not on PATH then double-clicking VMD.exe says "uv is not installed" on a
 # machine where it plainly is.
 Write-Step "Putting uv and bin\ where the console can find them"
-$uvSource = (Get-Command uv -ErrorAction SilentlyContinue).Source
-$uvLocal  = Join-Path $binDir 'uv.exe'
+$sameFile = $false
 if ($uvSource -and (Test-Path $uvSource)) {
+    try {
+        $sameFile = ([IO.Path]::GetFullPath($uvSource) -ieq [IO.Path]::GetFullPath($uvLocal))
+    } catch { $sameFile = $false }
+}
+if ($sameFile) {
+    # Copy-Item refuses to copy a file onto itself, and with
+    # $ErrorActionPreference = 'Stop' that refusal ended the whole install. It
+    # happens on any re-run where bin\ comes first on PATH, which is every run
+    # on a folder prepared for the offline laptop.
+    Write-Ok "uv is already in bin\uv.exe"
+} elseif ($uvSource -and (Test-Path $uvSource)) {
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     Copy-Item $uvSource $uvLocal -Force
     Write-Ok "uv copied to bin\uv.exe"
 } elseif (Test-Path $uvLocal) {
     Write-Ok "uv is already in bin\uv.exe"
 } else {
-    Write-Warn "Could not copy uv into bin\. The offline copy will not work without it."
+    Write-Warn "Could not copy uv into bin\."
 }
 
 if (Add-BinToUserPath $binDir) { Write-Ok "bin\ added to your PATH." }
 else { Write-Ok "bin\ is already on your PATH." }
+
+if (Test-Path $uvLocal) {
+    Add-Good "uv, in bin\uv.exe, and bin\ is on PATH"
+} else {
+    Add-Optional "uv is not inside bin\, so this folder cannot be copied to an offline laptop" @(
+        "This machine is fine - uv was found at $uvSource.",
+        "Run install.bat again before running offline-kit.bat."
+    )
+}
+
+# Everything from here uses the uv in bin\ by preference: it is the version that
+# wrote uv.lock, and naming it by full path removes any question about which uv
+# a bare name found.
+$uvExe = if (Test-Path $uvLocal) { $uvLocal } else { $uvSource }
 
 # =============================================================================
 #  8. the project's own Python
@@ -405,26 +711,51 @@ if ($projectPython) {
     Write-Ok "Already here: $(Split-Path -Leaf (Split-Path -Parent $projectPython))"
 } else {
     Write-Info "Downloading CPython 3.12 into bin\python\ (about 20 MB)."
-    uv python install --install-dir $pythonDir 3.12 | Out-Host
+    $null = Invoke-Logged $uvExe @('python', 'install', '--install-dir', $pythonDir, '3.12')
     $projectPython = Find-ProjectPython $root
     if ($projectPython) { Write-Ok "Python installed into bin\python\" }
-    else {
-        # Not fatal on this machine: uv will use one of its own interpreters and
-        # everything works here. It is fatal for the copy that goes to the
-        # offline laptop, and that is worth saying now rather than there.
-        Write-Warn "Could not install Python into bin\python\."
-        Write-Warn "This machine will still work. A copy of this folder on an offline"
-        Write-Warn "machine will not - the interpreter would be left behind."
-    }
+    else { Write-Info "Could not install Python into bin\python\." }
+}
+if ($projectPython) {
+    Add-Good "the project's own Python, in bin\python\ - the folder can travel"
+} else {
+    # Not fatal on this machine: uv will use one of its own interpreters and
+    # everything works here. It is fatal for the copy that goes to the offline
+    # laptop, and that is worth saying now rather than there.
+    Add-Optional "there is no Python inside bin\python\" @(
+        "This machine will still work - uv uses an interpreter of its own.",
+        "A copy of this folder on an offline machine will not: the interpreter",
+        "would be left behind. Run install.bat again before offline-kit.bat."
+    )
 }
 
 # =============================================================================
-#  9. the environment
+#  9. the environment, and the one question about VLC that counts
 # =============================================================================
 Write-Step "Building the Python environment"
+
+# Before anything touches .venv. On the deployment laptop the recorder is
+# running at this moment - that is what the autostart tasks are for - and it is
+# running out of .venv\Scripts\python.exe. uv would delete that folder, fail
+# partway through with "Access is denied", and leave behind something that is
+# neither a usable environment nor a recreatable one, so that every later run of
+# install.bat fails in the same way. Explained at length in scripts\_common.ps1.
+$halted = Stop-ProjectProcesses $root
+if ($halted.Stopped.Count -gt 0) {
+    Write-Info "Stopped what was running from this folder ($($halted.Stopped -join ', '))."
+    Write-Info "Recording starts again when the console opens at the end."
+}
+if ($halted.StillRunning.Count -gt 0) {
+    Write-Warn "Still running from this folder: $($halted.StillRunning -join ', ')."
+    Write-Warn "If the next step fails saying 'Access is denied', restart the laptop"
+    Write-Warn "and run install.bat again before anything else has started."
+}
+
 Write-Info "Fetching the libraries at the versions in uv.lock."
 Write-Info "This includes the detector stack, which is a large download."
 Write-Info "The first run takes several minutes; later runs are seconds."
+$vlcVerdict = 'unknown'
+$vlcDetail = ''
 Push-Location $root
 try {
     # --extra detect matters: a plain `uv sync` prunes anything not declared,
@@ -435,33 +766,125 @@ try {
     # that already had one that is the one it takes - quietly undoing step 8.
     $syncArgs = @('sync', '--extra', 'detect')
     if ($projectPython) { $syncArgs += @('--python', $projectPython) }
-    & uv @syncArgs | Out-Host
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-Logged $uvExe $syncArgs) -ne 0) {
         Write-Bad "uv sync failed. The output above says why."
-        exit 1
+        Add-Broken "the Python environment could not be built, so nothing runs at all" @(
+            "Check the internet connection and run install.bat again.",
+            "It continues from where it stopped."
+        )
+        Write-Host ""
+        Write-Summary
+        Stop-Installer 1
     }
 
-    uv run python -c "import cv2, pydantic, ultralytics" | Out-Host
-    if ($LASTEXITCODE -ne 0) {
+    $import = Invoke-Captured $uvExe @('run', '--frozen', '--no-sync', 'python', '-c',
+                                       'import cv2, pydantic, ultralytics; print("libraries ok")')
+    if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
+        foreach ($line in ($import.Err | Select-Object -Last 3)) { Write-Bad "  $line" }
         Write-Bad "The environment was built but the libraries do not import."
-        exit 1
+        Add-Broken "the libraries do not import, so the console cannot start" @(
+            "Delete the .venv folder and run install.bat again."
+        )
+        Write-Host ""
+        Write-Summary
+        Stop-Installer 1
     }
     Write-Ok "Environment ready."
+    Add-Good "the Python environment - the console and the recorder run"
+
+    # ------------------------------------------------------------------
+    #  The verdict on VLC
+    # ------------------------------------------------------------------
+    # This is the only test that settles it, which is why nothing before this
+    # point was allowed to conclude anything. A registry key with no working
+    # DLL is a false pass; a VLC in an unexpected place that Python loads
+    # perfectly well is a false failure. Both were being printed.
+    #
+    # It is the same line INSTALL.md tells the operator to type, on purpose, so
+    # that what they see by hand and what the installer says cannot disagree.
+    #
+    # Its stderr is captured rather than shown. libVLC prints one line per
+    # plugin - about fifty kilobytes of "stale plugins cache" - whenever its
+    # index is older than the plugins, and none of it means anything is wrong.
+    Write-Info "Asking Python whether it can draw the live picture."
+    $probe = Invoke-Captured $uvExe @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
+                                      "import vlc; vlc.Instance(); print('vlc ok')")
+    if (($probe.Code -eq 0) -and ($probe.Out -contains 'vlc ok')) {
+        $vlcVerdict = 'ok'
+        Write-Ok "Yes - Python loaded libVLC. The console will show the live picture."
+    } else {
+        $vlcDetail = ($probe.Err | Where-Object { $_ -and ($_ -notmatch 'stale plugins cache') } |
+                      Select-Object -Last 1)
+        $vlc = Get-VlcInstall
+        if ($vlc.Only32) { $vlcVerdict = '32bit' }
+        elseif ($vlc.Found) { $vlcVerdict = 'present-but-unusable' }
+        else { $vlcVerdict = 'missing' }
+        Write-Info "No - Python could not load libVLC. The rest of the system is unaffected."
+        if ($vlcDetail) { Write-Info "  $vlcDetail" }
+    }
 }
 finally { Pop-Location }
+
+switch ($vlcVerdict) {
+    'ok' {
+        Add-Good "VLC - Python loaded libVLC, so the console shows the live picture"
+    }
+    '32bit' {
+        # The failure that looks most like "VLC is missing" to somebody who can
+        # see VLC in their own Start menu. It gets its own sentence.
+        Add-Optional "VLC is installed, but it is the 32-bit build, which 64-bit Python cannot load" @(
+            "It is in $($vlc.Dir32). Everything except the live picture works.",
+            "Uninstall it from Add or remove programs, then install the 64-bit",
+            "Windows installer from https://www.videolan.org/vlc/ and run install.bat again."
+        )
+    }
+    'present-but-unusable' {
+        Add-Optional "VLC is installed in $($vlc.Dir), but Python could not load it" @(
+            $(if ($vlcDetail) { "Python said: $vlcDetail" } else { "Python gave no reason." }),
+            "Everything except the live picture works.",
+            "Reinstalling the 64-bit VLC from https://www.videolan.org/vlc/ usually fixes it."
+        )
+    }
+    'missing' {
+        Add-Optional "VLC is not installed, so the console shows no live picture" @(
+            "Everything else, recording included, works without it.",
+            "Install the 64-bit Windows installer from https://www.videolan.org/vlc/",
+            "and run install.bat again."
+        )
+    }
+    default {
+        Add-Optional "whether the live picture will work was not established" @(
+            "Type this in the VMD folder to find out:",
+            "  uv run --offline --frozen --no-sync python -c ""import vlc; vlc.Instance(); print('vlc ok')"""
+        )
+    }
+}
 
 # =============================================================================
 #  10. the single-file launcher
 # =============================================================================
 Write-Step "Building VMD.exe (the thing you double-click from now on)"
+$exePath = Join-Path $root 'VMD.exe'
+$builtExe = $false
 try {
     & (Join-Path $PSScriptRoot 'build_exe.ps1') | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "build failed" }
+    # Checked by looking for the file rather than by reading $LASTEXITCODE.
+    # build_exe.ps1 is a PowerShell script and reports failure by throwing, so
+    # $LASTEXITCODE after it is whatever the last program it happened to run
+    # left behind - which is not an answer to the question being asked.
+    $builtExe = Test-Path $exePath
 }
 catch {
+    Write-Info "Could not build VMD.exe: $($_.Exception.Message)"
+    $builtExe = Test-Path $exePath
+}
+if ($builtExe) {
+    Add-Good "VMD.exe - the icon to double-click"
+} else {
     # The exe is convenience, not function: VMD.bat starts the same console.
-    Write-Bad "Could not build VMD.exe: $($_.Exception.Message)"
-    Write-Info "Not a problem - double-click VMD.bat instead. It does the same thing."
+    Add-Optional "VMD.exe was not built" @(
+        "Not a problem - double-click VMD.bat instead. It does the same thing."
+    )
 }
 
 # =============================================================================
@@ -479,30 +902,38 @@ if ($NoAutostart) {
     try {
         & (Join-Path $PSScriptRoot 'autostart.ps1') -Install -Quiet | Out-Host
     } catch {
-        Write-Warn "Could not set up automatic starting: $($_.Exception.Message)"
-        Write-Info "Everything else works. Run autostart-on.bat to try again."
+        Write-Info "Could not set up automatic starting: $($_.Exception.Message)"
+    }
+    # Asked of Windows rather than assumed from the fact that the script
+    # returned. This is the step whose failure costs the most and shows the
+    # least: nothing looks wrong until the day the laptop restarts.
+    $tasks = @('VMD Recorder', 'VMD Console') | Where-Object {
+        Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
+    }
+    if ($tasks.Count -eq 2) {
+        Write-Ok "Both scheduled tasks are registered."
+        Add-Good "automatic start after a restart (VMD Recorder, VMD Console)"
+    } elseif ($tasks.Count -gt 0) {
+        Write-Bad "Only $($tasks -join ', ') was registered."
+        Add-Broken "the system will not fully come back after a restart" @(
+            "Double-click autostart-on.bat to try again."
+        )
+    } else {
+        Write-Bad "Neither scheduled task was registered."
+        Add-Broken "nothing will start after a restart, so a reboot stops the recording" @(
+            "Double-click autostart-on.bat to try again.",
+            "Until then, recording only runs while somebody has started the console."
+        )
     }
 }
 
 # =============================================================================
-#  12. start the console
+#  12. what happened, in three groups
 # =============================================================================
 Write-Step "Starting the console"
+Write-Summary
+Write-LogHint
 
-Write-Host ""
-if (-not $haveFfmpeg) {
-    # Not fatal: everything except recording still works, and saying so plainly
-    # beats failing the whole install over a component this run may not use.
-    Write-Host "  WARNING - ffmpeg is not installed, so nothing can be recorded." -ForegroundColor Yellow
-    Write-Host "  Install it and run this again before using the system for real." -ForegroundColor Yellow
-    Write-Host ""
-}
-if (-not $haveVlc) {
-    Write-Host "  WARNING - VLC is not installed, so the console shows no live picture." -ForegroundColor Yellow
-    Write-Host "  Everything else, recording included, works without it." -ForegroundColor Yellow
-    Write-Host ""
-}
-Write-Host "  Installed." -ForegroundColor Green
 Write-Host ""
 Write-Host "  From now on, to start the console:  double-click VMD.exe" -ForegroundColor White
 Write-Host "  (or VMD.bat - same thing)" -ForegroundColor Gray
@@ -522,15 +953,27 @@ Write-Host "  Tests:              uv run pytest" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  For a laptop with no internet, run offline-kit.bat next." -ForegroundColor Gray
 
+# The transcript is closed before the console starts, and deliberately so: the
+# console is a long-running program with a camera address and a password in it,
+# and leaving a recorder running over the top of it would put whatever it prints
+# into a file whose whole purpose is that it can be sent to somebody else.
+Stop-VmdTranscript $root | Out-Null
+
 if ($NoLaunch) { exit 0 }
 
 # Hand over to the console itself. It stays running, so this window becomes the
 # console's window rather than a second one.
-$exe = Join-Path $root 'VMD.exe'
-if (Test-Path $exe) { & $exe }
+if (Test-Path $exePath) { & $exePath }
 else {
     Push-Location $root
-    try { uv run python -m vmd.desktop }
+    try { & $uvExe run --offline --frozen --no-sync python -m vmd.desktop }
     finally { Pop-Location }
 }
 exit 0
+
+}
+finally {
+    # A crash still leaves a readable file. This is the second call on every
+    # ordinary path and does nothing then.
+    Stop-VmdTranscript $root | Out-Null
+}
