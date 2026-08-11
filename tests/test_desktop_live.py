@@ -7,7 +7,7 @@ import sqlite3
 
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
 from vmd.desktop.live import LiveTab
 from vmd.desktop.style import PALETTE
@@ -85,7 +85,7 @@ def movement(
     )
 
 
-def build(qtbot, *names: str, events=None):
+def build(qtbot, *names: str, events=None, register: bool = True):
     ptz = FakePtz()
     panes: dict[str, FakeVideoPane] = {}
 
@@ -99,7 +99,10 @@ def build(qtbot, *names: str, events=None):
         local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
         events=events,
     )
-    qtbot.addWidget(tab)
+    # A tab that is about to be given to a parent widget is left unregistered:
+    # qtbot would then close and delete it twice over.
+    if register:
+        qtbot.addWidget(tab)
     tab.apply(settings_with(*names))
     return tab, ptz, panes
 
@@ -234,6 +237,38 @@ def test_losing_focus_stops_the_camera(qtbot) -> None:
 
     # And the key it never saw released is forgotten, so the next press is a
     # fresh movement rather than a diagonal with a ghost.
+    qtbot.keyPress(tab, Qt.Key.Key_Up)
+    assert ptz.commands[-1] == ("move", 0.0, 0.5, 0.0)
+
+
+def test_switching_tabs_stops_a_camera_a_child_widget_started_moving(qtbot) -> None:
+    """The hazard, in the order it actually happens.
+
+    The operator clicks the movement list (or the Acknowledge button), then
+    holds an arrow. The key event travels up to the tab unhandled, so the head
+    moves - but the tab itself does not hold the focus. Switching to Settings
+    therefore delivers no focusOut, and nothing will ever deliver the key
+    release either: the head keeps slewing until it hits its stop while the
+    operator is looking at another tab.
+    """
+    tab, ptz, _ = build(qtbot, "thermal", register=False)
+    tabs = QTabWidget()
+    tabs.addTab(tab, "Live")
+    tabs.addTab(QWidget(), "Settings")
+    qtbot.addWidget(tabs)
+
+    tab._movement.setFocus()
+    QApplication.instance().sendEvent(
+        tab, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+    )
+    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+
+    tabs.setCurrentIndex(1)
+
+    assert ptz.commands[-1] == ("stop",), "the head was left slewing on another tab"
+    # And the key it never saw released is forgotten, so coming back to the tab
+    # does not start with a ghost held down.
+    tabs.setCurrentIndex(0)
     qtbot.keyPress(tab, Qt.Key.Key_Up)
     assert ptz.commands[-1] == ("move", 0.0, 0.5, 0.0)
 

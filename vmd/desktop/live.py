@@ -587,3 +587,18 @@ class LiveTab(QWidget):
         not an inconvenience."""
         self.stop_steering()
         super().focusOutEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """The same rule, for the tab going away rather than the focus.
+
+        `focusOutEvent` only fires when this widget is the one holding focus. An
+        arrow key still steers when the focus is on a child - the movement list,
+        the Acknowledge button - because the key event travels up to this tab
+        unhandled. Switching to Settings then hides the tab without ever taking
+        focus off that child, so no focusOut arrives, and neither does the key
+        release: the head slews until it reaches its stop, with the operator
+        looking at a different tab. Hiding covers the tab switch, the minimise
+        and the close alike.
+        """
+        self.stop_steering()
+        super().hideEvent(event)
