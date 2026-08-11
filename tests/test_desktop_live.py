@@ -88,12 +88,55 @@ def movement(
     )
 
 
-def build(qtbot, *names: str, events=None, register: bool = True, clock=None):
-    ptz = FakePtz()
-    panes: dict[str, FakeVideoPane] = {}
+class WidgetPane(QWidget):
+    """A pane that is a real widget and asks for a window handle, as the libVLC
+    one does.
 
-    def make_pane(name: str) -> FakeVideoPane:
-        panes[name] = FakeVideoPane()
+    The steering is filtered off the pane now, so a test that wants to drag on a
+    picture needs something a mouse event can actually be sent to - and the one
+    thing that matters about `VlcVideoPane` here is the call to `winId()`, which
+    is what turns every widget on the tab into a native window.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.url: str | None = None
+        self.restarts = 0
+        self.at_seconds = 0.0
+        self._state = "stopped"
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def show(self, url: str, at_seconds: float = 0.0) -> None:  # noqa: A003
+        if self.url is not None:
+            self.restarts += 1
+        self.url = url
+        self.at_seconds = float(at_seconds)
+        self._state = "connecting"
+        # What `VlcVideoPane._attach_surface` does, and the whole reason the
+        # steering may not be a widget laid over this one.
+        self.attach()
+
+    def attach(self) -> int:
+        return int(self.winId())
+
+    def stop(self) -> None:
+        self.url = None
+        self._state = "stopped"
+
+    def pretend_playing(self) -> None:
+        self._state = "playing"
+
+
+def build(qtbot, *names: str, events=None, register: bool = True, clock=None, pane=None):
+    ptz = FakePtz()
+    panes: dict = {}
+    make = pane or FakeVideoPane
+
+    def make_pane(name: str):
+        panes[name] = make()
         return panes[name]
 
     tab = LiveTab(
@@ -718,41 +761,108 @@ def test_a_stop_still_gets_through_after_the_command_thread_has_died(qtbot) -> N
     assert ptz.commands[-1] == ("stop",)
 
 
-# ---------------------------------------------------------------- the overlay
+# ------------------------------------------------- steering from the picture
+#
+# There is no widget over the video any more. A drag on the picture itself is
+# what steers, so these send their mouse events to the pane.
 
 
 def test_dragging_near_the_right_edge_pans_right_and_release_stops(qtbot) -> None:
-    tab, ptz, _ = build(qtbot, "thermal")
-    overlay = tab.overlay
-    overlay.resize(200, 100)
+    tab, ptz, panes = build(qtbot, "thermal", pane=WidgetPane)
+    picture = panes["thermal"]
+    picture.resize(200, 100)
 
-    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
+    qtbot.mousePress(picture, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
     assert sent(tab, ptz)[-1][0] == "move"
     assert sent(tab, ptz)[-1][1] > 0.0
 
-    qtbot.mouseMove(overlay, QPoint(190, 50))
+    qtbot.mouseMove(picture, QPoint(190, 50))
     assert sent(tab, ptz)[-1][1] > 0.0
 
-    qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(190, 50))
+    qtbot.mouseRelease(picture, Qt.MouseButton.LeftButton, pos=QPoint(190, 50))
     assert sent(tab, ptz)[-1] == ("stop",)
 
 
 def test_the_pointer_does_not_steer_unless_a_button_is_held(qtbot) -> None:
-    tab, ptz, _ = build(qtbot, "thermal")
-    overlay = tab.overlay
-    overlay.resize(200, 100)
-    qtbot.mouseMove(overlay, QPoint(198, 50))
+    tab, ptz, panes = build(qtbot, "thermal", pane=WidgetPane)
+    picture = panes["thermal"]
+    picture.resize(200, 100)
+    qtbot.mouseMove(picture, QPoint(198, 50))
     assert sent(tab, ptz) == []
 
 
-def test_the_pointer_leaving_the_overlay_stops_the_camera(qtbot) -> None:
-    tab, ptz, _ = build(qtbot, "thermal")
-    overlay = tab.overlay
-    overlay.resize(200, 100)
-    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
+def test_the_pointer_leaving_the_picture_stops_the_camera(qtbot) -> None:
+    tab, ptz, panes = build(qtbot, "thermal", pane=WidgetPane)
+    picture = panes["thermal"]
+    picture.resize(200, 100)
+    qtbot.mousePress(picture, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
     assert sent(tab, ptz)[-1][0] == "move"
-    QApplication.instance().sendEvent(overlay, QEvent(QEvent.Type.Leave))
+    QApplication.instance().sendEvent(picture, QEvent(QEvent.Type.Leave))
     assert sent(tab, ptz)[-1] == ("stop",)
+
+
+def test_dragging_the_second_picture_steers_by_where_it_is_in_that_picture(qtbot) -> None:
+    """Each picture is its own frame. Near the right edge of the visible view
+    means the same thing as near the right edge of the thermal one - it used to
+    be measured across the whole wall, where the right edge of the left-hand
+    picture was the middle and steered nothing."""
+    tab, ptz, panes = build(qtbot, "thermal", "visible", pane=WidgetPane)
+    picture = panes["visible"]
+    picture.resize(200, 100)
+
+    qtbot.mousePress(picture, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
+    assert sent(tab, ptz)[-1][0] == "move"
+    assert sent(tab, ptz)[-1][1] > 0.0
+    qtbot.mouseRelease(picture, Qt.MouseButton.LeftButton, pos=QPoint(198, 50))
+
+
+def test_nothing_is_laid_over_the_pictures(qtbot) -> None:
+    """The bug this whole arrangement exists to prevent, asserted structurally.
+
+    `VlcVideoPane` asks for a window handle so libVLC has something to draw
+    into. Qt answers by making every widget on this tab a native window of its
+    own - measured: the steering overlay's `internalWinId()` was 0 before a pane
+    asked and non-zero afterwards. A native window is its own surface in the
+    stacking order, so anything overlapping a picture can hide it outright,
+    while the pane goes on counting frames and reporting `playing` in green.
+
+    So the rule is not "the thing over the video must be transparent" - it is
+    that there is nothing over the video. Ancestors are exempt: a pane is inside
+    its frame, its splitter and this tab by construction.
+    """
+    tab, _, panes = build(qtbot, "thermal", "visible", pane=WidgetPane)
+    tab.resize(900, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    for picture in panes.values():
+        assert picture.attach(), "the pane never asked for a window handle"
+
+    def ancestors(widget) -> set:
+        seen = set()
+        parent = widget.parentWidget()
+        while parent is not None:
+            seen.add(parent)
+            parent = parent.parentWidget()
+        return seen
+
+    covered: list[str] = []
+    for name, picture in panes.items():
+        if not picture.isVisible():
+            continue
+        above = ancestors(picture)
+        for other in tab.findChildren(QWidget):
+            if other is picture or other in above or not other.isVisible():
+                continue
+            if other in ancestors(picture) or picture in ancestors(other):
+                continue
+            here = picture.rect().translated(picture.mapToGlobal(QPoint(0, 0)))
+            there = other.rect().translated(other.mapToGlobal(QPoint(0, 0)))
+            if here.intersects(there):
+                covered.append(
+                    f"{type(other).__name__}({other.objectName() or 'unnamed'}) "
+                    f"covers {name}; its own window is {other.internalWinId()}"
+                )
+    assert not covered, covered
 
 
 # ------------------------------------------------------------- state on screen

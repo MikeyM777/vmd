@@ -374,60 +374,44 @@ class ViewChooser(QWidget):
             )
 
 
-class SteeringOverlay(QWidget):
-    """A transparent sheet over the video wall that steers on drag.
-
-    It carries no picture of its own; libVLC draws underneath it. Pressing near
-    an edge slews towards that edge, faster the closer to the edge you are, and
-    letting go stops. It tracks the button itself rather than reading
-    `event.buttons()` so that a move event delivered without button state - as
-    Qt does for synthetic moves - cannot be mistaken for a drag.
-    """
-
-    def __init__(self, tab: "LiveTab", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._tab = tab
-        self._pressed = False
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAutoFillBackground(False)
-        self.setStyleSheet("background: transparent;")
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setMouseTracking(True)
-
-    def _fraction(self, event: QMouseEvent) -> tuple[float, float]:
-        position = event.position()
-        width = max(self.width(), 1)
-        height = max(self.height(), 1)
-        return (position.x() / width, position.y() / height)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        self._pressed = True
-        x, y = self._fraction(event)
-        self._tab.pointer_at(x, y, True)
-        event.accept()
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if not self._pressed:
-            event.ignore()
-            return
-        x, y = self._fraction(event)
-        self._tab.pointer_at(x, y, True)
-        event.accept()
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        self._pressed = False
-        x, y = self._fraction(event)
-        self._tab.pointer_at(x, y, False)
-        event.accept()
-
-    def leaveEvent(self, event: QEvent) -> None:
-        """The pointer left the picture. Whatever it was steering, stop: a slew
-        that outlives the gesture that started it is how a head ends up against
-        its stop."""
-        if self._pressed:
-            self._pressed = False
-            self._tab.pointer_at(0.5, 0.5, False)
-        super().leaveEvent(event)
+# Steering is read from the pictures themselves. Nothing is laid over them.
+#
+# There used to be a transparent widget - `SteeringOverlay` - covering the whole
+# video wall to catch drags near the edges of the picture. It was removed
+# because of what Qt does with native windows, and it must not come back in any
+# form.
+#
+# `VlcVideoPane._attach_surface` calls `winId()` to get an HWND for libVLC. In
+# Qt, `createWinId()` walks up to the top level and then back down over *every*
+# child of every widget on that path, so the moment one pane asks for a handle
+# every widget on this tab becomes a real window of its own. Measured here:
+# before the call the overlay's `internalWinId()` is 0, and after it the
+# overlay, the splitter, the frames, the view chooser and the alarm strip all
+# have one.
+#
+# A native child window is its own surface in the stacking order, and the
+# overlay was explicitly `raise_()`d above the splitter holding the panes.
+# Whether it then hides the video is not something this code gets to decide - it
+# depends on the graphics driver and the compositor. On the machine this was
+# written on it does not: the video comes through, measured at a blankness of 62
+# with the overlay up and 62 with it hidden, because the overlay carried
+# `WA_NoSystemBackground` and so nothing ever erased what libVLC had drawn. That
+# is not a guarantee, it is a coincidence of two things that were never
+# connected on purpose, and the failure it produces when the coincidence stops
+# holding is the worst one this console has: the stream is fine, the frames are
+# counted, the pane says `playing` in green, and the operator is looking at a
+# black rectangle.
+#
+# So there is no widget over the pictures at all, and `LiveTab` filters the
+# panes' own mouse events instead. That needs libVLC to give the pointer back -
+# it makes a child window inside the HWND it is handed, and that window owns
+# every point of the picture - which `VlcVideoPane` now asks for; see
+# `_leave_the_pointer_to_qt`, where the measurement is written down.
+#
+# What this costs: the splitter handle between two pictures, and the name plate
+# above each one, are not part of any pane, so a drag begun on one of them does
+# not steer. That is a few pixels of dead ground between the pictures, and it is
+# the right trade - the alternative is the black rectangle above.
 
 
 class _LinkInWordsHeCanUse:
@@ -599,6 +583,12 @@ class LiveTab(QWidget):
         # is doing work for nothing.
         self.rebuilds = 0
         self._held: set[str] = set()
+        # The pictures whose drags steer, and whether a button is down on one.
+        # A set of widgets rather than a walk over `_panes`, because what is
+        # filtered has to be the exact object the event arrived on and a pane is
+        # not always a widget.
+        self._steered: set[QWidget] = set()
+        self._pressed = False
         self._fine = False
         self._zoom = 0.0
         # Starts at rest rather than unknown, so that losing focus before
@@ -616,9 +606,9 @@ class LiveTab(QWidget):
         layout.setSpacing(SPACE_STEP)
         outer.addLayout(layout, 1)
 
-        # The splitter cannot hold the overlay: it turns every child widget into
-        # a pane. So the wall lives in a plain container, and the overlay is a
-        # sibling of the splitter kept at the container's full size.
+        # The wall lives in a plain container so that hiding every picture at
+        # once - the case where the camera has no views - is one widget rather
+        # than a walk over the splitter's children.
         self._wall_area = QWidget()
         wall_layout = QVBoxLayout(self._wall_area)
         wall_layout.setContentsMargins(0, 0, 0, 0)
@@ -627,17 +617,14 @@ class LiveTab(QWidget):
         # two near-black pictures is both invisible and unusable.
         self._wall.setHandleWidth(SPACE_SNUG)
         wall_layout.addWidget(self._wall)
-        self.overlay = SteeringOverlay(self, self._wall_area)
-        self.overlay.setGeometry(self._wall_area.rect())
-        self.overlay.raise_()
-        self._wall_area.installEventFilter(self)
 
         # The alarm strip belongs to the pictures, so it lives in their column
         # and not across the whole tab. Below them, which is DESIGN.md's rule -
         # an alarm is the moment the picture matters most, and the notice about
         # it may neither cover the picture nor push it down the screen. Outside
-        # the wall area rather than inside it, because the steering overlay
-        # covers everything in there and would swallow the Acknowledge button.
+        # the wall area rather than inside it: nothing at all goes over the
+        # pictures now, and a strip that overlapped one would be the same bug
+        # the steering overlay was removed for.
         pictures = QVBoxLayout()
         pictures.setContentsMargins(0, 0, 0, 0)
         pictures.setSpacing(SPACE_SNUG)
@@ -781,10 +768,64 @@ class LiveTab(QWidget):
         return cut
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self._wall_area and event.type() == QEvent.Type.Resize:
-            self.overlay.setGeometry(self._wall_area.rect())
-            self.overlay.raise_()
+        """Steer from a drag on a picture, without a widget over the picture.
+
+        Filtered rather than subclassed because the pane is whatever the console
+        was given - a libVLC widget, a label saying there is no video, or a fake
+        in a test - and none of them is this tab's to redefine.
+
+        The button is tracked here rather than read from `event.buttons()`,
+        exactly as the overlay did: Qt delivers synthetic move events with no
+        button state, and one of those must not be mistaken for a drag.
+        """
+        if watched not in self._steered:
+            return super().eventFilter(watched, event)
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            self._pressed = True
+            x, y = self._where(watched, event)
+            self.pointer_at(x, y, True)
+            return True
+        if kind == QEvent.Type.MouseMove:
+            if not self._pressed:
+                return False
+            x, y = self._where(watched, event)
+            self.pointer_at(x, y, True)
+            return True
+        if kind == QEvent.Type.MouseButtonRelease:
+            self._pressed = False
+            x, y = self._where(watched, event)
+            self.pointer_at(x, y, False)
+            return True
+        if kind == QEvent.Type.Leave and self._pressed:
+            # The pointer left the picture. Whatever it was steering, stop: a
+            # slew that outlives the gesture that started it is how a head ends
+            # up against its stop.
+            self._pressed = False
+            self.pointer_at(0.5, 0.5, False)
+            return False
         return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _where(pane: QObject, event: QMouseEvent) -> tuple[float, float]:
+        """Where in this picture the pointer is, as two fractions."""
+        position = event.position()
+        width = max(pane.width(), 1)
+        height = max(pane.height(), 1)
+        return (position.x() / width, position.y() / height)
+
+    def _steer_from(self, pane) -> None:
+        """Take this pane's drags as steering, if it is a widget at all.
+
+        A `FakeVideoPane` is not a QWidget and a console can be handed one; so
+        can `BrokenPane`, which is a label and perfectly able to be dragged on.
+        Whatever it is, nothing is laid over it.
+        """
+        if not isinstance(pane, QWidget):
+            return
+        pane.installEventFilter(self)
+        pane.setCursor(Qt.CursorShape.CrossCursor)
+        self._steered.add(pane)
 
     # ------------------------------------------------------------ what moved
 
@@ -1077,6 +1118,11 @@ class LiveTab(QWidget):
             if isinstance(pane, QWidget):
                 pane.setParent(None)
         self._panes.clear()
+        # Emptied with the panes it names. Holding a widget that has been let go
+        # of is a lookup against a deleted C++ object the next time a mouse moves
+        # over anything, which is a raised RuntimeError inside an event filter.
+        self._steered.clear()
+        self._pressed = False
         self._status.clear()
         # What each stream had climbed to, and what it was pointed at, before
         # this Save. Carried across below for any stream the Save did not
@@ -1139,6 +1185,10 @@ class LiveTab(QWidget):
             frame_layout.addWidget(label)
             if isinstance(pane, QWidget):
                 frame_layout.addWidget(pane, 1)
+            # The drags on this picture steer the camera. Filtered off the pane
+            # itself: nothing may be laid over it, for the reason written at the
+            # top of this file.
+            self._steer_from(pane)
             self._frames[stream.name] = frame
             self._wall.addWidget(frame)
             self._set_status(stream.name, "stopped")
@@ -1151,7 +1201,6 @@ class LiveTab(QWidget):
         self._apply_view(force=True)
         # An alarm raised before the streams changed is still unacknowledged.
         self._outline(self._alarm_stream)
-        self.overlay.raise_()
         # A saved budget or a saved folder changes what the storage lines say
         # about the reading already taken, and a saved radio address changes
         # what the link panel is describing, so redraw both now rather than at
@@ -1224,7 +1273,6 @@ class LiveTab(QWidget):
                 self._set_status(name, "stopped")
         self._no_views.setVisible(not self._frames)
         self._wall_area.setVisible(bool(self._frames))
-        self.overlay.raise_()
 
     def refresh(self) -> None:
         """Read every pane's state. Restart only what has actually failed.

@@ -268,6 +268,37 @@ class VlcVideoPane(QWidget):
             self._player.set_hwnd(handle)
         else:  # pragma: no cover - not the deployment platform
             self._player.set_xwindow(handle)
+        self._leave_the_pointer_to_qt()
+
+    def _leave_the_pointer_to_qt(self) -> None:
+        """Stop libVLC from taking the mouse and the keyboard off this widget.
+
+        Handed an HWND, libVLC does not draw into it: it creates a child window
+        of its own inside it - class name `VLC video output ...` - and that
+        window sits above the Qt widget and owns every point of the picture.
+        Measured with `WindowFromPoint` over a playing pane: by default the
+        window under the pointer is libVLC's, so no mouse event over the video
+        ever reaches Qt at all. That is why the steering used to need a
+        transparent widget laid over the whole wall to catch drags.
+
+        With mouse input given back, the same measurement returns the pane's own
+        Qt window, and an event filter on the pane sees the drags directly. The
+        keyboard goes back for the same reason and a second one: libVLC's own
+        shortcuts are bound to keys this console steers with, and a camera that
+        slews because VLC also thought the arrow key was for it is a hazard.
+
+        Guarded rather than assumed: the tests drive this class with stub
+        players, and a pane that refuses to show a picture because a stub has no
+        opinion about the mouse is a worse failure than a stub that never
+        answers the question.
+        """
+        for question, answer in (
+            ("video_set_mouse_input", False),
+            ("video_set_key_input", False),
+        ):
+            act = getattr(self._player, question, None)
+            if act is not None:
+                act(answer)
 
     def _sample(self) -> None:
         """Count decoded frames. This is the only truth about whether a picture
