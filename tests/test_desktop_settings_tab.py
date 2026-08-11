@@ -107,9 +107,13 @@ def test_the_streams_on_screen_are_the_streams_from_the_file(qtbot, tmp_path: Pa
         )
     )
     tab, _ = build(qtbot, tmp_path, settings)
+    # Both come back as used. There is no longer a switch for "use this view" -
+    # a line on this list IS a view in use - so a file that had one switched off
+    # is adopted rather than left in a state the operator cannot reach. The
+    # reader, which is also off the screen now, is carried across untouched.
     assert tab.streams() == [
         ("IR-ch2", "rtsp://10.0.0.2/ch2", True, "auto"),
-        ("day", "rtsp://10.0.0.2/ch0", False, "ffmpeg"),
+        ("day", "rtsp://10.0.0.2/ch0", True, "ffmpeg"),
     ]
     assert [row.name_field.text() for row in tab.stream_rows()] == ["IR-ch2", "day"]
 
@@ -121,62 +125,78 @@ def test_a_stream_added_in_the_window_is_the_stream_that_is_saved(qtbot, tmp_pat
     row = tab.stream_rows()[-1]
     qtbot.keyClicks(row.name_field, "IR-ch2")
     qtbot.keyClicks(row.url_field, "rtsp://10.0.0.2/ch2")
-    row.reader_field.setCurrentText("ffmpeg")
 
-    assert tab.streams() == [("IR-ch2", "rtsp://10.0.0.2/ch2", True, "ffmpeg")]
+    assert tab.streams() == [("IR-ch2", "rtsp://10.0.0.2/ch2", True, "auto")]
     assert tab.save() is True
 
     stored = load_settings(path).camera.streams
     assert [(s.name, s.url, s.enabled, s.reader) for s in stored] == [
-        ("IR-ch2", "rtsp://10.0.0.2/ch2", True, "ffmpeg")
+        ("IR-ch2", "rtsp://10.0.0.2/ch2", True, "auto")
     ]
 
 
-def test_the_tick_that_switches_a_view_off_does_not_call_itself_record(
-    qtbot, tmp_path: Path
-) -> None:
-    """The label said `record`. The setting is `enabled`, and it governs whether
-    the view exists at all - whether go2rtc pulls it, whether a pane shows it,
-    whether it is in the view chooser. The owner turned it off for the visible
-    camera, found the chooser offering only All and thermal, and asked why there
-    was no visible option: the chooser was right and the label had lied to him.
+def test_there_is_no_switch_for_whether_a_view_is_used(qtbot, tmp_path: Path) -> None:
+    """`Use this view` is gone, and the operator's own words are the argument:
+    "of course use that view, if it's added".
+
+    It replaces the older test that policed what that tick was CALLED. Adding a
+    camera view and then forgetting to tick a box beside it is a trap with no
+    upside: the reward for getting it right is the state you were already in, and
+    the punishment for missing it is a camera that is silently not watched. So
+    the answer is not a better label, it is no control at all - a line on the
+    list is a view in use, and the way to stop using one is to remove its line.
     """
-    tab, _ = build(qtbot, tmp_path)
+    tab, path = build(qtbot, tmp_path)
     tab.set_streams([("thermal", "rtsp://a/1", True, "auto")])
     row = tab.stream_rows()[0]
-    words = (row.record_field.text() + " " + row.record_field.toolTip()).lower()
-    assert row.record_field.text().strip()
-    assert "record" not in row.record_field.text().lower(), (
-        "recording is one of the things it governs, not what it is"
-    )
-    # And it says what switching it off actually costs, in the three places the
-    # operator would notice: the picture, the disk, and the watching.
-    for consequence in ("live", "record", "movement"):
-        assert consequence in words, words
-    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
-    assert not any(word in words for word in banned), words
+    assert not hasattr(row, "record_field"), "the tick is back"
+    assert tab.save() is True
+    assert load_settings(path).camera.streams[0].enabled is True
 
 
-def test_the_form_says_what_becomes_of_a_view_that_is_switched_off(
+def test_the_streams_box_says_that_a_line_on_it_is_a_view_in_use(
     qtbot, tmp_path: Path
 ) -> None:
-    """On the form itself, not in a tooltip only: an operator who unticks one
-    and finds it gone from the Live tab has to be able to work out why without
-    asking anyone."""
+    """On the form itself, not in a tooltip only. The sentence used to explain
+    the tick; with the tick gone it has to explain what replaced it, which is
+    the rule that a line here is a view that is used."""
     tab, _ = build(qtbot, tmp_path)
     said = tab.streams_help.text().lower()
     assert said.strip()
-    assert "live" in said
+    assert "remove" in said, said
+    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
+    assert not any(word in said for word in banned), said
 
 
-def test_unticking_record_is_saved_rather_than_deleting_the_stream(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path)
-    tab.set_streams([("thermal", "rtsp://a/1", True, "auto")])
-    tab.stream_rows()[0].record_field.setChecked(False)
+def test_a_view_switched_off_in_an_old_file_comes_back_on_and_the_form_says_so(
+    qtbot, tmp_path: Path
+) -> None:
+    """The decision about `enabled: false` in a file written before this change.
+
+    Leaving it off would be a setting with no control anywhere in the console -
+    a camera view the operator can see on the form, cannot switch back on, and
+    is given no reason for. So it is adopted: the row is a view in use, like
+    every other row. Adopting it silently would be the mirror mistake, so the
+    message line names the view and says what happens at the next Save, and
+    points at Remove for the operator who really did mean it off.
+    """
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://a/1", enabled=True),
+                StreamSettings(name="day", url="rtsp://a/2", enabled=False),
+            ],
+        )
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+
+    assert "day" in tab.message, tab.message
+    assert "thermal" not in tab.message, "only the one that was off is named"
+    assert "remove" in tab.message.lower(), tab.message
+
     assert tab.save() is True
-
-    stored = load_settings(path).camera.streams
-    assert len(stored) == 1 and stored[0].enabled is False
+    assert [s.enabled for s in load_settings(path).camera.streams] == [True, True]
 
 
 def test_removing_a_row_removes_that_stream_and_leaves_the_rest(qtbot, tmp_path: Path) -> None:
@@ -848,12 +868,14 @@ def test_nothing_on_a_stream_row_is_cut_in_half_inside_the_column(
     tab = SettingsTab(settings_path=tmp_path / "settings.json")
     qtbot.addWidget(tab)
     tab.load()
-    tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
+    row = tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
+    # The detection controls only exist once he has asked for them, and the
+    # question here is whether they fit when they do.
+    row.detect_field.setChecked(True)
     tab.show()
     tab.setGeometry(0, 0, FORM_MAX_WIDTH, 900)
     QApplication.processEvents()
 
-    row = tab.stream_rows()[-1]
     cut = [
         control.text()
         for control in (
@@ -900,6 +922,7 @@ def test_no_button_on_a_stream_row_is_clipped_by_its_own_label(
     tab.setStyleSheet(stylesheet())
     tab.load()
     row = tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
+    row.detect_field.setChecked(True)
     row.details_button.setChecked(True)
     tab.show()
     tab.setGeometry(0, 0, FORM_MAX_WIDTH, 1400)
@@ -1053,3 +1076,339 @@ def test_the_link_switch_says_what_it_does_in_plain_words(qtbot, tmp_path: Path)
     # No units, no acronyms and no protocol names on the face of it.
     for jargon in ("onvif", "kbps", "kb/s", "bitrate", "airtime", "encoder", "airos"):
         assert jargon not in tab.link_auto_field.text().lower(), tab.link_auto_field.text()
+
+
+# ------------------------------------------------- the tab he can actually use
+#
+# He went through this tab and could not read half of it: "'Watch for movement' -
+# what is that?", "'Use this view' is useless, of course use that view, if it's
+# added", "what is the difference between auto and ffmpeg?", "'Name what moved' -
+# what is that?", "'Skyline and ignore...' - what is that?". Everything below is
+# one of those sentences turned into something that can fail.
+
+JARGON = ("yolo", "cnn", "classifier", "inference", "model", "sensor", "pixel")
+
+
+def test_the_reader_choice_is_off_the_screen_but_not_out_of_the_file(
+    qtbot, tmp_path: Path
+) -> None:
+    """"What is the difference between auto and ffmpeg?" - and there is no answer
+    he could act on, because the honest one is "try the other if the picture will
+    not come up". A question the operator cannot answer does not belong on the
+    page he has to get through to set the camera up.
+
+    Off the screen, not out of the settings: a stream whose file says `ffmpeg`
+    still reads with ffmpeg after a load and a save, because a camera that only
+    works one way must not be quietly switched to the other by a form that no
+    longer shows the choice.
+    """
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="day", url="rtsp://10.0.0.2/ch0", reader="ffmpeg")
+            ],
+        )
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+    row = tab.stream_rows()[0]
+    assert not hasattr(row, "reader_field"), "the choice is back on the screen"
+    assert tab.save() is True
+    assert load_settings(path).camera.streams[0].reader == "ffmpeg"
+
+
+def test_the_detection_controls_are_out_of_sight_until_he_asks_for_them(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Too much going on." Seven controls per camera view, six of which mean
+    nothing until the first one is switched on.
+
+    Folded away, never deleted: he has said he wants to test movement detection
+    in the next days, so every one of these has to be there the moment he ticks
+    the box.
+    """
+    tab, _ = build(qtbot, tmp_path, _watched())
+    tab.show()
+    QApplication.processEvents()
+    row = tab.stream_rows()[0]
+
+    hidden = (
+        row.thermal_field,
+        row.classify_field,
+        row.sensitivity_field,
+        row.details_button,
+    )
+    assert row.detect_field.isVisible(), "the one switch that stays has gone too"
+    for control in hidden:
+        assert not control.isVisible(), f"{control} is on screen with watching off"
+
+    row.detect_field.setChecked(True)
+    QApplication.processEvents()
+    for control in hidden:
+        assert control.isVisible(), f"{control} did not come back"
+
+    row.detect_field.setChecked(False)
+    QApplication.processEvents()
+    for control in hidden:
+        assert not control.isVisible(), f"{control} stayed out"
+
+
+def test_folding_the_detection_controls_away_does_not_forget_them(
+    qtbot, tmp_path: Path
+) -> None:
+    """Hidden is not off. A choice he made and then folded away is still the
+    choice that gets saved."""
+    tab, path = build(
+        qtbot, tmp_path, _watched(detect=True, thermal=True, sensitivity="high")
+    )
+    row = tab.stream_rows()[0]
+    row.detect_field.setChecked(False)
+    assert tab.save() is True
+
+    stored = load_settings(path).camera.streams[0]
+    assert stored.detect is False
+    assert stored.thermal is True, "the heat flag was lost when the box folded"
+    assert stored.sensitivity == "high"
+
+
+def test_the_switch_for_watching_says_on_the_form_what_watching_does(
+    qtbot, tmp_path: Path
+) -> None:
+    """"'Watch for movement' - what is that?" - asked by the person the label was
+    written for. The name survives; what was missing is the sentence under it
+    saying what actually happens when it is on."""
+    tab, _ = build(qtbot, tmp_path, _watched())
+    row = tab.stream_rows()[0]
+    assert row.detect_field.text() == "Watch for movement"
+    said = row.detect_help.text().lower()
+    assert said.strip(), "the switch still explains itself only on hover"
+    assert "move" in said, said
+    # The two things he would actually notice: a line in the movement list, and
+    # the red strip across the pictures.
+    assert "strip" in said or "red" in said, said
+    assert not any(word in said for word in JARGON), said
+
+
+def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path) -> None:
+    """"'Name what moved' - what is that?" It reads as an instruction to the
+    operator - go and name it - rather than as something the software attempts.
+    """
+    tab, _ = build(qtbot, tmp_path, _watched())
+    row = tab.stream_rows()[0]
+    assert row.classify_label.text().rstrip(":") == "Try to say what it was"
+    said = row.classify_help.text().lower()
+    assert said.strip()
+    # The three things it might say, so the words themselves say what "it" is.
+    for example in ("person", "vehicle", "animal"):
+        assert example in said, said
+    # And the two things about it that matter more than the guess: it is a guess,
+    # and it never decides whether anything is recorded or reported.
+    assert "guess" in said, said
+    assert "record" in said, said
+    assert not any(word in said for word in JARGON), said
+
+
+def test_the_ignore_control_says_it_is_about_parts_of_the_picture(
+    qtbot, tmp_path: Path
+) -> None:
+    """"'Skyline and ignore...' - what is that?" Two nouns from the source code
+    joined by an "and", naming neither what it is for nor what it acts on."""
+    tab, _ = build(qtbot, tmp_path, _watched())
+    row = tab.stream_rows()[0]
+    assert row.details_button.text() == "Ignore parts of the picture"
+    said = row.details_help.text().lower()
+    assert said.strip()
+    for example in ("sky", "road", "tree"):
+        assert example in said, said
+    assert "wind" in said, said
+    assert "not" in said and "report" in said, said
+    assert not any(word in said for word in JARGON), said
+
+
+def test_the_camera_tools_box_says_it_is_for_checking_the_camera(
+    qtbot, tmp_path: Path
+) -> None:
+    """"The camera - is it relevant anymore?" It is: on a machine with no
+    terminal it is the only way to find out whether the camera answers at all.
+    What it was missing is a title saying that, next to a box already called
+    Camera one screen above."""
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.tools_box.title() == "Check the camera"
+
+
+# ---------------------------------------------------------------- the storage
+#
+# "I want a button that scans the PC storage situation and then automatically
+# adjusts the parameters like the budget, delete older than and so on. Make it
+# nicer and easier, like a slider for the budget. If the user wants, he can edit."
+
+
+def a_drive(total_gb: float, free_gb: float):
+    """A drive of a stated size, in the shape shutil.disk_usage answers in."""
+    from types import SimpleNamespace
+
+    total = int(total_gb * 1024**3)
+    free = int(free_gb * 1024**3)
+    return lambda path: SimpleNamespace(total=total, used=total - free, free=free)
+
+
+def test_scanning_this_pc_fills_in_the_budget_and_the_age_rule(
+    qtbot, tmp_path: Path
+) -> None:
+    """The two numbers he was expected to invent, worked out from the drive."""
+    root = with_footage(tmp_path)
+    tab, _ = build(qtbot, tmp_path, budgeted(root, 100.0))
+    tab.disk_usage = a_drive(total_gb=1000, free_gb=500)
+
+    tab.scan_this_pc()
+
+    # Everything free, less a slice of the drive kept back so it is never filled.
+    assert float(tab.budget_gb) == 450.0, tab.budget_gb
+    # And an age rule that matches what the budget holds, so footage goes for one
+    # reason rather than two.
+    assert tab.retention_days == "8", tab.retention_days
+    # And the slider now measures this drive rather than an invented scale: the
+    # handle three-quarters along means three-quarters of what is really there.
+    assert tab.budget_slider.maximum() == 1000, tab.budget_slider.maximum()
+
+
+def test_the_scan_says_in_plain_words_what_it_found(qtbot, tmp_path: Path) -> None:
+    """"Show what it found in plain words." Two numbers changing in two boxes is
+    not an answer to "what is the storage situation on this PC"."""
+    root = with_footage(tmp_path)
+    tab, _ = build(qtbot, tmp_path, budgeted(root, 100.0))
+    # An empty box is a black rectangle, and this one has to say what the button
+    # beside it is for before anyone has pressed it.
+    assert tab.storage_scan_note.text().strip()
+
+    tab.disk_usage = a_drive(total_gb=1000, free_gb=500)
+    tab.scan_this_pc()
+    said = tab.storage_scan_note.text()
+
+    assert "1000" in said or "1,000" in said, said  # the whole drive
+    assert "500" in said, said                      # what is free
+    assert "450" in said, said                      # what it suggests
+    assert "8 days" in said, said                   # what that buys
+    lower = said.lower()
+    assert "free" in lower, said
+    # It has to be readable as a suggestion rather than as a decision taken.
+    assert "suggest" in lower, said
+    for jargon in ("bytes", "gib", "disk_usage", "retention", "budget_gb"):
+        assert jargon not in lower, said
+
+
+def test_what_the_scan_suggested_is_still_his_to_change(qtbot, tmp_path: Path) -> None:
+    """"If the user wants, he can edit." A suggestion that cannot be overruled is
+    a decision wearing a suggestion's clothes."""
+    root = with_footage(tmp_path)
+    tab, path = build(qtbot, tmp_path, budgeted(root, 100.0))
+    tab.disk_usage = a_drive(total_gb=1000, free_gb=500)
+    tab.scan_this_pc()
+
+    tab.budget_gb = "77"
+    tab.retention_days = "3"
+    assert tab.save() is True, tab.message
+
+    stored = load_settings(path).storage
+    assert stored.budget_gb == 77.0
+    assert stored.retention_days == 3
+
+
+def test_a_drive_that_cannot_be_read_changes_nothing_and_says_so(
+    qtbot, tmp_path: Path
+) -> None:
+    """The scan touches the filesystem, which is exactly the thing that is broken
+    in the cases that matter. It must not answer a failed reading with a number.
+    """
+    root = with_footage(tmp_path)
+    tab, _ = build(qtbot, tmp_path, budgeted(root, 100.0))
+
+    def refuses(path):
+        raise OSError(5, "The device is not ready")
+
+    tab.disk_usage = refuses
+    tab.scan_this_pc()
+
+    assert float(tab.budget_gb) == 100.0, "it guessed at a drive it could not read"
+    assert "not ready" in tab.storage_scan_note.text(), tab.storage_scan_note.text()
+
+
+def test_the_slider_and_the_typed_budget_are_one_number(qtbot, tmp_path: Path) -> None:
+    """"Make it nicer and easier, like a slider for the budget. If the user
+    wants, he can edit." Two controls, one setting - and a form where the two
+    disagree would save whichever one the code happened to read."""
+    tab, path = build(qtbot, tmp_path)
+
+    tab.budget_slider.setValue(250)
+    assert tab.budget_gb == "250"
+    assert tab.save() is True, tab.message
+    assert load_settings(path).storage.budget_gb == 250.0
+
+    tab.budget_gb = "60"
+    assert tab.budget_slider.value() == 60
+
+
+def test_the_slider_says_how_many_days_of_footage_the_budget_buys(
+    qtbot, tmp_path: Path
+) -> None:
+    """A budget in gigabytes is not a quantity anybody has an instinct for. The
+    number he is really choosing is how far back he can look."""
+    tab, _ = build(qtbot, tmp_path, _watched())
+
+    tab.budget_slider.setValue(100)
+    small = tab.budget_days_note.text()
+    tab.budget_slider.setValue(500)
+    large = tab.budget_days_note.text()
+
+    assert "day" in small.lower(), small
+    assert small != large, "the same answer for a fifth of the disk"
+    assert any(character.isdigit() for character in small), small
+
+
+def test_typing_a_budget_bigger_than_the_slider_is_not_thrown_away(
+    qtbot, tmp_path: Path
+) -> None:
+    """The slider has to end somewhere and a drive does not have to agree with
+    where. The box is the setting; the slider is a way of moving it."""
+    tab, path = build(qtbot, tmp_path)
+    wanted = tab.budget_slider.maximum() + 4000
+    tab.budget_gb = str(wanted)
+    assert tab.save() is True, tab.message
+    assert load_settings(path).storage.budget_gb == float(wanted)
+
+
+# ------------------------------------------------------- the two heads, at once
+
+
+def test_the_camera_views_are_side_by_side_rather_than_stacked(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Make the vis and thermal in the settings side by side instead of one
+    under the other, so it's easier." They are one camera with two heads and he
+    sets them up together, so reading one against the other should not mean
+    scrolling."""
+    from PySide6.QtCore import QPoint
+
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://a/1"),
+                StreamSettings(name="visible", url="rtsp://a/2"),
+            ],
+        )
+    )
+    tab, _ = build(qtbot, tmp_path, settings)
+    tab.show()
+    tab.setGeometry(0, 0, 1366, 768)
+    QApplication.processEvents()
+
+    thermal, visible = tab.stream_rows()
+    left = thermal.mapTo(tab, QPoint(0, 0))
+    right = visible.mapTo(tab, QPoint(0, 0))
+    assert left.y() == right.y(), "one is still under the other"
+    assert right.x() > left.x()
+    # And neither is squeezed into a sliver to make room for the other.
+    assert abs(thermal.width() - visible.width()) <= 2, (
+        f"{thermal.width()} px against {visible.width()}"
+    )

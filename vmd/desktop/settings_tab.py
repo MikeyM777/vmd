@@ -17,6 +17,9 @@ Two rules follow from that, and both are load-bearing:
 from __future__ import annotations
 
 import logging
+import math
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
@@ -28,6 +31,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -38,6 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -55,6 +60,12 @@ from vmd.desktop.style import (
     SPACE_STEP,
     SPACE_TIGHT,
 )
+
+# The console has one slider and it should keep looking like one slider. The
+# look is built out of PALETTE names in the zoom bar, which is where the first
+# one was needed; copying it here would be the same decision written twice, and
+# style.py - where it really belongs - is owned by other work this week.
+from vmd.desktop.zoombar import _SLIDER_STYLE as SLIDER_STYLE
 from vmd.settings import (
     Settings,
     SettingsError,
@@ -66,9 +77,43 @@ from vmd.settings import (
 logger = logging.getLogger(__name__)
 
 # name, url, enabled, reader
+#
+# The third and fourth are no longer things the form asks about. They stay in
+# the shape because everything downstream that describes a stream describes it
+# with these four - `services.py` builds the same tuple straight out of the
+# settings - and because the fourth is still carried across a save even though
+# nobody chooses it here. The third is always True; see `StreamRowWidget`.
 StreamRow = tuple[str, str, bool, str]
 
-READERS = ["auto", "ffmpeg"]
+# How many camera views stand side by side.
+#
+# Two, because the camera is one gimbal with two heads and he sets them up
+# against each other: "make the vis and thermal in the settings side by side
+# instead of one under the other, so it's easier". Three would put a card at
+# about 240 px inside a column that stops at FORM_MAX_WIDTH, which is narrower
+# than the longest control on it.
+STREAM_COLUMNS = 2
+
+# How much of the drive is never offered to the budget.
+#
+# A drive filled to the last byte is a Windows laptop that cannot write its own
+# page file, and this one is a console nobody logs into to clear space. The
+# fraction handles a big drive, where 10 GB would be a rounding error; the floor
+# handles a small one, where 5% would be.
+DRIVE_RESERVE_FRACTION = 0.05
+DRIVE_RESERVE_FLOOR_BYTES = 10 * 1024**3
+
+# Below this there is no budget worth suggesting, and saying so is more use than
+# a number. A day of two streams at the link ceiling is about 13 GB.
+SMALLEST_WORTHWHILE_BUDGET_BYTES = 5 * 1024**3
+
+# Where the budget slider ends. Not a limit on the setting - the box beside it
+# takes any number the model accepts, and a bigger one simply parks the handle
+# at the end - but a slider has to have a length, and a 4 TB scale makes every
+# ordinary budget the first millimetre of it.
+BUDGET_SLIDER_MAX_GB = 2000
+
+SECONDS_IN_A_DAY = 86400.0
 
 # The file `storage_problem` writes and removes to find out whether footage can
 # actually be written to the chosen folder. A name nothing else uses, and one
@@ -103,6 +148,34 @@ WHY_THERMAL = (
     "condition."
 )
 
+# The three sentences he asked for, in the only place he will read them: on the
+# form, under the control, in the ink notes are written in.
+#
+# "'Watch for movement' - what is that?", "'Name what moved' - what is that?",
+# "'Skyline and ignore...' - what is that?" - all three asked by the person
+# these labels were written for. A tooltip is read by whoever hovers over that
+# one control, which on a console driven from two metres back is nobody. The
+# review of this tab says it plainly: a control whose name only makes sense on
+# hover is a control with the wrong name, and the tooltips here were already
+# doing more work than tooltips should.
+DETECT_HELP = (
+    "With this on, anything that moves in this view is written into the movement "
+    "list and lights the red strip across the bottom of the pictures. Recording "
+    "carries on either way - this only decides whether you are told."
+)
+
+CLASSIFY_HELP = (
+    "After something has moved, VMD can have a guess at what it was: a person, a "
+    "vehicle, an animal. It is only ever a guess, and it never decides whether "
+    "anything is recorded or reported - a thing it cannot name is still reported."
+)
+
+REGIONS_HELP = (
+    "The sky, a road you do not care about, a tree that moves in the wind - "
+    "anything you mark in here is not reported. Everything outside it is still "
+    "watched."
+)
+
 WHY_CLASSIFY = (
     "After something has moved, VMD can try to say what it was - a person, a "
     "dog, a car.\n\n"
@@ -129,25 +202,49 @@ WHY_HORIZON = (
     "perfectly good setting."
 )
 
-WHY_REGIONS = (
-    "A patch listed here is never reported. It is the only reliable answer to "
-    "one particular tree that sways, a flag, or a busy road you do not care "
-    "about. Everything outside these patches is still watched.\n\n"
+WHICH_NUMBER_IS_WHICH = (
     "The four numbers are dots (pixels) in the picture: how far across from the "
     "left edge, how far down from the top edge, then how wide and how tall."
 )
 
+WHY_REGIONS = (
+    "A patch listed here is never reported. It is the only reliable answer to "
+    "one particular tree that sways, a flag, or a busy road you do not care "
+    "about. Everything outside these patches is still watched.\n\n"
+    + WHICH_NUMBER_IS_WHICH
+)
 
-class StreamRowWidget(QWidget):
-    """One stream, as the operator sees it: a name, an address, whether it is
-    recorded, which client reads it, and - since detection exists - whether it is
-    watched and how. Nothing about it is fixed: a camera calls its streams
-    whatever it likes and the form has to keep up.
+
+class StreamRowWidget(QFrame):
+    """One camera view, as a card: a name, an address, and - folded away until
+    it is asked for - whether it is watched and how. Nothing about it is fixed:
+    a camera calls its streams whatever it likes and the form has to keep up.
 
     Every one of those choices lives on this widget rather than in a list held
     beside it, because that is what makes removing, adding and reordering rows
     safe. A detection setting matched to a stream by position is a thermal flag
     waiting to land on the wrong head.
+
+    Two things it used to ask and no longer does.
+
+    **Whether the view is used at all.** It was a tick box called `Use this
+    view`, and the operator's verdict was "useless, of course use that view, if
+    it's added". He is right, and the reason is not taste: the reward for
+    remembering the tick is the state you were already in, and the price of
+    missing it is a camera that is silently not shown, not recorded and not
+    watched. `enabled` is still in the settings file and everything downstream
+    still reads it; this form simply always writes True, because a line on the
+    list IS a view in use and the way to stop using one is `Remove`.
+
+    **Which client reads the stream.** `auto` or `ffmpeg`, and the honest
+    explanation is "try the other one if the picture will not come up", which is
+    not a question to put to somebody setting a camera up for the first time.
+    The setting keeps working and a file that says `ffmpeg` still says `ffmpeg`
+    after a save; it is just not on the screen.
+
+    The rest of the card is a column rather than a row because two of these
+    stand side by side now, so each has about 360 px to live in - and a control
+    whose label is cut in half is a control nobody can act on.
     """
 
     def __init__(
@@ -160,6 +257,11 @@ class StreamRowWidget(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # `enabled` is taken and ignored: see the class docstring. It stays in
+        # the signature because the four-part shorthand tuple is what a dozen
+        # callers hand `set_streams`, and dropping it there would be churn in
+        # every one of them for a value that is now always the same.
+        del enabled
         if stream is None:
             # `model_construct`, not the constructor: a row on screen is not a
             # setting yet. "Add a stream" starts an empty one, and an empty name
@@ -171,15 +273,20 @@ class StreamRowWidget(QWidget):
             # chance to type anything. Defaults for every field this does not
             # name are still filled in.
             stream = StreamSettings.model_construct(
-                name=name, url=url, enabled=enabled, reader=reader
+                name=name, url=url, enabled=True, reader=reader
             )
         # Everything this stream arrived with. A save is this with the widgets
         # written over it, so a field added to StreamSettings later is carried
         # across rather than reset the first time anyone presses Save.
         self._base = stream.model_dump(mode="json")
 
+        # A bordered card, because two of these stand side by side and the eye
+        # has to be able to tell where one camera view stops and the next starts.
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(SPACE_SNUG, SPACE_SNUG, SPACE_SNUG, SPACE_SNUG)
         outer.setSpacing(SPACE_TIGHT)
 
         # --- what it is ------------------------------------------------------
@@ -189,64 +296,25 @@ class StreamRowWidget(QWidget):
 
         self.name_field = QLineEdit(stream.name)
         self.name_field.setPlaceholderText("name")
-        self.name_field.setFixedWidth(140)
 
         self.url_field = QLineEdit(stream.url)
         self.url_field.setPlaceholderText("rtsp://address/path")
 
-        # It said `record`, and it is not that. The setting behind it is
-        # `enabled`, and it governs whether this view exists at all: whether
-        # go2rtc pulls it, whether a pane shows it, whether it is offered in the
-        # Live tab's view chooser, whether it is watched - and, among all of
-        # that, whether it is recorded. The owner switched it off for the
-        # visible camera, found the chooser offering only "All" and "thermal",
-        # and asked why there was no visible option. The chooser was right; the
-        # label had told him he was turning off a recording preference.
-        #
-        # The name in settings.json is untouched. `enabled` stays `enabled`, and
-        # every file already written keeps loading exactly as it did.
-        self.record_field = QCheckBox("Use this view")
-        self.record_field.setChecked(stream.enabled)
-        self.record_field.setToolTip(
-            "Whether this camera view is used at all.\n\n"
-            "Off means it is switched off completely: it does not appear in the "
-            "Live tab, nothing is recorded from it, and nothing watches it for "
-            "movement. Everything typed on this line is kept, so ticking it "
-            "again brings the view back as it was."
-        )
-
-        self.reader_field = QComboBox()
-        self.reader_field.addItems(READERS)
-        self.reader_field.setCurrentText(stream.reader if stream.reader in READERS else "auto")
-        # Honest already - these are the two ways of reading the stream, by
-        # their own names - and left alone for that reason. What it was missing
-        # is any hint of what it is: a bare box saying "auto" beside an address
-        # says nothing about what is automatic about it.
-        self.reader_field.setToolTip(
-            "How the video is read from this address.\n\n"
-            "Leave this on auto. The other setting is for a camera whose video "
-            "the ordinary reader will not play - try it only if the picture "
-            "will not come up and you have been asked to."
-        )
-
         self.remove_button = QPushButton("Remove")
 
-        top.addWidget(self.name_field)
-        top.addWidget(self.url_field, 1)
-        top.addWidget(self.record_field)
-        top.addWidget(self.reader_field)
+        top.addWidget(self.name_field, 1)
         top.addWidget(self.remove_button)
         outer.addLayout(top)
+        # The address on its own line. In half a column there is no room for a
+        # name and an address side by side, and the address is the longer of the
+        # two by a wide margin.
+        outer.addWidget(self.url_field)
 
         # --- whether it is watched, and how ----------------------------------
         #
-        # A second line under the stream rather than a separate panel: these
-        # belong to this stream and nothing else, and a panel somewhere else on
-        # the tab is how the wrong stream gets marked thermal.
-        watch = QVBoxLayout()
-        watch.setContentsMargins(146, 0, 0, 0)  # under the address, not the name
-        watch.setSpacing(SPACE_TIGHT)
-
+        # On this card rather than in a panel of its own: these belong to this
+        # view and nothing else, and a panel somewhere else on the tab is how the
+        # wrong stream gets marked thermal.
         self.detect_field = QCheckBox("Watch for movement")
         self.detect_field.setChecked(stream.detect)
         self.detect_field.setToolTip(
@@ -255,18 +323,43 @@ class StreamRowWidget(QWidget):
             "anyone has told it about the trees alarms all day, and an alarm "
             "nobody believes is worse than none."
         )
+        outer.addWidget(self.detect_field)
+
+        self.detect_help = _note(DETECT_HELP)
+        outer.addWidget(self.detect_help)
+
+        # Everything below the switch, in one widget so that one line of code
+        # shows or hides all of it.
+        #
+        # "Too much going on." Seven controls per camera view, six of which are
+        # answers to a question - how should this view be watched - that nobody
+        # is asking until the first one is ticked. Folded, never deleted: he has
+        # said he wants to test movement detection in the next days, and a
+        # setting that has been removed is not a setting that can be tested.
+        self.watched = QWidget()
+        watch = QVBoxLayout(self.watched)
+        watch.setContentsMargins(SPACE_ROOM, SPACE_TIGHT, 0, 0)
+        watch.setSpacing(SPACE_TIGHT)
 
         self.thermal_field = QCheckBox("Heat camera")
         self.thermal_field.setChecked(stream.thermal)
         self.thermal_field.setToolTip(WHY_THERMAL)
+        watch.addWidget(self.thermal_field)
 
         self.classify_field = QComboBox()
         for label, value in CLASSIFY_CHOICES:
             self.classify_field.addItem(label, value)
         self.classify_field.setToolTip(WHY_CLASSIFY)
         self.set_classify(stream.classify)
-        classify_label = QLabel("Name what moved:")
-        classify_label.setToolTip(WHY_CLASSIFY)
+        # It said "Name what moved", which reads as an instruction to the
+        # operator rather than as something the software attempts - and he asked
+        # what it was.
+        self.classify_label = QLabel("Try to say what it was:")
+        self.classify_label.setToolTip(WHY_CLASSIFY)
+        watch.addWidget(self.classify_label)
+        watch.addWidget(self.classify_field)
+        self.classify_help = _note(CLASSIFY_HELP)
+        watch.addWidget(self.classify_help)
 
         self.sensitivity_field = QComboBox()
         for label, value in SENSITIVITY_CHOICES:
@@ -279,44 +372,29 @@ class StreamRowWidget(QWidget):
         self.set_sensitivity(stream.sensitivity)
         sensitivity_label = QLabel("How touchy:")
         sensitivity_label.setToolTip(self.sensitivity_field.toolTip())
+        watch.addWidget(sensitivity_label)
+        watch.addWidget(self.sensitivity_field)
 
-        self.details_button = QPushButton("Sky line and ignored patches")
+        # It said "Sky line and ignored patches": two nouns lifted out of the
+        # source and joined by an "and", naming neither what it is for nor what
+        # it acts on. He asked what it was.
+        self.details_button = QPushButton("Ignore parts of the picture")
         self.details_button.setCheckable(True)
         self.details_button.setToolTip(
             "The two settings for a view that keeps alarming on something you "
             "do not care about."
         )
+        watch.addWidget(self.details_button)
+        self.details_help = _note(REGIONS_HELP)
+        watch.addWidget(self.details_help)
 
-        # Two lines and not one. All seven of these on a single row is about
-        # 1500 px of controls, and the form is a column that stops growing - so
-        # on one line the tick boxes lost their last word and the button read
-        # "e and ignored p". A control whose label is cut in half is a control
-        # nobody can act on, and this row carries the thermal flag, which is the
-        # one setting that quietly changes what gets reported.
-        #
-        # The switches first, then the two choices under them, because that is
-        # the order they are decided in: whether this view is watched at all,
-        # then how.
-        switches = QHBoxLayout()
-        switches.setContentsMargins(0, 0, 0, 0)
-        switches.setSpacing(SPACE_ROOM)
-        switches.addWidget(self.detect_field)
-        switches.addWidget(self.thermal_field)
-        switches.addWidget(self.details_button)
-        switches.addStretch(1)
-        watch.addLayout(switches)
-
-        choices = QHBoxLayout()
-        choices.setContentsMargins(0, 0, 0, 0)
-        choices.setSpacing(SPACE_SNUG)
-        choices.addWidget(classify_label)
-        choices.addWidget(self.classify_field)
-        choices.addSpacing(SPACE_ROOM)
-        choices.addWidget(sensitivity_label)
-        choices.addWidget(self.sensitivity_field)
-        choices.addStretch(1)
-        watch.addLayout(choices)
-        outer.addLayout(watch)
+        # A label above its box rather than beside it. In half a column there is
+        # no room for both, and the thing that has to be readable is the choice
+        # itself: "High - notices small or distant movement" is 250 px of words
+        # and it is what the operator is picking between.
+        outer.addWidget(self.watched)
+        self.detect_field.toggled.connect(self.watched.setVisible)
+        self.watched.setVisible(self.detect_field.isChecked())
 
         # --- the two that need explaining ------------------------------------
         self.details = QFrame()
@@ -343,8 +421,6 @@ class StreamRowWidget(QWidget):
         self.pick_button.clicked.connect(lambda: self.on_pick(self))
         details_layout.addWidget(self.pick_button)
 
-        horizon_line = QHBoxLayout()
-        horizon_line.setSpacing(6)
         self.horizon_enabled_field = QCheckBox("Ignore everything above a sky line")
         self.horizon_enabled_field.setToolTip(WHY_HORIZON)
         self.horizon_field = QSpinBox()
@@ -354,28 +430,30 @@ class StreamRowWidget(QWidget):
         self.set_horizon(stream.horizon_y)
         self.horizon_enabled_field.toggled.connect(self.horizon_field.setEnabled)
         self.horizon_field.setEnabled(self.horizon_enabled_field.isChecked())
-        horizon_line.addWidget(self.horizon_enabled_field)
+        # The tick and its number stacked rather than side by side. Together
+        # they are about 400 px of controls, and half a form column is 360.
+        details_layout.addWidget(self.horizon_enabled_field)
+        horizon_line = QHBoxLayout()
+        horizon_line.setSpacing(SPACE_SNUG)
         horizon_line.addWidget(self.horizon_field)
         horizon_line.addStretch(1)
         details_layout.addLayout(horizon_line)
 
-        horizon_help = WrappedNote(
+        self.horizon_help = _note(
             "Draw the line on the picture above rather than guessing the "
             "number: a line set too low throws away real movement below it and "
             "never tells you it did. If the camera cannot be reached, leave the "
             "sky line off unless someone has read the number off a picture for "
             "you. Off is a perfectly safe setting."
         )
-        horizon_help.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
-        )
-        details_layout.addWidget(horizon_help)
-        self.horizon_help = horizon_help
+        details_layout.addWidget(self.horizon_help)
 
-        self.regions_help = WrappedNote(WHY_REGIONS)
-        self.regions_help.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
-        )
+        # Only the half of WHY_REGIONS that is not already said above. What a
+        # patch is FOR is now written under the button that opens this panel, and
+        # having it twice on one card, in two wordings, is exactly the "too much
+        # going on" this tab was cut down for. What is left is the half that
+        # cannot be said anywhere else: which number is which.
+        self.regions_help = _note(WHICH_NUMBER_IS_WHICH)
         details_layout.addWidget(self.regions_help)
 
         self.regions_list = QListWidget()
@@ -383,31 +461,34 @@ class StreamRowWidget(QWidget):
         self.regions_list.setMaximumHeight(90)
         details_layout.addWidget(self.regions_list)
 
-        # Two lines, and for the same reason the row of switches above is two
-        # lines: the form column stops growing, so a row that asks for more
-        # than it than it can have is not shrunk by Qt - it is clipped, at both
-        # ends. Six controls here needed about 1020 px in a 964 px column, and
-        # what came out was `elete the selected patc` beside four spin boxes
-        # that had lost the words saying which number was which. A control
-        # whose label is cut in half is a control nobody can act on.
+        # Two by two, and for the same reason this row was split off the row
+        # above it before: the form column stops growing, so a row that asks for
+        # more than it can have is not shrunk by Qt - it is clipped, at both
+        # ends, and what came out was `elete the selected patc` beside four spin
+        # boxes that had lost the words saying which number was which. Half a
+        # column is 360 px and four of these need about 500, so the four numbers
+        # are two lines now, and the button that lost its first and last letters
+        # says the two words that matter.
         #
         # The four numbers first, then the two buttons that act on them, which
         # is also the order they are used in.
-        region_line = QHBoxLayout()
-        region_line.setSpacing(6)
+        numbers = QGridLayout()
+        numbers.setHorizontalSpacing(SPACE_SNUG)
+        numbers.setVerticalSpacing(SPACE_TIGHT)
         self.region_x = _region_box("across")
         self.region_y = _region_box("down")
         self.region_w = _region_box("wide")
         self.region_h = _region_box("tall")
-        for box in (self.region_x, self.region_y, self.region_w, self.region_h):
-            region_line.addWidget(box)
-        region_line.addStretch(1)
-        details_layout.addLayout(region_line)
+        for index, box in enumerate(
+            (self.region_x, self.region_y, self.region_w, self.region_h)
+        ):
+            numbers.addWidget(box, index // 2, index % 2)
+        details_layout.addLayout(numbers)
 
         region_buttons = QHBoxLayout()
-        region_buttons.setSpacing(6)
+        region_buttons.setSpacing(SPACE_SNUG)
         self.add_region_button = QPushButton("Add this patch")
-        self.remove_region_button = QPushButton("Delete the selected patch")
+        self.remove_region_button = QPushButton("Delete patch")
         region_buttons.addWidget(self.add_region_button)
         region_buttons.addWidget(self.remove_region_button)
         region_buttons.addStretch(1)
@@ -419,7 +500,9 @@ class StreamRowWidget(QWidget):
 
         self.details.setVisible(False)
         self.details_button.toggled.connect(self.details.setVisible)
-        outer.addWidget(self.details)
+        # Inside the folded block, not beside it: a panel about the sky line of a
+        # view nobody is watching is furniture.
+        watch.addWidget(self.details)
 
         # What to say when a patch cannot be added. Set by SettingsTab so the
         # row does not need to know where the message line lives.
@@ -428,11 +511,18 @@ class StreamRowWidget(QWidget):
     # ------------------------------------------------------------- the values
 
     def values(self) -> StreamRow:
+        """Name, address, used, reader - the last two no longer asked about.
+
+        `True` and not a remembered value: a line on the list is a view in use.
+        The reader comes back out of what this row arrived with, so a camera set
+        up to read with ffmpeg keeps reading with ffmpeg across a save made by a
+        form that never showed the choice.
+        """
         return (
             self.name_field.text().strip(),
             self.url_field.text().strip(),
-            self.record_field.isChecked(),
-            self.reader_field.currentText(),
+            True,
+            self._base.get("reader", "auto"),
         )
 
     def classify(self) -> bool | None:
@@ -575,6 +665,156 @@ def _why(exc: OSError) -> str:
     return (exc.strerror or str(exc)).rstrip(". ")
 
 
+# What the tab says before anybody has pressed the button. An empty box is a
+# black rectangle, and a black rectangle is not an answer to "what is the
+# storage situation on this PC".
+SCAN_INVITATION = (
+    "Press Scan this PC and it will look at the drive this folder is on, then "
+    "fill in a budget and an age rule that fit it. Nothing is written until you "
+    "press Save."
+)
+
+
+@dataclass(frozen=True)
+class DriveScan:
+    """What a look at this computer's drive came to.
+
+    `budget_gb` and `days` are None when nothing can be suggested - a drive that
+    cannot be read, or one with no room left worth having. `words` is never
+    empty: it is the whole point of the button. The operator asked for "a button
+    that scans the PC storage situation and then automatically adjusts the
+    parameters", and half of that is the scan saying what it found, in a
+    sentence, rather than two numbers silently changing in two boxes.
+    """
+
+    words: str
+    budget_gb: float | None = None
+    days: int | None = None
+    # The whole drive, in the units the budget is set in, so the slider can be
+    # given a scale that means something physical rather than an invented one.
+    drive_gb: float | None = None
+
+
+def scan_drive(
+    root: Path,
+    rate_bytes_per_second: float,
+    usage=None,
+    recorded=None,
+) -> DriveScan:
+    """Look at the drive the recordings go on, and suggest what to do with it.
+
+    The suggestion is the whole drive's free room, plus whatever VMD's own
+    footage is already occupying - retention can delete that to make space, so
+    it is not lost to us - less a slice kept back so the drive is never filled
+    right up. A Windows laptop with no room at all cannot write its own page
+    file, and this one is a console nobody logs into to clear space.
+
+    The age rule is set to match what the budget holds rather than to some round
+    number. The two rules delete for different reasons, and an age rule shorter
+    than the budget throws away footage there was room for, while a longer one
+    does nothing at all. Set equal, footage goes for one reason and the operator
+    only has to understand one of them.
+
+    Nothing is guessed when the drive cannot be read. A recordings folder on a
+    drive letter with nothing behind it is the most likely mistake anybody makes
+    setting this up, and answering it with a confident number would be worse
+    than answering it with nothing.
+
+    `usage` and `recorded` are the two touches of the filesystem, taken as
+    arguments so this can be tested against a 1 TB drive on a machine that has
+    not got one.
+    """
+    usage = usage or shutil.disk_usage
+    recorded = recorded or recorded_bytes
+
+    # The folder does not have to exist yet - first run is exactly the moment
+    # this button is useful - so the question is asked of the nearest parent
+    # that does, which is on the same drive.
+    probe = Path(root)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        space = usage(str(probe))
+    except OSError as exc:
+        return DriveScan(
+            f"The drive this folder is on could not be read: {_why(exc)}. "
+            f"Nothing was changed. Check the folder above is on a drive this "
+            f"computer can reach."
+        )
+
+    ours = recorded(root) or 0
+    room = space.free + ours
+    reserve = max(space.total * DRIVE_RESERVE_FRACTION, DRIVE_RESERVE_FLOOR_BYTES)
+    budget_bytes = room - reserve
+    drive_gb = space.total / 1024**3
+    # A line per finding rather than one solid paragraph. This is a report, and
+    # a report read once by somebody who is not sure what he is looking for is
+    # read line by line or not at all. "0 KB" is not an amount of footage; the
+    # first run has none, and saying so is shorter and truer.
+    found = (
+        f"This computer's drive holds {bytes_in_words(space.total)} and "
+        f"{bytes_in_words(space.free)} of it is free. VMD's own footage on it "
+        f"comes to {bytes_in_words(ours) if ours else 'nothing yet'}."
+    )
+    if budget_bytes < SMALLEST_WORTHWHILE_BUDGET_BYTES:
+        return DriveScan(
+            found + "\nThere is not enough room left on it to suggest anything. "
+            "Free some space on this drive, or point the folder above at "
+            "another one, and scan again.",
+            drive_gb=drive_gb,
+        )
+
+    budget_gb = float(math.floor(budget_bytes / 1024**3))
+    days = _days_of_footage(budget_gb, rate_bytes_per_second)
+    holds = (
+        "" if days is None else f" - about {_days_in_words(days)} of footage at "
+        f"the rate this camera records"
+    )
+    lines = [
+        found,
+        f"Suggested budget: {budget_gb:.0f} GB{holds}. That is everything free "
+        f"apart from a slice of the drive left alone, so it can never be filled "
+        f"right up.",
+    ]
+    if days is not None:
+        lines.append(
+            f"Suggested delete older than: {_days_in_words(days)}, the same as "
+            f"the budget holds, so footage goes for one reason and not two."
+        )
+    lines.append(
+        "Both are suggestions and both are in the boxes below now. Change "
+        "either one if it is not what you want, then press Save."
+    )
+    return DriveScan(
+        "\n".join(lines), budget_gb=budget_gb, days=days, drive_gb=drive_gb
+    )
+
+
+def _days_of_footage(budget_gb: float, rate_bytes_per_second: float) -> int | None:
+    """How far back a budget of this size lets him look, in whole days.
+
+    None when there is nothing to divide by, and never zero: a budget that holds
+    less than a day still holds something, and "0 days of footage" reads as a
+    setting that does not work.
+    """
+    if rate_bytes_per_second <= 0 or budget_gb <= 0:
+        return None
+    return max(
+        1, int(budget_gb * 1024**3 / rate_bytes_per_second / SECONDS_IN_A_DAY)
+    )
+
+
+def _days_in_words(days: int) -> str:
+    """"1 day", not "1 days".
+
+    The smallest possible carelessness, and it shows up in the state that
+    matters most - a budget that holds a single day is the one worth reading
+    twice. The storage panel has the same bug in "Roughly 1 minutes left" and it
+    is not going to be copied into a control that did not have it.
+    """
+    return "1 day" if days == 1 else f"{days} days"
+
+
 def _form(parent: QWidget | None = None) -> QFormLayout:
     """A form laid out on the console's own rhythm.
 
@@ -586,6 +826,19 @@ def _form(parent: QWidget | None = None) -> QFormLayout:
     form.setVerticalSpacing(SPACE_SNUG)
     form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     return form
+
+
+def _note(text: str) -> WrappedNote:
+    """A sentence under a control, in the ink notes are written in.
+
+    Every one of these used to be a tooltip and nothing else, and the operator
+    read none of them: he went through this tab and asked, out loud, what four
+    of its labels meant. The colour and the size come from the palette and the
+    type scale, as everything drawn here does.
+    """
+    note = WrappedNote(text)
+    note.setStyleSheet(f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;")
+    return note
 
 
 def _region_box(what: str) -> QSpinBox:
@@ -645,6 +898,11 @@ class SettingsTab(QWidget):
         # that the second press of Save goes ahead. See `_budget_warning`.
         self._warned_about: tuple[str, float] | None = None
         self._tools = tools
+        # How `Scan this PC` asks the operating system about the drive. An
+        # attribute so a test can hand it a 1 TB drive on a machine that has not
+        # got one, and so the one filesystem call this tab makes from a button
+        # press is in a place anybody can find.
+        self.disk_usage = shutil.disk_usage
         # One at a time, and never on the UI thread: finding the right path
         # probes two dozen addresses and takes up to a minute. A console that
         # stops repainting for a minute is a console the operator restarts.
@@ -725,23 +983,25 @@ class SettingsTab(QWidget):
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
         streams_outer.setSpacing(SPACE_STEP)
-        # On the form rather than only in a tooltip. An operator who unticks a
-        # view and finds it gone from the Live tab has to be able to work out
-        # why from what is in front of them - which is exactly what did not
-        # happen: the box said "record", so switching a camera off entirely
-        # looked like switching off a recording preference.
-        self.streams_help = WrappedNote(
-            "One line per camera view. A view that is not ticked is switched "
-            "off completely: it is not shown in the Live tab, nothing is "
-            "recorded from it, and nothing watches it. What is typed on its "
-            "line is kept either way."
-        )
-        self.streams_help.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        # On the form rather than only in a tooltip. It used to explain the tick
+        # box beside each view; with the tick gone it has to explain the rule
+        # that replaced it, because "how do I stop using this camera" now has
+        # exactly one answer and it is not on the card.
+        self.streams_help = _note(
+            "One card for each of the camera's views. Every view on this list is "
+            "used: it is shown in the Live tab, it is recorded, and it is "
+            "watched if you ask for that below. To stop using one, remove it."
         )
         streams_outer.addWidget(self.streams_help)
-        self._streams_layout = QVBoxLayout()
-        self._streams_layout.setSpacing(SPACE_ROOM)
+        # Side by side, two across. "Make the vis and thermal in the settings
+        # side by side instead of one under the other, so it's easier" - and he
+        # is right about why: it is one camera with two heads, he sets them up
+        # against each other, and comparing them used to mean scrolling.
+        self._streams_layout = QGridLayout()
+        self._streams_layout.setHorizontalSpacing(SPACE_ROOM)
+        self._streams_layout.setVerticalSpacing(SPACE_ROOM)
+        for column in range(STREAM_COLUMNS):
+            self._streams_layout.setColumnStretch(column, 1)
         streams_outer.addLayout(self._streams_layout)
         self.add_stream_button = QPushButton("Add a stream")
         self.add_stream_button.clicked.connect(lambda: self.add_stream_row())
@@ -751,14 +1011,6 @@ class SettingsTab(QWidget):
         detection_box = QGroupBox("Movement detection")
         detection_outer = QVBoxLayout(detection_box)
         detection_outer.setSpacing(SPACE_SNUG)
-        detection_help = WrappedNote(
-            "These apply to every view at once. Which views are watched, and "
-            "how, is set on each stream above."
-        )
-        detection_help.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
-        )
-        detection_outer.addWidget(detection_help)
 
         self._detection_enabled = QCheckBox("Watch for movement at all")
         self._detection_enabled.setToolTip(
@@ -767,8 +1019,29 @@ class SettingsTab(QWidget):
             "program that shares nothing with this one."
         )
         detection_outer.addWidget(self._detection_enabled)
+        detection_outer.addWidget(
+            _note(
+                "The master switch. With it off nothing is watched, whatever "
+                "the camera views say. Recording carries on either way."
+            )
+        )
 
-        self._detection_classify = QCheckBox("Allow VMD to try to name what moved")
+        # Behind the master switch, for the same reason the per-view controls
+        # are behind theirs: they are answers to a question nobody is asking
+        # until it is on. Hidden is not off - whatever is set here is still what
+        # gets saved.
+        self._detection_extras = QWidget()
+        extras = QVBoxLayout(self._detection_extras)
+        extras.setContentsMargins(SPACE_ROOM, SPACE_TIGHT, 0, 0)
+        extras.setSpacing(SPACE_SNUG)
+        extras.addWidget(
+            _note(
+                "These apply to every view at once. Which views are watched, "
+                "and how, is set on each card above."
+            )
+        )
+
+        self._detection_classify = QCheckBox("Allow VMD to try to say what it was")
         self._detection_classify.setToolTip(
             "The master switch for naming things. With this off, nothing is "
             "ever named, whatever the individual views are set to. With it on, "
@@ -777,7 +1050,7 @@ class SettingsTab(QWidget):
             "about 13 dots across, so it is off to begin with. You are told "
             "about the movement either way."
         )
-        detection_outer.addWidget(self._detection_classify)
+        extras.addWidget(self._detection_classify)
 
         travel_line = _form()
         self._min_travel = QLineEdit()
@@ -790,18 +1063,96 @@ class SettingsTab(QWidget):
             "number for each view, and typing one here overrules a measurement."
         )
         travel_line.addRow("Must travel at least (dots)", self._min_travel)
-        detection_outer.addLayout(travel_line)
+        extras.addLayout(travel_line)
+        detection_outer.addWidget(self._detection_extras)
+        self._detection_enabled.toggled.connect(self._detection_extras.setVisible)
+        self._detection_extras.setVisible(self._detection_enabled.isChecked())
         layout.addWidget(detection_box)
 
+        # --- storage ---------------------------------------------------------
+        #
+        # "I want a button that scans the PC storage situation and then
+        # automatically adjusts the parameters like the budget, delete older
+        # than and so on. Make it nicer and easier, like a slider for the
+        # budget. If the user wants, he can edit."
+        #
+        # Three boxes he was expected to invent numbers for, one of which
+        # silently deletes footage when it is lowered. The scan works two of them
+        # out from the drive that is actually there, the slider makes the third
+        # a thing he can feel rather than a number he has to know, and the boxes
+        # stay: a suggestion that cannot be overruled is a decision wearing a
+        # suggestion's clothes.
         storage_box = QGroupBox("Storage")
-        storage_form = _form(storage_box)
+        storage_outer = QVBoxLayout(storage_box)
+        storage_outer.setSpacing(SPACE_SNUG)
+
+        storage_form = _form()
         self._root = QLineEdit()
+        storage_form.addRow("Folder", self._root)
+
+        scan_line = QHBoxLayout()
+        scan_line.setSpacing(SPACE_SNUG)
+        self.scan_button = QPushButton("Scan this PC")
+        self.scan_button.setToolTip(
+            "Looks at the drive the folder above is on - how big it is, how much "
+            "is free, how much VMD is already using - and fills in a budget and "
+            "an age rule to match.\n\n"
+            "It changes the two boxes below and nothing else. Nothing is written "
+            "until you press Save."
+        )
+        self.scan_button.clicked.connect(self.scan_this_pc)
+        scan_line.addWidget(self.scan_button)
+        scan_line.addStretch(1)
+        storage_form.addRow("", scan_line)
+
+        # Across both columns of the form, not in the field column. It is a
+        # paragraph, not a value, and squeezed into the width of a text box it
+        # asked for three lines of room to draw one - which reads as an
+        # unexplained hole above the sentence.
+        self.storage_scan_note = _note(SCAN_INVITATION)
+        storage_form.addRow(self.storage_scan_note)
+
         self._budget = QLineEdit()
+        # Room for a number, not room for a sentence. Measured off the font
+        # rather than typed as a pixel count, so it is right at whatever size
+        # the console's own text is drawn.
+        self._budget.setMaximumWidth(
+            self._budget.fontMetrics().horizontalAdvance("000000000")
+        )
+        self.budget_slider = QSlider(Qt.Orientation.Horizontal)
+        self.budget_slider.setRange(1, BUDGET_SLIDER_MAX_GB)
+        self.budget_slider.setStyleSheet(SLIDER_STYLE)
+        self.budget_slider.setToolTip(
+            "How much of the drive VMD is allowed to fill with footage. When it "
+            "is full the oldest footage is deleted to keep recording going."
+        )
+        budget_line = QHBoxLayout()
+        budget_line.setSpacing(SPACE_SNUG)
+        budget_line.addWidget(self.budget_slider, 1)
+        budget_line.addWidget(self._budget)
+        storage_form.addRow("Budget (GB)", budget_line)
+
+        # What the number actually means. A budget in gigabytes is not a
+        # quantity anybody has an instinct for; how far back he can look is.
+        self.budget_days_note = _note("")
+        storage_form.addRow("", self.budget_days_note)
+
+        # Wired last, and that is load-bearing: `setRange` above moves a slider
+        # that was sitting at zero, and a handler connected before this line
+        # would fire while half the widgets it writes to did not exist yet.
+        #
+        # `_syncing_budget` is set while one of the pair is being moved by the
+        # other, so that they cannot chase each other round in a circle. The box
+        # is the setting; the slider is a way of moving it, which is why a
+        # number typed past the end of the slider is kept rather than clamped.
+        self._syncing_budget = False
+        self.budget_slider.valueChanged.connect(self._budget_slid)
+        self._budget.textChanged.connect(self._budget_typed)
+
         self._days = QLineEdit()
         self._days.setPlaceholderText("empty means never delete by age")
-        storage_form.addRow("Folder", self._root)
-        storage_form.addRow("Budget (GB)", self._budget)
         storage_form.addRow("Delete older than (days)", self._days)
+        storage_outer.addLayout(storage_form)
         layout.addWidget(storage_box)
 
         radio_box = QGroupBox("Radio")
@@ -835,18 +1186,21 @@ class SettingsTab(QWidget):
         )
         radio_form.addRow("", self.link_auto_field)
 
-        self.link_help = WrappedNote(
+        self.link_help = _note(
             "It never goes below the lowest picture you allow. If the link "
             "cannot carry even that, it says so in the Logs tab rather than "
             "spoiling the picture further."
         )
-        self.link_help.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
-        )
         radio_form.addRow("", self.link_help)
         layout.addWidget(radio_box)
 
-        tools_box = QGroupBox("The camera")
+        # "The camera - is it relevant anymore?" It is, and more than most of
+        # this page: it is the only way to find out whether the camera answers
+        # at all on a machine with no terminal and no second computer. What was
+        # wrong was the title, which was `The camera` sitting one screen below a
+        # box called `Camera` - so it read as a second place to configure the
+        # same thing rather than as the place to test it.
+        self.tools_box = tools_box = QGroupBox("Check the camera")
         tools_outer = QVBoxLayout(tools_box)
         tools_outer.setSpacing(SPACE_SNUG)
         tools_buttons = QHBoxLayout()
@@ -1013,6 +1367,101 @@ class SettingsTab(QWidget):
         """Every field holding a password. They are all plain text on purpose."""
         return [self._password, self._radio_password]
 
+    # ---------------------------------------------------------------- storage
+
+    def scan_this_pc(self) -> None:
+        """Look at the drive, say what is on it, and fill in the two numbers.
+
+        The two settings this fills in are the ones he had no way of arriving
+        at: a budget in gigabytes and an age in days, on a form that never told
+        him how big the drive was. Both stay editable, and neither is written
+        anywhere until Save - this button changes two boxes and a sentence.
+        """
+        root = Path(self.storage_root.strip() or "recordings")
+        if not root.is_absolute():
+            root = self.settings_path.parent / root
+        found = scan_drive(root, self._footage_rate(), usage=self.disk_usage)
+        self.storage_scan_note.setText(found.words)
+        if found.drive_gb is not None:
+            # The slider now measures something real: how much of THIS drive the
+            # footage may take. Before a scan it has an invented scale, because
+            # nothing has asked the drive how big it is - and a handle sitting at
+            # 5% of an invented scale says nothing at all.
+            self.budget_slider.setMaximum(
+                max(int(found.drive_gb), int(found.budget_gb or 0), 1)
+            )
+        if found.budget_gb is None:
+            return  # nothing could be worked out, and the sentence says why
+        self.budget_gb = f"{found.budget_gb:.0f}"
+        if found.days is not None:
+            self.retention_days = str(found.days)
+
+    def _footage_rate(self) -> float:
+        """How fast footage arrives, in bytes a second. An estimate, and a
+        pessimistic one.
+
+        The same arithmetic the storage panel uses when it has nothing measured
+        to go on: the bitrate the camera has been asked to fit inside, times the
+        number of views being recorded. It is deliberately the high end - a
+        thermal head watching a still perimeter undershoots it by a lot - so the
+        days it works out are the fewest he will get rather than the most.
+
+        The views come from the form and the ceiling from the settings that were
+        loaded, because the first is on this screen and the second is not.
+        """
+        views = sum(1 for _name, url, _used, _reader in self.streams() if url) or 1
+        return max(self._loaded.bitrate.ceiling_kbps, 1) * 1000.0 / 8.0 * views
+
+    def _budget_slid(self, value: int) -> None:
+        if self._syncing_budget:
+            return
+        self._syncing_budget = True
+        try:
+            self._budget.setText(str(int(value)))
+        finally:
+            self._syncing_budget = False
+        self._say_how_many_days()
+
+    def _budget_typed(self, text: str) -> None:
+        """Move the handle to match what was typed, without touching the text.
+
+        A number past the end of the slider parks the handle at the end and is
+        otherwise left completely alone. The box is the setting: rewriting what
+        somebody typed is how a form loses a field, and this one is the field
+        that deletes footage when it goes down.
+        """
+        if not self._syncing_budget:
+            self._syncing_budget = True
+            try:
+                try:
+                    wanted = int(round(float(text)))
+                except ValueError:
+                    wanted = self.budget_slider.value()  # half-typed, or empty
+                self.budget_slider.setValue(
+                    max(
+                        self.budget_slider.minimum(),
+                        min(self.budget_slider.maximum(), wanted),
+                    )
+                )
+            finally:
+                self._syncing_budget = False
+        self._say_how_many_days()
+
+    def _say_how_many_days(self) -> None:
+        """How far back this budget lets him look, beside the budget."""
+        try:
+            budget_gb = float(self._budget.text())
+        except ValueError:
+            budget_gb = 0.0
+        days = _days_of_footage(budget_gb, self._footage_rate())
+        if days is None:
+            self.budget_days_note.setText("")
+            return
+        self.budget_days_note.setText(
+            f"≈ {_days_in_words(days)} of footage before the oldest starts "
+            f"being deleted."
+        )
+
     # ---------------------------------------------------------------- streams
 
     def add_stream_row(
@@ -1028,7 +1477,10 @@ class SettingsTab(QWidget):
         row.on_problem = self._set_message
         row.on_pick = self.open_picker
         self._rows.append(row)
-        self._streams_layout.addWidget(row)
+        self._lay_the_cards_out()
+        # A view added or removed changes how fast the disk fills, which changes
+        # how many days the budget buys.
+        self._say_how_many_days()
         return row
 
     def remove_stream_row(self, row: StreamRowWidget) -> None:
@@ -1038,6 +1490,30 @@ class SettingsTab(QWidget):
         self._streams_layout.removeWidget(row)
         row.setParent(None)
         row.deleteLater()
+        self._lay_the_cards_out()
+        self._say_how_many_days()
+
+    def _lay_the_cards_out(self) -> None:
+        """Put the cards back in the grid, in order, two across.
+
+        Rebuilt from `self._rows` on every change rather than patched, because a
+        grid cell is a position and the rows move: removing the first of three
+        leaves a hole in the top left and the third card where the third card
+        was. Taking the items out does not unparent the widgets - they stay
+        children of the box and are simply placed again.
+
+        Top-aligned, so that one card with its detection settings unfolded does
+        not stretch the empty card beside it to the same height.
+        """
+        while self._streams_layout.count():
+            self._streams_layout.takeAt(0)
+        for index, row in enumerate(self._rows):
+            self._streams_layout.addWidget(
+                row,
+                index // STREAM_COLUMNS,
+                index % STREAM_COLUMNS,
+                Qt.AlignmentFlag.AlignTop,
+            )
 
     def stream_rows(self) -> list[StreamRowWidget]:
         return list(self._rows)
@@ -1103,7 +1579,7 @@ class SettingsTab(QWidget):
         # to the row that shows them, and a row that was handed only a name and
         # an address would write the defaults back over them at the next save.
         self.set_streams(list(settings.camera.streams))
-        self._set_message(problem)
+        self._set_message(" ".join(part for part in (problem, _adopted(settings)) if part))
 
     # ------------------------------------------------------------------ save
 
@@ -1264,13 +1740,14 @@ class SettingsTab(QWidget):
 
     def _problem(self) -> str:
         seen: set[str] = set()
-        for name, url, enabled, _reader in self.streams():
-            if enabled and not url:
-                # "ticked to record" was the old label's words. The tick means
-                # the view is in use, and the sentence has to say what to do.
+        for name, url, _used, _reader in self.streams():
+            if not url:
+                # There is no tick to talk about any more: a card on the list is
+                # a view in use, so the two ways out of this are the address and
+                # the Remove button.
                 return (
-                    f'"{name or "A stream"}" is ticked to be used but has no '
-                    f"address. Type one in, or untick it."
+                    f'"{name or "A view"}" has no address. Type one in, or '
+                    f"remove it."
                 )
             if url and not name:
                 return "A stream has an address but no name."
@@ -1532,6 +2009,43 @@ def _secrets(settings: Settings) -> set[str]:
             secrets.add(password)
             secrets.add(quote(password, safe=""))
     return secrets
+
+
+def _adopted(settings: Settings) -> str:
+    """What to say about a view the file has switched off, if there is one.
+
+    This is the decision about `enabled: false` in a file written while there
+    was still a tick box for it. Two things could happen to such a view and only
+    one of them is defensible.
+
+    Leaving it off would leave a setting with no control anywhere in this
+    console: a camera view he can see on the form, cannot switch back on, and is
+    given no reason for. He has no terminal and no second machine, so "edit the
+    JSON" is not a way back - it is the end of the road.
+
+    So it is adopted, like every other line on the list. What is not acceptable
+    is doing that silently, because somebody may have meant it: hence this
+    sentence, which names the view, says what happens at the next Save, and
+    points at the control that still expresses "I do not want this view", which
+    is Remove.
+    """
+    off = [
+        stream.name or "a view with no name"
+        for stream in settings.camera.streams
+        if not stream.enabled
+    ]
+    if not off:
+        return ""
+    named = " and ".join(f'"{name}"' for name in off)
+    was = "was" if len(off) == 1 else "were"
+    it = "it" if len(off) == 1 else "they"
+    its = "its" if len(off) == 1 else "their"
+    return (
+        f"{named} {was} switched off in the settings file. There is no longer a "
+        f"switch for that - every view on this list is a view in use - so {it} "
+        f"will be used again from the next Save. Remove {its} card if that is "
+        f"not what you want."
+    )
 
 
 def _first_problem(exc: Exception) -> str:
