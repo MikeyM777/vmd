@@ -26,6 +26,7 @@ vmd-record = "vmd.record_main:main"
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
+    "pytest-timeout>=2.4.0",
 ]
 
 [build-system]
@@ -41,3 +42,20 @@ addopts = "-q"
 markers = [
     "integration: spawns real external processes; slow. Skip with -m 'not integration'",
 ]
+
+# No test may hang. Three mutations have already wedged this suite instead of
+# failing it, and each time only that one mutation was fixed - never the reason a
+# test *can* hang. A suite that stops at 3 a.m. on an unattended machine tells
+# nobody anything; one that fails prints a stack trace naming the line.
+#
+# 30 seconds against a unit suite whose slowest individual test is a few seconds
+# is roughly ten times the worst honest case, which is the point: this is a
+# deadlock detector, not a performance budget. The integration tests legitimately
+# spawn go2rtc and ffmpeg and record real clips in real time - the acceptance
+# test is about half a minute on its own - so `tests/conftest.py` raises the
+# ceiling for anything marked `integration` rather than letting 30 s fail them.
+#
+# `thread` is the only method available on Windows, which is the machine this
+# runs on: SIGALRM does not exist there.
+timeout = 30
+timeout_method = "thread"

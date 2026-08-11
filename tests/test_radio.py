@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from vmd.radio import airos
 from vmd.radio.airos import (
     REDACTED,
     AirOsRadio,
@@ -345,9 +346,33 @@ def test_the_capacity_is_in_megabits_whichever_field_reported_it() -> None:
     assert parse_status({"wireless": {"essid": "x"}}).tx_capacity_mbps is None
 
 
-def test_an_unreachable_radio_is_a_sentence_not_a_crash() -> None:
+# ------------------------------------------------------------- the black hole
+#
+# 192.0.2.0/24 is TEST-NET-1: reserved by RFC 5737, never routed, and therefore
+# never answered and never refused. That is exactly the case these tests are
+# about - a radio that is simply not there - and it is the honest way to
+# reproduce it.
+#
+# What it used to cost was `TIMEOUT` twice over, https then http, with nothing at
+# the other end: three tests at ~12 s each, 36 s of a 165 s suite spent proving
+# that a packet sent nowhere goes nowhere. The behaviour under test is error
+# CLASSIFICATION - an unreachable radio must not be accused of a bad password -
+# and how long the wait was before it got classified is no part of that. So the
+# socket, the failure and every line of the code path are unchanged and only the
+# ceiling moves. Injected rather than shortened in the source: 6 s is the right
+# ceiling for a console with an operator in front of it and the wrong one here.
+NOWHERE = "192.0.2.99:8"
+
+
+@pytest.fixture
+def nowhere(monkeypatch) -> str:
+    monkeypatch.setattr(airos, "TIMEOUT", 0.25)
+    return NOWHERE
+
+
+def test_an_unreachable_radio_is_a_sentence_not_a_crash(nowhere: str) -> None:
     with pytest.raises(RadioError) as caught:
-        AirOsRadio("192.0.2.99:8", USER, PASSWORD).status()
+        AirOsRadio(nowhere, USER, PASSWORD).status()
     assert "cannot reach" in str(caught.value)
 
 
@@ -509,9 +534,9 @@ def test_an_unexplained_code_is_reported_as_itself(radio: str) -> None:
     assert "username or password" not in said
 
 
-def test_a_radio_that_never_answered_is_not_accused_of_anything(radio: str) -> None:
+def test_a_radio_that_never_answered_is_not_accused_of_anything(nowhere: str) -> None:
     with pytest.raises(RadioError) as caught:
-        AirOsRadio("192.0.2.99:8", USER, PASSWORD).status()
+        AirOsRadio(nowhere, USER, PASSWORD).status()
     assert "username or password" not in str(caught.value)
 
 
@@ -750,8 +775,8 @@ def service_for(host: str) -> RadioService:
     )
 
 
-def test_the_service_never_raises(radio: str) -> None:
-    service = service_for("192.0.2.99:8")
+def test_the_service_never_raises(nowhere: str) -> None:
+    service = service_for(nowhere)
     try:
         assert until(lambda: service.status().get("checking") is not True)
         status = service.status()
