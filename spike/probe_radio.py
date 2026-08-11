@@ -778,7 +778,12 @@ def verdict(payload: dict) -> list[str]:
         ]
     else:
         lines += [
-            f"The console's link panel will show {status.signal_dbm} dBm as its headline.",
+            f"The console's link panel will show {status.signal_dbm} dBm as the caption",
+            "on its Signal bar. The headline above the bars is one word for the whole",
+            "link - GOOD, FAIR, BUSY, FULL or WEAK - worked out from this figure and",
+            "the airtime together, and the sentences that explain it are behind the",
+            "`Details` toggle. Ask him for the word, not for the number: the number is",
+            "what this report is for.",
         ]
         if status.remote_signal_dbm is not None:
             lines += [
@@ -789,9 +794,10 @@ def verdict(payload: dict) -> list[str]:
     if status.airtime_percent is not None:
         lines += [
             "",
-            f"Airtime: {status.airtime_percent:g}% of it is spent. This is the figure the",
-            "panel leads with, and it is the one that says whether another stream will",
-            "fit - a wireless link runs out of TIME, not of bits per second.",
+            f"Airtime: {status.airtime_percent:g}% of it is spent. This is the panel's",
+            "`Link in use` bar, and it is the reading that says whether another stream",
+            "will fit - a wireless link runs out of TIME, not of bits per second. It is",
+            "also what turns the headline to BUSY and then to FULL.",
         ]
     unknown = [
         name

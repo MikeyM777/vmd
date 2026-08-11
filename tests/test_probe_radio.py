@@ -317,6 +317,25 @@ def test_the_verdict_leads_with_the_airtime_and_puts_the_capacity_in_its_place(
     assert "kbps" in verdict and "confirmed" in verdict
 
 
+def test_the_verdict_describes_the_panel_the_console_actually_draws(capsys) -> None:
+    """The link panel led with the dBm figure. It has not since `c476aee`.
+
+    It leads with one word for the whole link - GOOD, FAIR, BUSY, FULL, WEAK -
+    with the dBm as the caption on the Signal bar and the sentences folded
+    behind `Details`. This script is the one the operator is told to run when
+    the radio will not read, and its output is what he sends on; a report
+    describing a screen that no longer exists sends whoever is helping him
+    looking for a figure that is not where it says.
+    """
+    _code, out = run([HOST], fetch_returning(REAL_STATUS), capsys=capsys)
+    verdict = out.split("VERDICT")[-1]
+    assert "as its headline" not in verdict, verdict
+    assert "Signal bar" in verdict, verdict
+    # And it names the vocabulary the headline is actually drawn from, so that
+    # whoever reads this knows what to ask him to read out.
+    assert "FULL" in verdict and "GOOD" in verdict, verdict
+
+
 def test_the_verdict_says_why_no_distance_is_reported(capsys) -> None:
     """The radio sent a distance. Two of them, in fact - 0 and 1 - on a 15 km
     link, and the report has to say that is why the panel shows neither rather
