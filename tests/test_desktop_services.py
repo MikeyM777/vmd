@@ -373,6 +373,10 @@ def console_with_detector(
         clock=clock or Clock(),
         now=now or (lambda: 1_000_000.0),
         disk=watching(settings),
+        # Read on the caller's thread, so no test here waits on one. The
+        # detector's report is read on a worker in the console, for the same
+        # reason the folder is.
+        executor=lambda work: work(),
     )
 
 

@@ -16,7 +16,37 @@ from vmd.desktop.app import build_wiring, default_settings_path, pane_factory, p
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.window import ConsoleWindow
-from vmd.settings import Settings, StreamSettings, load_settings, save_settings
+from vmd.settings import (
+    CameraSettings,
+    Settings,
+    StorageSettings,
+    StreamSettings,
+    load_settings,
+    save_settings,
+)
+
+
+# Anything the console reads off the recordings folder is read on a worker now,
+# so an assertion about it is an assertion with a moment's delay in it. Every one
+# of them waits - bounded, and by beating the console rather than by sleeping, so
+# that a reading which never arrives fails the test instead of hanging it.
+BEAT_TIMEOUT = 10.0
+
+
+def beating(window, ready, timeout: float = BEAT_TIMEOUT) -> bool:
+    """Heartbeat the console until `ready()`, or give up and say so."""
+    import time as _time
+
+    from PySide6.QtWidgets import QApplication
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        window.heartbeat()
+        if ready():
+            return True
+        QApplication.processEvents()
+        _time.sleep(0.02)
+    return False
 
 
 class FakeServices:
@@ -24,6 +54,11 @@ class FakeServices:
         self.ticks = 0
         self.stopped = False
         self.applied: list = []
+        # How often the whole state has been composed. On the real services
+        # that means the recorder's sentence, the disk reading and the
+        # detector's report, and a heartbeat that asks for it twice pays for
+        # all three twice.
+        self.state_calls = 0
 
     def apply(self, settings) -> None:
         self.applied.append(settings)
@@ -41,6 +76,7 @@ class FakeServices:
         return f"rtsp://127.0.0.1:8554/{name}"
 
     def state(self) -> dict:
+        self.state_calls += 1
         return {
             "recording": True,
             "streaming": "streaming",
@@ -370,6 +406,7 @@ class NoDetectionServices(FakeServices):
 
 class FailingDetectionServices(FakeServices):
     def state(self) -> dict:
+        self.state_calls += 1
         return {
             "recording": True,
             "streaming": "streaming",
@@ -411,8 +448,16 @@ def test_the_status_line_survives_services_with_nothing_to_say_about_detection(
 
 
 def test_live_and_playback_read_the_same_movement(qtbot, tmp_path: Path) -> None:
-    """One store, two tabs. Two connections to one file would be two answers
-    to the same question."""
+    """One file, two tabs, one answer.
+
+    Two readers now, not one store: the Live tab reads on a worker because
+    events.db lives in the folder that goes away, and sqlite will not let one
+    connection cross threads. WAL is what makes two of them safe. What must not
+    change is that both tabs show the same movement.
+
+    Bounded, and it beats the console rather than sleeping: a reading that never
+    arrives fails this test instead of hanging it.
+    """
     from vmd.desktop.timeline import day_bounds
     from vmd.detect.events import EventStore
 
@@ -423,9 +468,9 @@ def test_live_and_playback_read_the_same_movement(qtbot, tmp_path: Path) -> None
     store.close()
 
     window, _ = build(qtbot, tmp_path, events_path=events_path)
-    window.heartbeat()
-
-    assert len(window.live.recent_rows()) == 1
+    assert beating(window, lambda: len(window.live.recent_rows()) == 1), (
+        "the movement never reached the Live tab"
+    )
     window.playback.show_day(2026, 8, 11, stream="thermal")
     assert len(window.playback.event_marks) == 1
     window.close()
@@ -458,7 +503,8 @@ def test_an_event_store_that_will_not_open_costs_detection_not_the_console(
         assert not isinstance(window.tabs.widget(index), QLabel)
 
     # And it goes on ticking, with no movement to show.
-    window.heartbeat()
+    for _ in range(3):
+        window.heartbeat()
     assert window.live.recent_rows() == []
     window.close()
 
@@ -1148,3 +1194,167 @@ def test_a_radio_with_nothing_to_report_still_says_nothing() -> None:
         "link -"
     )
     assert ConsoleWindow._link_words({"checking": True}) == "link checking"
+
+
+# ------------------------------------- the heartbeat and the folder that goes
+#
+# `vmd/desktop/disk.py` opens by stating the rule: none of it runs on the GUI
+# thread and none of it runs on the two-second heartbeat, because a disconnected
+# drive can leave a filesystem call blocked for many seconds. Two things broke
+# it against that same folder - the detector's report and the movement list -
+# so the dead-drive case the rule exists for was also the case in which the
+# console froze every two seconds.
+
+
+# How long a wedged read pretends the drive is still thinking about it. Long
+# enough that a console reading on the GUI thread is caught, short enough that
+# being caught costs the suite seconds rather than minutes.
+WEDGE_SECONDS = 3.0
+
+
+class WedgedStore:
+    """A movement database on a drive that has gone away.
+
+    `recent` never returns for as long as anyone would wait for it. Bounded
+    inside and released at the end of the test, so that a console which really
+    did read it on the GUI thread fails this test rather than hanging the suite.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self.released = threading.Event()
+        self.asked = threading.Event()
+
+    def recent(self, limit: int):
+        self.asked.set()
+        self.released.wait(WEDGE_SECONDS)
+        return []
+
+
+def test_a_recordings_folder_that_has_gone_does_not_freeze_the_heartbeat(
+    qtbot, tmp_path: Path
+) -> None:
+    import threading
+    import time as _time
+
+    from vmd.desktop.live import LiveTab
+    from vmd.desktop.video import FakeVideoPane
+
+    store = WedgedStore()
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        events=store,
+    )
+    qtbot.addWidget(tab)
+    try:
+        tab.apply(load_settings(_settings_with_a_stream(tmp_path)))
+        slowest = 0.0
+        for _ in range(5):
+            started = _time.monotonic()
+            tab.refresh()
+            slowest = max(slowest, _time.monotonic() - started)
+        assert store.asked.wait(10.0), "the movement list was never read at all"
+        assert slowest < 1.0, f"a refresh took {slowest:.1f} s against a dead folder"
+        # And the one blocked reading did not become one worker per beat.
+        stuck = [t for t in threading.enumerate() if "movement" in t.name]
+        assert len(stuck) <= 1, [t.name for t in stuck]
+    finally:
+        store.released.set()
+        tab.shutdown()
+
+
+def test_the_detector_s_report_is_not_read_on_the_heartbeat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same folder, the same rule. `read_detection_status` was reached from
+    `heartbeat` -> `status_parts` -> `state` -> `detection_state`, and it opens
+    a file in the recordings root."""
+    import threading
+    import time as _time
+
+    from vmd.desktop import services as services_module
+    from vmd.desktop.services import ConsoleServices, DetectorProcess, RecorderProcess
+
+    released = threading.Event()
+    asked = threading.Event()
+
+    class Living:
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    settings_path = _settings_with_a_stream(tmp_path, detect=True)
+    services = ConsoleServices(
+        settings=load_settings(settings_path),
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(settings_path, spawn=lambda c: Living()),
+        detector=DetectorProcess(settings_path, spawn=lambda c: Living()),
+    )
+
+    def wedged(path):
+        asked.set()
+        released.wait(WEDGE_SECONDS)
+        return None
+
+    # The file itself, not the console's plumbing: the question is whether
+    # opening it happens on the thread that asked for the state.
+    monkeypatch.setattr(services_module, "read_detection_status", wedged)
+    try:
+        slowest = 0.0
+        for _ in range(5):
+            started = _time.monotonic()
+            services.state()
+            slowest = max(slowest, _time.monotonic() - started)
+        assert asked.wait(10.0), "the detector's report was never read at all"
+        assert slowest < 1.0, f"state() took {slowest:.1f} s against a dead folder"
+    finally:
+        released.set()
+
+
+def test_the_services_are_asked_what_they_are_doing_once_a_beat(
+    qtbot, tmp_path: Path
+) -> None:
+    """`status_parts` and `recording_now` both need it, and both used to ask -
+    so every beat composed the recorder's sentence, the disk reading and the
+    detector's report twice over."""
+    window, services = build(qtbot, tmp_path)
+    before = services.state_calls
+    window.heartbeat()
+    assert services.state_calls - before == 1, (
+        f"one heartbeat asked for the state {services.state_calls - before} times"
+    )
+    window.close()
+
+
+def _settings_with_a_stream(tmp_path: Path, detect: bool = False) -> Path:
+    path = tmp_path / "settings.json"
+    save_settings(
+        Settings(
+            camera=CameraSettings(
+                host="10.0.0.2",
+                streams=[
+                    StreamSettings(
+                        name="thermal",
+                        url="rtsp://10.0.0.2/t",
+                        enabled=True,
+                        detect=detect,
+                    )
+                ],
+            ),
+            storage=StorageSettings(root=tmp_path / "recordings"),
+        ),
+        path,
+    )
+    return path

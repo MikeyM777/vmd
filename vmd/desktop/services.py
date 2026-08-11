@@ -19,6 +19,7 @@ from typing import Callable
 
 from vmd.background import BackgroundValue
 from vmd.desktop.disk import DiskWatcher
+from vmd.desktop.watch import Watched
 # The recorder's own exit code for "another recorder already holds the claim",
 # imported rather than repeated: it is a protocol between exactly these two
 # files, and a second copy of the number would be a second opinion within a
@@ -91,6 +92,20 @@ DETECTION_STATUS_FILENAME = "detection.json"
 # this into "permanently stale".
 DETECTION_STATUS_STALE_SECONDS = 30.0
 DETECTION_STATUS_STALE_INTERVALS = 4
+
+# How often that file is actually read, and it is read on a worker.
+#
+# It lives in the recordings root, which is the folder that goes away - a drive
+# letter with nothing behind it, or a UNC path an operator typed - and reading
+# it was being done on the GUI thread on the two-second heartbeat. So the exact
+# case `vmd/desktop/disk.py` was written to report was also the case in which
+# the console froze every two seconds.
+#
+# Five seconds, which is the detector's own default reporting interval: asking
+# more often than the file is written is asking for the same answer. Six times
+# this is the staleness limit above, so a wedged detector is still reported
+# within a handful of heartbeats.
+DETECTION_STATUS_POLL_SECONDS = 5.0
 
 # How a child that will not stay up is recognised: more than this many restarts
 # inside this window and the console stops calling it running. Two minutes is
@@ -1240,6 +1255,7 @@ class ConsoleServices:
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], float] = time.time,
         disk: DiskWatcher | None = None,
+        executor: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self.settings = settings
         self.settings_path = Path(settings_path)
@@ -1261,6 +1277,16 @@ class ConsoleServices:
         self._now = now
         self.detection_status_path = (
             Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+        )
+        # And the same treatment the folder itself gets, for the same reason and
+        # against the same folder: read on a worker, answered from what the last
+        # one left behind. See DETECTION_STATUS_POLL_SECONDS.
+        self._detection_report: Watched[dict] = Watched(
+            read=lambda: read_detection_status(self.detection_status_path),
+            every=DETECTION_STATUS_POLL_SECONDS,
+            executor=executor,
+            clock=clock,
+            name="the detector's report",
         )
 
         # Detection nobody asked for is not supervised at all. `vmd.detect_main`
@@ -1454,6 +1480,10 @@ class ConsoleServices:
         # Left pointing at the old folder, the status line would read a file
         # nobody writes any more and call detection unknown for ever.
         self.detection_status_path = Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+        # A file at the old path is a file nobody writes any more, and the last
+        # answer read out of it is not about the folder in front of the operator
+        # now. Ask again at once rather than waiting out the interval.
+        self._detection_report.forget()
         # The folder it watches may have moved too, and a saved folder is a new
         # question rather than one to wait out the poll interval for.
         self.disk.apply(settings)
@@ -1774,8 +1804,16 @@ class ConsoleServices:
         read the detector's report, or read one written before lunch, has to say
         it does not know - anything else is the console inventing health it was
         never told about.
+
+        The file is not opened here. It is opened on a worker and this reads
+        what the worker left behind, because this is called from the status
+        line, on the heartbeat, against the folder that goes away. The reading
+        starts here rather than in `tick` so that a console asked for its state
+        by something other than the heartbeat is asking a fresh question too;
+        starting one costs a lock and, at most every few seconds, a thread.
         """
-        status = read_detection_status(self.detection_status_path)
+        self._detection_report.poll()
+        status = self._detection_report.value
         if status is None or not detection_status_fresh(status, self._now()):
             return [], False
         streams = [

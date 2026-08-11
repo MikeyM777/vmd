@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +36,7 @@ from typing import Callable
 from PySide6.QtWidgets import QGroupBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from vmd.desktop.style import PALETTE
+from vmd.desktop.watch import Watched
 from vmd.settings import Settings, StorageSettings, detect_free_bytes
 
 logger = logging.getLogger(__name__)
@@ -419,9 +419,11 @@ def bytes_in_words(count: float) -> str:
 class DiskWatcher:
     """Reads the folder on a worker, at most once every `POLL_SECONDS`.
 
-    Not a QObject and not tied to a thread pool, so it can be built and driven
-    by `ConsoleServices`, which has no window and no event loop, and driven
-    synchronously by a test that must never wait on a thread.
+    A `Watched` with the recordings folder as its question. The mechanism moved
+    out to `vmd/desktop/watch.py` when two more questions about this same folder
+    - the detector's report and the movement list - had to stop being asked on
+    the heartbeat: the rule at the top of this file is not about the disk, and
+    three copies of it would have been three rules within a month.
     """
 
     def __init__(
@@ -433,19 +435,34 @@ class DiskWatcher:
         read: Callable[[Settings, float], DiskReading] | None = None,
     ) -> None:
         self.settings = settings
-        self._executor = executor or _daemon_thread
-        self._clock = clock
         self._now = now
         self._read = read or (lambda settings, now: read_disk(settings, now=now))
-        self._lock = threading.Lock()
-        self._reading: DiskReading | None = None
-        self._last_started: float | None = None
-        self._in_flight = False
+        self._watched: Watched[DiskReading] = Watched(
+            read=self._look,
+            every=POLL_SECONDS,
+            executor=executor,
+            clock=clock,
+            name="the recordings folder",
+        )
+
+    def _look(self) -> DiskReading:
+        """One reading, on the worker. Never raises: a panel beats a dead thread.
+
+        The settings are read here rather than captured when the reading was
+        started, so a folder saved a moment ago is the folder that gets read.
+        """
+        settings = self.settings
+        try:
+            return self._read(settings, self._now())
+        except Exception as exc:  # noqa: BLE001 - a panel beats a dead thread
+            logger.exception("the recordings folder could not be read")
+            return _unusable(
+                self._now(), f"The recordings folder could not be read: {exc}."
+            )
 
     @property
     def reading(self) -> DiskReading | None:
-        with self._lock:
-            return self._reading
+        return self._watched.value
 
     def apply(self, settings: Settings) -> None:
         """Take the settings the operator just saved, and ask again at once.
@@ -453,41 +470,12 @@ class DiskWatcher:
         A saved folder is a new question. Waiting out the rest of the interval
         would leave the panel describing the folder that was replaced.
         """
-        with self._lock:
-            self.settings = settings
-            self._last_started = None
+        self.settings = settings
+        self._watched.again()
 
     def poll(self) -> None:
         """Called from the heartbeat. Starts a reading if one is due."""
-        with self._lock:
-            if self._in_flight:
-                # A stat blocked on a dead drive must not queue one worker per
-                # heartbeat behind it.
-                return
-            now = self._clock()
-            if self._last_started is not None and now - self._last_started < POLL_SECONDS:
-                return
-            self._last_started = now
-            self._in_flight = True
-            settings = self.settings
-
-        def work() -> None:
-            try:
-                reading = self._read(settings, self._now())
-            except Exception as exc:  # noqa: BLE001 - a panel beats a dead thread
-                logger.exception("the recordings folder could not be read")
-                reading = _unusable(
-                    self._now(), f"The recordings folder could not be read: {exc}."
-                )
-            with self._lock:
-                self._reading = reading
-                self._in_flight = False
-
-        self._executor(work)
-
-
-def _daemon_thread(work: Callable[[], None]) -> None:
-    threading.Thread(target=work, name="vmd-disk", daemon=True).start()
+        self._watched.poll()
 
 
 class StoragePanel(QGroupBox):

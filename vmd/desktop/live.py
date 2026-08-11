@@ -57,6 +57,7 @@ from vmd.desktop.style import (
     WEIGHT_VALUE,
 )
 from vmd.desktop.video import VideoPane
+from vmd.desktop.watch import Watched
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
 from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
@@ -117,6 +118,21 @@ NO_VIEWS_NOTE = "No pictures. Add a camera view in Settings."
 # How many rows of movement the side column shows. The list is a glance, not an
 # archive - the archive is Playback, where the same events are marks on the day.
 RECENT_LIMIT = 20
+
+# How often the movement list is read, and it is read on a worker now.
+#
+# Zero, meaning once per refresh: the heartbeat is the rate limit, and it has to
+# be. This list is what raises the alarm strip, and an interval of its own would
+# be a second delay added to the one thing on this screen that must not have
+# one. The reading before it never piles up either way - `Watched` will not
+# start a second read while the first is still out on a drive that has gone.
+#
+# What it does cost is one beat: the refresh draws what the last reading left
+# behind, so movement announces itself two seconds later than it did when this
+# was read on the GUI thread. That is the price of the console not freezing
+# every two seconds when the recordings folder is unreachable, and it is the
+# right way round - a console frozen at that moment shows nothing at all.
+EVENTS_POLL_SECONDS = 0.0
 
 # How many restarts of one stream are reported in full before the console
 # starts saying it once in a while instead. The same shape as the supervisor's
@@ -482,6 +498,7 @@ class LiveTab(QWidget):
         storage=None,
         radio=None,
         clock: Callable[[], float] | None = None,
+        executor: Callable[[Callable[[], None]], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -494,6 +511,27 @@ class LiveTab(QWidget):
         self._make_pane = make_pane
         self._local_url = local_url
         self._events = events
+        # The movement list is read on a worker, not here. events.db lives in
+        # the recordings root - the folder that goes away - and this was being
+        # read on the GUI thread on the two-second heartbeat, which made the
+        # dead-drive case the case in which the console froze every two seconds.
+        # `vmd/desktop/disk.py` states that rule; this is the same folder.
+        #
+        # Whatever is handed in has to be readable from a thread that is not
+        # this one. `EventStore`'s own rule is that one instance belongs to one
+        # thread and another thread opens its own against the same file - see
+        # `ConsoleWindow._movement_reader`, which is what the console hands in.
+        self._events_watch: Watched[list] | None = (
+            Watched(
+                read=lambda: list(self._events.recent(RECENT_LIMIT)),
+                every=EVENTS_POLL_SECONDS,
+                executor=executor,
+                clock=clock or time.monotonic,
+                name="the movement list",
+            )
+            if events is not None
+            else None
+        )
         # A DiskWatcher, or None for a console started with --no-services, which
         # has no folder to watch. It must cost the storage lines and nothing
         # else - the pictures and the steering are not downstream of the disk.
@@ -839,12 +877,16 @@ class LiveTab(QWidget):
         pictures, the steering and the panes are not downstream of it, and an
         operator who loses the movement list must not lose the camera with it.
         """
-        if self._events is None:
+        if self._events_watch is None:
             return
-        try:
-            events = list(self._events.recent(RECENT_LIMIT))
-        except Exception:  # noqa: BLE001 - the camera does not depend on this
-            logger.exception("the movement list could not be read")
+        self._events_watch.poll()
+        events = self._events_watch.value
+        if events is None:
+            # Nothing has been read yet, or the last read failed - which is
+            # already a line in the Logs tab, said once rather than every two
+            # seconds. Either way there is nothing to draw and nothing to
+            # announce, and a movement that has not been read is not a movement
+            # that has been acknowledged: the next reading raises it.
             return
 
         ids = frozenset(event.id for event in events)

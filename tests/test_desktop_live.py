@@ -102,6 +102,10 @@ def build(qtbot, *names: str, events=None, register: bool = True, clock=None):
         local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
         events=events,
         clock=clock,
+        # Read on the caller's thread, so no test here waits on one. In the
+        # console the movement list is read on a worker, because events.db is
+        # in the recordings folder and that is the folder that goes away.
+        executor=lambda work: work(),
     )
     # A tab that is about to be given to a parent widget is left unregistered:
     # qtbot would then close and delete it twice over.

@@ -93,6 +93,13 @@ BLINK_MS = 900
 # the exact doubt this indicator exists to remove. It dims; it never leaves.
 DIM_ALPHA = 0.30
 
+# "Nobody has asked yet", as something that cannot be confused with a state.
+# `status_parts`, `status_text` and `recording_now` each need the services'
+# state, and each used to ask for it - so a single heartbeat had the services
+# compose the whole thing twice over, including the recorder's sentence and the
+# detector's report. Given one, they share it; given none, they ask.
+_UNASKED = object()
+
 
 def _dimmed(colour: str, alpha: float = DIM_ALPHA) -> str:
     """The same colour mixed down towards the page, as a hex Qt can parse."""
@@ -417,10 +424,16 @@ class ConsoleWindow(QMainWindow):
         # here only for a window built without one - a test, or anything that
         # constructs the console directly.
         self._buffer = attach(log_buffer if log_buffer is not None else LogBuffer())
-        # One store, read by Live and by Playback: two connections to one file
-        # would be two answers to the same question. Opened before the tabs and
-        # outside their factories, so that a database which will not open costs
-        # detection rather than the Live tab.
+        # Opened before the tabs and outside their factories, so that a database
+        # which will not open costs detection rather than the Live tab.
+        #
+        # This store belongs to the GUI thread and is the Playback tab's, which
+        # reads it when the operator picks a day. The Live tab reads the same
+        # file on a worker instead - see `_movement_reader` - because it reads
+        # on the heartbeat and this file is in the folder that goes away. Two
+        # readers of one file, not two answers: sqlite in WAL mode is how the
+        # detector writes it while both of them read it.
+        self._events_path = events_path
         self.events = self._open_events(events_path)
 
         try:
@@ -434,7 +447,8 @@ class ConsoleWindow(QMainWindow):
                 ptz=ptz,
                 make_pane=make_pane,
                 local_url=services.local_url,
-                events=self.events,
+                # Not the store itself: the Live tab reads on a worker.
+                events=self._movement_reader(),
                 # The same reading the status line asks about recording, drawn
                 # in the right column as the design has it. `getattr`, because
                 # services are handed in and one without a disk watcher must
@@ -509,8 +523,41 @@ class ConsoleWindow(QMainWindow):
         self._blink = QTimer(self)
         self._blink.setInterval(BLINK_MS)
         self._blink.timeout.connect(self._beat)
-        self.band.show_parts(self.status_parts())
-        self._show_recording()
+        state = self._ask_state()
+        self.band.show_parts(self.status_parts(state))
+        self._show_recording(state)
+
+    def _movement_reader(self):
+        """The movement list, readable from a thread that is not this one.
+
+        The Live tab reads it on a worker, because events.db is in the
+        recordings root and that is the folder that goes away - see
+        `vmd/desktop/watch.py`. The store the Playback tab uses cannot go with
+        it: `EventStore`'s own rule is that one instance belongs to one thread,
+        and sqlite enforces that by refusing.
+
+        So the tab is handed this instead, which opens its own store for each
+        reading and closes it again - which is exactly what `EventStore` says
+        another thread should do, and WAL is why it is safe beside the detector
+        writing. None when there is no database to read, which costs the
+        movement list and nothing else.
+        """
+        if self.events is None:
+            return None
+        path = self._events_path
+
+        class _MovementAnywhere:
+            @staticmethod
+            def recent(limit: int):
+                from vmd.detect.events import EventStore
+
+                store = EventStore(path)
+                try:
+                    return store.recent(limit)
+                finally:
+                    store.close()
+
+        return _MovementAnywhere()
 
     @staticmethod
     def _open_events(events_path: str | Path | None):
@@ -565,12 +612,14 @@ class ConsoleWindow(QMainWindow):
         self._refresh(self.live)
         if self.tabs.currentWidget() is self.logs:
             self._refresh(self.logs)
-        self.band.show_parts(self.status_parts())
-        self._show_recording()
+        # Asked once and handed to both. See `_UNASKED`.
+        state = self._ask_state()
+        self.band.show_parts(self.status_parts(state))
+        self._show_recording(state)
 
-    def _show_recording(self) -> None:
+    def _show_recording(self, state=_UNASKED) -> None:
         """Point the dot at the truth, and run the timer only while it moves."""
-        recording = self.recording_now()
+        recording = self.recording_now(state)
         self.band.show_recording(recording, self._bright)
         if recording and self.isVisible():
             if not self._blink.isActive():
@@ -662,8 +711,9 @@ class ConsoleWindow(QMainWindow):
                 if isinstance(answered, list):
                     problems.extend(str(problem) for problem in answered)
         self._report_save(problems)
-        self.band.show_parts(self.status_parts())
-        self._show_recording()
+        state = self._ask_state()
+        self.band.show_parts(self.status_parts(state))
+        self._show_recording(state)
 
     def _report_save(self, problems: list[str]) -> None:
         """Say, under the button that was just pressed, what did not take effect.
@@ -699,7 +749,19 @@ class ConsoleWindow(QMainWindow):
         nothing, and taken the heartbeat down with it."""
         return " · ".join(words for _glance, words, _state in self.status_parts())
 
-    def status_parts(self) -> list[tuple[str, str, str]]:
+    def _ask_state(self):
+        """What the services are doing, or None because they could not be asked.
+
+        None is a state of its own and is drawn as one: a services object that
+        cannot answer is a fault, not an empty answer.
+        """
+        try:
+            return self._services.state()
+        except Exception:  # noqa: BLE001 - the console must go on drawing
+            logger.exception("the services could not say what they are doing")
+            return None
+
+    def status_parts(self, state=_UNASKED) -> list[tuple[str, str, str]]:
         """The same sentences the status line has always carried, each with the
         word it goes by and the state it is reporting.
 
@@ -715,11 +777,10 @@ class ConsoleWindow(QMainWindow):
         can end up describing different parts of the system in the same column.
         """
         parts: list[tuple[str, str, str]] = []
+        if state is _UNASKED:
+            state = self._ask_state()
 
-        try:
-            state = self._services.state()
-        except Exception:  # noqa: BLE001
-            logger.exception("the services could not say what they are doing")
+        if state is None:
             # No glance word: this is never the healthy case, so nothing would
             # ever draw one.
             parts.append(
@@ -779,17 +840,24 @@ class ConsoleWindow(QMainWindow):
 
         return parts
 
-    def recording_now(self) -> bool:
+    def recording_now(self, state=_UNASKED) -> bool:
         """Whether footage is reaching the disk, for the dot that says so.
 
-        Its own reading rather than a flag set inside `status_parts`, so that a
-        services object which cannot be asked anything leaves the dot saying
-        "not recording" - which is the truth, and is the safe way round. A dot
-        that keeps blinking because nobody could be asked is exactly the lie
-        this indicator exists to stop telling.
+        Read from `recording` and from nothing else, so that a services object
+        which cannot be asked anything leaves the dot saying "not recording" -
+        which is the truth, and is the safe way round. A dot that keeps blinking
+        because nobody could be asked is exactly the lie this indicator exists
+        to stop telling.
+
+        It takes the heartbeat's own reading when there is one rather than
+        asking again: composing the state a second time on every beat asked the
+        recorder, the disk and the detector's report all over again for an
+        answer the beat already had.
         """
+        if state is _UNASKED:
+            state = self._ask_state()
         try:
-            return bool(self._services.state().get("recording"))
+            return bool(state is not None and state.get("recording"))
         except Exception:  # noqa: BLE001 - the dot must not take the heartbeat down
             logger.exception("the services could not say whether they are recording")
             return False
