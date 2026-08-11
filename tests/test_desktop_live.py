@@ -354,6 +354,47 @@ def test_a_stream_that_only_flaps_keeps_climbing_the_backoff(qtbot) -> None:
     assert restarts_seen[-1] == restarts_seen[-2], "it should have stopped by now"
 
 
+def test_a_stream_a_dead_server_keeps_refusing_climbs_the_backoff(qtbot, caplog) -> None:
+    """The operator's Logs tab, three minutes of it, at the pane's own pace.
+
+    This is the shape the field actually produces, and it has no `playing` in it
+    at all: the pane is restarted, libVLC spends a few seconds failing to set up
+    the RTSP session, and the pane reports `failed` again - so the console sees
+    failed, connecting, connecting, failed, for as long as it is open. None of
+    connecting, late or stopped is a recovery, and if any of them forgave the
+    ladder the way one `playing` reading used to, this stream would be restarted
+    every six seconds for ever and the Logs tab would carry nothing else.
+
+    Six seconds is the measured spacing from his laptop, and it is why the first
+    two rungs - two seconds and four - are invisible there: they are shorter
+    than libVLC's own time to give up, so the first three restarts are that far
+    apart however the ladder is set. It has to have climbed past them by the
+    end of three minutes, and the line has to have stopped being written.
+    """
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    pane = panes["thermal"]
+    since_restart = 99
+
+    with caplog.at_level("WARNING", logger="vmd.desktop.live"):
+        for _ in range(90):  # 180 s of heartbeats
+            if since_restart >= 3:  # libVLC takes about six seconds to give up
+                pane.pretend_failed()
+            before = pane.restarts
+            tab.refresh()
+            since_restart = 0 if pane.restarts > before else since_restart + 1
+            clock.advance(2.0)
+
+    assert pane.restarts >= 3, "it must go on trying"
+    assert pane.restarts <= 10, (
+        f"{pane.restarts} restarts in three minutes: the ladder never climbed"
+    )
+    assert len(caplog.records) <= 4, (
+        f"{len(caplog.records)} lines about one stream in three minutes evicts "
+        "everything that explains it from a 500-line ring"
+    )
+
+
 def test_saving_something_else_does_not_forgive_a_camera_that_is_off(qtbot) -> None:
     """A Save that corrects the storage folder has said nothing about a camera
     that is switched off, and it used to put every pane back on the bottom rung
