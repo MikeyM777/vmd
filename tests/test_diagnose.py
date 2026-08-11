@@ -85,6 +85,78 @@ def test_the_camera_password_never_survives_in_either_form(no_network) -> None:
     assert "****" in text
 
 
+def test_a_password_typed_into_the_address_itself_is_redacted(no_network) -> None:
+    """The form the camera's own instructions come in, and the one that leaked.
+
+    Every camera manual on earth gives the address as
+    `rtsp://admin:hunter2@192.168.1.251/ch0`, and an operator who pastes that in
+    has no reason to fill the password field as well - the address already
+    carries the login, which is a case this file explicitly handles two hundred
+    lines further down. But redaction worked off the two password FIELDS, so a
+    password that was never in either of them was printed verbatim on the
+    `typed :` line of a report whose whole purpose is being handed to somebody
+    else.
+
+    That is the fifth encoding of the same bug in this project, which is the
+    reason the rule changed: the secret is found in the output rather than
+    listed at every place it might appear.
+    """
+    settings = settings_with(password="")
+    settings.camera.streams = [
+        StreamSettings(name="thermal", url="rtsp://admin:hunter2@10.0.0.5:554/ch1")
+    ]
+    text = "\n".join(diagnose(settings))
+    assert "hunter2" not in text, text
+    # And what is left is still the sentence he came for: the username and the
+    # address are what he checks, and only the secret goes.
+    assert "admin" in text and "10.0.0.5" in text
+
+
+def test_a_password_in_an_address_survives_neither_the_typed_nor_the_encoded_form(
+    no_network,
+) -> None:
+    """The same address with a password that has to be escaped to travel."""
+    settings = settings_with(password="")
+    settings.camera.streams = [
+        StreamSettings(name="thermal", url=f"rtsp://admin:{ENCODED}@10.0.0.5:554/ch1")
+    ]
+    lines = diagnose(settings) + [f"ffprobe: could not open rtsp://admin:{ENCODED}@10.0.0.5/ch1"]
+    text = "\n".join(redact(lines, settings))
+    assert ENCODED not in text, text
+    assert PASSWORD not in text, text
+
+
+def test_a_login_in_a_line_is_masked_even_when_settings_has_never_heard_of_it() -> None:
+    """The half of the rule that stopped listing places and looks for the shape.
+
+    ffprobe, ffmpeg and go2rtc all echo the address they were given, and the
+    address they were given is not always one this settings file can name - a
+    go2rtc source, a URL built by something else, a line copied from a log. The
+    only thing every one of them has in common is `scheme://user:secret@`, and
+    that is now what is looked for.
+    """
+    text = "\n".join(
+        redact(["ffprobe: rtsp://admin:s3cret@10.0.0.5/ch1 refused"], settings_with(password=""))
+    )
+    assert "s3cret" not in text, text
+    assert "rtsp://admin:****@10.0.0.5/ch1" in text, text
+
+
+def test_a_password_from_an_address_is_masked_where_it_is_echoed_on_its_own() -> None:
+    """And the half that still earns its place: a secret with no shape to find.
+
+    A camera that puts the login in its refusal - or any tool that prints the
+    password without the URL around it - leaves nothing for the pattern above to
+    match, which is why the list of known secrets is still applied afterwards.
+    """
+    settings = settings_with(password="")
+    settings.camera.streams = [
+        StreamSettings(name="thermal", url="rtsp://admin:hunter2@10.0.0.5:554/ch1")
+    ]
+    text = "\n".join(redact(["the camera answered: bad login for admin/hunter2"], settings))
+    assert "hunter2" not in text, text
+
+
 def test_the_radio_password_is_redacted_too(no_network) -> None:
     settings = settings_with(password="")
     settings.radio = RadioSettings(

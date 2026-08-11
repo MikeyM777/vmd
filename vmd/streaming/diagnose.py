@@ -37,24 +37,56 @@ COMMON_PATHS = [
 ]
 
 
+# The login inside a URL, wherever one turns up in this report.
+#
+# Length-bounded on every part, which is the rule `vmd/desktop/logs.py` states
+# for the same reason: this runs over ffprobe's own error text, and an
+# unbounded alternation over attacker-shaped input is how a redaction pass
+# becomes a hang. A password may not contain a bare `@` - the URL would not
+# parse - so the boundary is unambiguous.
+_URL_LOGIN = re.compile(
+    r"(?P<head>[a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^\s:/?#@]{0,64}:)"
+    r"(?P<secret>[^\s/?#@]{1,128})"
+    r"(?P<tail>@)"
+)
+
+
 def secrets_of(settings: Settings) -> list[str]:
     """Every form of every password that could appear in these lines.
 
-    Both forms, because they are genuinely different strings. The operator types
-    the password into its own field and `with_credentials` percent-encodes it
-    into the RTSP URL, so `p@ss:w/rd` travels as `p%40ss%3Aw%2Frd` - and a
-    redaction that only knew the typed form matched nothing at all and wrote the
-    real password into a report meant to be sent to someone else.
+    Both forms of each, because they are genuinely different strings. The
+    operator types the password into its own field and `with_credentials`
+    percent-encodes it into the RTSP URL, so `p@ss:w/rd` travels as
+    `p%40ss%3Aw%2Frd` - and a redaction that only knew the typed form matched
+    nothing at all and wrote the real password into a report meant to be sent to
+    someone else.
+
+    The stream addresses are read as well as the two password fields, and that
+    is the part that was missing. Every camera manual gives the address as
+    `rtsp://admin:hunter2@192.168.1.251/ch0`, and an operator who pastes that in
+    has no reason to fill the password field too - this file handles that case
+    explicitly further down, under "this address already carries a login". The
+    secret was then in none of the fields redaction knew about.
 
     Longest first so that a password which contains another one is masked whole
     rather than leaving a tail behind.
     """
     values: set[str] = set()
-    for secret in (settings.camera.password, settings.radio.password):
+    typed = [settings.camera.password, settings.radio.password]
+    for stream in settings.camera.streams:
+        found = _URL_LOGIN.search(str(stream.url or ""))
+        if found:
+            typed.append(found.group("secret"))
+    for secret in typed:
         if not secret:
             continue
         values.add(secret)
         values.add(quote(secret, safe=""))
+    # Deliberately NOT the decoded form. `unquote` on a password containing a
+    # percent sign turns it into an ordinary-looking string - `a%20b` becomes
+    # `a b` - and this list is applied to every line of the report by plain
+    # substring replacement, so a short decoded form would mask real words and
+    # leave the operator a report he cannot read.
     return sorted(values, key=len, reverse=True)
 
 
@@ -66,12 +98,20 @@ def redact(lines: list[str], settings: Settings) -> list[str]:
     against the credentialed address and routinely echoes it back inside its own
     error text, which this then prints six lines of. Redacting at the exit is
     the only place that covers both, and anything added later.
+
+    Two passes, and the first is the one that matters. Redaction in this project
+    has now been fixed five times, each time for one more place a password could
+    be - the typed form, the percent-encoded form, the radio's as well as the
+    camera's, the address the operator pasted it into. So the first pass stops
+    listing places and looks for the SHAPE: any `scheme://user:secret@` in any
+    line loses its secret, whether or not anything in settings.json has ever
+    heard of it. The second pass is the list, which still earns its place -
+    a password echoed on its own, outside a URL, has no shape to find.
     """
     secrets = secrets_of(settings)
-    if not secrets:
-        return lines
     cleaned = []
     for line in lines:
+        line = _URL_LOGIN.sub(lambda m: f"{m.group('head')}****{m.group('tail')}", line)
         for secret in secrets:
             line = line.replace(secret, "****")
         cleaned.append(line)
