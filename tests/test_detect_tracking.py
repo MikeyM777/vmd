@@ -29,6 +29,45 @@ def test_travelled_is_the_distance_from_first_to_last_centre():
     assert track.travelled == 50.0  # 3-4-5 triangle
 
 
+def test_a_track_that_never_dies_does_not_grow_without_bound():
+    """This process runs for months, and some tracks never end.
+
+    A track stays alive while a blob within reach turns up at least every eight
+    frames, which is exactly what foliage in wind does - the design says so
+    itself: blobs that "appear, vanish and reappear in the same place for as
+    long as the wind blows". It is never confirmed, so nothing ever closes it.
+
+    Measured against the unbounded version: one such track held 360,000 boxes
+    after four hours at 25 fps - 31.7 MB, about 190 MB a day, 5.6 GB a month.
+    """
+    track = Track(id=1)
+    for index in range(50_000):
+        track.observe(Box(100 + (index % 3), 100, 10, 20), index)
+
+    assert len(track.boxes) <= 128, f"{len(track.boxes)} boxes held by one track"
+    assert len(track.seen_frames) <= 128
+
+
+def test_a_long_track_still_knows_where_it_started():
+    """Trimming the history must not cost the travel rule its origin.
+
+    `travelled` is first centre to last, and it is the wind rule. Measuring it
+    from a trimmed window instead would turn a long slow walk into a short one
+    and stop confirming it.
+    """
+    track = Track(id=1)
+    for index in range(2_000):
+        track.observe(Box(index, 0, 10, 10), index)
+    assert track.travelled == 1999.0
+
+
+def test_the_confirmation_window_survives_a_trimmed_history():
+    track = Track(id=1)
+    for index in range(2_000):
+        track.observe(Box(index * 3, 0, 10, 10), index)
+    assert confirmed(track, need=3, window=5, min_travel_px=12) is True
+
+
 def test_travel_does_not_accumulate_from_jitter():
     """A blob shivering in place has travelled nothing, however long it shivers."""
     track = Track(id=1)

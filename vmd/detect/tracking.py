@@ -10,6 +10,7 @@ last M frames *and* has moved further than a minimum distance.
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 
 from vmd.detect.motion import Box
@@ -30,20 +31,41 @@ DEFAULT_NEED = 3
 DEFAULT_WINDOW = 5
 DEFAULT_MIN_TRAVEL_PX = 12
 
+# How many recent observations a track keeps.
+#
+# Some tracks never end. A track stays alive while a blob within reach turns up
+# at least every `max_gap_frames`, which is exactly what foliage in wind does -
+# blobs that appear, vanish and reappear in the same place for as long as the
+# wind blows. It never travels far enough to be confirmed, so nothing ever
+# closes it, and this process runs for months. Measured unbounded: one such
+# track held 360,000 boxes after four hours at 25 fps - 31.7 MB, about 190 MB a
+# day and 5.6 GB a month, per bush.
+#
+# Nothing downstream looks further back than the confirmation window, which is
+# six frames at its widest, so 128 is two orders of magnitude of headroom over
+# anything that is read - and where the track began is kept separately, because
+# the travel rule needs it and it is the one observation that must never be
+# thrown away.
+TRACK_HISTORY = 128
+
 
 @dataclass
 class Track:
     """One moving thing, followed across frames."""
 
     id: int
-    boxes: list[Box] = field(default_factory=list)
-    seen_frames: list[int] = field(default_factory=list)
+    boxes: deque[Box] = field(default_factory=lambda: deque(maxlen=TRACK_HISTORY))
+    seen_frames: deque[int] = field(default_factory=lambda: deque(maxlen=TRACK_HISTORY))
     first_frame: int = -1
     last_frame: int = -1
+    # Where it began. Held apart from `boxes` because that is a window onto the
+    # recent past and this is not allowed to fall out of it.
+    first_box: Box | None = None
 
     def observe(self, box: Box, frame_index: int) -> None:
-        if not self.boxes:
+        if self.first_box is None:
             self.first_frame = frame_index
+            self.first_box = box
         self.boxes.append(box)
         self.seen_frames.append(frame_index)
         self.last_frame = frame_index
@@ -59,10 +81,14 @@ class Track:
 
         Deliberately not path length. Path length accumulates from a blob that
         shivers in place, which is exactly the thing this rule exists to reject.
+
+        Measured from `first_box` rather than from the oldest box still held: a
+        long slow walk whose beginning has aged out of the window would
+        otherwise read as a short one, and stop being confirmed.
         """
-        if len(self.boxes) < 2:
+        if self.first_box is None or len(self.boxes) < 2:
             return 0.0
-        (x0, y0), (x1, y1) = self.boxes[0].centre, self.boxes[-1].centre
+        (x0, y0), (x1, y1) = self.first_box.centre, self.boxes[-1].centre
         return math.hypot(x1 - x0, y1 - y0)
 
 

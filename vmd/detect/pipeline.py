@@ -9,6 +9,7 @@ elsewhere; this file must stay testable with numpy in milliseconds.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -21,6 +22,7 @@ from vmd.detect.filters import (
     implausible_size,
     in_ignore_mask,
     is_global_motion,
+    minimum_height_px,
 )
 from vmd.detect.motion import Box, MotionFinder
 from vmd.detect.tracking import (
@@ -31,7 +33,16 @@ from vmd.detect.tracking import (
     confirmed,
 )
 
+logger = logging.getLogger(__name__)
+
 Sensitivity = Literal["low", "normal", "high"]
+
+# The names the rejection counts are kept under. Every one of these rules
+# deletes real detections when it is set wrongly, and every one of them does it
+# without saying anything - which is exactly why they are counted. A rule that
+# has rejected everything it has ever seen is a rule that is wrong, and that is
+# a number the operator can be shown rather than a thing they have to guess.
+REJECTION_RULES = ("ignore_mask", "horizon", "too_small", "too_large")
 
 
 @dataclass(frozen=True)
@@ -140,6 +151,15 @@ class DetectionPipeline:
         # tracks each frame, and ids are never reused, so it cannot grow.
         self._reported: set[int] = set()
         self.frames_suppressed = 0  # frames thrown away as camera movement
+        # What each rule threw away, and how much there was to throw away. See
+        # REJECTION_RULES: these rules are the only things in this package that
+        # can delete a real person and say nothing about it.
+        self.blobs_seen = 0
+        self.rejected: dict[str, int] = {rule: 0 for rule in REJECTION_RULES}
+        # The frame height the horizon was last judged against, so a horizon
+        # that cannot be right is complained about once per resolution rather
+        # than twenty-five times a second.
+        self._horizon_checked_against: int | None = None
 
     def reset(self) -> None:
         """Forget the scene. For after a PTZ move, when the view is a new one."""
@@ -149,6 +169,7 @@ class DetectionPipeline:
         """Process one frame. Returns the tracks confirmed on *this* frame."""
         height, width = frame.shape[:2]
         boxes = self.motion.blobs(frame)
+        self.blobs_seen += len(boxes)
 
         # Cheapest first, and the cheapest of all is deciding the whole frame is
         # untrustworthy: when the camera moved, no blob in it means anything.
@@ -156,7 +177,8 @@ class DetectionPipeline:
             self.frames_suppressed += 1
             boxes = []
         else:
-            boxes = [box for box in boxes if self._keep(box, height)]
+            horizon = self._horizon_for(height)
+            boxes = [box for box in boxes if self._keep(box, height, horizon)]
 
         live = self.tracker.update(boxes, frame_index)
         live_ids = {track.id for track in live}
@@ -172,11 +194,45 @@ class DetectionPipeline:
                 detections.append(Detection(track=track, box=track.box, frame_index=frame_index))
         return detections
 
-    def _keep(self, box: Box, frame_height: int) -> bool:
+    def _horizon_for(self, frame_height: int) -> int | None:
+        """The horizon to apply to a frame this tall, or None when it cannot be one.
+
+        A horizon at or below the bottom of the frame is above every box in it,
+        so obeying it makes the stream a hundred percent blind - for ever, and
+        without a word. It is a number typed into a spin box that accepts 0 to
+        100000 and knows nothing about how tall this stream is, and the operator
+        types it against whatever resolution the console happened to be showing.
+
+        So it is checked against a real frame, which is the first thing that
+        knows the answer, and a horizon that cannot be right is refused and said
+        out loud rather than obeyed. Refusing costs some false alarms from the
+        sky. Obeying costs every alarm there is.
+        """
+        horizon = self.config.horizon_y
+        if horizon is None:
+            return None
+        if horizon < frame_height:
+            return horizon
+        if self._horizon_checked_against != frame_height:
+            self._horizon_checked_against = frame_height
+            logger.warning(
+                "the horizon line is set to %d, and this stream is only %d dots "
+                "tall - everything in the picture is above it, so the rule would "
+                "reject every movement there is. It is being ignored. Set it to "
+                "less than %d, or turn it off.",
+                horizon,
+                frame_height,
+                frame_height,
+            )
+        return None
+
+    def _keep(self, box: Box, frame_height: int, horizon_y: int | None) -> bool:
         tuning = self.config.tuning
         if in_ignore_mask(box, self.config.ignore_mask):
+            self.rejected["ignore_mask"] += 1
             return False
-        if above_horizon(box, self.config.horizon_y):
+        if above_horizon(box, horizon_y):
+            self.rejected["horizon"] += 1
             return False
         if implausible_size(
             box,
@@ -184,5 +240,15 @@ class DetectionPipeline:
             tuning.min_height_fraction,
             self.config.max_height_fraction,
         ):
+            # Told apart, because they mean opposite things. Everything too
+            # small is a sensitivity or a sensor that is quieter than the
+            # numbers assume; everything too large is a lighting change, or a
+            # frame the camera is re-encoding underneath us.
+            key = (
+                "too_small"
+                if box.h < minimum_height_px(frame_height, tuning.min_height_fraction)
+                else "too_large"
+            )
+            self.rejected[key] += 1
             return False
         return True

@@ -15,6 +15,7 @@ difference.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -47,6 +48,31 @@ DEFAULT_IDLE_SLEEP = 0.2
 # the track *started* on rather than the frame it was confirmed on. A few
 # seconds at any frame rate, and bounded, because this process runs for months.
 FRAME_TIME_HISTORY = 512
+
+
+# A password inside a URL. The same expression as `vmd.desktop.logs`, copied
+# rather than imported because importing that module would pull Qt into the
+# detector process - which is the one process on this machine that must be able
+# to run on a laptop with no window system at all. Every part is length-bounded
+# for the reason given there: an unbounded prefix backtracks across a very long
+# line at every position in it.
+_CREDENTIALS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^\s/@:]{1,256}):([^\s/@]{0,256})@")
+
+
+def without_credentials(text: str) -> str:
+    """The same text with any password inside a URL taken out of it.
+
+    RTSP carries the camera's credentials in the address, and when go2rtc is
+    down this process falls back to the camera's own URL - so the line saying
+    which stream it is reading would otherwise put the camera's password on the
+    operator's screen, and in any photograph of it.
+
+    The username is kept. Which account was refused is half the diagnosis of a
+    401, and it is not the secret.
+    """
+    if "://" not in text or "@" not in text:
+        return text
+    return _CREDENTIALS.sub(r"\1:****@", text)
 
 
 def open_capture_cv2(url: str):
@@ -83,6 +109,12 @@ class StreamDetector:
         ignore_regions: Sequence[Sequence[int]] = (),
         classifier=None,
         clock: Callable[[], float] = time.time,
+        # Deliberately a second clock. `clock` stamps events, so it has to be
+        # the wall clock the operator reads. The reopen schedule is a duration
+        # and must not be: this laptop is offline, its clock is set by hand,
+        # and a correction of an hour backwards measured on the wall clock
+        # leaves a dead stream untouched for that hour.
+        monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         max_read_failures: int = DEFAULT_MAX_READ_FAILURES,
         reopen_delay: float = DEFAULT_REOPEN_DELAY,
@@ -94,6 +126,12 @@ class StreamDetector:
         self.config = config or DetectionConfig()
         self.store = store
         self.pipeline = pipeline or DetectionPipeline(self.config)
+        # The pipeline is what actually consults the config, so the config this
+        # object paints the ignore mask onto has to be the pipeline's own. An
+        # injected pipeline may have been built around a different object, and
+        # a mask painted onto the one nobody reads is an operator watching a
+        # tree he has painted out go on alarming.
+        self.config = getattr(self.pipeline, "config", None) or self.config
         self.ignore_regions = list(ignore_regions)
         # Never None, so recording an event has one code path. The default
         # names nothing, which on the thermal is the correct answer and not a
@@ -102,6 +140,7 @@ class StreamDetector:
 
         self._open_capture = open_capture
         self._clock = clock
+        self._monotonic = monotonic
         self._sleep = sleep
         self.max_read_failures = max_read_failures
         self.initial_reopen_delay = reopen_delay
@@ -113,10 +152,16 @@ class StreamDetector:
         self._retry_at = 0.0
         self._read_failures = 0
         self._stop = threading.Event()
-        self._mask_painted = not self.ignore_regions
+        # (height, width) the ignore mask was last painted at, or None while
+        # nothing has been painted. Not a boolean: the frame can change size.
+        self._mask_size: tuple[int, int] | None = None
 
         self.frames = 0
         self.events = 0
+        # Confirmed tracks that never reached the database. Counted separately
+        # from `events` so the console cannot show a healthy-looking number for
+        # movement that is in no list the operator can open.
+        self.unrecorded = 0
         self.errors = 0
         self.reopens = 0
         self.reason = "the stream has not been opened yet"
@@ -147,9 +192,18 @@ class StreamDetector:
             "opened": self.opened,
             "frames": self.frames,
             "events": self.events,
+            "unrecorded": self.unrecorded,
             "errors": self.errors,
             "reopens": self.reopens,
             "reason": self.reason,
+            # How much moved, and what each rejection rule threw away. Every one
+            # of those rules deletes real detections when it is set wrongly and
+            # says nothing when it does, so the counts are published: a rule
+            # that has rejected everything this stream has ever produced is a
+            # rule that is wrong, and it is now a number rather than a guess.
+            "blobs": getattr(self.pipeline, "blobs_seen", 0),
+            "rejected": dict(getattr(self.pipeline, "rejected", {}) or {}),
+            "suppressed": getattr(self.pipeline, "frames_suppressed", 0),
         }
 
     # -- the loop ---------------------------------------------------------
@@ -213,13 +267,15 @@ class StreamDetector:
     # -- opening and reopening --------------------------------------------
 
     def _try_open(self) -> bool:
-        now = self._clock()
+        now = self._monotonic()
         if now < self._retry_at:
             return False
         try:
             capture = self._open_capture(self.url)
         except Exception as exc:  # noqa: BLE001 - an unreachable stream is not an error here
-            logger.warning("%s: %s", self.stream, exc)
+            # The message is scrubbed too: what failed to open is usually named
+            # in it, and what failed to open is a URL with a password in it.
+            logger.warning("%s: %s", self.stream, without_credentials(str(exc)))
             capture = None
         if capture is None:
             self._schedule_retry(now)
@@ -232,7 +288,7 @@ class StreamDetector:
         self._read_failures = 0
         self.reopen_delay = self.initial_reopen_delay
         self.reason = ""
-        logger.info("%s: reading %s", self.stream, self.url)
+        logger.info("%s: reading %s", self.stream, without_credentials(self.url))
         return True
 
     def _schedule_retry(self, now: float) -> None:
@@ -253,7 +309,7 @@ class StreamDetector:
         self._release()
         self.reopens += 1
         self._read_failures = 0
-        self._schedule_retry(self._clock())
+        self._schedule_retry(self._monotonic())
         # The camera may have been moved while it was unreachable, so the
         # background model is about to be a model of a view that no longer
         # exists.
@@ -274,15 +330,31 @@ class StreamDetector:
     # -- frames -----------------------------------------------------------
 
     def _paint_mask(self, frame) -> None:
-        """Build the ignore mask once, from the size of a real frame.
+        """Build the ignore mask from the size of a real frame, and rebuild it
+        when that size changes.
 
         The operator paints rectangles; only a frame knows how big the frame is.
+        And a frame is not a fixed size: this app re-encodes the camera over
+        ONVIF while it is running, so the stream can change resolution without
+        anybody asking it to. A mask painted once at the first size stops lining
+        up with the picture the moment it changes - the tree the operator
+        painted out comes back, and a patch of ground he never painted goes
+        quiet - so the size it was painted at is remembered and checked.
         """
-        if self._mask_painted:
+        if not self.ignore_regions:
             return
         height, width = frame.shape[:2]
+        if self._mask_size == (height, width):
+            return
+        if self._mask_size is not None:
+            logger.info(
+                "%s: the picture is now %dx%d; repainting the ignored regions",
+                self.stream,
+                width,
+                height,
+            )
         self.config.ignore_mask = mask_from_regions(self.ignore_regions, width, height)
-        self._mask_painted = True
+        self._mask_size = (height, width)
 
     def _remember_frame_time(self, index: int, now: float) -> None:
         self._frame_times[index] = now
@@ -314,38 +386,74 @@ class StreamDetector:
         there is no confidence below which this returns early, because at 700 m
         the thing the operator most needs to hear about is exactly the thing
         nothing can name.
+
+        Nor does the database. A store that could not be opened, or one that
+        refuses the write, costs the row and must not also cost the sentence:
+        a person crossing the perimeter that produced no line anywhere is the
+        exact failure the whole system exists to prevent, and a full disk is a
+        perfectly ordinary way to arrive at it. So every confirmed track is
+        announced, and the announcement says whether it reached the database.
         """
         track = detection.track
         box = detection.box
-        started = self._frame_times.get(track.first_frame, now)
-        if self.store is None:
-            return
+        # Never after `now`. The two readings come from a clock the operator
+        # sets by hand, and one corrected between the track's first frame and
+        # its confirmation would stamp an event that ends before it starts -
+        # which overlaps no window, so `between()` never returns it and the
+        # mark is missing from every part of the timeline.
+        started = min(self._frame_times.get(track.first_frame, now), now)
         label, confidence = self._name(frame, box)
-        try:
-            self.store.add(
-                stream=self.stream,
-                started=started,
-                ended=now,
-                box=(box.x, box.y, box.w, box.h),
-                travelled_px=track.travelled,
-                label=label,
-                confidence=confidence,
-                clip_path="",
-            )
-        except Exception:  # noqa: BLE001 - a locked database must not stop detection
-            self.errors += 1
-            logger.exception("%s: could not record an event; continuing", self.stream)
-            return
-        self.events += 1
-        logger.info(
-            "%s: movement at (%d, %d) %dx%d, travelled %.0f px%s",
+
+        stored = False
+        problem = ""
+        if self.store is None:
+            problem = "there is no event database open; this is logged only"
+        else:
+            try:
+                self.store.add(
+                    stream=self.stream,
+                    started=started,
+                    ended=now,
+                    box=(box.x, box.y, box.w, box.h),
+                    travelled_px=track.travelled,
+                    label=label,
+                    confidence=confidence,
+                    clip_path="",
+                )
+                stored = True
+            except Exception as exc:  # noqa: BLE001 - a locked database must not stop detection
+                self.errors += 1
+                problem = f"it could not be recorded ({exc}); this is logged only"
+                logger.exception("%s: could not record an event; continuing", self.stream)
+
+        if stored:
+            self.events += 1
+        else:
+            self.unrecorded += 1
+        self._announce(box, track.travelled, label, confidence, problem)
+
+    def _announce(
+        self, box, travelled: float, label: str, confidence: float, problem: str = ""
+    ) -> None:
+        """Say what moved, at the volume the situation deserves.
+
+        A recorded event is information; one that never reached the database is
+        a warning, because the operator's list will not have it in it.
+        """
+        message = "%s: movement at (%d, %d) %dx%d, travelled %.0f px%s%s"
+        arguments = (
             self.stream,
             box.x,
             box.y,
             box.w,
             box.h,
-            track.travelled,
+            travelled,
             # Blank means unidentified, not uncertain: most of what this system
             # sees is too small to name and is reported anyway.
             f" - looks like a {label} ({confidence:.0%})" if label else "",
+            f" - {problem}" if problem else "",
         )
+        if problem:
+            logger.warning(message, *arguments)
+        else:
+            logger.info(message, *arguments)

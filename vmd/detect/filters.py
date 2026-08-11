@@ -25,6 +25,23 @@ GLOBAL_MOTION_FRACTION = 0.35
 MIN_HEIGHT_FRACTION = 0.015
 MAX_HEIGHT_FRACTION = 0.6
 
+# The frame the minimum was written against: the thermal sensor this system
+# watches with. 0.015 of it is 7.7 px, comfortably under the 13 px a person at
+# 700 m occupies, which is the whole point of the number.
+#
+# Read as a fraction of *any* frame it stops being that number. The visible
+# camera delivers 1080 or 1920 lines, and this app re-encodes the stream over
+# ONVIF while it is running, so the frame can get taller without anyone
+# choosing it - at which point 0.015 becomes 29 px and the rule deletes the
+# 13-pixel person the entire design exists to report. Measured on the owner's
+# own footage (1080x1920): four of eight walk-throughs were rejected here, on
+# every single frame, for being 12-28 px tall.
+#
+# So the fraction is taken against the shorter of the frame and this reference.
+# Downwards nothing changes - a small frame really is a small scene - and
+# upwards the rule can never demand more pixels than it was measured to demand.
+REFERENCE_FRAME_HEIGHT = 512
+
 
 def in_ignore_mask(box: Box, mask: np.ndarray | None) -> bool:
     """True when the box's centre falls in an operator-painted region.
@@ -57,6 +74,18 @@ def above_horizon(box: Box, horizon_y: int | None) -> bool:
     return box.bottom <= horizon_y
 
 
+def minimum_height_px(
+    frame_height: int, min_fraction: float = MIN_HEIGHT_FRACTION
+) -> float:
+    """The shortest blob this frame may contain and still be worth reporting.
+
+    Capped at the reference sensor, so a taller stream cannot quietly turn the
+    small end of the rule into a rule against small people. See
+    REFERENCE_FRAME_HEIGHT.
+    """
+    return min_fraction * min(float(frame_height), float(REFERENCE_FRAME_HEIGHT))
+
+
 def implausible_size(
     box: Box,
     frame_height: int,
@@ -67,8 +96,16 @@ def implausible_size(
 
     Height rather than area, because height is what scales with distance and
     area punishes a wide, low thing (a vehicle) for being wide.
+
+    The two ends are not symmetrical. The large end is a fraction of the frame
+    in front of us, because a blob covering two thirds of the picture is a
+    lighting change whatever the sensor is. The small end is capped at the
+    sensor the number was measured on, because a taller frame does not make a
+    distant person any larger - see `minimum_height_px`.
     """
-    return box.h < min_fraction * frame_height or box.h > max_fraction * frame_height
+    if box.h < minimum_height_px(frame_height, min_fraction):
+        return True
+    return box.h > max_fraction * frame_height
 
 
 def is_global_motion(

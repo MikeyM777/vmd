@@ -102,12 +102,17 @@ def test_the_table_refuses_a_null_label(tmp_path):
         store.close()
 
 
-def test_recent_is_newest_first(tmp_path):
+def test_recent_is_most_recently_recorded_first(tmp_path):
+    """"Newest" here means last written, not latest stamped.
+
+    On a clock that runs forwards the two are the same thing. This laptop's
+    clock is set by hand and is the only one it has, so they are not.
+    """
     store = build(tmp_path)
     try:
         for started in (100.0, 300.0, 200.0):
             store.add("thermal", started, started + 1.0, (0, 0, 4, 4), 20.0)
-        assert [e.started for e in store.recent()] == [300.0, 200.0, 100.0]
+        assert [e.started for e in store.recent()] == [200.0, 300.0, 100.0]
     finally:
         store.close()
 
@@ -118,6 +123,34 @@ def test_recent_honours_the_limit(tmp_path):
         for started in range(10):
             store.add("thermal", float(started), started + 1.0, (0, 0, 4, 4), 20.0)
         assert [e.started for e in store.recent(limit=3)] == [9.0, 8.0, 7.0]
+    finally:
+        store.close()
+
+
+def test_a_clock_that_stepped_backwards_cannot_hide_the_newest_event(tmp_path):
+    """The one failure this table must not have.
+
+    Ordered by `started`, an event stamped before the ones already in the table
+    sorts below all of them - and if the step back is bigger than the span the
+    window covers, it falls off the end of the list entirely. It is written
+    correctly, it is simply never shown and never alarmed: the console goes
+    quiet while the perimeter is being crossed and nothing says why.
+
+    The id is monotonic. The clock is not.
+    """
+    store = build(tmp_path)
+    try:
+        # A day of events on a clock that was running.
+        for minute in range(60):
+            store.add("thermal", 100_000.0 + minute * 60, 100_000.0 + minute * 60 + 2, (0, 0, 4, 4), 20.0)
+        # The operator corrects the clock by an hour, backwards. Then somebody
+        # walks across the perimeter.
+        crossing = store.add("thermal", 96_400.0, 96_402.0, (11, 22, 33, 44), 55.0)
+
+        listed = store.recent(limit=20)
+        assert crossing in [e.id for e in listed], "the newest event is not in the list at all"
+        assert listed[0].id == crossing
+        assert listed[0].box == (11, 22, 33, 44)
     finally:
         store.close()
 

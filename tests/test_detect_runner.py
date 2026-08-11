@@ -96,6 +96,7 @@ class Clock:
 
 def build(tmp_path, pipeline=None, captures=None, **kwargs):
     store = EventStore(tmp_path / "events.db")
+    clock = kwargs.pop("clock", None) or Clock()
     opened = []
 
     def open_capture(url):
@@ -115,7 +116,11 @@ def build(tmp_path, pipeline=None, captures=None, **kwargs):
         store,
         open_capture=kwargs.pop("open_capture", open_capture),
         pipeline=pipeline or StubPipeline(),
-        clock=kwargs.pop("clock", Clock()),
+        clock=clock,
+        # Most tests here drive the reopen schedule through the same object
+        # they drive event timestamps with, which is what a machine whose clock
+        # is behaving looks like. The tests that separate them do so on purpose.
+        monotonic=kwargs.pop("monotonic", None) or clock,
         sleep=kwargs.pop("sleep", lambda _s: None),
         **kwargs,
     )
@@ -260,6 +265,72 @@ def test_reopening_backs_off_instead_of_hammering_the_stream(tmp_path):
         clock.now = 3.6
         detector.step()
         assert len(detector.opened_captures) == 3
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_clock_set_backwards_does_not_stop_the_stream_being_reopened(tmp_path):
+    """The reopen schedule is a duration, and durations do not come off a clock
+    somebody sets by hand.
+
+    This laptop is offline, so its clock is the operator's to correct. Measured
+    against the wall clock, a correction of an hour backwards leaves the retry
+    an hour in the future, and the stream is simply not tried again for that
+    hour - with the reason still reading "trying again in 1 second".
+    """
+    wall = Clock(start=1_000_000.0, step=0.0)
+    steady = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        captures=[None, FakeCapture(frames=2)],
+        clock=wall,
+        monotonic=steady,
+        reopen_delay=1.0,
+    )
+    try:
+        detector.step()
+        assert len(detector.opened_captures) == 1
+        wall.now -= 3600.0  # the operator corrects the clock by an hour
+        steady.now += 2.0  # and two real seconds pass
+        assert detector.step() is True
+        assert len(detector.opened_captures) == 2
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_an_event_never_ends_before_it_started(tmp_path):
+    """A clock corrected mid-track must not produce an event with no duration
+    it can be found by.
+
+    `between()` asks for events overlapping a window - `ended >= start AND
+    started <= end`. An event whose `started` is after its `ended` overlaps no
+    window at all, so its mark is missing from every part of the timeline.
+    """
+
+    class SteppingClock:
+        def __init__(self, readings):
+            self.readings = list(readings)
+
+        def __call__(self):
+            return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+
+    # Frames 0 and 1 on the old clock; by frame 2 the operator has wound it back.
+    clock = SteppingClock([1000.0, 1001.0, 900.0, 900.0])
+    pipeline = StubPipeline({2: [detection_at(2, first_frame=0)]})
+    detector, store = build(
+        tmp_path, captures=[FakeCapture(frames=4)], pipeline=pipeline, clock=clock
+    )
+    try:
+        for _ in range(3):
+            detector.step()
+        events = store.recent()
+        assert len(events) == 1
+        event = events[0]
+        assert event.started <= event.ended, f"{event.started} is after {event.ended}"
+        found = store.between(event.started - 5.0, event.ended + 5.0)
+        assert [e.id for e in found] == [event.id], "the event overlaps no window at all"
     finally:
         detector.close()
         store.close()
@@ -433,6 +504,95 @@ def test_a_store_that_refuses_a_write_does_not_stop_the_detector(tmp_path):
         detector.step()
         assert detector.state()["frames"] == 2
         assert detector.state()["errors"] == 2
+    finally:
+        detector.close()
+
+
+def test_the_ignore_mask_is_repainted_when_the_frame_changes_size(tmp_path):
+    """The stream can change resolution without anyone asking it to.
+
+    This app re-encodes the camera over ONVIF while it is running, so a frame
+    is not a fixed size. A mask painted once at the first size stops lining up
+    with the picture the moment it changes: the tree the operator painted out
+    comes back, and some part of the ground he never painted goes quiet.
+    """
+
+    class ResizingCapture:
+        def __init__(self):
+            self.sizes = [(60, 80), (60, 80), (120, 160), (120, 160)]
+
+        def read(self):
+            if not self.sizes:
+                return False, None
+            height, width = self.sizes.pop(0)
+            return True, np.zeros((height, width), dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    detector, store = build(
+        tmp_path,
+        captures=[ResizingCapture()],
+        ignore_regions=[(0, 0, 20, 20)],
+    )
+    try:
+        detector.step()
+        assert detector.config.ignore_mask.shape == (60, 80)
+        detector.step()
+        detector.step()  # the stream is now twice the size
+        assert detector.config.ignore_mask.shape == (120, 160), (
+            "the mask still describes a picture the camera stopped sending"
+        )
+        assert detector.config.ignore_mask[0, 0] != 0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_movement_is_still_announced_when_there_is_no_store(tmp_path, caplog):
+    """A detector with no database still has to say what it saw.
+
+    `detect_main` opens the store on the detector's own thread and, when that
+    fails, logs "movement will be logged only" and carries on. It was not
+    logged only: the recording path returned before it said anything, so a
+    person crossing the perimeter produced a row in no database, a line in no
+    log and no count anywhere. That is the exact failure this system exists to
+    prevent, arrived at through a disk that was full.
+    """
+    pipeline = StubPipeline({0: [detection_at(0)]})
+    detector, store = build(tmp_path, pipeline=pipeline)
+    store.close()
+    detector.store = None
+    try:
+        with caplog.at_level("WARNING", logger="vmd.detect.runner"):
+            detector.step()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "movement" in said.lower(), f"nothing was said about the movement: {said!r}"
+        assert "40" in said and "20" in said, "the movement was announced without saying where"
+        # And it is visible as a number, not only as a line in a log nobody
+        # scrolls back through.
+        assert detector.state()["unrecorded"] == 1
+    finally:
+        detector.close()
+
+
+def test_a_store_that_refuses_a_write_still_says_what_moved(tmp_path, caplog):
+    """A locked database loses the row. It must not also lose the sentence."""
+
+    class RefusingStore:
+        def add(self, *args, **kwargs):
+            raise RuntimeError("database is locked")
+
+    pipeline = StubPipeline({0: [detection_at(0)]})
+    detector, store = build(tmp_path, pipeline=pipeline)
+    store.close()
+    detector.store = RefusingStore()
+    try:
+        with caplog.at_level("WARNING", logger="vmd.detect.runner"):
+            detector.step()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "movement" in said.lower(), f"nothing was said about the movement: {said!r}"
+        assert detector.state()["unrecorded"] == 1
     finally:
         detector.close()
 

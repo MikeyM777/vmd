@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 import numpy as np
 
+from vmd import app_folder
 from vmd.detect.motion import Box
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,10 @@ CROP_IMGSZ = 320
 # floor on *what the model reports*, never a floor on whether an event exists.
 MIN_CONFIDENCE = 0.25
 
+# The weights file, by name. Resolved to an absolute path beside the
+# application rather than trusted as a relative name: a bare name is resolved
+# against the working directory, and the working directory is only the app
+# folder because both launchers happen to set it.
 DEFAULT_WEIGHTS = "yolo11n.pt"
 
 # CPU by default. The laptop this runs on has no usable GPU, and asking for one
@@ -176,16 +182,44 @@ def crop_for(frame, box: Box, pad: float = CROP_PAD, min_side: int = MIN_CROP_PX
 # -- the real thing ---------------------------------------------------------
 
 
-def load_yolo(weights: str):
+def weights_path(weights: str | Path = DEFAULT_WEIGHTS) -> Path:
+    """Where the weights are, as an absolute path.
+
+    A name with no directory in it is looked for beside the application, not in
+    whatever directory the process happens to have been started in.
+    """
+    candidate = Path(weights)
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        return candidate
+    return app_folder() / candidate
+
+
+def load_yolo(weights: str | Path = DEFAULT_WEIGHTS):
     """Import ultralytics and open the weights. Called once, on demand.
 
     Deliberately a module-level function rather than an import at the top of
     the file: importing ultralytics imports torch, which costs seconds and is
     not installed on a machine that only records.
+
+    The file is checked before ultralytics is imported, and that order is the
+    point. Handed a name it cannot find, ultralytics recognises `yolo11n.pt` as
+    one of its own published assets and fetches it from github.com, three times
+    over. This machine is offline by design and has no business trying: a
+    missing weights file has to be a sentence the operator can read, and
+    unlabelled events, not a download that cannot finish.
     """
+    path = weights_path(weights)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"there are no classifier weights at {path}, so movement will be "
+            f"reported without labels. Nothing will be downloaded - this "
+            f"machine is offline on purpose. Copy {Path(weights).name} to that "
+            f"path to have events named."
+        )
+
     from ultralytics import YOLO
 
-    return YOLO(weights)
+    return YOLO(str(path))
 
 
 class YoloClassifier:
@@ -231,6 +265,13 @@ class YoloClassifier:
             return self._model
         try:
             self._model = self._load(self.weights)
+        except FileNotFoundError as exc:
+            # Not a fault to be diagnosed from a stack trace. The weights are an
+            # optional install, and their absence has one plain consequence the
+            # operator can act on, so it is said once as a sentence.
+            self._unavailable = True
+            logger.warning("%s", exc)
+            return None
         except BaseException:  # noqa: BLE001 - including SystemExit from a broken install
             self._unavailable = True
             logger.exception(

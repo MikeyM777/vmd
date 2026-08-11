@@ -119,9 +119,25 @@ class EventStore:
         self._connection.commit()
 
     def recent(self, limit: int = 50) -> list[Event]:
-        """The newest events first - what the "recent movement" list shows."""
+        """The newest events first - what the "recent movement" list shows.
+
+        Ordered by id, which is insertion order, and deliberately not by
+        `started`. For an alarm "newest" means most recently *recorded*, and
+        the id is the only monotonic thing here: this laptop is offline, so its
+        clock is set by hand and can step backwards.
+
+        Ordered by `started`, an event stamped before the rows already in the
+        table sorts below all of them, and if the step back is larger than the
+        span this window covers it falls off the end of the list entirely. The
+        row is written correctly and simply never appears - the console goes
+        quiet while the perimeter is being crossed, with nothing anywhere
+        saying why. That is the one failure this table must not have.
+
+        `between()` is the other way round on purpose: it is asking a question
+        about wall-clock time, so it answers in wall-clock order.
+        """
         rows = self._connection.execute(
-            "SELECT * FROM events ORDER BY started DESC, id DESC LIMIT ?", (int(limit),)
+            "SELECT * FROM events ORDER BY id DESC LIMIT ?", (int(limit),)
         ).fetchall()
         return [self._to_event(row) for row in rows]
 

@@ -138,6 +138,52 @@ def test_the_painted_ignore_regions_reach_the_detector(tmp_path):
         service.stop()
 
 
+def test_the_painted_ignore_mask_reaches_the_pipeline_that_reads_it(tmp_path):
+    """Reaching the detector is not the same as reaching the thing that looks.
+
+    The mask can only be painted once a frame has said how big a frame is, so
+    the runner paints it onto its config when the first frame arrives - and the
+    pipeline is the object that consults it. If the two are handed different
+    config objects the operator paints out a swaying tree and the tree goes on
+    alarming, with nothing anywhere saying why.
+    """
+    settings = build_settings(tmp_path)
+    settings.camera.streams[0].ignore_regions = [IgnoreRegion(x=0, y=0, w=4, h=4)]
+    # A real pipeline: the stub has no config to hand a mask to.
+    service = DetectionService(settings, open_capture=lambda url: FakeCapture())
+    try:
+        detector = service.detectors[0]
+        assert detector.step() is True  # one real frame, which paints the mask
+        mask = detector.pipeline.config.ignore_mask
+        assert mask is not None, "the pipeline is reading a config nobody painted"
+        assert mask.shape == (8, 8)
+        assert mask[0, 0] != 0
+    finally:
+        service.stop()
+
+
+def test_what_the_rejection_rules_threw_away_is_published(tmp_path):
+    """The console is another process and cannot ask.
+
+    Ignore mask, horizon, minimum size: each of these deletes real detections
+    when it is wrong, and none of them says anything when it does. A count per
+    rule, beside the stream it belongs to, is what turns "the detector has been
+    quiet since Tuesday" from a mystery into a reading.
+    """
+    settings = build_settings(tmp_path)
+    service = DetectionService(settings, open_capture=lambda url: FakeCapture())
+    try:
+        detector = service.detectors[0]
+        detector.step()
+        state = detector.state()
+        assert set(state["rejected"]) == {"ignore_mask", "horizon", "too_small", "too_large"}
+        assert state["blobs"] >= 0
+        assert state["suppressed"] >= 0
+        assert "rejected" in service.status()["streams"][0]
+    finally:
+        service.stop()
+
+
 def test_each_detector_gets_its_stream_s_own_settings(tmp_path):
     settings = build_settings(tmp_path, thermal_detect=True, visible_detect=True)
     settings.camera.streams[0].sensitivity = "high"

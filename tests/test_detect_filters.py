@@ -65,6 +65,45 @@ def test_implausible_sizes_are_rejected_and_plausible_ones_are_not():
     assert implausible_size(Box(0, 0, 10, 20), FRAME_H, 0.02, 0.5) is False
 
 
+def test_the_minimum_height_does_not_get_stricter_on_a_taller_frame():
+    """The 13-pixel person must survive whatever sensor the frame came from.
+
+    The height fractions were specified against the thermal sensor this system
+    watches with - 512 lines, on which a person at 700 m is about 13 px. Read
+    as a fraction of *any* frame, 0.015 of a 1920-line stream is 29 px, and the
+    rule that exists to keep the small end genuinely small deletes the exact
+    thing the whole design exists to report.
+    """
+    person_at_700_m = Box(0, 0, 6, 13)
+
+    # On the sensor the number was written for, this is already fine.
+    assert implausible_size(person_at_700_m, 512, 0.015, 0.6) is False
+    # On a taller frame - the visible camera, or a re-encoded thermal - the
+    # same blob is the same person and must not become implausible.
+    assert implausible_size(person_at_700_m, 1920, 0.015, 0.6) is False
+    assert implausible_size(person_at_700_m, 1080, 0.015, 0.6) is False
+
+
+def test_a_shorter_frame_still_gets_the_fraction():
+    """Downwards the fraction is still right: a small frame means a small scene.
+
+    Only the growth is capped. On a 240-line preview 0.03 is 7.2 px and a
+    6-pixel blob is still noise.
+    """
+    assert implausible_size(Box(0, 0, 6, 6), 240, 0.03, 0.6) is True
+    assert implausible_size(Box(0, 0, 6, 8), 240, 0.03, 0.6) is False
+
+
+def test_the_maximum_height_is_still_a_fraction_of_the_real_frame():
+    """The big end is a fraction of the frame in front of us, and stays one.
+
+    A blob covering two thirds of a 1920-line frame is a lighting change however
+    tall the sensor is.
+    """
+    assert implausible_size(Box(0, 0, 100, 1400), 1920, 0.015, 0.6) is True
+    assert implausible_size(Box(0, 0, 100, 1000), 1920, 0.015, 0.6) is False
+
+
 def test_global_motion_fires_when_most_of_the_frame_moves():
     """The camera itself moved: PTZ, or wind shaking the mast."""
     size = (FRAME_W, FRAME_H)

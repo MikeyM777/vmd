@@ -86,6 +86,35 @@ def test_a_rectangle_flickering_in_place_is_never_confirmed():
     assert detections == []
 
 
+def test_a_thirteen_pixel_walker_is_found_on_a_tall_frame():
+    """The frame getting taller must not make the detector blinder.
+
+    Every other test in this file draws on a 240-line frame, where a 24-pixel
+    rectangle is a tenth of the picture. The visible camera delivers 1080 lines
+    and this app re-encodes the stream over ONVIF while it is running, so the
+    frame height is not a constant - and the person the system exists to see is
+    13 px whatever the sensor is. Measured on the owner's own 1080x1920
+    footage, reading the minimum height as a fraction of the frame rejected
+    four of eight walk-throughs on every frame of them.
+    """
+    width, height = 1080, 1920
+    pipeline = DetectionPipeline()
+    index = 0
+    for index in range(WARMUP_FRAMES):
+        assert pipeline.feed(grey_frame(width, height), index) == []
+    index += 1
+
+    detections = []
+    for step in range(20):
+        frame = grey_frame(width, height)
+        draw_rect(frame, 300 + step * 6, 900, 6, 13)  # a person at 700 m
+        detections.extend(pipeline.feed(frame, index))
+        index += 1
+
+    assert len(detections) == 1
+    assert detections[0].box.h < 30
+
+
 def noise_frame(seed: int = 7, width: int = FRAME_W, height: int = FRAME_H) -> np.ndarray:
     """A textured scene. A flat grey frame cannot show a pan: shifting it changes nothing."""
     generator = np.random.default_rng(seed)
@@ -152,6 +181,67 @@ def test_a_blob_above_the_horizon_is_dropped_and_the_same_blob_below_it_is_kept(
 
     assert fly(y=20, horizon_y=120) == []  # a bird, well above the skyline
     assert len(fly(y=160, horizon_y=120)) == 1  # the same thing on the ground
+
+
+def test_a_horizon_below_the_bottom_of_the_frame_is_refused_rather_than_obeyed(caplog):
+    """A horizon lower than the frame is tall rejects every blob in it.
+
+    It is typed into a spin box that accepts 0 to 100000 and knows nothing
+    about how tall this stream is - and the operator types it against whatever
+    resolution the console was showing, which is not necessarily this one. Obey
+    it and the stream is a hundred percent blind, for ever, in silence. The
+    design says as much itself: "a wrong horizon silently deletes real
+    detections".
+    """
+    pipeline = DetectionPipeline(DetectionConfig(horizon_y=FRAME_H + 50))
+    index = feed_empty(pipeline, WARMUP_FRAMES)
+
+    detections = []
+    with caplog.at_level("WARNING", logger="vmd.detect.pipeline"):
+        for step in range(15):
+            frame = grey_frame()
+            draw_rect(frame, 30 + step * 10, 160, 24, 24)
+            detections.extend(pipeline.feed(frame, index))
+            index += 1
+
+    assert len(detections) == 1, "a horizon that cannot be right must not be obeyed"
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "horizon" in said.lower(), f"it was ignored without saying so: {said!r}"
+    assert str(FRAME_H) in said, "the operator is not told what the frame height actually is"
+
+
+def test_a_horizon_inside_the_frame_is_obeyed_and_says_nothing(caplog):
+    pipeline = DetectionPipeline(DetectionConfig(horizon_y=120))
+    index = feed_empty(pipeline, WARMUP_FRAMES)
+    with caplog.at_level("WARNING", logger="vmd.detect.pipeline"):
+        for step in range(15):
+            frame = grey_frame()
+            draw_rect(frame, 30 + step * 10, 20, 24, 24)  # a bird, above the line
+            pipeline.feed(frame, index)
+            index += 1
+    assert caplog.records == []
+    assert pipeline.rejected["horizon"] > 0
+
+
+def test_the_pipeline_counts_what_each_rule_threw_away():
+    """Every rule here deletes real detections when it is wrong, and every one
+    of them does it silently. A count is the least the operator can be given:
+    a rule that has rejected everything it has ever seen is a rule that is
+    wrong, and it is visible as a number without anyone having to guess."""
+    mask = np.zeros((FRAME_H, FRAME_W), dtype=np.uint8)
+    mask[:, : FRAME_W // 2] = 1
+    pipeline = DetectionPipeline(DetectionConfig(ignore_mask=mask))
+    index = feed_empty(pipeline, WARMUP_FRAMES)
+
+    for step in range(15):
+        frame = grey_frame()
+        draw_rect(frame, 10 + step * 4, 110, 24, 24)  # inside the painted half
+        pipeline.feed(frame, index)
+        index += 1
+
+    assert pipeline.blobs_seen > 0
+    assert pipeline.rejected["ignore_mask"] > 0
+    assert pipeline.rejected["ignore_mask"] <= pipeline.blobs_seen
 
 
 def test_a_confirmed_track_is_reported_once():

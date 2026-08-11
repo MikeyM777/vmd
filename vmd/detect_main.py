@@ -101,21 +101,33 @@ class DetectionService:
         self.threads: list[threading.Thread] = []
 
         self.detectors = [
-            StreamDetector(
-                self._source_for(stream),
-                stream.name,
-                config_from_settings(stream, settings.detection),
-                None,  # each thread opens its own store; see _work
-                open_capture=open_capture,
-                pipeline=self._pipeline_factory(config_from_settings(stream, settings.detection)),
-                ignore_regions=regions_of(stream),
-                # Loads nothing here: the YOLO import is deferred to the first
-                # crop worth naming, so this process starts on a machine with
-                # no torch and no weights. Off for the thermal by default.
-                classifier=classifier_for(stream, settings.detection),
-            )
-            for stream in detected_streams(settings)
+            self._detector_for(stream, open_capture) for stream in detected_streams(settings)
         ]
+
+    def _detector_for(self, stream, open_capture) -> StreamDetector:
+        """One stream's detector, built around **one** config object.
+
+        The single object matters. The ignore mask cannot be built until a
+        frame has said how big a frame is, so the runner paints it onto its
+        config when the first frame arrives - and the pipeline is what consults
+        it. Building the config twice, once for each, gave the runner one
+        object to paint and the pipeline another to read, and the operator's
+        answer to a specific swaying tree silently did nothing at all.
+        """
+        config = config_from_settings(stream, self.settings.detection)
+        return StreamDetector(
+            self._source_for(stream),
+            stream.name,
+            config,
+            None,  # each thread opens its own store; see _work
+            open_capture=open_capture,
+            pipeline=self._pipeline_factory(config),
+            ignore_regions=regions_of(stream),
+            # Loads nothing here: the YOLO import is deferred to the first crop
+            # worth naming, so this process starts on a machine with no torch
+            # and no weights. Off for the thermal by default.
+            classifier=classifier_for(stream, self.settings.detection),
+        )
 
     # -- where the frames come from ---------------------------------------
 
@@ -219,6 +231,11 @@ class DetectionService:
             "detecting": sum(1 for s in streams if s["opened"]),
             "configured": len(streams),
             "events": sum(s["events"] for s in streams),
+            # Movement that was seen and confirmed but never reached the
+            # database - a store that would not open, a disk that filled. It is
+            # published separately because it is the one number that means the
+            # operator's list is missing things it should have in it.
+            "unrecorded": sum(s.get("unrecorded", 0) for s in streams),
             "events_db": str(self.events_path),
         }
 
