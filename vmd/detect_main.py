@@ -66,6 +66,18 @@ STATUS_FILENAME = "detection.json"
 # dead camera looks exactly like a quiet perimeter.
 STALLED_AFTER_SECONDS = 60.0
 
+# How long a stream's picture may be bit-for-bit identical before it is called
+# out. Movement is the difference between one frame and the next, so a picture
+# that never changes cannot produce a detection however fast it arrives - a
+# relay serving a cached keyframe, or a decoder repeating its last good picture
+# after the link dropped, both report as a perfectly healthy stream.
+#
+# Five minutes, because the other explanation for an identical picture is a
+# genuinely motionless scene an encoder is skipping wholesale, and that is not
+# a fault. The warning is worded to hold either way: nothing can be detected
+# from frames that are all the same, whichever of the two is true.
+FROZEN_AFTER_SECONDS = 300.0
+
 # The frame rate below which the confirmation rule stops being able to confirm
 # a person crossing.
 #
@@ -259,6 +271,13 @@ class DetectionService:
             # Open, and sending nothing. Counted apart from `detecting` because
             # a wedged read is counted in it and is the opposite of detecting.
             "stalled": sum(1 for s in streams if _stalled(s)),
+            # Open, delivering at a healthy rate, and delivering a flat
+            # rectangle. Counted apart from `stalled` because frames really are
+            # arriving - it is only that there is nothing in them - and apart
+            # from `detecting` because nothing there is being detected.
+            "blind": sum(1 for s in streams if s.get("blind")),
+            # Open, delivering, and delivering the same picture every time.
+            "frozen": sum(1 for s in streams if _frozen(s)),
             # Open, delivering, and delivering too slowly for the confirmation
             # rule to confirm anything. See SLOW_STREAM_FPS.
             "slow": sum(1 for s in streams if _too_slow(s)),
@@ -325,7 +344,9 @@ class DetectionService:
             state = detector.state()
             stalled = _stalled(state)
             slow = _too_slow(state)
-            key = (state["opened"], state["reason"], stalled, slow)
+            blind = bool(state.get("blind"))
+            frozen = _frozen(state)
+            key = (state["opened"], state["reason"], stalled, blind, frozen, slow)
             if getattr(detector, "_last_logged", None) == key:
                 continue
             detector._last_logged = key
@@ -340,6 +361,27 @@ class DetectionService:
                     "nothing there is being watched",
                     state["stream"],
                     state["seconds_since_frame"],
+                )
+            elif blind:
+                # Frames, at a healthy rate, with nothing in them. Said as a
+                # warning for the same reason as a stall: from every other
+                # reading this is a stream that is working.
+                logger.warning(
+                    "%s: frames are arriving but there is no picture in them - "
+                    "%d in a row have been blank. Nothing there is being watched. "
+                    "Check that this is the right stream and that the camera is "
+                    "still sending video on it.",
+                    state["stream"],
+                    state.get("blank_frames", 0),
+                )
+            elif frozen:
+                logger.warning(
+                    "%s: the picture has not changed at all for %.0f seconds. "
+                    "Either the stream has frozen on one frame or nothing in "
+                    "view has moved; movement is found by comparing frames, so "
+                    "nothing there can be detected while this is true.",
+                    state["stream"],
+                    state["seconds_since_change"],
                 )
             elif slow:
                 logger.warning(
@@ -360,6 +402,17 @@ def _stalled(state: dict) -> bool:
         return False
     since = state.get("seconds_since_frame")
     return since is not None and since > STALLED_AFTER_SECONDS
+
+
+def _frozen(state: dict) -> bool:
+    """True when an open, delivering stream has sent the same picture throughout."""
+    if not state.get("opened") or state.get("blind"):
+        # A blank stream is frozen too, by definition. It is reported as blank
+        # instead, because "there is no picture" is a diagnosis and "the picture
+        # is not changing" is a symptom of several things.
+        return False
+    since = state.get("seconds_since_change")
+    return since is not None and since > FROZEN_AFTER_SECONDS
 
 
 def _too_slow(state: dict) -> bool:

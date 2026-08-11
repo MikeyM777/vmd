@@ -21,6 +21,8 @@ import time
 from collections import deque
 from typing import Callable, Sequence
 
+import numpy as np
+
 from vmd.detect.classify import UNNAMED, NullClassifier, named
 from vmd.detect.config import mask_from_regions
 from vmd.detect.events import EventStore
@@ -53,6 +55,25 @@ FRAME_TIME_HISTORY = 512
 # quoting. Fewer than this and one slow frame on a radio link is the whole
 # measurement.
 MIN_FRAMES_TO_MEASURE_RATE = 16
+
+# How coarsely a frame is looked at when asking whether there is a picture in
+# it. Every sixteenth row and column of a 1080p frame is 68x120 values, which
+# costs microseconds and is far more than enough to tell a photograph from a
+# flat rectangle. It has to be cheap: it runs on every frame of every stream on
+# a laptop that is also decoding video for the screen.
+FRAME_SAMPLE_STRIDE = 16
+
+# How much lighter the lightest sampled value may be than the darkest before the
+# frame is allowed to count as a picture. Two, not zero, because a decoder can
+# put a dither of one level onto a frame that is otherwise flat. No real view of
+# anything - not even a wall at night, which carries sensor noise - is this
+# uniform.
+BLANK_SPREAD = 2
+
+# How many blank frames in a row before it is called out. A single flat frame
+# happens at a keyframe boundary or when the camera's own auto-exposure gives
+# up for an instant; ten in a row is a stream with nothing in it.
+BLANK_FRAMES_BEFORE_BLIND = 10
 
 
 # A password inside a URL. The same expression as `vmd.desktop.logs`, copied
@@ -177,9 +198,27 @@ class StreamDetector:
         # no code here runs: the read-failure counter does not advance, the
         # capture is still open, and `reason` is still the empty string the last
         # good frame set. Nothing but the clock can show the difference.
+        # On the steady clock, not the wall one. This is a duration - how long
+        # the stream has been silent - and the laptop's wall clock is set by
+        # hand. An hour's correction backwards makes the silence negative, and
+        # a negative silence is under every threshold there is, so the one
+        # reading that tells a wedged read from a quiet perimeter would report
+        # "fine" for exactly as long as the correction was worth.
         self._last_frame_at: float | None = None
         self._frame_times: dict[int, float] = {}
         self._frame_order: deque[int] = deque()
+
+        # What the frames actually contain. `read()` returning True proves a
+        # buffer came back, not that there is a picture in it: a decoder given
+        # a stream it cannot make sense of hands back success and a rectangle
+        # of one flat value, and a relay that cached a keyframe hands back the
+        # same picture for ever. Movement is found by comparing a frame with
+        # the ones before it, so either of those produces no detection ever -
+        # while every other reading here says the stream is healthy. Nothing
+        # else in this loop can tell them from a perimeter with nobody on it.
+        self.blank_frames = 0
+        self._last_sample: np.ndarray | None = None
+        self._picture_changed_at: float | None = None
 
     # -- state ------------------------------------------------------------
 
@@ -190,6 +229,11 @@ class StreamDetector:
     @property
     def stopped(self) -> bool:
         return self._stop.is_set()
+
+    @property
+    def blind(self) -> bool:
+        """True when frames are arriving and there is no picture in them."""
+        return self.blank_frames >= BLANK_FRAMES_BEFORE_BLIND
 
     @property
     def fps(self) -> float | None:
@@ -245,9 +289,22 @@ class StreamDetector:
             # the point: the detector's own thread is the one that may be
             # blocked inside a read that will not return.
             "seconds_since_frame": (
-                None if self._last_frame_at is None else self._clock() - self._last_frame_at
+                None if self._last_frame_at is None else self._monotonic() - self._last_frame_at
             ),
             "fps": self.fps,
+            # Frames arriving with nothing in them. Published separately from
+            # `frames`, because `frames` is the number that made this look
+            # healthy while the operator was being shown nothing.
+            "blind": self.blind,
+            "blank_frames": self.blank_frames,
+            # How long the picture has been identical. None until two frames
+            # have arrived to compare. A stream that never changes can never
+            # produce a detection, whatever its frame rate says.
+            "seconds_since_change": (
+                None
+                if self._picture_changed_at is None
+                else self._monotonic() - self._picture_changed_at
+            ),
         }
 
     # -- the loop ---------------------------------------------------------
@@ -286,13 +343,21 @@ class StreamDetector:
             return False
 
         self._read_failures = 0
+        # Cleared before the frame is looked at, not after: a frame that
+        # arrives is news the moment it arrives, and `_inspect_picture` puts
+        # its own sentence back if there is nothing in that frame.
         self.reason = ""
         now = self._clock()
-        self._last_frame_at = now
+        # Read once and passed down. Two readings of the same clock inside one
+        # frame are two different numbers, and the tests drive both clocks
+        # through the same stepping object on purpose.
+        steady = self._monotonic()
+        self._last_frame_at = steady
         index = self._frame_index
         self._frame_index += 1
         self.frames += 1
         self._remember_frame_time(index, now)
+        self._inspect_picture(frame, steady)
         self._paint_mask(frame)
 
         try:
@@ -334,7 +399,7 @@ class StreamDetector:
         # The silence is timed from here, not from the first frame. A capture
         # can wedge on its first read as easily as on its thousandth, and "no
         # frame has ever arrived" must not read as "nothing to report".
-        self._last_frame_at = self._clock()
+        self._last_frame_at = self._monotonic()
         self.reopen_delay = self.initial_reopen_delay
         self.reason = ""
         logger.info("%s: reading %s", self.stream, without_credentials(self.url))
@@ -376,10 +441,76 @@ class StreamDetector:
             logger.debug("%s: releasing the capture failed", self.stream, exc_info=True)
         self._capture = None
         # There is nothing open to have gone silent, and a number left over
-        # from the capture before this one would be read as one that had.
+        # from the capture before this one would be read as one that had. The
+        # same goes for what the last capture's frames looked like: comparing
+        # the first frame of a new stream with the last frame of a dead one
+        # answers no question anybody asked.
         self._last_frame_at = None
+        self.blank_frames = 0
+        self._last_sample = None
+        self._picture_changed_at = None
 
     # -- frames -----------------------------------------------------------
+
+    def _inspect_picture(self, frame, now: float) -> None:
+        """Ask whether there is anything in this frame, and whether it moved.
+
+        Two failures wear the same disguise, and this loop cannot see either of
+        them without looking at the pixels:
+
+        * **A blank frame.** A decoder handed a stream it cannot make sense of
+          returns success and a rectangle of one flat value, exactly as ffmpeg
+          does when it grabs the first frame off a live stream. Every guard
+          upstream passes - ok is True, the frame is not None, the count
+          climbs, the frame rate is healthy - and background subtraction on a
+          flat picture finds nothing, for ever.
+        * **A frozen frame.** A relay that cached a keyframe, or a decoder
+          repeating its last good picture after the link dropped. Movement is
+          the difference between one frame and the next, so a picture that
+          never changes cannot produce a detection whatever its frame rate is.
+
+        Both report precisely what a quiet perimeter reports. This does not act
+        on either - a stream with no picture in it is still read, because the
+        picture may come back and dropping it would be the same mistake in the
+        other direction - it only makes the difference sayable.
+
+        Cheap on purpose: one strided view, no copy of the frame, arithmetic on
+        a few thousand values. Guarded, because a frame is whatever the capture
+        handed back, and being unable to inspect it is not a reason to stop
+        watching the perimeter.
+        """
+        try:
+            sample = np.asarray(frame)[::FRAME_SAMPLE_STRIDE, ::FRAME_SAMPLE_STRIDE]
+            if sample.size == 0:
+                return
+            spread = float(sample.max()) - float(sample.min())
+            unchanged = (
+                self._last_sample is not None
+                and self._last_sample.shape == sample.shape
+                and np.array_equal(self._last_sample, sample)
+            )
+            # A copy: the capture is entitled to reuse its own buffer, and a
+            # view of a buffer that is overwritten in place would compare equal
+            # to itself for ever and call every stream frozen.
+            self._last_sample = sample.copy()
+        except Exception:  # noqa: BLE001 - an unreadable frame is not a crash
+            logger.debug("%s: could not inspect the picture", self.stream, exc_info=True)
+            return
+
+        if not unchanged or self._picture_changed_at is None:
+            self._picture_changed_at = now
+
+        if spread <= BLANK_SPREAD:
+            self.blank_frames += 1
+        else:
+            self.blank_frames = 0
+
+        if self.blind:
+            self.reason = (
+                f"frames are arriving but there is no picture in them - "
+                f"{self.blank_frames} in a row have been blank. Nothing there "
+                f"can be detected while this is true."
+            )
 
     def _paint_mask(self, frame) -> None:
         """Build the ignore mask from the size of a real frame, and rebuild it

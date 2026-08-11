@@ -550,7 +550,14 @@ def test_the_delivered_frame_rate_is_measured_and_published(tmp_path):
     from the frames that actually arrive rather than from a setting.
     """
     clock = Clock(start=1000.0, step=2.0)  # a frame every two seconds
-    detector, store = build(tmp_path, captures=[FakeCapture(frames=40)], clock=clock)
+    # A steady clock of its own, so what the rate is measured against is only
+    # the stepping wall clock above and not also every duration this loop reads.
+    detector, store = build(
+        tmp_path,
+        captures=[FakeCapture(frames=40)],
+        clock=clock,
+        monotonic=Clock(start=0.0, step=0.0),
+    )
     try:
         assert detector.state()["fps"] is None  # nothing to measure yet
         for _ in range(20):
@@ -815,6 +822,168 @@ def test_no_regions_means_no_mask(tmp_path):
     try:
         detector.step()
         assert detector.config.ignore_mask is None
+    finally:
+        detector.close()
+        store.close()
+
+
+# --------------------------------------------------------------------------
+# Frames that arrive but carry nothing
+# --------------------------------------------------------------------------
+
+
+def picture(height=64, width=64, seed=0):
+    """A frame with something in it: a gradient, so it is never flat."""
+    rows = np.arange(height, dtype=np.uint8).reshape(height, 1)
+    columns = np.arange(width, dtype=np.uint8).reshape(1, width)
+    return ((rows + columns + seed) % 251).astype(np.uint8)
+
+
+class RepeatingCapture:
+    """A capture that hands back the same picture for ever."""
+
+    def __init__(self, image):
+        self.image = image
+        self.reads = 0
+        self.released = False
+
+    def read(self):
+        self.reads += 1
+        return True, self.image.copy()
+
+    def release(self):
+        self.released = True
+
+
+def test_a_stream_delivering_a_blank_picture_is_not_counted_as_watching(tmp_path):
+    """`read()` returning True is not a picture arriving.
+
+    A decoder handed a stream it cannot make sense of - the wrong sub-stream,
+    a codec it will not admit to failing on, a camera that has powered its
+    sensor down - returns success and a frame of one flat value. Every guard in
+    this loop passes: ok is True, the frame is not None, the frame count
+    climbs, the frame rate is healthy, the read-failure counter stays at zero
+    and `reason` stays empty. Background subtraction on a flat picture finds
+    nothing for ever, so the stream reports exactly what a quiet perimeter
+    reports, and there is no other way to tell them apart.
+    """
+    detector, store = build(tmp_path, captures=[RepeatingCapture(np.zeros((64, 64), np.uint8))])
+    try:
+        for _ in range(20):
+            assert detector.step() is True
+        state = detector.state()
+        assert state["frames"] == 20, "the frames did arrive; that is the trap"
+        assert state["opened"] is True
+        assert state["blind"] is True
+        assert "no picture" in state["reason"], state["reason"]
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_stream_with_a_real_picture_in_it_is_never_called_blind(tmp_path):
+    """The check has to be one no working camera can fail.
+
+    A false "no picture" would have the operator chasing a stream that is fine,
+    and an operator who has learned to disbelieve the warning is worse off than
+    one who never had it.
+    """
+    detector, store = build(tmp_path, captures=[FakeCapture(frames=0)])
+    detector._open_capture = lambda url: RepeatingCapture(picture())
+    try:
+        for _ in range(30):
+            detector.step()
+        state = detector.state()
+        assert state["frames"] == 30
+        assert state["blind"] is False
+        assert state["reason"] == ""
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_picture_that_never_changes_is_visible_as_a_frozen_stream(tmp_path):
+    """One frame, delivered over and over, is not a stream.
+
+    A relay that cached a keyframe, a decoder repeating its last good picture
+    after the link dropped: the frames keep coming, at a healthy rate, and the
+    picture in them is the same picture. Movement is found by comparing a frame
+    with the ones before it, so a stream that never changes can never produce a
+    detection - and it is counted among the streams being watched.
+    """
+    steady = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        captures=[RepeatingCapture(picture())],
+        clock=Clock(start=1000.0, step=0.0),
+        monotonic=steady,
+    )
+    try:
+        detector.step()
+        assert detector.state()["seconds_since_change"] == 0.0
+        for _ in range(5):
+            steady.now += 30.0
+            detector.step()
+        assert detector.state()["seconds_since_change"] == 150.0, (
+            "the picture has not moved for two and a half minutes"
+        )
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_changing_picture_keeps_resetting_the_time_since_it_changed(tmp_path):
+    steady = Clock(start=0.0, step=0.0)
+
+    class MovingCapture:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self):
+            self.reads += 1
+            return True, picture(seed=self.reads)
+
+        def release(self):
+            pass
+
+    detector, store = build(
+        tmp_path,
+        captures=[MovingCapture()],
+        clock=Clock(start=1000.0, step=0.0),
+        monotonic=steady,
+    )
+    try:
+        detector.step()
+        steady.now += 100.0
+        detector.step()
+        assert detector.state()["seconds_since_change"] == 0.0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_clock_set_backwards_does_not_hide_a_stream_that_went_quiet(tmp_path):
+    """How long a stream has been silent is a duration, not two dates.
+
+    This laptop is offline and its clock is set by hand. Measured against the
+    wall clock, an hour's correction backwards makes the silence negative, and
+    a negative silence is below every threshold there is - so the one reading
+    that tells a wedged read from a quiet perimeter reports "fine" for an hour,
+    which is exactly as long as the operator is least able to afford it.
+    """
+    wall = Clock(start=1000.0, step=0.0)
+    steady = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        captures=[FakeCapture(frames=1)],
+        clock=wall,
+        monotonic=steady,
+    )
+    try:
+        assert detector.step() is True
+        steady.now += 300.0  # five minutes of a read that never returned
+        wall.now -= 3600.0  # and the operator corrects the clock by an hour
+        assert detector.state()["seconds_since_frame"] == 300.0
     finally:
         detector.close()
         store.close()

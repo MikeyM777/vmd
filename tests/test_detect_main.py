@@ -178,8 +178,10 @@ def test_a_stream_that_opened_and_went_quiet_is_reported_as_stalled(tmp_path, ca
         detector.step()
         assert service.status()["stalled"] == 0
 
-        # The read went in and did not come out.
-        detector._last_frame_at = time.time() - (STALLED_AFTER_SECONDS + 5.0)
+        # The read went in and did not come out. Dated on the steady clock,
+        # because how long a stream has been silent is a duration and this
+        # laptop's wall clock is the operator's to set.
+        detector._last_frame_at = time.monotonic() - (STALLED_AFTER_SECONDS + 5.0)
         status = service.status()
         assert status["stalled"] == 1
         assert status["detecting"] == 1, "it is still open, which is the trap"
@@ -630,3 +632,125 @@ def test_run_forever_returns_once_it_is_stopped(tmp_path):
 
     assert returned.wait(5.0), "run_forever must return once the service is stopped"
     assert service.stopping is True
+
+
+# --------------------------------------------------------------------------
+# Frames that arrive with nothing in them
+# --------------------------------------------------------------------------
+
+
+class BlankCapture:
+    """A capture that delivers a flat rectangle for ever, and says it worked."""
+
+    def __init__(self):
+        self.reads = 0
+        self.released = False
+
+    def read(self):
+        self.reads += 1
+        return True, np.zeros((64, 64), dtype=np.uint8)
+
+    def release(self):
+        self.released = True
+
+
+class StillCapture:
+    """A capture that delivers the same real picture for ever."""
+
+    def __init__(self):
+        rows = np.arange(64, dtype=np.uint8).reshape(64, 1)
+        columns = np.arange(64, dtype=np.uint8).reshape(1, 64)
+        self.image = ((rows + columns) % 251).astype(np.uint8)
+        self.reads = 0
+        self.released = False
+
+    def read(self):
+        self.reads += 1
+        return True, self.image.copy()
+
+    def release(self):
+        self.released = True
+
+
+def test_a_stream_with_no_picture_in_it_is_counted_apart_from_detecting(tmp_path, caplog):
+    """Frames arriving is not a perimeter being watched.
+
+    This is the frame picker's black rectangle, one process along: the read
+    succeeded, the frame is not None, the count climbs, the frame rate is
+    healthy - and the picture is a flat rectangle, in which background
+    subtraction will find nothing for as long as it runs. The console counts
+    the stream among the ones being watched and the operator is shown a number
+    that means nothing.
+    """
+    service = service_for(tmp_path, open_capture=lambda url: BlankCapture())
+    try:
+        detector = service.detectors[0]
+        for _ in range(20):
+            detector.step()
+        status = service.status()
+        assert status["detecting"] == 1, "it is open and reading, which is the trap"
+        assert status["blind"] == 1
+        assert status["stalled"] == 0, "frames are arriving; this is a different failure"
+
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "no picture" in said, said
+    finally:
+        service.stop()
+
+
+def test_a_stream_whose_picture_never_changes_is_said_out_loud(tmp_path, caplog):
+    """A cached keyframe served for ever reports as a healthy stream.
+
+    Movement is the difference between one frame and the next. A relay handing
+    back the same picture at twenty-five frames a second is delivering nothing
+    a detector can use, and every other reading - opened, frames, fps, silence
+    - says it is fine.
+    """
+    from vmd.detect_main import FROZEN_AFTER_SECONDS
+
+    service = service_for(tmp_path, open_capture=lambda url: StillCapture())
+    try:
+        detector = service.detectors[0]
+        detector.step()
+        assert service.status()["frozen"] == 0
+        detector.step()
+        # Time passes with the same picture arriving throughout.
+        detector._picture_changed_at = time.monotonic() - (FROZEN_AFTER_SECONDS + 1.0)
+        assert service.status()["frozen"] == 1
+
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "has not changed" in said, said
+    finally:
+        service.stop()
+
+
+def test_a_healthy_stream_is_neither_blind_nor_frozen(tmp_path):
+    """The two checks have to be ones no working camera can fail."""
+
+    class MovingCapture:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self):
+            self.reads += 1
+            rows = np.arange(64, dtype=np.uint8).reshape(64, 1)
+            columns = np.arange(64, dtype=np.uint8).reshape(1, 64)
+            return True, ((rows + columns + self.reads) % 251).astype(np.uint8)
+
+        def release(self):
+            pass
+
+    service = service_for(tmp_path, open_capture=lambda url: MovingCapture())
+    try:
+        for _ in range(30):
+            service.detectors[0].step()
+        status = service.status()
+        assert status["blind"] == 0
+        assert status["frozen"] == 0
+        assert status["detecting"] == 1
+    finally:
+        service.stop()
