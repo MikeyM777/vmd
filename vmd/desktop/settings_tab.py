@@ -37,12 +37,23 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from vmd.desktop.style import PALETTE
+from vmd.desktop.live import WrappedNote
+from vmd.desktop.style import (
+    FORM_MAX_WIDTH,
+    PALETTE,
+    SIZE_SMALL,
+    SPACE_GROUP,
+    SPACE_ROOM,
+    SPACE_SNUG,
+    SPACE_STEP,
+    SPACE_TIGHT,
+)
 from vmd.settings import (
     Settings,
     SettingsError,
@@ -157,12 +168,12 @@ class StreamRowWidget(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
+        outer.setSpacing(SPACE_TIGHT)
 
         # --- what it is ------------------------------------------------------
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(6)
+        top.setSpacing(SPACE_SNUG)
 
         self.name_field = QLineEdit(stream.name)
         self.name_field.setPlaceholderText("name")
@@ -192,9 +203,9 @@ class StreamRowWidget(QWidget):
         # A second line under the stream rather than a separate panel: these
         # belong to this stream and nothing else, and a panel somewhere else on
         # the tab is how the wrong stream gets marked thermal.
-        watch = QHBoxLayout()
+        watch = QVBoxLayout()
         watch.setContentsMargins(146, 0, 0, 0)  # under the address, not the name
-        watch.setSpacing(6)
+        watch.setSpacing(SPACE_TIGHT)
 
         self.detect_field = QCheckBox("Watch for movement")
         self.detect_field.setChecked(stream.detect)
@@ -236,14 +247,35 @@ class StreamRowWidget(QWidget):
             "do not care about."
         )
 
-        watch.addWidget(self.detect_field)
-        watch.addWidget(self.thermal_field)
-        watch.addWidget(classify_label)
-        watch.addWidget(self.classify_field)
-        watch.addWidget(sensitivity_label)
-        watch.addWidget(self.sensitivity_field)
-        watch.addWidget(self.details_button)
-        watch.addStretch(1)
+        # Two lines and not one. All seven of these on a single row is about
+        # 1500 px of controls, and the form is a column that stops growing - so
+        # on one line the tick boxes lost their last word and the button read
+        # "e and ignored p". A control whose label is cut in half is a control
+        # nobody can act on, and this row carries the thermal flag, which is the
+        # one setting that quietly changes what gets reported.
+        #
+        # The switches first, then the two choices under them, because that is
+        # the order they are decided in: whether this view is watched at all,
+        # then how.
+        switches = QHBoxLayout()
+        switches.setContentsMargins(0, 0, 0, 0)
+        switches.setSpacing(SPACE_ROOM)
+        switches.addWidget(self.detect_field)
+        switches.addWidget(self.thermal_field)
+        switches.addWidget(self.details_button)
+        switches.addStretch(1)
+        watch.addLayout(switches)
+
+        choices = QHBoxLayout()
+        choices.setContentsMargins(0, 0, 0, 0)
+        choices.setSpacing(SPACE_SNUG)
+        choices.addWidget(classify_label)
+        choices.addWidget(self.classify_field)
+        choices.addSpacing(SPACE_ROOM)
+        choices.addWidget(sensitivity_label)
+        choices.addWidget(self.sensitivity_field)
+        choices.addStretch(1)
+        watch.addLayout(choices)
         outer.addLayout(watch)
 
         # --- the two that need explaining ------------------------------------
@@ -287,21 +319,23 @@ class StreamRowWidget(QWidget):
         horizon_line.addStretch(1)
         details_layout.addLayout(horizon_line)
 
-        horizon_help = QLabel(
+        horizon_help = WrappedNote(
             "Draw the line on the picture above rather than guessing the "
             "number: a line set too low throws away real movement below it and "
             "never tells you it did. If the camera cannot be reached, leave the "
             "sky line off unless someone has read the number off a picture for "
             "you. Off is a perfectly safe setting."
         )
-        horizon_help.setWordWrap(True)
-        horizon_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        horizon_help.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
         details_layout.addWidget(horizon_help)
         self.horizon_help = horizon_help
 
-        self.regions_help = QLabel(WHY_REGIONS)
-        self.regions_help.setWordWrap(True)
-        self.regions_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        self.regions_help = WrappedNote(WHY_REGIONS)
+        self.regions_help.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
         details_layout.addWidget(self.regions_help)
 
         self.regions_list = QListWidget()
@@ -486,6 +520,19 @@ def _why(exc: OSError) -> str:
     return (exc.strerror or str(exc)).rstrip(". ")
 
 
+def _form(parent: QWidget | None = None) -> QFormLayout:
+    """A form laid out on the console's own rhythm.
+
+    Rows close together and labels close to their fields: what separates two
+    settings here is the panel they are on, not the distance between them.
+    """
+    form = QFormLayout(parent) if parent is not None else QFormLayout()
+    form.setHorizontalSpacing(SPACE_ROOM)
+    form.setVerticalSpacing(SPACE_SNUG)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    return form
+
+
 def _region_box(what: str) -> QSpinBox:
     box = QSpinBox()
     box.setRange(0, 100000)
@@ -567,12 +614,46 @@ class SettingsTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self._scroll)
 
-        layout = QVBoxLayout(self._page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        # The form is a column, and it stops growing.
+        #
+        # This is most of what "the program isn't fitted right" meant. A
+        # thirteen-character address field stretched across 1900 px of a 4K
+        # panel puts the label and the box it belongs to at opposite ends of the
+        # screen, and every one of the six boxes did it. Past FORM_MAX_WIDTH the
+        # column stops and the room goes to the margins, which is what makes it
+        # readable at 3840 and unchanged at 1280 - where the column is narrower
+        # than the ceiling anyway and nothing here applies.
+        centred = QHBoxLayout(self._page)
+        centred.setContentsMargins(SPACE_GROUP, SPACE_ROOM, SPACE_GROUP, SPACE_ROOM)
+        centred.setSpacing(0)
+        column = QWidget()
+        column.setMaximumWidth(FORM_MAX_WIDTH)
+        # Expanding up to that ceiling and not past it. Without the policy the
+        # column takes its own size hint and the form is narrower on a big
+        # screen than it is on a small one, which is the opposite of the point:
+        # what is wanted is a column that uses the room it has until using more
+        # would stop helping.
+        column.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        # The column outweighs the two margins, so it takes the room first and
+        # what is left over goes evenly to either side of it. Without a stretch
+        # of its own it would be given nothing but its own size hint, and the
+        # form would be NARROWER on a big screen than on a small one.
+        centred.addStretch(1)
+        centred.addWidget(column, 8)
+        centred.addStretch(1)
+
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # The rhythm: a wide gap BETWEEN the boxes and a tight one inside them,
+        # so what separates two settings is which panel they are on rather than
+        # how far apart they happen to be. They were all ten pixels from
+        # everything, which reads as one undifferentiated list of eleven things.
+        layout.setSpacing(SPACE_GROUP)
 
         camera_box = QGroupBox("Camera")
-        camera_form = QFormLayout(camera_box)
+        camera_form = _form(camera_box)
         self._host = QLineEdit()
         self._username = QLineEdit()
         # Shown, never masked: this machine is offline and physically controlled,
@@ -585,8 +666,9 @@ class SettingsTab(QWidget):
 
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
+        streams_outer.setSpacing(SPACE_STEP)
         self._streams_layout = QVBoxLayout()
-        self._streams_layout.setSpacing(4)
+        self._streams_layout.setSpacing(SPACE_ROOM)
         streams_outer.addLayout(self._streams_layout)
         self.add_stream_button = QPushButton("Add a stream")
         self.add_stream_button.clicked.connect(lambda: self.add_stream_row())
@@ -595,12 +677,14 @@ class SettingsTab(QWidget):
 
         detection_box = QGroupBox("Movement detection")
         detection_outer = QVBoxLayout(detection_box)
-        detection_help = QLabel(
+        detection_outer.setSpacing(SPACE_SNUG)
+        detection_help = WrappedNote(
             "These apply to every view at once. Which views are watched, and "
             "how, is set on each stream above."
         )
-        detection_help.setWordWrap(True)
-        detection_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        detection_help.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
         detection_outer.addWidget(detection_help)
 
         self._detection_enabled = QCheckBox("Watch for movement at all")
@@ -622,7 +706,7 @@ class SettingsTab(QWidget):
         )
         detection_outer.addWidget(self._detection_classify)
 
-        travel_line = QFormLayout()
+        travel_line = _form()
         self._min_travel = QLineEdit()
         self._min_travel.setPlaceholderText("empty means use the touchiness setting")
         self._min_travel.setToolTip(
@@ -637,7 +721,7 @@ class SettingsTab(QWidget):
         layout.addWidget(detection_box)
 
         storage_box = QGroupBox("Storage")
-        storage_form = QFormLayout(storage_box)
+        storage_form = _form(storage_box)
         self._root = QLineEdit()
         self._budget = QLineEdit()
         self._days = QLineEdit()
@@ -648,7 +732,7 @@ class SettingsTab(QWidget):
         layout.addWidget(storage_box)
 
         radio_box = QGroupBox("Radio")
-        radio_form = QFormLayout(radio_box)
+        radio_form = _form(radio_box)
         self._radio_host = QLineEdit()
         self._radio_user = QLineEdit()
         self._radio_password = QLineEdit()
@@ -659,7 +743,9 @@ class SettingsTab(QWidget):
 
         tools_box = QGroupBox("The camera")
         tools_outer = QVBoxLayout(tools_box)
+        tools_outer.setSpacing(SPACE_SNUG)
         tools_buttons = QHBoxLayout()
+        tools_buttons.setSpacing(SPACE_SNUG)
         self.test_button = QPushButton("Test the camera")
         self.test_button.clicked.connect(self.test_camera)
         self.find_button = QPushButton("Find the right path")
@@ -676,16 +762,35 @@ class SettingsTab(QWidget):
         self._output = QPlainTextEdit()
         self._output.setReadOnly(True)
         self._output.setMinimumHeight(160)
+        # An empty report box is a black rectangle, and a black rectangle is
+        # not an answer to "has anything happened?". The placeholder is drawn
+        # only while there is nothing in it, so it costs nothing once a tool has
+        # actually said something.
+        self._output.setPlaceholderText(
+            "Press one of the buttons above and what the camera says appears here."
+        )
         tools_outer.addWidget(self._output)
         layout.addWidget(tools_box)
 
-        self._message = QLabel("")
-        self._message.setWordWrap(True)
-        layout.addWidget(self._message)
-
+        # The one row on this page the page exists for: what went wrong, and
+        # the button that writes the file. Together, and at the end, because
+        # "Not saved: ..." is about the button beside it - it used to be a bare
+        # line floating above a full-width button of exactly the weight of every
+        # other button on the tab.
+        #
+        # A WrappedNote: this line carries the sentence saying WHY a save did
+        # not take effect, which is three lines long and is the one sentence on
+        # this tab that must never be cut in half.
+        self._message = WrappedNote("")
         self.save_button = QPushButton("Save")
+        self.save_button.setProperty("primary", "true")
         self.save_button.clicked.connect(self.save)
-        layout.addWidget(self.save_button)
+        ending = QHBoxLayout()
+        ending.setContentsMargins(0, 0, 0, 0)
+        ending.setSpacing(SPACE_GROUP)
+        ending.addWidget(self._message, 1)
+        ending.addWidget(self.save_button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(ending)
         layout.addStretch(1)
 
     # ------------------------------------------------------------- properties

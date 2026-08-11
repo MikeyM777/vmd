@@ -427,3 +427,48 @@ def _record(name: str, message: str) -> logging.LogRecord:
         name=name, level=logging.WARNING, pathname=__file__, lineno=1,
         msg=message, args=(), exc_info=None,
     )
+
+
+def test_the_logs_tab_says_when_nothing_has_been_logged(qtbot) -> None:
+    """A black rectangle with a header on it is indistinguishable from a tab
+    that failed to load, and this tab is the only place on the machine where
+    the operator can read what went wrong."""
+    from vmd.desktop.logs import LogBuffer, LogsTab
+
+    tab = LogsTab(LogBuffer())
+    qtbot.addWidget(tab)
+    tab.refresh()
+    assert tab.row_count == 0
+    assert tab.empty.isVisibleTo(tab)
+    assert tab.table.isVisibleTo(tab) is False
+
+    tab._buffer.records.append(
+        {"seq": 1, "time": 0.0, "level": "INFO", "source": "go2rtc", "text": "listening"}
+    )
+    tab.refresh()
+    assert tab.table.isVisibleTo(tab)
+    assert tab.empty.isVisibleTo(tab) is False
+
+
+def test_the_message_column_does_not_move_when_a_line_arrives(qtbot) -> None:
+    """Nothing on a console anyone is watching should shift sideways because a
+    value changed."""
+    from vmd.desktop.logs import LogBuffer, LogsTab
+
+    tab = LogsTab(LogBuffer())
+    qtbot.addWidget(tab)
+    tab.resize(900, 400)
+    tab._buffer.records.append(
+        {"seq": 1, "time": 0.0, "level": "INFO", "source": "go2rtc", "text": "listening"}
+    )
+    tab.refresh()
+    before = [tab.table.columnWidth(i) for i in range(3)]
+    tab._buffer.records.append(
+        {
+            "seq": 2, "time": 0.0, "level": "WARNING",
+            "source": "vmd.desktop.services.supervisor",
+            "text": "the recorder exited at once and was started again",
+        }
+    )
+    tab.refresh()
+    assert [tab.table.columnWidth(i) for i in range(3)] == before

@@ -13,11 +13,13 @@ import re
 import threading
 from collections import deque
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,9 +27,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.style import PALETTE
+from vmd.desktop.style import PALETTE, SIZE_HEADING, SPACE_SNUG, SPACE_STEP
 
 LOG_LINES = 500
+
+# How wide the three narrow columns are. Sized to their contents once rather
+# than shared out evenly: the time is eight characters, the level is at most
+# eight, the source rarely more than ten, and the message - the part anybody
+# reads - takes everything that is left. Evenly shared, a quarter of the window
+# went to a column holding "INFO".
+TIME_WIDTH = 78
+LEVEL_WIDTH = 78
+SOURCE_WIDTH = 110
+
+# What the table says before anything has been logged. Never blank: a black
+# rectangle is indistinguishable from a tab that failed to load, and this one is
+# the only place on the machine where the operator can read what went wrong.
+NOTHING_LOGGED = "Nothing has been logged yet."
 SEVERE = {"WARNING", "ERROR", "CRITICAL"}
 
 # How close to the bottom the scrollbar has to be to count as "already there".
@@ -149,8 +165,11 @@ class LogsTab(QWidget):
         self._last_signature: tuple | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(SPACE_STEP, SPACE_STEP, SPACE_STEP, SPACE_STEP)
+        layout.setSpacing(SPACE_STEP)
 
         controls = QHBoxLayout()
+        controls.setSpacing(SPACE_SNUG)
         self.all_button = QPushButton("All")
         self.warnings_button = QPushButton("Warnings and errors")
         self.follow_checkbox = QCheckBox("Follow")
@@ -171,10 +190,39 @@ class LogsTab(QWidget):
         # the operator can read, "who said this" is half the diagnosis.
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["time", "level", "from", "message"])
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        # The three narrow columns are fixed, so the message column does not
+        # jump sideways every time a line arrives from a logger with a longer
+        # name than the last one. Nothing on a console anyone is watching should
+        # move because a value changed.
+        for column, width in (
+            (0, TIME_WIDTH), (1, LEVEL_WIDTH), (2, SOURCE_WIDTH)
+        ):
+            header.setSectionResizeMode(column, QHeaderView.Fixed)
+            self.table.setColumnWidth(column, width)
+        header.setHighlightSections(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
+
+        # In the table's place while there is nothing in it.
+        self.empty = QLabel(NOTHING_LOGGED)
+        self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_HEADING}px;"
+        )
+        layout.addWidget(self.empty, 1)
+        self._show_table_or_not()
+
+    def _show_table_or_not(self) -> None:
+        """Whichever of the table and the empty state has something to say."""
+        empty = self.table.rowCount() == 0
+        self.table.setVisible(not empty)
+        self.empty.setVisible(empty)
 
     def _show_all(self) -> None:
         self.set_level_filter("ALL")
@@ -252,6 +300,7 @@ class LogsTab(QWidget):
 
             self.table.setItem(row, 3, QTableWidgetItem(line["text"]))
 
+        self._show_table_or_not()
         if should_follow:
             self.table.scrollToBottom()
         else:

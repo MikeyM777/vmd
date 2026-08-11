@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtWidgets import QApplication, QLineEdit
 
 from vmd.desktop.settings_tab import PROBE_NAME, SettingsTab
 from vmd.settings import (
@@ -770,3 +770,72 @@ def test_a_recordings_folder_that_cannot_be_written_to_is_refused(qtbot, tmp_pat
     assert tab.save() is False
     assert "written" in tab.message.lower()
     assert str(root) in tab.message
+
+
+# ------------------------------------------------------------ how it is fitted
+#
+# "The program isn't fitted right" was mostly this tab: a thirteen-character
+# address field stretched across 1900 px of a 4K panel, with the label at one
+# end of the screen and the box it belongs to at the other.
+
+
+def test_the_form_stops_growing_however_wide_the_screen_is(qtbot, tmp_path: Path) -> None:
+    from vmd.desktop.style import FORM_MAX_WIDTH
+
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.show()
+    tab.setGeometry(0, 0, 3840, 2160)
+    QApplication.processEvents()
+
+    widest = max(
+        field.width()
+        for field in (tab._host, tab._username, tab._root, tab._radio_host)
+    )
+    assert widest <= FORM_MAX_WIDTH, (
+        f"a field is {widest} px wide; the column is meant to stop at {FORM_MAX_WIDTH}"
+    )
+
+
+def test_nothing_on_a_stream_row_is_cut_in_half_inside_the_column(
+    qtbot, tmp_path: Path
+) -> None:
+    """Every control on a stream row on one line was about 1500 px of controls
+    in a column that stops growing, so the tick boxes lost their last word and
+    the button read "e and ignored p". A control whose label is cut in half is a
+    control nobody can act on - and this row carries the heat-camera flag, which
+    quietly changes what gets reported."""
+    from vmd.desktop.style import FORM_MAX_WIDTH
+
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
+    tab.show()
+    tab.setGeometry(0, 0, FORM_MAX_WIDTH, 900)
+    QApplication.processEvents()
+
+    row = tab.stream_rows()[-1]
+    cut = [
+        control.text()
+        for control in (
+            row.detect_field,
+            row.thermal_field,
+            row.details_button,
+            row.remove_button,
+        )
+        if control.width() < control.minimumSizeHint().width()
+    ]
+    assert cut == [], f"cut off: {cut}"
+
+
+def test_the_report_box_says_what_it_is_for_before_anything_has_used_it(
+    qtbot, tmp_path: Path
+) -> None:
+    """An empty report box is a black rectangle, and a black rectangle is not an
+    answer to "has anything happened?"."""
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    assert tab.output_text() == ""
+    assert tab._output.placeholderText(), "an empty box has to say what it is for"
