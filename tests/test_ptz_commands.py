@@ -30,6 +30,7 @@ import time
 
 import pytest
 
+from vmd.ptz.onvif import PtzCapability
 from vmd.ptz.service import PtzCommands, PtzService, ZoomHandle
 from vmd.settings import Settings
 
@@ -317,6 +318,47 @@ def test_saving_settings_never_waits_for_a_camera_that_is_being_read() -> None:
 
     assert took < 0.5, f"the Save button waited {took:.1f} s for the camera"
     assert service.camera is not None and service.camera.host == "10.0.0.10"
+
+
+def test_a_save_landing_mid_answer_produces_a_sentence_and_not_a_crash() -> None:
+    """The other side of taking the camera lock off Save.
+
+    `apply` no longer waits for whatever the camera is doing, which means the
+    camera it swapped out can now be swapped out from under a call that is
+    already inside a method - and every one of those reads `self.camera` more
+    than once. Guarded everywhere else in this file by a bare `except`; `status`
+    had no guard at all, so a save that landed between two lines of it raised
+    AttributeError into whatever was asking.
+
+    A camera answering slowly and a save arriving while it does is not a rare
+    pairing: the save is exactly what an operator does when the camera is not
+    answering.
+    """
+    settings = Settings()
+    settings.camera.host = "10.0.0.9"
+    service = PtzService(settings)
+
+    class SwapsUnderneath:
+        """A camera whose answer arrives after the operator has changed his mind."""
+
+        def __init__(self) -> None:
+            self.capability = PtzCapability(available=True, reason="ready")
+
+        def connect(self):
+            service.apply(Settings())  # the operator cleared the address
+            return self.capability
+
+        def position(self):
+            return None
+
+    service.camera = SwapsUnderneath()
+    service._connected = False
+
+    # A dict about the camera the question was asked of, and never an exception.
+    # The next call describes the camera there is now, which is none.
+    answer = service.status()
+    assert isinstance(answer, dict) and answer["reason"] == "ready"
+    assert service.status() == {"available": False, "reason": "no camera address set"}
 
 
 def test_reading_a_zoom_position_never_talks_to_the_camera() -> None:

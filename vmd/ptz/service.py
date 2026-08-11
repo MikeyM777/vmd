@@ -85,19 +85,29 @@ class PtzService:
             self._connected = False
             self.lenses = lenses
 
+    # Every method below takes the camera into a local before it uses it, and
+    # that is the price of `apply` no longer waiting: the camera can be swapped
+    # while a call is inside one of these, and each of them touched
+    # `self.camera` more than once. Read twice, the second read can be None, and
+    # `status` is the one with no guard around it - a save landing between two
+    # of its lines raised AttributeError into whoever asked, which is the shape
+    # of thing that must never reach a Qt handler. Held in a local, the answer
+    # describes the camera the question was asked of, and the next call
+    # describes the one there is now.
     def status(self) -> dict:
         with self._lock:
-            if self.camera is None:
+            camera = self.camera
+            if camera is None:
                 return {"available": False, "reason": "no camera address set"}
             if not self._connected:
-                capability = self.camera.connect()
+                capability = camera.connect()
                 self._connected = capability.available
-            payload = self.camera.capability.as_dict()
+            payload = camera.capability.as_dict()
             if self._connected:
                 # Where the head actually is, when the camera will say. Cameras
                 # that do not answer GetStatus simply have no figure, which the
                 # console shows as "—" rather than as a number it invented.
-                position = self.camera.position()
+                position = camera.position()
                 if position:
                     payload.update(position)
             return payload
@@ -119,17 +129,18 @@ class PtzService:
     def encoders(self) -> dict:
         """What the camera is currently encoding, or why we cannot tell."""
         with self._lock:
-            if self.camera is None:
+            camera = self.camera
+            if camera is None:
                 return {"ok": False, "error": "no camera address set"}
             try:
-                configs = CameraEncoders(self.camera).read()
+                configs = CameraEncoders(camera).read()
             except PtzError as exc:
                 return {"ok": False, "error": str(exc)}
             except Exception as exc:  # noqa: BLE001
                 logger.exception("could not read encoder settings")
                 return {"ok": False, "error": str(exc)}
             payload = []
-            encoders = CameraEncoders(self.camera)
+            encoders = CameraEncoders(camera)
             for config in configs:
                 try:
                     sizes = encoders.options(config.token)
@@ -149,10 +160,11 @@ class PtzService:
         paid for by the time it arrives.
         """
         with self._lock:
-            if self.camera is None:
+            camera = self.camera
+            if camera is None:
                 return {"ok": False, "error": "no camera address set"}
             try:
-                encoders = CameraEncoders(self.camera)
+                encoders = CameraEncoders(camera)
                 config = next((c for c in encoders.read() if c.token == token), None)
                 if config is None:
                     return {"ok": False, "error": f"the camera has no encoder called {token}"}
@@ -242,10 +254,11 @@ class PtzService:
     def zoom(self, stream: str, where: float) -> dict:
         """Send one picture's lens to a zoom, 0.0 wide to 1.0 tele."""
         with self._lock:
-            if self.lenses is None:
+            lenses = self.lenses
+            if lenses is None:
                 return {"ok": False, "error": "no camera address set"}
             try:
-                answer = self.lenses.go_to(stream, where)
+                answer = lenses.go_to(stream, where)
             except Exception as exc:  # noqa: BLE001 - the console outlives the camera
                 logger.exception("could not zoom %s", stream)
                 return {"ok": False, "error": str(exc)}
@@ -254,10 +267,11 @@ class PtzService:
     def zoom_hold(self, stream: str, speed: float) -> dict:
         """Keep one picture's lens zooming, or stop it when the speed is zero."""
         with self._lock:
-            if self.lenses is None:
+            lenses = self.lenses
+            if lenses is None:
                 return {"ok": False, "error": "no camera address set"}
             try:
-                answer = self.lenses.creep(stream, speed)
+                answer = lenses.creep(stream, speed)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("could not zoom %s", stream)
                 return {"ok": False, "error": str(exc)}
@@ -272,10 +286,11 @@ class PtzService:
         is zooming the answer is almost always nothing.
         """
         with self._lock:
-            if self.lenses is None:
+            lenses = self.lenses
+            if lenses is None:
                 return
             try:
-                self.lenses.poll()
+                lenses.poll()
             except Exception:  # noqa: BLE001
                 logger.exception("could not read the zoom positions")
 
