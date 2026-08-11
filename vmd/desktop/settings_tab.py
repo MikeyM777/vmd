@@ -160,7 +160,18 @@ class StreamRowWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         if stream is None:
-            stream = StreamSettings(name=name, url=url, enabled=enabled, reader=reader)
+            # `model_construct`, not the constructor: a row on screen is not a
+            # setting yet. "Add a stream" starts an empty one, and an empty name
+            # is a stream nothing downstream can address - so `StreamSettings`
+            # refuses it, correctly, at the point where it becomes a setting.
+            # That point is Save, where `_problem` already says "A stream has an
+            # address but no name." in words the operator can act on. Validating
+            # here instead would make the Add button raise before they had a
+            # chance to type anything. Defaults for every field this does not
+            # name are still filled in.
+            stream = StreamSettings.model_construct(
+                name=name, url=url, enabled=enabled, reader=reader
+            )
         # Everything this stream arrived with. A save is this with the widgets
         # written over it, so a field added to StreamSettings later is carried
         # across rather than reset the first time anyone presses Save.
