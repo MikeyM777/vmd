@@ -63,6 +63,30 @@ CREEP_SPEED = 0.35
 # learns to ignore.
 NOT_ASKED = "the camera has not been asked yet"
 
+# How long to leave a camera alone after it has failed to say what lenses it has.
+#
+# `poll` runs on the console's two-second heartbeat, and discovery is the one
+# part of it that is not already rate-limited: a camera that answered is never
+# asked again, but a camera that did NOT answer was asked on every single beat,
+# for as long as the console was open. Against a wrong password that is three
+# HTTP requests every two seconds against a device whose own firmware answers
+# 403 "after too many tries"; against a camera that is switched off it is an
+# eight-second timeout every two seconds, for months. Either way it is the
+# console putting traffic on a link with nothing spare, on a schedule, to ask a
+# question it has already been told the answer to - which is the one thing the
+# docstring above says this file exists not to do.
+#
+# It is also the command sender's own thread. While it sits inside that call,
+# the stop the operator owes the head when he lets go of an arrow key is in the
+# mailbox waiting for it.
+#
+# Thirty seconds, which is `DiskWatcher`'s number for the same shape of
+# question and about four times the ONVIF timeout, so the sender is idle
+# between attempts rather than permanently inside one. The cost is that a camera
+# which comes back takes up to half a minute to be noticed - and nothing is
+# waiting on that but a slider, because steering does not go through here.
+RETRY_AFTER_SECONDS = 30.0
+
 
 class Lenses:
     """Per-picture zoom, over one camera and one shared gimbal.
@@ -86,6 +110,11 @@ class Lenses:
         self._read_at: dict[str, float] = {}
         self._absolute = False
         self._found = False
+        # When discovery was last attempted and failed. See RETRY_AFTER_SECONDS:
+        # a camera that cannot answer must not be asked on every heartbeat, and
+        # this is the only thing that remembers it was asked at all - `reason`
+        # says what went wrong, never when.
+        self._asked_at: float | None = None
         self.reason = NOT_ASKED
 
     # ----------------------------------------------------------- discovery
@@ -93,11 +122,20 @@ class Lenses:
     def find(self) -> bool:
         """Ask the camera what it has, and remember which lens is which.
 
-        Safe to call repeatedly; it only asks again after a failure. A camera
-        that answered once does not grow a third lens.
+        Safe to call repeatedly, and cheap. A camera that answered is never
+        asked again - it does not grow a third lens - and a camera that did not
+        is left alone for RETRY_AFTER_SECONDS rather than asked on every beat of
+        the console's heartbeat.
         """
         if self._found:
             return True
+        now = self._clock()
+        if self._asked_at is not None and now - self._asked_at < RETRY_AFTER_SECONDS:
+            # Already refused, recently. `reason` still holds the camera's own
+            # words for it, so nothing on screen changes; what changes is that
+            # the link is not spent asking again.
+            return False
+        self._asked_at = now
         try:
             profiles = self._camera.profiles()
         except PtzError as exc:

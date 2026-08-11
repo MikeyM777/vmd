@@ -19,7 +19,13 @@ tests below count the calls.
 
 from __future__ import annotations
 
-from vmd.ptz.lenses import CREEP_SPEED, SETTLING_EVERY, SETTLING_SECONDS, Lenses
+from vmd.ptz.lenses import (
+    CREEP_SPEED,
+    RETRY_AFTER_SECONDS,
+    SETTLING_EVERY,
+    SETTLING_SECONDS,
+    Lenses,
+)
 from vmd.ptz.onvif import Profile, PtzCapability, PtzError
 
 STREAMS = ["thermal", "visible"]
@@ -103,27 +109,73 @@ def test_a_camera_that_lists_nothing_is_a_reason_rather_than_a_crash() -> None:
     assert lenses.go_to("thermal", 0.5)["ok"] is False
 
 
-def test_a_camera_that_cannot_be_reached_is_asked_again_next_time() -> None:
+class Deaf(FakeCamera):
+    """A camera that refuses to list anything until `up` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.up = False
+
+    def profiles(self):
+        self.listed += 1
+        if not self.up:
+            raise PtzError("cannot reach 192.168.1.251 after 8 s")
+        return TWO_LENSES
+
+
+def test_a_camera_that_cannot_be_reached_is_asked_again_later() -> None:
     """The radio link goes down and comes back. A console that gave up on the
     first refusal would need restarting to notice the camera returned."""
-
-    class Deaf(FakeCamera):
-        def __init__(self) -> None:
-            super().__init__()
-            self.up = False
-
-        def profiles(self):
-            self.listed += 1
-            if not self.up:
-                raise PtzError("cannot reach 192.168.1.251 after 8 s")
-            return TWO_LENSES
-
     camera = Deaf()
-    lenses = Lenses(camera, STREAMS)
+    clock = Clock()
+    lenses = Lenses(camera, STREAMS, clock=clock)
     assert lenses.find() is False
     camera.up = True
+    clock.tick(RETRY_AFTER_SECONDS)
     assert lenses.find() is True
     assert camera.listed == 2
+
+
+def test_a_camera_that_cannot_be_reached_is_not_asked_on_every_heartbeat() -> None:
+    """The state a wrong address or a camera that is switched off leaves behind.
+
+    `poll` runs on the console's two-second heartbeat, and every one of them
+    called `find` again, which on a camera that has not answered means another
+    `GetProfiles` - one login attempt per authentication style against a camera
+    that is refusing, or one eight-second timeout against one that is not there,
+    for as long as the console is open. That is the console putting traffic on a
+    link measured at 88% of its airtime, on a schedule, to ask a question it has
+    already been told the answer to - which is exactly what this module's
+    docstring says it exists not to do.
+
+    It is also the command sender's thread. While it is inside that call, the
+    stop the operator owes the head when he lets go of an arrow key is sitting
+    in the mailbox waiting for it.
+    """
+    camera = Deaf()
+    clock = Clock()
+    lenses = Lenses(camera, STREAMS, clock=clock)
+    for _ in range(300):  # ten minutes of heartbeats
+        clock.tick(2.0)
+        lenses.poll()
+    allowed = int(600 / RETRY_AFTER_SECONDS) + 1
+    assert camera.listed <= allowed, f"{camera.listed} attempts in ten minutes"
+
+
+def test_a_camera_that_comes_back_is_noticed_without_anybody_restarting_anything() -> None:
+    """The other half, and the reason the retry is slowed rather than stopped."""
+    camera = Deaf()
+    clock = Clock()
+    lenses = Lenses(camera, STREAMS, clock=clock)
+    lenses.poll()
+    assert lenses.reason != "ready"
+
+    camera.up = True
+    for _ in range(int(RETRY_AFTER_SECONDS / 2.0) + 2):
+        clock.tick(2.0)
+        lenses.poll()
+    assert lenses.reason == "ready"
+    assert lenses.position("thermal") == 0.3
 
 
 def test_a_camera_that_answered_is_not_asked_what_it_has_again() -> None:
