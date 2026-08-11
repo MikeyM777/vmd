@@ -25,6 +25,7 @@ from vmd.desktop.services import (
     _default_spawn,
     _taskkill_tree,
     detector_fingerprint,
+    process_started_at,
     read_detection_status,
     recordable,
     recorder_fingerprint,
@@ -1847,3 +1848,106 @@ def test_the_recorders_in_flight_segment_is_indexed_after_a_forced_restart(
         assert closed.name in indexed
     finally:
         service.stop()
+
+
+# ------------------------------------------------------ adopting the right process
+#
+# `_pid_alive` only asks whether SOMETHING holds that PID. After a power cut -
+# the event this always-on laptop will certainly see - recorder.pid survives on
+# disk holding a dead PID, and Windows reuses PIDs from a small pool. The
+# console then logged "a recorder is already running; adopting it", reported
+# recording, and never started a recorder at all: nothing was written and the
+# status line was green.
+
+
+def test_a_pid_reused_by_something_else_is_not_adopted(tmp_path: Path) -> None:
+    """The PID is alive - it is this test process - and it is not a recorder."""
+    pid_file = tmp_path / "recorder.pid"
+    pid_file.write_text(
+        json.dumps({"pid": os.getpid(), "started_at": 1000.0}), encoding="utf-8"
+    )
+
+    spawned: list = []
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda c: (spawned.append(c), FakeProcess())[1],
+    )
+    recorder.start()
+
+    assert len(spawned) == 1, "a stale PID file left the machine recording nothing"
+    assert recorder.running is True
+
+
+def test_the_process_that_really_is_ours_is_still_adopted(tmp_path: Path) -> None:
+    """The other half: a child that genuinely survived the last console must not
+    be duplicated, because two of them fight over the same files and index."""
+    started_at = process_started_at(os.getpid())
+    assert started_at is not None, "this platform cannot answer the question at all"
+    pid_file = tmp_path / "recorder.pid"
+    pid_file.write_text(
+        json.dumps({"pid": os.getpid(), "started_at": started_at}), encoding="utf-8"
+    )
+
+    spawned: list = []
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda c: (spawned.append(c), FakeProcess())[1],
+    )
+    recorder.start()
+
+    assert spawned == [], "the live child should have been adopted"
+    assert recorder.running is True
+
+
+def test_a_pid_file_from_an_older_console_is_adopted_but_said_to_be_unverified(
+    tmp_path: Path, caplog
+) -> None:
+    """A bare number is what previous versions wrote. There is nothing to check
+    it against, so it is adopted as before - and said to be unchecked, because
+    the alternative is starting a second recorder on the same directory."""
+    pid_file = tmp_path / "recorder.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+    spawned: list = []
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda c: (spawned.append(c), FakeProcess())[1],
+    )
+    with caplog.at_level(logging.WARNING):
+        recorder.start()
+
+    assert spawned == []
+    said = " ".join(record.getMessage() for record in caplog.records)
+    assert "could not be checked" in said or "not be verified" in said
+
+
+def test_the_pid_file_records_when_the_process_started(tmp_path: Path) -> None:
+    class RealEnough:
+        pid = os.getpid()
+
+        def poll(self):
+            return None
+
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=tmp_path / "recorder.pid",
+        spawn=lambda c: RealEnough(),
+    )
+    recorder.start()
+
+    written = json.loads((tmp_path / "recorder.pid").read_text(encoding="utf-8"))
+    assert written["pid"] == os.getpid()
+    assert written["started_at"] == process_started_at(os.getpid())
+
+
+def test_when_a_process_started_can_be_read_for_this_process() -> None:
+    started_at = process_started_at(os.getpid())
+    assert started_at is not None
+    assert 0 < started_at <= time.time() + 1
+
+
+def test_asking_when_a_process_that_is_not_there_started_is_not_an_exception() -> None:
+    assert process_started_at(999_999) is None

@@ -39,6 +39,12 @@ READER_STOP_SECONDS = 2.0
 # because taskkill /F has already returned by the time it is checked at all.
 ADOPTED_STOP_SECONDS = 2.0
 
+# How far the start time recorded in a PID file may differ from the one the
+# operating system reports before the process is treated as a stranger. A second
+# is generous: both numbers come from the same call, and the only thing between
+# them is a float going through JSON.
+PID_START_TOLERANCE_SECONDS = 1.0
+
 # The longest single line kept from a child. A child in a restart loop, or an
 # ffmpeg dumping a binary probe, can write a great deal without a newline, and
 # the ring buffer's capacity is no defence against one line that is a megabyte.
@@ -350,8 +356,8 @@ class ChildProcess:
         if self.running:
             return
 
-        adopted = self._read_pid()
-        if adopted is not None and self._alive(adopted):
+        adopted, recorded_start = self._read_pid()
+        if adopted is not None and self._alive(adopted) and self._is_ours(adopted, recorded_start):
             logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
             self._adopted_pid = adopted
             self._announce_adoption(adopted)
@@ -488,11 +494,86 @@ class ChildProcess:
         thread.join(timeout)
         return not thread.is_alive()
 
-    def _read_pid(self) -> int | None:
+    def _is_ours(self, pid: int, recorded_start: float | None) -> bool:
+        """Is the process holding that PID the child this file was written for?
+
+        A live PID is not an answer. After a power cut the PID file survives
+        holding a dead PID, and Windows hands PIDs out again from a small pool -
+        so an unrelated program can be holding it by the time the console
+        starts. The console then adopted a stranger, reported "recording", and
+        never started a recorder at all: nothing written, status line green.
+        That is the worst failure shape this system has, and it lasts until
+        somebody notices the disk is not growing.
+
+        Unverifiable is not the same as "not ours", and is deliberately treated
+        the old way. A PID file written by an older console holds a bare number
+        with nothing to check against, and a process whose start time this
+        console may not read is a question that could not be answered. In both
+        cases the alternative to adopting is starting a SECOND child on the same
+        recording directory and the same index, which is the collision adoption
+        exists to prevent. So it adopts, and says the check could not be made -
+        and the recording state, which is now a question about the folder rather
+        than about a process, catches a ghost within one poll either way.
+        """
+        if recorded_start is None:
+            self._child_logger.warning(
+                "%s: adopting pid %s, but which program holds that number could "
+                "not be checked - the PID file was written by an older console",
+                self.label,
+                pid,
+            )
+            return True
+        actual = process_started_at(pid)
+        if actual is None:
+            self._child_logger.warning(
+                "%s: adopting pid %s, but which program holds that number could "
+                "not be verified on this machine",
+                self.label,
+                pid,
+            )
+            return True
+        if abs(actual - recorded_start) <= PID_START_TOLERANCE_SECONDS:
+            return True
+        self._child_logger.warning(
+            "%s: pid %s is now held by a different program, so the %s from the "
+            "last run is gone - probably a power cut. Starting a fresh one.",
+            self.label,
+            pid,
+            self.label,
+        )
+        return False
+
+    def _read_pid(self) -> tuple[int | None, float | None]:
+        """The PID this child was last started as, and when that process began.
+
+        A bare number is what older consoles wrote and is still read, so that an
+        upgrade does not orphan a running recorder.
+        """
         try:
-            return int(self.pid_path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            return None
+            text = self.pid_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None, None
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            try:
+                return int(text), None
+            except ValueError:
+                return None, None
+        if isinstance(payload, int):
+            # A bare number is valid JSON, so the older format arrives here
+            # rather than in the ValueError above.
+            return payload, None
+        if not isinstance(payload, dict):
+            return None, None
+        try:
+            pid = int(payload["pid"])
+        except (KeyError, TypeError, ValueError):
+            return None, None
+        started_at = payload.get("started_at")
+        if not isinstance(started_at, (int, float)):
+            started_at = None
+        return pid, started_at
 
     def _write_pid(self) -> None:
         pid = getattr(self._process, "pid", None)
@@ -500,7 +581,10 @@ class ChildProcess:
             return
         try:
             self.pid_path.parent.mkdir(parents=True, exist_ok=True)
-            self.pid_path.write_text(str(pid), encoding="utf-8")
+            self.pid_path.write_text(
+                json.dumps({"pid": pid, "started_at": process_started_at(pid)}),
+                encoding="utf-8",
+            )
         except OSError:
             logger.warning("could not write %s", self.pid_path, exc_info=True)
 
@@ -636,6 +720,84 @@ class DetectorProcess(ChildProcess):
     module = "vmd.detect_main"
     pid_filename = "detector.pid"
     label = "detector"
+
+
+def process_started_at(pid: int) -> float | None:
+    """When that process was created, in epoch seconds, or None if unknowable.
+
+    This is what tells a recorder that survived the last console from an
+    unrelated program that happens to hold the same number. `_pid_alive` only
+    asks whether SOMETHING holds that PID, and after a power cut - the event an
+    always-on laptop will certainly see - recorder.pid survives on disk holding
+    a dead PID while Windows hands that PID out again from a small pool. The
+    console then adopted a stranger, reported "recording", and never started a
+    recorder at all.
+
+    ctypes rather than a dependency, and rather than shelling out: `wmic` is
+    gone from current Windows, PowerShell costs the better part of a second, and
+    this runs while the operator is waiting for a window to open.
+    PROCESS_QUERY_LIMITED_INFORMATION is enough for a process of the same user
+    and is what a service-style child needs.
+
+    None means the question could not be answered - not that the process is
+    gone. The caller treats that as "unverified", never as "not ours".
+    """
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        return _windows_started_at(pid)
+    return _proc_started_at(pid)  # pragma: no cover - not the deployment platform
+
+
+def _windows_started_at(pid: int) -> float | None:
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    # 1601-01-01 to 1970-01-01 in 100-nanosecond ticks, which is the unit every
+    # Windows FILETIME is counted in.
+    EPOCH_TICKS = 116_444_736_000_000_000
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            ok = kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            )
+            if not ok:
+                return None
+            ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+            return (ticks - EPOCH_TICKS) / 10_000_000.0
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001 - an unanswerable question, not a failure
+        logger.debug("could not read the start time of pid %s", pid, exc_info=True)
+        return None
+
+
+def _proc_started_at(pid: int) -> float | None:  # pragma: no cover - not Windows
+    """The same answer from /proc, for a development machine that is not Windows."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            fields = handle.read().rsplit(") ", 1)[1].split()
+        ticks_after_boot = int(fields[19]) / os.sysconf("SC_CLK_TCK")
+        with open("/proc/stat", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("btime "):
+                    return int(line.split()[1]) + ticks_after_boot
+    except (OSError, IndexError, ValueError):
+        return None
+    return None
 
 
 def _pid_alive(pid: int) -> bool:
