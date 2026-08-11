@@ -536,6 +536,31 @@ def test_a_capture_that_wedged_mid_read_is_visible_as_a_stall(tmp_path):
         store.close()
 
 
+def test_the_delivered_frame_rate_is_measured_and_published(tmp_path):
+    """The confirmation rule counts frames, so the frame rate decides recall.
+
+    A track becomes an event after three of the last five frames and twelve
+    pixels of travel. At 25 fps that is a fifth of a second; at a third of a
+    frame per second it is fifteen, which is longer than most people take to
+    cross anything. Measured on the owner's own labelled footage, decimated:
+    7/8 person spans at 30 fps, 7/8 at 3 fps, 5/8 at 1 fps, 2/8 at 0.33 fps.
+
+    And the frame rate is not a fixed property of the camera - this app
+    re-encodes the stream over ONVIF while it is running - so it is measured
+    from the frames that actually arrive rather than from a setting.
+    """
+    clock = Clock(start=1000.0, step=2.0)  # a frame every two seconds
+    detector, store = build(tmp_path, captures=[FakeCapture(frames=40)], clock=clock)
+    try:
+        assert detector.state()["fps"] is None  # nothing to measure yet
+        for _ in range(20):
+            detector.step()
+        assert detector.state()["fps"] == pytest.approx(0.5, rel=0.2)
+    finally:
+        detector.close()
+        store.close()
+
+
 def test_a_capture_that_never_delivered_a_first_frame_is_a_stall_too(tmp_path):
     """The wedge can happen on the first read as easily as the thousandth.
 

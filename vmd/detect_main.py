@@ -66,6 +66,21 @@ STATUS_FILENAME = "detection.json"
 # dead camera looks exactly like a quiet perimeter.
 STALLED_AFTER_SECONDS = 60.0
 
+# The frame rate below which the confirmation rule stops being able to confirm
+# a person crossing.
+#
+# A track becomes an event after three of the last five frames and twelve
+# pixels of travel. At 25 fps that is a fifth of a second. At one frame every
+# three seconds it is fifteen, which is longer than it takes to cross most of
+# anything. Measured on the owner's own labelled footage, decimated to stand in
+# for a re-encoded stream: 7/8 person spans at 30 fps, 7/8 at 3 fps, 5/8 at
+# 1 fps, 2/8 at 0.33 fps.
+#
+# So 3 fps: the lowest rate that lost nothing, and the point below which the
+# operator has to be told, because the control that puts the stream there is
+# this app's own ONVIF re-encode and nothing else would connect the two.
+SLOW_STREAM_FPS = 3.0
+
 
 def detected_streams(settings: Settings) -> list:
     """The streams to watch: enabled, ticked for detection, master switch on.
@@ -244,6 +259,9 @@ class DetectionService:
             # Open, and sending nothing. Counted apart from `detecting` because
             # a wedged read is counted in it and is the opposite of detecting.
             "stalled": sum(1 for s in streams if _stalled(s)),
+            # Open, delivering, and delivering too slowly for the confirmation
+            # rule to confirm anything. See SLOW_STREAM_FPS.
+            "slow": sum(1 for s in streams if _too_slow(s)),
             "configured": len(streams),
             "events": sum(s["events"] for s in streams),
             # Movement that was seen and confirmed but never reached the
@@ -306,7 +324,8 @@ class DetectionService:
         for detector in self.detectors:
             state = detector.state()
             stalled = _stalled(state)
-            key = (state["opened"], state["reason"], stalled)
+            slow = _too_slow(state)
+            key = (state["opened"], state["reason"], stalled, slow)
             if getattr(detector, "_last_logged", None) == key:
                 continue
             detector._last_logged = key
@@ -322,6 +341,15 @@ class DetectionService:
                     state["stream"],
                     state["seconds_since_frame"],
                 )
+            elif slow:
+                logger.warning(
+                    "%s: only %.1f frames a second are arriving. Movement has to "
+                    "be seen in three frames out of five before it counts, so at "
+                    "this rate somebody can cross and be gone before the detector "
+                    "has enough of them. Raise the frame rate for this stream.",
+                    state["stream"],
+                    state["fps"],
+                )
             else:
                 logger.info("%s: detecting", state["stream"])
 
@@ -332,6 +360,14 @@ def _stalled(state: dict) -> bool:
         return False
     since = state.get("seconds_since_frame")
     return since is not None and since > STALLED_AFTER_SECONDS
+
+
+def _too_slow(state: dict) -> bool:
+    """True when the stream is arriving too slowly for a track to be confirmed."""
+    if not state.get("opened"):
+        return False
+    fps = state.get("fps")
+    return fps is not None and fps < SLOW_STREAM_FPS
 
 
 def _write_json_atomically(payload: dict, path: Path) -> None:

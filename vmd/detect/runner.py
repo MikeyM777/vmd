@@ -49,6 +49,11 @@ DEFAULT_IDLE_SLEEP = 0.2
 # seconds at any frame rate, and bounded, because this process runs for months.
 FRAME_TIME_HISTORY = 512
 
+# How many frames must have arrived before the delivered frame rate is worth
+# quoting. Fewer than this and one slow frame on a radio link is the whole
+# measurement.
+MIN_FRAMES_TO_MEASURE_RATE = 16
+
 
 # A password inside a URL. The same expression as `vmd.desktop.logs`, copied
 # rather than imported because importing that module would pull Qt into the
@@ -186,6 +191,29 @@ class StreamDetector:
     def stopped(self) -> bool:
         return self._stop.is_set()
 
+    @property
+    def fps(self) -> float | None:
+        """Frames a second, as actually delivered. None until there are enough.
+
+        Measured rather than configured. The confirmation rule counts frames -
+        three of the last five - so the frame rate is what decides how long a
+        person has to be visible before they become an event, and the frame
+        rate is not a fixed property of the camera: this app re-encodes the
+        stream over ONVIF while it is running.
+
+        Taken over the whole remembered window rather than the last interval,
+        because one late frame on a radio link is normal and is not news.
+        """
+        if len(self._frame_order) < MIN_FRAMES_TO_MEASURE_RATE:
+            return None
+        first = self._frame_times.get(self._frame_order[0])
+        last = self._frame_times.get(self._frame_order[-1])
+        if first is None or last is None or last <= first:
+            # Including a clock that was set backwards mid-window: no answer is
+            # better than a negative frame rate.
+            return None
+        return (len(self._frame_order) - 1) / (last - first)
+
     def state(self) -> dict:
         """What the console shows for this stream, per stream.
 
@@ -219,6 +247,7 @@ class StreamDetector:
             "seconds_since_frame": (
                 None if self._last_frame_at is None else self._clock() - self._last_frame_at
             ),
+            "fps": self.fps,
         }
 
     # -- the loop ---------------------------------------------------------

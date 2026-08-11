@@ -192,6 +192,35 @@ def test_a_stream_that_opened_and_went_quiet_is_reported_as_stalled(tmp_path, ca
         service.stop()
 
 
+def test_a_stream_too_slow_to_confirm_anything_is_said_out_loud(tmp_path, caplog):
+    """A frame rate is not just performance; below a point it is deafness.
+
+    Three of the last five frames is a fifth of a second at 25 fps and fifteen
+    seconds at one frame every three. Measured on the owner's own labelled
+    footage: 7/8 person spans at 3 fps, 5/8 at 1 fps, 2/8 at 0.33 fps. And the
+    control that puts a stream there is this app's own ONVIF re-encode, so
+    nothing else would ever connect the two for the operator.
+    """
+    service = service_for(tmp_path)
+    try:
+        detector = service.detectors[0]
+        detector.step()
+        assert service.status()["slow"] == 0  # nothing measured yet
+
+        # A stream arriving at one frame every two seconds.
+        detector._frame_order.extend(range(20))
+        detector._frame_times.update({index: 1000.0 + index * 2.0 for index in range(20)})
+        assert detector.state()["fps"] < 1.0
+        assert service.status()["slow"] == 1
+
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+        said = " ".join(record.getMessage() for record in caplog.records)
+        assert "frames a second" in said, said
+    finally:
+        service.stop()
+
+
 def test_what_the_rejection_rules_threw_away_is_published(tmp_path):
     """The console is another process and cannot ask.
 
