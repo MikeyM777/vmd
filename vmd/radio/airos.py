@@ -75,6 +75,14 @@ def _int(value) -> int | None:
     return int(number) if number is not None else None
 
 
+def _capacity(polled, rate) -> float | None:
+    """The negotiated capacity in Mb/s, from whichever field reported it."""
+    kbps = _number(polled)
+    if kbps:
+        return kbps / 1000.0
+    return _number(rate)
+
+
 def parse_status(payload: dict) -> LinkStatus:
     """Pull what matters out of airOS status JSON.
 
@@ -102,8 +110,17 @@ def parse_status(payload: dict) -> LinkStatus:
         # throughput is in kbps in airOS; rates are the negotiated link speed.
         tx_mbps=(_number(throughput.get("tx")) or 0) / 1000 if throughput.get("tx") is not None else None,
         rx_mbps=(_number(throughput.get("rx")) or 0) / 1000 if throughput.get("rx") is not None else None,
-        tx_capacity_mbps=_number(polling.get("dl_capacity") or wireless.get("txrate")),
-        rx_capacity_mbps=_number(polling.get("ul_capacity") or wireless.get("rxrate")),
+        # Two fields, two units, and everything downstream compares them with the
+        # throughput above. The airMAX polling capacity is reported in kbps, the
+        # same as the throughput beside it; txrate and rxrate are already Mb/s.
+        # Treated as one unit, a 24 Mb/s link reads as 24000 and the panel says
+        # the link is 0.02% used at the moment the picture is breaking up.
+        #
+        # UNPROVEN against a real radio: which of these fields your airOS build
+        # fills in, and in which unit, is exactly what spike/probe_radio.py is
+        # for - it prints the raw JSON next to these numbers.
+        tx_capacity_mbps=_capacity(polling.get("dl_capacity"), wireless.get("txrate")),
+        rx_capacity_mbps=_capacity(polling.get("ul_capacity"), wireless.get("rxrate")),
         distance_m=_int(wireless.get("distance")),
         uptime_s=_int(host.get("uptime")),
         device=str(host.get("hostname") or host.get("devmodel") or ""),

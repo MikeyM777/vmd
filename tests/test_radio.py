@@ -106,6 +106,28 @@ def test_rssi_only_radios_still_give_a_signal() -> None:
     assert status.signal_dbm == -63
 
 
+def test_the_capacity_is_in_megabits_whichever_field_reported_it() -> None:
+    """The two fields are not in the same unit, and reading them as though they
+    were is what makes the one view that explains the stuttering useless.
+
+    airOS reports the airMAX polling capacity in kbps - the same unit as the
+    throughput beside it - and txrate/rxrate in Mb/s. Read as one unit, a 24 Mb/s
+    link reads as 24000 and 4 Mb/s of video reads as 0.02% of the link at exactly
+    the moment the picture is breaking up.
+    """
+    polled = parse_status(
+        {"wireless": {"essid": "x", "polling": {"dl_capacity": 24000, "ul_capacity": 18000}}}
+    )
+    assert polled.tx_capacity_mbps == 24.0
+    assert polled.rx_capacity_mbps == 18.0
+
+    rated = parse_status({"wireless": {"essid": "x", "txrate": 130, "rxrate": 117}})
+    assert rated.tx_capacity_mbps == 130.0
+    assert rated.rx_capacity_mbps == 117.0
+
+    assert parse_status({"wireless": {"essid": "x"}}).tx_capacity_mbps is None
+
+
 def test_a_wrong_password_says_so(radio: str) -> None:
     FakeRadio.accept_login = False
     with pytest.raises(RadioError) as caught:
