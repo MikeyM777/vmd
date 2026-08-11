@@ -3256,3 +3256,30 @@ def test_a_streaming_server_with_a_picture_in_it_costs_nothing(
     assert streaming.asked == 1
     assert took < 2.0, f"a healthy start waited {took:.1f}s"
     assert "holding the camera" not in said_in(caplog)
+
+
+def test_a_save_that_leaves_the_camera_held_is_settled_too(tmp_path: Path, caplog) -> None:
+    """A Save restarts the streaming server, and a streaming server restarted
+    while the recorder is on the camera is refused by the camera exactly as it
+    is at start-up. The operator who has just corrected the password would
+    otherwise be left with the same blank panes and nothing said."""
+    recording_from_the_camera(tmp_path)
+
+    class Restartable(Blind):
+        def apply(self, settings) -> None:
+            self.applied = True
+
+    streaming = Restartable()
+    services = console_with_streaming(tmp_path, streaming)
+    services.handover_seconds = 0.5
+    services.start()
+    caplog.clear()
+
+    changed = settings_for(tmp_path, detect=True)
+    changed.camera.password = "corrected"
+    with caplog.at_level(logging.WARNING):
+        services.apply(changed)
+
+    said = said_in(caplog).lower()
+    assert "camera" in said and "recorder" in said, said
+

@@ -1793,6 +1793,13 @@ class ConsoleServices:
 
         problems.extend(self._apply_to_recorder(previous, settings, recording))
         problems.extend(self._apply_to_detector(previous, settings, wanted))
+        # And the same question as at start-up, for the same reason: a Save
+        # restarts the streaming server, and one restarted while the recorder is
+        # holding the camera is refused by the camera exactly as it is at
+        # start-up - so the operator who has just corrected the password would
+        # otherwise watch the panes stay blank with nothing said. Last, so it is
+        # asked of the children this Save has left running.
+        self._settle_the_camera()
         return problems
 
     def _apply_to_recorder(
