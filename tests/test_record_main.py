@@ -175,8 +175,8 @@ def test_stuck_deletions_are_reported(tmp_path, monkeypatch):
     def refuse(_path):
         raise PermissionError("file is in use")
 
-    def refusing_apply_plan(plan, index, unlink=None):
-        return real_apply_plan(plan, index, unlink=refuse)
+    def refusing_apply_plan(plan, index, unlink=None, events=None):
+        return real_apply_plan(plan, index, unlink=refuse, events=events)
 
     monkeypatch.setattr(record_main_module, "apply_plan", refusing_apply_plan)
 
@@ -311,7 +311,9 @@ def test_stuck_paths_stay_in_seen(tmp_path, monkeypatch):
     monkeypatch.setattr(
         record_main_module,
         "apply_plan",
-        lambda plan, index, unlink=None: real_apply_plan(plan, index, unlink=refuse),
+        lambda plan, index, unlink=None, events=None: real_apply_plan(
+            plan, index, unlink=refuse, events=events
+        ),
     )
 
     settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
@@ -422,3 +424,143 @@ def test_falls_back_to_the_camera_when_the_streaming_server_is_gone(tmp_path):
     )
     service = RecordingService(settings, spawn=spawn_fake, endpoint_path=endpoint)
     assert service.recorders[0].source_url == "rtsp://10.0.0.2/thermal"
+
+
+# ------------------------------------------------- the events beside the index
+#
+# Events point at footage. Retention deletes footage. Nothing was passing the
+# event store to apply_plan, so the list would have gone on offering to play
+# files that had been reclaimed months earlier.
+
+
+def write_segments(tmp_path, names, size=2000):
+    directory = tmp_path / "recordings" / "thermal"
+    directory.mkdir(parents=True, exist_ok=True)
+    for offset, name in enumerate(names):
+        path = directory / name
+        path.write_bytes(b"x" * size)
+        os.utime(path, (100.0 + offset, 100.0 + offset))
+    return directory
+
+
+def test_a_machine_without_detection_gets_no_events_database(tmp_path):
+    """The recorder must not create the detector's database. A file that
+    appears on every machine is a file every machine has to explain."""
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once()
+    write_segments(tmp_path, ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4"])
+    service.run_once(now=1000.0)
+    service.stop()
+
+    assert not (tmp_path / "recordings" / "events.db").exists()
+
+
+def test_retention_reclaims_the_events_whose_footage_it_deleted(tmp_path):
+    from vmd.detect.events import EventStore
+    from vmd.storage.discovery import parse_segment_start
+
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    root = tmp_path / "recordings"
+    root.mkdir(parents=True, exist_ok=True)
+
+    names = [
+        "2026-08-07_10-00-00.mp4",
+        "2026-08-07_10-05-00.mp4",
+        "2026-08-07_10-10-00.mp4",
+    ]
+    oldest = parse_segment_start(names[0])
+    store = EventStore(root / "events.db")
+    store.add("thermal", oldest - 60, oldest - 55, (1, 2, 3, 4), 40.0)  # inside the doomed file
+    store.add("thermal", oldest + 600, oldest + 605, (1, 2, 3, 4), 40.0)  # still on disk
+    store.add("visible", oldest - 60, oldest - 55, (1, 2, 3, 4), 40.0)  # another camera
+    store.close()
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once()
+    write_segments(tmp_path, names)
+    service.run_once(now=1000.0)
+    service.stop()
+
+    reader = EventStore(root / "events.db")
+    try:
+        kept = reader.recent()
+        assert [(e.stream, e.started) for e in kept] == [
+            ("thermal", oldest + 600),
+            ("visible", oldest - 60),
+        ], "only the thermal events under the deleted footage should have gone"
+    finally:
+        reader.close()
+
+
+def test_a_detector_enabled_after_the_recorder_started_still_gets_reclaimed(tmp_path):
+    """The recorder runs for months. Detection is ticked on in the Settings
+    tab one afternoon, and the store appears underneath a service that has
+    already decided there was none."""
+    from vmd.detect.events import EventStore
+    from vmd.storage.discovery import parse_segment_start
+
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    service = RecordingService(settings, spawn=spawn_fake, retention_interval=0.0)
+    service.run_once()
+    root = tmp_path / "recordings"
+    assert not (root / "events.db").exists()
+
+    names = [
+        "2026-08-07_10-00-00.mp4",
+        "2026-08-07_10-05-00.mp4",
+        "2026-08-07_10-10-00.mp4",
+    ]
+    oldest = parse_segment_start(names[0])
+    store = EventStore(root / "events.db")  # the detector, started this afternoon
+    store.add("thermal", oldest - 60, oldest - 55, (1, 2, 3, 4), 40.0)
+    store.close()
+
+    write_segments(tmp_path, names)
+    service.run_once(now=1000.0)
+    service.stop()
+
+    reader = EventStore(root / "events.db")
+    try:
+        assert reader.count() == 0, "the events were never reclaimed"
+    finally:
+        reader.close()
+
+
+def test_stopping_the_recorder_lets_go_of_the_events_database(tmp_path):
+    """A handle left open would stop the next recorder from opening it, and on
+    Windows would stop anything from moving the file at all."""
+    from vmd.detect.events import EventStore
+
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    root = tmp_path / "recordings"
+    root.mkdir(parents=True, exist_ok=True)
+    EventStore(root / "events.db").close()
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once()
+    write_segments(tmp_path, ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4"])
+    service.run_once(now=1000.0)
+    service.stop()
+
+    (root / "events.db").unlink()  # PermissionError on Windows if a handle is open
+
+
+def test_an_unreadable_events_database_does_not_stop_retention(tmp_path):
+    """Freeing the disk is what retention is for. If it needed a working
+    events.db to finish, a corrupt one would fill the disk and stop recording."""
+    settings = build_settings(tmp_path, budget_gb=3000 / 1024**3)
+    root = tmp_path / "recordings"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "events.db").write_bytes(b"this is not a database")
+
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once()
+    directory = write_segments(
+        tmp_path,
+        ["2026-08-07_10-00-00.mp4", "2026-08-07_10-05-00.mp4", "2026-08-07_10-10-00.mp4"],
+    )
+    service.run_once(now=1000.0)
+    service.stop()
+
+    assert not (directory / "2026-08-07_10-00-00.mp4").exists()

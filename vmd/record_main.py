@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # settings it was started with.
 DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 
+# The detector's database, beside this service's own. Opened only if it is
+# already there; see _event_store.
+EVENTS_FILENAME = "events.db"
+
 
 class RecordingService:
     """Owns the recorders, the index and the retention pass."""
@@ -44,6 +48,10 @@ class RecordingService:
         self.root = Path(settings.storage.root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = SegmentIndex(self.root / "segments.db")
+        # Opened on demand rather than here; see _event_store.
+        self.events_path = self.root / EVENTS_FILENAME
+        self._events = None
+        self._events_failures = 0
         try:
             recorder_kwargs = {"spawn": spawn} if spawn else {}
             self.recorders = [
@@ -77,6 +85,48 @@ class RecordingService:
             # immediate retry fail with "database is locked".
             self.index.close()
             raise
+
+    def _event_store(self):
+        """The movement events, if a detector has ever written any.
+
+        Opened lazily, and only when the file already exists. Opening it in the
+        constructor would be simpler, and would create events.db on every
+        machine - including the ones where detection was never turned on, where
+        an empty database beside the recordings is a thing an operator has to
+        ask about and a thing a backup has to carry. The recorder is not the
+        detector, and it should not leave the detector's fingerprints.
+
+        Checked on every retention pass rather than once, because detection can
+        be ticked on in the Settings tab one afternoon while this service has
+        been running since March: the store appears underneath a process that
+        has already decided there was none, and the events written from then on
+        must still be reclaimed with the footage they point at.
+
+        The import is local for the same reason: `vmd.detect` pulls in the
+        detector's whole stack, and a machine that only records must not need
+        it installed to record.
+        """
+        if self._events is not None:
+            return self._events
+        if not self.events_path.exists():
+            return None
+        try:
+            from vmd.detect.events import EventStore
+
+            self._events = EventStore(self.events_path)
+        except Exception:  # noqa: BLE001 - retention frees the disk with or without this
+            self._events_failures += 1
+            # Loud the first few times, then rare. This is retried every
+            # retention pass for as long as the fault lasts, and a fault that
+            # lasts for days must stay visible without burying the log.
+            if self._events_failures <= 3 or self._events_failures % 100 == 0:
+                logger.exception(
+                    "the movement events could not be opened (%d times); "
+                    "footage will be reclaimed without them",
+                    self._events_failures,
+                )
+            self._events = None
+        return self._events
 
     def _source_for(self, stream) -> str:
         """Prefer the local streaming server over the camera.
@@ -155,6 +205,12 @@ class RecordingService:
             self._index_new_segments(time.time())
         except Exception:  # noqa: BLE001 - shutdown must always complete
             logger.exception("final indexing pass failed")
+        if self._events is not None:
+            try:
+                self._events.close()
+            except Exception:  # noqa: BLE001 - shutdown must always complete
+                logger.exception("the movement events would not close")
+            self._events = None
         self.index.close()
 
     def status(self, now: float | None = None) -> dict:
@@ -355,7 +411,9 @@ class RecordingService:
         self._last_warning = plan.warning
         if plan.warning:
             logger.warning(plan.warning)
-        removed = apply_plan(plan, self.index)
+        # The events go with the footage they point at, or the movement list
+        # ends up offering to play files that were reclaimed months ago.
+        removed = apply_plan(plan, self.index, events=self._event_store())
         for segment in removed:
             self._seen.discard(segment.path)
         if removed:
