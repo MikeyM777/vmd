@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import ValidationError
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
@@ -978,8 +979,16 @@ class CameraTools:
         """Everything about this installation, in one file that can be sent on.
 
         Diagnosing a machine at the other end of a conversation fails on missing
-        context more than on hard problems. The password is never included: it
-        is the one thing in here that must not travel.
+        context more than on hard problems. No password is ever included: they
+        are the one thing in here that must not travel, and this file exists to
+        be handed to somebody else.
+
+        Both forms of each, because a password does not reach this text the way
+        it was typed. RTSP carries credentials in the URL, so `with_credentials`
+        percent-encodes them: `p@ss:w/rd` appears as `p%40ss%3Aw%2Frd`, which a
+        search for the typed form does not match at all. The camera's and the
+        radio's alike - the radio's is in the same report and travels the same
+        way.
         """
         path = Path(path)
         lines = ["VMD report", ""]
@@ -987,10 +996,25 @@ class CameraTools:
         lines.append("")
         lines.extend(self.diagnose(settings))
         text = "\n".join(lines)
-        if settings.camera.password:
-            text = text.replace(settings.camera.password, "****")
+        for secret in _secrets(settings):
+            text = text.replace(secret, "****")
         path.write_text(text, encoding="utf-8")
         return path
+
+
+def _secrets(settings: Settings) -> set[str]:
+    """Every string that must never leave this machine, in every form it takes.
+
+    The empty ones are dropped rather than replaced: `"".replace("", "****")`
+    puts the redaction between every character of the file, and a laptop on
+    which nobody has typed a password yet is the ordinary first-run state.
+    """
+    secrets: set[str] = set()
+    for password in (settings.camera.password, settings.radio.password):
+        if password:
+            secrets.add(password)
+            secrets.add(quote(password, safe=""))
+    return secrets
 
 
 def _first_problem(exc: Exception) -> str:

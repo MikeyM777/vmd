@@ -84,6 +84,60 @@ def test_a_report_never_contains_the_password(qtbot, tmp_path) -> None:
     assert "s3cret-in-the-field" not in target.read_text(encoding="utf-8")
 
 
+def test_a_report_never_contains_a_password_that_needed_encoding(qtbot, tmp_path) -> None:
+    """The password reaches the report the way RTSP carries it: percent-encoded
+    into the URL. `p@ss:w/rd` is written `p%40ss%3Aw%2Frd` there, so redacting
+    only the typed form redacts nothing at all - in the one file this console
+    produces for the express purpose of being sent to somebody else.
+
+    The radio's password travels the same way and out of the same form.
+    """
+    from urllib.parse import quote
+
+    from vmd.streaming.go2rtc import with_credentials
+
+    settings = settings_with_camera()
+    settings.camera.username = "admin"
+    settings.camera.password = "p@ss:w/rd"
+    settings.radio.password = "r@dio/pass"
+    url = with_credentials("rtsp://10.0.0.2/ch2", "admin", settings.camera.password)
+    assert quote(settings.camera.password, safe="") in url  # this is how it travels
+
+    tools = CameraTools(
+        ptz=FakePtz(),
+        find_paths=lambda s, on_progress: [],
+        diagnose=lambda s: [f"  trying {url}", f"radio          : {s.radio.password}"],
+    )
+    target = tmp_path / "vmd-report.txt"
+    tools.write_report(settings, target, extra=[])
+
+    text = target.read_text(encoding="utf-8")
+    for secret in (
+        settings.camera.password,
+        quote(settings.camera.password, safe=""),
+        settings.radio.password,
+        quote(settings.radio.password, safe=""),
+    ):
+        assert secret not in text, f"{secret!r} travelled in the report"
+    assert "10.0.0.2" in text, "the report still has to say something useful"
+
+
+def test_a_report_with_no_password_set_is_still_readable(qtbot, tmp_path) -> None:
+    """The first-run state. Replacing the empty string would put the redaction
+    between every character of the file."""
+    tools = CameraTools(
+        ptz=FakePtz(),
+        find_paths=lambda s, on_progress: [],
+        diagnose=lambda s: ["camera address : 10.0.0.2"],
+    )
+    target = tmp_path / "vmd-report.txt"
+    tools.write_report(settings_with_camera(), target, extra=["recording: yes"])
+
+    text = target.read_text(encoding="utf-8")
+    assert "camera address : 10.0.0.2" in text
+    assert "****" not in text
+
+
 def test_a_camera_that_refuses_is_reported_in_its_own_words(qtbot) -> None:
     class Refusing:
         def fit_encoders_to_link(self, ceiling_kbps: int) -> dict:
