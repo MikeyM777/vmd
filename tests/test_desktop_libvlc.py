@@ -10,6 +10,7 @@ fake headers so that all seven ways it goes wrong can be run on any machine.
 from __future__ import annotations
 
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ PROGRAM_FILES = r"C:\Program Files"
 PROGRAM_FILES_X86 = r"C:\Program Files (x86)"
 HERE = Path(r"C:\Program Files\VideoLAN\VLC")
 THERE = Path(r"C:\Program Files (x86)\VideoLAN\VLC")
+PER_USER = Path(r"C:\Users\op\AppData\Local\Programs\VideoLAN\VLC")
 ELSEWHERE = Path(r"D:\Tools\VLC")
 
 WINDOWS = {
@@ -133,13 +135,25 @@ def test_a_64_bit_vlc_recorded_only_in_the_32_bit_view_is_still_found() -> None:
     assert found.folder == ELSEWHERE
 
 
-def test_vlc_in_the_usual_folder_is_found_with_nothing_in_the_registry() -> None:
-    """The registry entry is not sacred: the folder is checked whether or not
-    anything ever recorded it."""
-    exists, machines = an_installation(HERE)
+@pytest.mark.parametrize(
+    "folder",
+    [HERE, THERE, PER_USER],
+    ids=["program-files", "program-files-x86", "per-user"],
+)
+def test_vlc_in_a_usual_folder_is_found_with_nothing_in_the_registry(folder: Path) -> None:
+    """The registry entry is not sacred: the folders are checked whether or not
+    anything ever recorded them.
+
+    python-vlc's own fallback list is `%ProgramFiles%` and `%HOMEDRIVE%` and
+    stops there. It never looks in `Program Files (x86)` and never in
+    `%LOCALAPPDATA%\\Programs`, which is where VLC installs itself when it is
+    installed without an administrator - so a per-user VLC is invisible to it
+    twice over, once in the registry and once here.
+    """
+    exists, machines = an_installation(folder)
     found = look(exists=exists, machines=machines)
 
-    assert found.folder == HERE
+    assert found.folder == folder
 
 
 def test_a_folder_named_by_the_operator_is_tried_before_anything_else() -> None:
@@ -235,6 +249,7 @@ def test_nothing_anywhere_says_where_it_looked_and_what_to_install() -> None:
     assert "not installed" in said
     assert str(HERE) in said, "the operator is not told where to put it"
     assert str(THERE) in said
+    assert str(PER_USER) in said
     assert "64-bit" in said
 
 
@@ -385,6 +400,59 @@ def test_a_file_that_is_not_a_windows_binary_reads_as_nothing(tmp_path: Path) ->
 
 def test_a_file_that_is_not_there_reads_as_nothing(tmp_path: Path) -> None:
     assert machine_of(tmp_path / "nowhere" / "libvlc.dll") is None
+
+
+# --------------------------------------------- what the import must not do
+
+# Loading VLC in a fresh interpreter, and reporting the one thing that cannot be
+# asked of an interpreter that has already imported it. python-vlc looks for the
+# library once, at import, and the working directory it changes is changed
+# there.
+LOADS_VLC = """
+import os, sys
+before = os.getcwd()
+sys.path.insert(0, %(repo)r)
+from vmd.desktop.video import load_vlc
+try:
+    load_vlc()
+except Exception as exc:
+    print("SKIP", exc)
+else:
+    print("CWD", before, "->", os.getcwd())
+"""
+
+
+def test_loading_vlc_leaves_the_working_directory_where_it_found_it(tmp_path: Path) -> None:
+    """python-vlc's own search `os.chdir`s into the VLC folder, loads the
+    library and chdirs back - inside an import, under a running application.
+
+    The console resolves several paths against the working directory, the
+    settings file among them, and a chdir that is not undone - an exception
+    between the two, a second thread reading a path in the window between them -
+    moves all of them at once. Handing python-vlc the library's full path
+    returns it before that branch is ever reached, so the whole manoeuvre never
+    happens. This is what proves it, in a fresh interpreter, because the chdir
+    is at import and this one has imported already.
+    """
+    import subprocess
+
+    script = tmp_path / "loads_vlc.py"
+    script.write_text(LOADS_VLC % {"repo": str(Path(__file__).resolve().parents[1])})
+    done = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    said = [line for line in done.stdout.splitlines() if line.startswith(("CWD", "SKIP"))]
+    assert said, done.stderr[-2000:]
+    if said[0].startswith("SKIP"):
+        pytest.skip(said[0])
+
+    before, _, after = said[0][len("CWD ") :].partition(" -> ")
+    assert Path(after) == Path(before), "libVLC moved the working directory"
+    assert Path(after) == tmp_path
 
 
 # ------------------------------------------------------- on this machine, for real
