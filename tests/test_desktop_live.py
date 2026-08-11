@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
-from vmd.desktop.live import LiveTab
+from vmd.desktop.live import PLAYING_BEFORE_FORGIVEN, LiveTab
 from vmd.desktop.style import PALETTE
 from vmd.desktop.video import FakeVideoPane
 from vmd.detect.events import Event
@@ -283,7 +283,14 @@ def test_a_stream_that_keeps_failing_stops_claiming_it_will_fix_itself(qtbot) ->
     assert "settings" in label, "say where the operator can do something about it"
 
 
-def test_a_stream_that_comes_back_forgets_the_backoff(qtbot) -> None:
+def keeps_playing(tab, pane, beats: int = PLAYING_BEFORE_FORGIVEN) -> None:
+    """A stream that stays up, rather than one that is up for one reading."""
+    pane.pretend_playing()
+    for _ in range(beats):
+        tab.refresh()
+
+
+def test_a_stream_that_stays_back_forgets_the_backoff(qtbot) -> None:
     clock = HandWoundClock()
     tab, _, panes = build(qtbot, "thermal", clock=clock)
     for _ in range(30):
@@ -291,8 +298,7 @@ def test_a_stream_that_comes_back_forgets_the_backoff(qtbot) -> None:
         tab.refresh()
         clock.advance(2.0)
 
-    panes["thermal"].pretend_playing()
-    tab.refresh()
+    keeps_playing(tab, panes["thermal"])
     assert "not coming back" not in tab.stream_label_text("thermal").lower()
 
     before = panes["thermal"].restarts
@@ -301,17 +307,88 @@ def test_a_stream_that_comes_back_forgets_the_backoff(qtbot) -> None:
     assert panes["thermal"].restarts == before + 1, "a recovered stream waits again"
 
 
-def test_a_stream_that_comes_back_and_fails_again_is_reported_again(qtbot, caplog) -> None:
+def test_a_stream_that_stays_back_and_fails_again_is_reported_again(qtbot, caplog) -> None:
     tab, _, panes = build(qtbot, "thermal")
     with caplog.at_level("WARNING", logger="vmd.desktop.live"):
         panes["thermal"].pretend_failed()
         tab.refresh()
-        panes["thermal"].pretend_playing()
-        tab.refresh()
+        keeps_playing(tab, panes["thermal"])
         panes["thermal"].pretend_failed()
         tab.refresh()
 
     assert len(caplog.records) == 2
+
+
+def test_a_stream_that_only_flaps_keeps_climbing_the_backoff(qtbot) -> None:
+    """The fault as the operator's Logs tab showed it.
+
+    A stream on a marginal link goes failed, playing, failed, playing. One good
+    reading used to forgive the whole ladder, so it never climbed one: two
+    seconds between restarts for as long as the console was open. The restarts
+    were never the damage - the damage was that `%s failed; restarting it` at
+    that rate evicts the 500-line ring the operator reads, which is how go2rtc's
+    "401 Unauthorized" was lost while the fault was being hunted.
+    """
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    restarts_seen = []
+    for _ in range(12):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        restarts_seen.append(panes["thermal"].restarts)
+        # One good reading and then straight back to failed: not a recovery.
+        panes["thermal"].pretend_playing()
+        tab.refresh()
+        clock.advance(4.0)
+
+    # The ladder is 2, 4, 8, 16, 32, then a minute. Four seconds between
+    # attempts stops being enough almost at once, so a flapping stream is
+    # restarted a handful of times rather than on every single failure.
+    assert panes["thermal"].restarts <= 5, (
+        f"restarted {panes['thermal'].restarts} times in twelve failures"
+    )
+    assert restarts_seen[-1] == restarts_seen[-2], "it should have stopped by now"
+
+
+def test_saving_something_else_does_not_forgive_a_camera_that_is_off(qtbot) -> None:
+    """A Save that corrects the storage folder has said nothing about a camera
+    that is switched off, and it used to put every pane back on the bottom rung
+    of the ladder."""
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    for _ in range(8):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        clock.advance(64.0)
+    climbed = panes["thermal"].restarts
+    assert climbed >= 6, "the ladder has to have been climbed for this to mean anything"
+
+    # The same streams, the same addresses: nothing here is about the camera.
+    tab.apply(settings_with("thermal"))
+    assert tab._restarts.get("thermal", 0) == climbed, (
+        "a Save that touched nothing may not reset the backoff"
+    )
+
+    # And the ladder goes on from where it was rather than starting again.
+    clock.advance(64.0)
+    tab._panes["thermal"].pretend_failed()
+    tab.refresh()
+    assert tab._restarts["thermal"] == climbed + 1
+
+
+def test_a_stream_whose_address_changed_starts_again_from_the_bottom(qtbot) -> None:
+    """The other half: correcting the address IS a reason to try at once."""
+    clock = HandWoundClock()
+    tab, _, panes = build(qtbot, "thermal", clock=clock)
+    for _ in range(8):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        clock.advance(64.0)
+
+    corrected = settings_with("thermal")
+    corrected.camera.streams[0].url = "rtsp://10.0.0.9/thermal"
+    tab.apply(corrected)
+    assert tab._restarts.get("thermal", 0) == 0
 
 
 def test_changing_the_streams_replaces_the_panes(qtbot) -> None:

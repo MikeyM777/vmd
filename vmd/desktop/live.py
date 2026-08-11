@@ -138,6 +138,26 @@ FAILURES_BETWEEN_REMINDERS = 100
 RESTART_FIRST_DELAY = 2.0
 RESTART_BACKOFF_MAX = 60.0
 
+# How many heartbeats a pane has to keep saying "playing" before its place on
+# that ladder is forgiven.
+#
+# It was one, and one is the flapping case: failed, playing, failed, which is
+# exactly what a stream on a marginal radio link does. A single good reading
+# reset the ladder to the bottom rung, so a flapping stream never climbed it at
+# all and was restarted every two seconds for as long as the console was open.
+# The restarts were not the damage. The damage was the log: `%s failed;
+# restarting it` at that rate evicts the 500-line ring the operator reads, and
+# that is how go2rtc's "401 Unauthorized" - the line that says WHY - was lost
+# while the fault was being hunted.
+#
+# Five, and the heartbeat is two seconds, so ten seconds of continuous pictures.
+# The number is chosen against the pane's own idea of "late": a stream is called
+# late after eight seconds without a frame, so ten seconds of `playing` is a
+# stream that has been delivering pictures for longer than the console's own
+# patience with one that has stopped. Anything shorter is a gap between two
+# failures rather than a recovery.
+PLAYING_BEFORE_FORGIVEN = 5
+
 # After this many failures in a row the console stops implying it is about to
 # fix this. It keeps trying, slowly, because a camera that is switched back on
 # must come back without anyone restarting the console - but it stops saying
@@ -451,6 +471,13 @@ class LiveTab(QWidget):
         # And when each may be tried again. Injected clock so a test can wind
         # four hundred seconds of heartbeats past without waiting for any.
         self._next_try: dict[str, float] = {}
+        # How many heartbeats in a row each stream has been playing. A stream
+        # has to stay up, not merely be up for one reading, before the console
+        # forgives its place on the backoff ladder.
+        self._playing_for: dict[str, int] = {}
+        # The camera address each stream was last built against. A Save that did
+        # not touch a stream has no business forgiving that stream's failures.
+        self._urls: dict[str, str] = {}
         self._clock = clock or time.monotonic
         self._alarm_stream: str | None = None
         # Which events have already been accounted for, rather than the highest
@@ -885,8 +912,18 @@ class LiveTab(QWidget):
                 pane.setParent(None)
         self._panes.clear()
         self._status.clear()
+        # What each stream had climbed to, and what it was pointed at, before
+        # this Save. Carried across below for any stream the Save did not
+        # change: a Save that corrects the storage folder has said nothing about
+        # a camera that is switched off, and clearing the ladder for it put the
+        # console straight back to restarting it every two seconds.
+        was_at = dict(self._restarts)
+        was_due = dict(self._next_try)
+        was_pointed_at = dict(self._urls)
         self._restarts.clear()
         self._next_try.clear()
+        self._playing_for.clear()
+        self._urls.clear()
         for frame in self._frames.values():
             frame.setParent(None)
         self._frames.clear()
@@ -901,6 +938,15 @@ class LiveTab(QWidget):
                 continue
             pane = self._make_pane(stream.name)
             self._panes[stream.name] = pane
+            self._urls[stream.name] = stream.url
+            # Only a stream whose address really changed starts again from the
+            # bottom of the ladder. Everything else keeps the count it had, so a
+            # camera that is off is still tried at the interval it had earned.
+            if was_pointed_at.get(stream.name) == stream.url:
+                if stream.name in was_at:
+                    self._restarts[stream.name] = was_at[stream.name]
+                if stream.name in was_due:
+                    self._next_try[stream.name] = was_due[stream.name]
             # Each pane sits in a frame of its own so that an event can outline
             # the stream it was seen on. The pane itself cannot carry the
             # outline: a VideoPane is only required to show, stop and report a
@@ -998,10 +1044,15 @@ class LiveTab(QWidget):
                 if url:
                     pane.show(url)
                     self._set_status(name, pane.state)
-                    # A stream brought back is not a stream that failed, so the
-                    # backoff that was counting its failures starts again.
-                    self._restarts.pop(name, None)
-                    self._next_try.pop(name, None)
+                    self._playing_for[name] = 0
+                    if not force:
+                        # A view the operator has just switched BACK to is a
+                        # fresh start, and its old failures were not it failing.
+                        # Not on the forced pass, though: that one is `apply`
+                        # rebuilding every pane, and a Save is not a reason to
+                        # forgive a camera that is switched off.
+                        self._restarts.pop(name, None)
+                        self._next_try.pop(name, None)
             else:
                 pane.stop()
                 self._set_status(name, "stopped")
@@ -1022,12 +1073,23 @@ class LiveTab(QWidget):
             state = pane.state
             self._set_status(name, state)
             if state == "failed":
+                self._playing_for[name] = 0
                 self._restart_when_due(name, pane)
             elif state == "playing":
-                # Actually recovered, rather than merely on its way somewhere.
-                # A stream that flaps between failed and connecting has not.
-                self._restarts.pop(name, None)
-                self._next_try.pop(name, None)
+                # Actually recovered, and not merely up at the instant the
+                # console looked. A stream on a marginal link comes back for a
+                # heartbeat and goes again, and forgiving the ladder on one good
+                # reading meant it never climbed one - two seconds between
+                # restarts, for ever, drowning the log the operator reads.
+                settled = self._playing_for.get(name, 0) + 1
+                self._playing_for[name] = settled
+                if settled >= PLAYING_BEFORE_FORGIVEN:
+                    self._restarts.pop(name, None)
+                    self._next_try.pop(name, None)
+            else:
+                # Connecting, late or stopped. None of them is a recovery, and
+                # a run of good readings broken by one of them starts again.
+                self._playing_for[name] = 0
         self._refresh_events()
         # The camera answers on its own thread now, so its answer is picked up
         # here rather than where the key was pressed.
