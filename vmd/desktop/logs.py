@@ -16,6 +16,7 @@ from collections import deque
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
@@ -181,8 +182,25 @@ class LogsTab(QWidget):
         self.follow_checkbox.setChecked(True)
         self.all_button.clicked.connect(self._show_all)
         self.warnings_button.clicked.connect(self._show_warnings_and_errors)
+        # Asked for by the operator after a day of reading lines off this table
+        # and typing them into a chat by hand. This machine has no terminal and
+        # this tab is where the console, go2rtc, the recorder and the detector
+        # all converge, so getting what is in it to somebody who is not standing
+        # in front of it is part of what the tab is for.
+        self.copy_button = QPushButton("Copy")
+        self.copy_button.setToolTip(
+            "Copy the lines shown here, so they can be pasted somewhere else"
+        )
+        self.copy_button.clicked.connect(self._copy)
+        # What the button did. A button that changes nothing on screen, on a
+        # console with no other feedback, reads as one that is broken - and it
+        # is pressed again.
+        self.copy_note = QLabel("")
+        self.copy_note.setStyleSheet(f"color: {PALETTE['muted']};")
         controls.addWidget(self.all_button)
         controls.addWidget(self.warnings_button)
+        controls.addWidget(self.copy_button)
+        controls.addWidget(self.copy_note)
         controls.addStretch(1)
         controls.addWidget(self.follow_checkbox)
         layout.addLayout(controls)
@@ -260,6 +278,44 @@ class LogsTab(QWidget):
     def level_color_at(self, row: int) -> QColor:
         item = self.table.item(row, 1)
         return item.foreground().color() if item else QColor()
+
+    def text_for_copying(self) -> str:
+        """Everything on screen, as text, in the order it is on screen.
+
+        What is on screen and not what is in the buffer: the filter is how the
+        operator narrows this down to the fault he is chasing, and handing back
+        everything anyway would return the haystack he has just removed.
+
+        The same four columns, in the same order, because the person reading it
+        at the other end is reading it against this window. Passwords were taken
+        out when each line was logged, so nothing here can put one back.
+        """
+        return "\n".join(
+            "  ".join(
+                (
+                    datetime.datetime.fromtimestamp(line["time"]).strftime("%H:%M:%S"),
+                    line["level"],
+                    _short_source(line["source"]),
+                    line["text"],
+                )
+            )
+            for line in self._filtered_lines()
+        )
+
+    def _copy(self) -> None:
+        """Put it on the clipboard, and say what happened either way."""
+        text = self.text_for_copying()
+        count = len(self._filtered_lines())
+        if not count:
+            self.copy_note.setText("There is nothing here to copy.")
+            return
+        try:
+            QApplication.clipboard().setText(text)
+        except Exception:  # noqa: BLE001 - a clipboard is not worth a lost window
+            logging.getLogger(__name__).exception("the log could not be copied")
+            self.copy_note.setText("The clipboard would not take it.")
+            return
+        self.copy_note.setText(f"Copied {count} line{'' if count == 1 else 's'}.")
 
     def _filtered_lines(self) -> list[dict]:
         return [

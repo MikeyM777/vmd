@@ -472,3 +472,92 @@ def test_the_message_column_does_not_move_when_a_line_arrives(qtbot) -> None:
     )
     tab.refresh()
     assert [tab.table.columnWidth(i) for i in range(3)] == before
+
+
+# ------------------------------------------------------------ getting it out
+#
+# From the operator, after a day of it: he has been reading lines off this table
+# and typing them into a chat by hand, because this machine has no terminal and
+# the Logs tab is where everything the console, go2rtc and the recorder say ends
+# up. A tab that is the only diagnostic on the machine has to be able to hand
+# what it holds to a person who is not standing in front of it.
+
+
+def buffer_with(name: str, *lines: tuple[str, str]) -> LogBuffer:
+    buffer = LogBuffer(capacity=20)
+    logger = logging.getLogger(name)
+    logger.addHandler(buffer)
+    logger.setLevel(logging.INFO)
+    try:
+        for level, message in lines:
+            getattr(logger, level)(message)
+    finally:
+        logger.removeHandler(buffer)
+    return buffer
+
+
+def test_the_lines_on_screen_can_be_had_as_text(qtbot) -> None:
+    tab = LogsTab(
+        buffer_with(
+            "vmd.test.copy",
+            ("info", "the ordinary one"),
+            ("error", "401 Unauthorized"),
+        )
+    )
+    qtbot.addWidget(tab)
+    tab.refresh()
+
+    text = tab.text_for_copying()
+
+    assert "the ordinary one" in text
+    assert "401 Unauthorized" in text
+    assert len(text.splitlines()) == 2, "one line per line, or it cannot be read"
+    assert "ERROR" in text, "the level has to survive the copy"
+    assert "copy" in text.lower(), "and which logger said it"
+
+
+def test_only_what_is_on_screen_is_copied(qtbot) -> None:
+    """The filter is how the operator narrows this to the fault he is chasing.
+    Copying everything anyway would hand over the haystack he has just removed."""
+    tab = LogsTab(
+        buffer_with(
+            "vmd.test.copyfilter",
+            ("info", "ordinary"),
+            ("error", "the fault"),
+        )
+    )
+    qtbot.addWidget(tab)
+    tab.set_level_filter("WARNING")
+    tab.refresh()
+
+    text = tab.text_for_copying()
+
+    assert "the fault" in text
+    assert "ordinary" not in text
+
+
+def test_the_copy_button_puts_it_on_the_clipboard_and_says_so(qtbot) -> None:
+    """A button that does nothing visible, on a machine with no other feedback,
+    reads as a button that is broken - and he presses it again."""
+    from PySide6.QtWidgets import QApplication
+
+    tab = LogsTab(buffer_with("vmd.test.copybutton", ("error", "401 Unauthorized")))
+    qtbot.addWidget(tab)
+    tab.refresh()
+
+    tab.copy_button.click()
+
+    assert "401 Unauthorized" in QApplication.clipboard().text()
+    said = tab.copy_note.text().lower()
+    assert "1" in said and "copied" in said, said
+
+
+def test_copying_an_empty_table_says_there_was_nothing(qtbot) -> None:
+    tab = LogsTab(LogBuffer(capacity=5))
+    qtbot.addWidget(tab)
+    tab.refresh()
+
+    tab.copy_button.click()
+
+    assert tab.copy_note.text(), "silence here reads as a button that did not work"
+
