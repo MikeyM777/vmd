@@ -43,6 +43,7 @@ class ConsoleWindow(QMainWindow):
         radio,
         index_path: str | Path,
         make_pane: Callable[[str], VideoPane],
+        events_path: str | Path | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -55,6 +56,11 @@ class ConsoleWindow(QMainWindow):
         self._radio = radio
         self._index: SegmentIndex | None = None
         self._buffer = attach(LogBuffer())
+        # One store, read by Live and by Playback: two connections to one file
+        # would be two answers to the same question. Opened before the tabs and
+        # outside their factories, so that a database which will not open costs
+        # detection rather than the Live tab.
+        self.events = self._open_events(events_path)
 
         try:
             settings = load_settings(self._settings_path)
@@ -63,7 +69,12 @@ class ConsoleWindow(QMainWindow):
             settings = Settings()
 
         def build_live() -> QWidget:
-            tab = LiveTab(ptz=ptz, make_pane=make_pane, local_url=services.local_url)
+            tab = LiveTab(
+                ptz=ptz,
+                make_pane=make_pane,
+                local_url=services.local_url,
+                events=self.events,
+            )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
@@ -71,7 +82,9 @@ class ConsoleWindow(QMainWindow):
 
         def build_playback() -> QWidget:
             self._index = SegmentIndex(index_path)
-            return PlaybackTab(index=self._index, pane=make_pane("playback"))
+            return PlaybackTab(
+                index=self._index, pane=make_pane("playback"), events=self.events
+            )
 
         def build_settings() -> QWidget:
             tab = SettingsTab(settings_path=self._settings_path)
@@ -93,6 +106,27 @@ class ConsoleWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.heartbeat)
         self._timer.start(HEARTBEAT_MS)
+
+    @staticmethod
+    def _open_events(events_path: str | Path | None):
+        """The movement events, or None and a line in the log.
+
+        The import is here rather than at the top of the file for the same
+        reason the failure is swallowed: `vmd.detect` pulls in the detector's
+        stack, and the console has to open on a laptop where the detector was
+        never installed, where its database has been corrupted, or where the
+        disk holding it is not mounted. None of those is a reason to lose the
+        window - the Settings and Logs tabs behind it are how they get fixed.
+        """
+        if events_path is None:
+            return None
+        try:
+            from vmd.detect.events import EventStore
+
+            return EventStore(events_path)
+        except Exception:  # noqa: BLE001 - a console with no movement list still helps
+            logger.exception("the movement events could not be opened: %s", events_path)
+            return None
 
     @staticmethod
     def _tab(name: str, build: Callable[[], QWidget]) -> QWidget:
@@ -152,6 +186,11 @@ class ConsoleWindow(QMainWindow):
         else:
             parts.append("recording" if state.get("recording") else "NOT recording")
             parts.append(f"streaming: {state.get('streaming')}")
+            # `.get` twice: the services are handed in, and a state without a
+            # word about detection must produce a status line, not a KeyError
+            # that costs the operator the recording state as well.
+            detection = state.get("detection") or {}
+            parts.append(f"detection: {detection.get('reason', 'unknown')}")
 
         try:
             link = self._radio.status()
@@ -173,4 +212,10 @@ class ConsoleWindow(QMainWindow):
                 self._index.close()
             except Exception:  # noqa: BLE001 - closing must not fail a close
                 logger.exception("the segment index would not close")
+        if self.events is not None:
+            try:
+                self.events.close()
+            except Exception:  # noqa: BLE001 - closing must not fail a close
+                logger.exception("the movement events would not close")
+            self.events = None
         super().closeEvent(event)

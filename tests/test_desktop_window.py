@@ -36,7 +36,17 @@ class FakeServices:
         return f"rtsp://127.0.0.1:8554/{name}"
 
     def state(self) -> dict:
-        return {"recording": True, "streaming": "streaming", "restarts": {}}
+        return {
+            "recording": True,
+            "streaming": "streaming",
+            "restarts": {},
+            "detection": {
+                "enabled": True,
+                "running": True,
+                "restarts": 0,
+                "reason": "detecting",
+            },
+        }
 
 
 class AngryServices(FakeServices):
@@ -79,7 +89,7 @@ def write_settings(tmp_path: Path) -> Path:
     return path
 
 
-def build(qtbot, tmp_path: Path, services=None, radio=None, make_pane=None):
+def build(qtbot, tmp_path: Path, services=None, radio=None, make_pane=None, events_path=None):
     path = write_settings(tmp_path)
     services = services if services is not None else FakeServices()
     window = ConsoleWindow(
@@ -89,6 +99,7 @@ def build(qtbot, tmp_path: Path, services=None, radio=None, make_pane=None):
         radio=radio if radio is not None else FakeRadio(),
         index_path=tmp_path / "segments.db",
         make_pane=make_pane or (lambda name: FakeVideoPane()),
+        events_path=events_path,
     )
     qtbot.addWidget(window)
     return window, services
@@ -186,9 +197,18 @@ def test_the_wiring_is_built_without_a_display(tmp_path: Path) -> None:
     wiring = build_wiring(load_settings(path), path, with_services=False)
     assert wiring.settings_path == path
     assert wiring.index_path == tmp_path / "recordings" / "segments.db"
+    # Beside the segment index: the two are reclaimed together.
+    assert wiring.events_path == tmp_path / "recordings" / "events.db"
     # Nothing to start means nothing was built to start.
     assert wiring.services.streaming is None
+    # The detector is built either way; whether it is supervised is the
+    # settings' business, not the wiring's.
+    assert wiring.services.detector is not None
     assert wiring.services.state()["recording"] is False
+    # No stream has detection ticked, so this is off rather than broken - and
+    # nothing has created the detector's database.
+    assert wiring.services.state()["detection"]["enabled"] is False
+    assert not wiring.events_path.exists()
 
 
 def test_a_pane_that_cannot_be_built_becomes_a_message(qtbot) -> None:
@@ -211,3 +231,112 @@ def test_a_pane_that_cannot_be_built_becomes_a_message(qtbot) -> None:
 def test_a_pane_that_can_be_built_is_used(qtbot) -> None:
     pane = pane_factory(FakeVideoPane)("thermal")
     assert isinstance(pane, FakeVideoPane)
+
+
+# ------------------------------------------------------------- detection
+#
+# Live and Playback read the same events.db, the status line says whether
+# detection is running, and a store that cannot be opened costs detection
+# rather than the console.
+
+
+class NoDetectionServices(FakeServices):
+    """An older shape of state(), with nothing to say about detection."""
+
+    def state(self) -> dict:
+        return {"recording": True, "streaming": "streaming", "restarts": {}}
+
+
+class FailingDetectionServices(FakeServices):
+    def state(self) -> dict:
+        return {
+            "recording": True,
+            "streaming": "streaming",
+            "restarts": {"detector": 7},
+            "detection": {
+                "enabled": True,
+                "running": False,
+                "restarts": 7,
+                "reason": "NOT running - restarted 7 times in the last 2 minutes",
+            },
+        }
+
+
+def test_the_status_line_says_whether_detection_is_running(qtbot, tmp_path: Path) -> None:
+    window, _ = build(qtbot, tmp_path)
+    text = window.status_text().lower()
+    assert "detection" in text
+    assert "detecting" in text
+
+
+def test_the_status_line_names_a_detector_that_will_not_stay_up(
+    qtbot, tmp_path: Path
+) -> None:
+    """Restarting forever behind a status line that reads "detecting" is the
+    failure the operator must not be protected from."""
+    window, _ = build(qtbot, tmp_path, services=FailingDetectionServices())
+    text = window.status_text()
+    assert "NOT running" in text
+    assert "7" in text
+
+
+def test_the_status_line_survives_services_with_nothing_to_say_about_detection(
+    qtbot, tmp_path: Path
+) -> None:
+    window, _ = build(qtbot, tmp_path, services=NoDetectionServices())
+    text = window.status_text().lower()
+    assert "recording" in text
+    window.heartbeat()
+
+
+def test_live_and_playback_read_the_same_movement(qtbot, tmp_path: Path) -> None:
+    """One store, two tabs. Two connections to one file would be two answers
+    to the same question."""
+    from vmd.desktop.timeline import day_bounds
+    from vmd.detect.events import EventStore
+
+    start, end = day_bounds(2026, 8, 11)
+    events_path = tmp_path / "recordings" / "events.db"
+    store = EventStore(events_path)
+    store.add("thermal", start + 3600, start + 3604, (1, 2, 3, 4), 40.0)
+    store.close()
+
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window.heartbeat()
+
+    assert len(window.live.recent_rows()) == 1
+    window.playback.show_day(2026, 8, 11, stream="thermal")
+    assert len(window.playback.event_marks) == 1
+    window.close()
+
+
+def test_a_console_told_of_no_events_database_says_nothing_about_it(
+    qtbot, tmp_path: Path, caplog
+) -> None:
+    """There is nothing to open and nothing to complain about."""
+    with caplog.at_level("ERROR", logger="vmd.desktop.window"):
+        window, _ = build(qtbot, tmp_path)
+    assert window.events is None
+    assert caplog.records == []
+    window.close()
+
+
+def test_an_event_store_that_will_not_open_costs_detection_not_the_console(
+    qtbot, tmp_path: Path
+) -> None:
+    """The four tabs are how a broken installation gets diagnosed. Losing them
+    to the detector's database would take away the tools for fixing it."""
+    events_path = tmp_path / "recordings" / "events.db"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_bytes(b"this is not a database")
+
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["Live", "Playback", "Settings", "Logs"]
+    for index in range(4):
+        assert not isinstance(window.tabs.widget(index), QLabel)
+
+    # And it goes on ticking, with no movement to show.
+    window.heartbeat()
+    assert window.live.recent_rows() == []
+    window.close()

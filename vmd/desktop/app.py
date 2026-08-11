@@ -18,7 +18,7 @@ from typing import Callable
 
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
-from vmd.desktop.services import ConsoleServices, RecorderProcess
+from vmd.desktop.services import ConsoleServices, DetectorProcess, RecorderProcess
 from vmd.desktop.style import stylesheet
 from vmd.desktop.video import PaneState, VideoPane, VlcVideoPane
 from vmd.desktop.window import ConsoleWindow
@@ -97,6 +97,7 @@ class Wiring:
 
     settings_path: Path
     index_path: Path
+    events_path: Path
     services: ConsoleServices
     ptz: PtzService
     radio: RadioService
@@ -119,10 +120,15 @@ def build_wiring(
         settings_path=settings_path,
         streaming=streaming,
         recorder=RecorderProcess(settings_path),
+        # Built whether or not detection is enabled: ConsoleServices decides
+        # whether to supervise it, and building it costs nothing but an object.
+        detector=DetectorProcess(settings_path),
     )
     return Wiring(
         settings_path=settings_path,
         index_path=Path(settings.storage.root) / "segments.db",
+        # Beside the segment index, because the two are reclaimed together.
+        events_path=Path(settings.storage.root) / "events.db",
         services=services,
         ptz=PtzService(settings),
         radio=RadioService(settings),
@@ -156,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         radio=wiring.radio,
         index_path=wiring.index_path,
         make_pane=pane_factory(),
+        events_path=wiring.events_path,
     )
     window.show()
     return app.exec()
