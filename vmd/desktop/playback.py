@@ -42,6 +42,22 @@ logger = logging.getLogger(__name__)
 BAR_HEIGHT = 34
 PLAYHEAD_WIDTH = 3
 
+# A movement mark, and how close a click has to be to mean it rather than the
+# time under the pointer.
+#
+# Six pixels. A whole day is drawn in a few hundred of them - one pixel is
+# several minutes - so the pixel under the pointer is never the second the
+# movement began, and a click that lands beside a mark meant the mark. Six is
+# wide enough to hit with a trackpad on a laptop that lives outdoors and narrow
+# enough that two events minutes apart stay separately clickable.
+MARK_WIDTH = 3
+MARK_TOLERANCE_PX = 6
+
+# How far before the movement playback starts. An event that begins on the
+# first frame you see is one you have already missed: the approach is the part
+# worth watching.
+EVENT_LEAD_SECONDS = 5.0
+
 
 class TimelineBar(QWidget):
     """One day, drawn: recorded spans filled, gaps left as the dark well.
@@ -56,6 +72,7 @@ class TimelineBar(QWidget):
         super().__init__(parent)
         self._tab = tab
         self._bars: list[tuple[float, float]] = []
+        self._marks: list[float] = []
         self._playhead: float | None = None
         self.setMinimumHeight(BAR_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -66,6 +83,10 @@ class TimelineBar(QWidget):
     ) -> None:
         self._bars = list(bars)
         self._playhead = playhead
+        self.update()
+
+    def set_marks(self, marks: list[float]) -> None:
+        self._marks = list(marks)
         self.update()
 
     def set_playhead(self, playhead: float | None) -> None:
@@ -84,6 +105,13 @@ class TimelineBar(QWidget):
             # still a segment, and drawing nothing would claim it is a gap.
             w = max(1, int(round(span * width)))
             painter.fillRect(x, 0, min(w, width - x), height, recorded)
+        # Over the coverage, under the playhead: a mark says something happened
+        # there, and the playhead says where the operator is looking now.
+        movement = QColor(PALETTE["alarm"])
+        for fraction in self._marks:
+            x = int(round(fraction * width)) - MARK_WIDTH // 2
+            x = min(max(x, 0), max(width - MARK_WIDTH, 0))
+            painter.fillRect(x, 0, MARK_WIDTH, height, movement)
         if self._playhead is not None:
             x = int(round(self._playhead * width)) - PLAYHEAD_WIDTH // 2
             x = min(max(x, 0), max(width - PLAYHEAD_WIDTH, 0))
@@ -92,7 +120,10 @@ class TimelineBar(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt's name
         width = max(self.width(), 1)
-        self._tab.click_at(event.position().x() / width)
+        # The width goes with the fraction because the tolerance around a
+        # movement mark is in pixels, and only this widget knows how many
+        # pixels a day is drawn in.
+        self._tab.click_at(event.position().x() / width, width=width)
         event.accept()
 
 
@@ -100,15 +131,25 @@ class PlaybackTab(QWidget):
     """A day of recordings, and a player pointed into it."""
 
     def __init__(
-        self, index: SegmentIndex, pane: VideoPane, parent: QWidget | None = None
+        self,
+        index: SegmentIndex,
+        pane: VideoPane,
+        events=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._index = index
         self._pane = pane
+        # Anything with `between(start, end, stream)` - in the console an
+        # EventStore over the same events.db the Live tab reads. None means no
+        # detection to draw, which is a day with no marks and nothing else.
+        self._events = events
         today = datetime.date.today()
         self._day_start, self._day_end = day_bounds(today.year, today.month, today.day)
         self._segments: list[Segment] = []
         self.coverage: list[tuple[float, float]] = []
+        # (fraction of the day, the event) for every mark on the bar.
+        self.event_marks: list[tuple[float, object]] = []
         self.status_text = ""
         # The offset is recorded here and applied by the player: VideoPane.show
         # takes a URL and nothing else, so the "start this many seconds in" half
@@ -215,7 +256,9 @@ class PlaybackTab(QWidget):
         except sqlite3.Error as error:
             self._segments = []
             self.coverage = []
+            self.event_marks = []
             self.bar.set_bars([], None)
+            self.bar.set_marks([])
             self._report_unreadable(error)
             return
 
@@ -224,6 +267,7 @@ class PlaybackTab(QWidget):
         ]
         self.coverage = coverage_bars(self._segments, self._day_start, self._day_end)
         self.bar.set_bars(self.coverage, None)
+        self._load_marks(stream)
 
         day = date.toString("yyyy-MM-dd")
         if not self._segments:
@@ -238,24 +282,84 @@ class PlaybackTab(QWidget):
             f"{_duration(recorded)} recorded. Click the bar to play from a time."
         )
 
+    # -------------------------------------------------------- what moved, drawn
+
+    def _load_marks(self, stream: str) -> None:
+        """The movement events inside the day being shown, as fractions of it.
+
+        Filtered against the day here as well as in the query. A mark drawn
+        outside the bar is clamped to its edge, and a mark at the edge of the
+        bar would claim movement at midnight that happened the day before.
+
+        A store that cannot be read costs the marks and nothing else: the
+        coverage comes from the segment index, and an operator who loses the
+        movement marks must not lose the footage they were drawn over.
+        """
+        self.event_marks = []
+        if self._events is not None:
+            span = self._day_end - self._day_start
+            try:
+                events = self._events.between(self._day_start, self._day_end, stream)
+            except Exception as error:  # noqa: BLE001 - the footage is not downstream of this
+                logger.warning("the movement events could not be read: %s", error)
+                events = []
+            for event in events:
+                if not self._day_start <= event.started < self._day_end:
+                    continue
+                self.event_marks.append(((event.started - self._day_start) / span, event))
+        self.bar.set_marks([fraction for fraction, _ in self.event_marks])
+
+    def _mark_near(self, fraction: float, width: int) -> object | None:
+        """The movement mark this click meant, if it meant one.
+
+        Nearest wins, so two events minutes apart stay separately clickable.
+        """
+        if not self.event_marks or width <= 0:
+            return None
+        x = fraction * width
+        nearest = min(self.event_marks, key=lambda mark: abs(mark[0] * width - x))
+        if abs(nearest[0] * width - x) > MARK_TOLERANCE_PX:
+            return None
+        return nearest[1]
+
     # ---------------------------------------------------------------- the click
 
-    def click_at(self, fraction: float) -> None:
-        """Play whatever covers this fraction of the day, or say what does not."""
-        when = time_at(fraction, self._day_start, self._day_end)
+    def click_at(self, fraction: float, width: int | None = None) -> None:
+        """Play whatever covers this fraction of the day, or say what does not.
+
+        A click within a few pixels of a movement mark means the mark, and
+        plays from five seconds before it. The alternative - the exact time
+        under the pointer - is a time nobody can aim at: one pixel of the bar is
+        several minutes of the day.
+        """
+        width = self.bar.width() if width is None else width
+        event = self._mark_near(fraction, width)
+        if event is not None:
+            self._play_at(event.started - EVENT_LEAD_SECONDS, event=event)
+            return
+        self._play_at(time_at(fraction, self._day_start, self._day_end))
+
+    def _play_at(self, when: float, event=None) -> None:
         self.playhead_time = when
         clock = datetime.datetime.fromtimestamp(when).strftime("%H:%M:%S")
+        span = self._day_end - self._day_start
+        fraction = min(max((when - self._day_start) / span, 0.0), 1.0)
 
         target = seek_target(self._segments, when)
         if target is None:
             # Say the time that was asked about, and leave the picture alone.
             # Playing the nearest file instead would show the operator footage
-            # from a different moment while the clock claims otherwise.
+            # from a different moment while the clock claims otherwise. A mark
+            # whose footage retention has already reclaimed is answered the same
+            # way: the movement was real, and there is nothing left to show.
             self.bar.set_playhead(None)
-            self._set_status(f"no recording at {clock}")
+            note = f"no recording at {clock}"
+            if event is not None:
+                note += f" - the movement on {event.stream} there is no longer on disk"
+            self._set_status(note)
             return
 
-        self.bar.set_playhead(min(max(fraction, 0.0), 1.0))
+        self.bar.set_playhead(fraction)
         self.seek_offset = target.offset_seconds
         path = Path(target.path)
         try:
@@ -266,9 +370,13 @@ class PlaybackTab(QWidget):
             url = path.resolve().as_uri()
         self._pane.show(url)
         logger.info("playing %s from %.1f s in", path.name, target.offset_seconds)
-        self._set_status(
-            f"{clock} - {path.name}, {_duration(target.offset_seconds)} in"
-        )
+        note = f"{clock} - {path.name}, {_duration(target.offset_seconds)} in"
+        if event is not None:
+            note = (
+                f"{clock} - {_duration(EVENT_LEAD_SECONDS)} before the movement on "
+                f"{event.stream}, {path.name}"
+            )
+        self._set_status(note)
 
     # --------------------------------------------------------------- the words
 

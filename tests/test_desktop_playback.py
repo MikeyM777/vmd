@@ -12,6 +12,7 @@ from vmd.desktop.playback import PlaybackTab
 from vmd.desktop.style import PALETTE
 from vmd.desktop.timeline import day_bounds
 from vmd.desktop.video import FakeVideoPane
+from vmd.detect.events import Event
 from vmd.storage.index import SegmentIndex
 
 
@@ -275,5 +276,221 @@ def test_a_click_in_a_gap_names_the_time_and_leaves_the_picture_alone(
         assert "03:00" in tab.status_text
         assert pane.url == path.as_uri()  # still showing what it was showing
         assert pane.restarts == 0
+    finally:
+        index.close()
+
+
+# ----------------------------------------------------------- movement marks
+#
+# The same events the Live tab lists, drawn on the day they happened. A click
+# on one seeks to five seconds before the movement, because an event that
+# starts on the first frame you see is one you have already missed.
+
+
+class FakeEvents:
+    """A reader with the EventStore's shape.
+
+    It filters by stream and deliberately *not* by time: the tab must not draw
+    a mark for a day it is not showing, and a reader that had already dropped
+    those events would prove nothing about that.
+    """
+
+    def __init__(self, events=None) -> None:
+        self.events = list(events or [])
+
+    def between(self, start: float, end: float, stream: str | None = None):
+        return [e for e in self.events if stream is None or e.stream == stream]
+
+
+class BrokenEvents:
+    def between(self, start: float, end: float, stream: str | None = None):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+
+def movement(event_id: int, started: float, stream: str = "thermal"):
+    return Event(
+        id=event_id,
+        stream=stream,
+        started=started,
+        ended=started + 4.0,
+        box=(10, 20, 13, 30),
+        travelled_px=51.0,
+    )
+
+
+def build_with_events(qtbot, tmp_path: Path, events):
+    index = SegmentIndex(tmp_path / "segments.db")
+    pane = FakeVideoPane()
+    tab = PlaybackTab(index=index, pane=pane, events=events)
+    qtbot.addWidget(tab)
+    return tab, pane, index
+
+
+def test_movement_in_the_day_becomes_a_mark(qtbot, tmp_path: Path) -> None:
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + 3600)])
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert [round(f, 6) for f, _ in tab.event_marks] == [round(3600 / span, 6)]
+    finally:
+        index.close()
+
+
+def test_movement_from_another_day_is_not_drawn(qtbot, tmp_path: Path) -> None:
+    """A mark at the edge of the bar would claim movement at midnight."""
+    start, end = day_bounds(2026, 8, 11)
+    events = FakeEvents([movement(1, start - 7200), movement(2, end + 7200)])
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert tab.event_marks == []
+    finally:
+        index.close()
+
+
+def test_marks_follow_the_chosen_stream(qtbot, tmp_path: Path) -> None:
+    start, end = day_bounds(2026, 8, 11)
+    events = FakeEvents(
+        [
+            movement(1, start + 3600, stream="thermal"),
+            movement(2, start + 7200, stream="visible"),
+            movement(3, start + 9000, stream="visible"),
+        ]
+    )
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "t.mp4"), start, end, 1000)
+        index.add("visible", str(tmp_path / "v.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert len(tab.event_marks) == 1
+
+        tab.stream_selector.setCurrentText("visible")
+        assert len(tab.event_marks) == 2
+    finally:
+        index.close()
+
+
+def test_the_bar_draws_a_mark_where_the_movement_was(qtbot, tmp_path: Path) -> None:
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + span / 2)])
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.bar.resize(200, 24)
+
+        image = tab.bar.grab().toImage()
+        # Measured against the width the bar was actually painted at: it lives
+        # in a layout, which has the last word on how wide it is.
+        middle = round(0.5 * image.width())
+        marked = [
+            x for x in range(image.width()) if image.pixelColor(x, 12) == QColor(PALETTE["alarm"])
+        ]
+        assert marked, "the movement was not drawn"
+        assert all(abs(x - middle) <= 3 for x in marked)
+    finally:
+        index.close()
+
+
+def test_clicking_a_mark_seeks_five_seconds_before_the_movement(
+    qtbot, tmp_path: Path
+) -> None:
+    """An event that starts on the first frame you see is one you have missed."""
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + span / 2)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        path = tmp_path / "a.mp4"
+        index.add("thermal", str(path), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        tab.bar.resize(200, 24)
+        # Middle of whatever width the bar ended up with: the layout has the
+        # last word on that, and the mark is at the middle of the day.
+        qtbot.mouseClick(
+            tab.bar, Qt.MouseButton.LeftButton, pos=QPoint(round(tab.bar.width() / 2), 12)
+        )
+
+        assert tab.playhead_time == start + span / 2 - 5.0
+        assert tab.seek_offset == span / 2 - 5.0
+        assert pane.url == path.as_uri()
+    finally:
+        index.close()
+
+
+def test_a_click_within_the_tolerance_prefers_the_mark(qtbot, tmp_path: Path) -> None:
+    """Six pixels either side. A mark is three pixels wide and a whole day is
+    drawn in a few hundred of them, so the pixel under the pointer is never the
+    second the movement began."""
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + span / 2)])
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        tab.click_at(106 / 200, width=200)  # six pixels away
+        assert tab.playhead_time == start + span / 2 - 5.0
+    finally:
+        index.close()
+
+
+def test_a_click_outside_the_tolerance_is_an_ordinary_seek(qtbot, tmp_path: Path) -> None:
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + span / 2)])
+    tab, _, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        tab.click_at(107 / 200, width=200)  # seven pixels away
+        assert tab.playhead_time == start + span * 107 / 200
+    finally:
+        index.close()
+
+
+def test_movement_whose_footage_is_gone_says_so_rather_than_playing_something_else(
+    qtbot, tmp_path: Path
+) -> None:
+    """Retention reclaims footage, and a mark can outlive the file it points
+    at. It is answered the way a click in a gap is answered: name the time,
+    leave the picture alone."""
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents([movement(1, start + span / 2)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        # Footage everywhere except where the movement was.
+        index.add("thermal", str(tmp_path / "a.mp4"), start, start + span / 4, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        tab.click_at(0.5, width=200)
+
+        assert pane.url is None
+        assert "no recording" in tab.status_text.lower()
+    finally:
+        index.close()
+
+
+def test_an_event_store_that_cannot_be_read_still_draws_the_day(
+    qtbot, tmp_path: Path
+) -> None:
+    """The coverage comes from the segment index. Losing the movement marks
+    must not lose the footage they were drawn over."""
+    start, end = day_bounds(2026, 8, 11)
+    tab, _, index = build_with_events(qtbot, tmp_path, BrokenEvents())
+    try:
+        index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert len(tab.coverage) == 1
+        assert tab.event_marks == []
     finally:
         index.close()
