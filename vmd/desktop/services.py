@@ -27,6 +27,7 @@ from vmd.desktop.watch import Watched
 # standard library and vmd.storage, which the Playback tab already imports.
 from vmd.detect_main import STATUS_FILENAME, detected_streams
 from vmd.record_main import ALREADY_RECORDING_EXIT
+from vmd.record_main import STATUS_FILENAME as RECORDER_STATUS_FILENAME
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
 from vmd.streaming.go2rtc import Go2rtcService
@@ -87,6 +88,20 @@ CHILD_READ_CHUNK = 8192
 # package resolves its own re-exports on first use, so this import costs the
 # standard library and `vmd.settings`.
 DETECTION_STATUS_FILENAME = STATUS_FILENAME
+
+# And where the recorder publishes the same kind of thing, in the same folder,
+# in the same shape - `streams`, `written_at`, `interval` - so it is read with
+# the same two functions and aged against the same rule. Its own name for it,
+# imported for the same reason as the detector's: two spellings of one filename
+# is how a rename breaks one side of a protocol without anything failing.
+#
+# What the console wants out of it is one fact per stream: which side of the
+# radio link that stream is coming from. The recorder publishes more than that -
+# `link_doubled` is a sharper subset, naming streams pulled from the camera
+# while the streaming server holds that same camera - but the detector has no
+# counterpart to it, and one rule read the same way out of both files is worth
+# more here than the sharper one read out of half of them.
+RECORDING_STATUS_FILENAME = RECORDER_STATUS_FILENAME
 
 # How old that file may be before the console stops believing it. The detector
 # rewrites it every `interval` seconds - five by default - so thirty seconds is
@@ -1293,6 +1308,18 @@ class ConsoleServices:
             clock=clock,
             name="the detector's report",
         )
+        # The recorder's report, read exactly the same way and for exactly the
+        # same reason: same folder, same shape, same worker rule.
+        self.recording_status_path = (
+            Path(settings.storage.root) / RECORDING_STATUS_FILENAME
+        )
+        self._recording_report: Watched[dict] = Watched(
+            read=lambda: read_detection_status(self.recording_status_path),
+            every=DETECTION_STATUS_POLL_SECONDS,
+            executor=executor,
+            clock=clock,
+            name="the recorder's report",
+        )
 
         # Detection nobody asked for is not supervised at all. `vmd.detect_main`
         # prints "nothing to detect" and exits 0 when no stream is ticked, so a
@@ -1507,10 +1534,12 @@ class ConsoleServices:
         # Left pointing at the old folder, the status line would read a file
         # nobody writes any more and call detection unknown for ever.
         self.detection_status_path = Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+        self.recording_status_path = Path(settings.storage.root) / RECORDING_STATUS_FILENAME
         # A file at the old path is a file nobody writes any more, and the last
         # answer read out of it is not about the folder in front of the operator
         # now. Ask again at once rather than waiting out the interval.
         self._detection_report.forget()
+        self._recording_report.forget()
         # The folder it watches may have moved too, and a saved folder is a new
         # question rather than one to wait out the poll interval for.
         self.disk.apply(settings)
@@ -1644,7 +1673,75 @@ class ConsoleServices:
             "detection": self.detection_state(),
             "restarts": dict(self.supervisor.restarts),
             "storage": self.disk.reading,
+            # Which streams the radio link is carrying more than once. Empty is
+            # the healthy answer and the ordinary one. See `link_doubled`.
+            "on_camera": self.link_doubled(),
         }
+
+    def streams_on_camera(self) -> dict[str, set[str]]:
+        """Which streams are being read straight from the camera, and by what.
+
+        Two files, one question. The recorder and the detector each publish, per
+        stream, which side of the radio link that stream is coming from - the
+        local streaming server, or the camera itself - and they publish it under
+        the same key with the same two words. They spell the stream's own name
+        differently, which is the only thing this has to reconcile.
+
+        Neither file is opened here. Both are read on a worker and this reads
+        what the workers left behind, because they live in the recordings root -
+        the folder that goes away - and this is called from the status band on
+        the heartbeat. A report nobody has written recently is not repeated:
+        stale is unknown, and a detector that wedged an hour ago left a file
+        describing an hour ago.
+        """
+        who: dict[str, set[str]] = {}
+        for report, key, whose in (
+            (self._detection_report, "stream", "detection"),
+            (self._recording_report, "name", "recording"),
+        ):
+            report.poll()
+            status = report.value
+            if status is None or not detection_status_fresh(status, self._now()):
+                continue
+            for stream in status.get("streams") or []:
+                if not isinstance(stream, dict) or stream.get("source") != "camera":
+                    continue
+                named = stream.get(key) or stream.get("stream") or stream.get("name")
+                if named:
+                    who.setdefault(str(named), set()).add(whose)
+        return who
+
+    def link_doubled(self) -> list[str]:
+        """The streams the radio link is carrying more than one copy of.
+
+        The founding constraint of this system is that the camera is pulled
+        exactly once across a >15 km, ~5 Mb/s link that "barely carries one",
+        and the console spec says doubling it "is the difference between
+        recording and losing the live picture as well". It is protected by
+        convention in several places and enforced nowhere, and when it breaks it
+        breaks quietly: the detector's fallback to the camera is sticky, so a
+        single restart of the streaming server - which this console performs on
+        every material settings change - can leave detection on a second direct
+        connection for the life of the process.
+
+        Counted rather than assumed, because being on the camera is not by
+        itself a fault. A stream with no streaming server behind it is read from
+        the camera on purpose and that is one copy, which is what it should be.
+        What is worth the operator's attention is two: the streaming server
+        holding the camera while a child holds it as well, or both children
+        holding it at once. Only those are named, so that the band saying
+        something means something.
+
+        A streaming server that is up is counted as one crossing because that is
+        what it is for: it pulls the camera so that everything on this machine
+        can read its copy.
+        """
+        pictures = 1 if getattr(self.streaming, "running", False) else 0
+        return sorted(
+            stream
+            for stream, whose in self.streams_on_camera().items()
+            if len(whose) + pictures >= 2
+        )
 
     def recording_state(self) -> dict:
         """Whether footage is reaching the disk, and if not, why not.

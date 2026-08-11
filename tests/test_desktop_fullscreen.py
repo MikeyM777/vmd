@@ -112,6 +112,13 @@ class FakeServices:
                 "restarts": 9,
                 "reason": "detection keeps stopping and being restarted",
             },
+            # The longest thing the band can ever carry, and the newest: a fifth
+            # chip appears only when the radio link is carrying a stream more
+            # than once, and it arrives as a whole sentence naming every stream
+            # it is true of. A band measured without it is a band measured in
+            # the state it is in on a healthy machine, which is not the state
+            # this file exists to measure.
+            "on_camera": ["thermal", "visible"],
         }
 
 

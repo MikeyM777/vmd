@@ -227,6 +227,29 @@ def _detection_state(detection: dict) -> str:
     return "ok" if detection.get("running") else "alarm"
 
 
+def _doubled_words(streams: list[str]) -> str:
+    """What the band says when the radio link is carrying a stream twice.
+
+    Not an alarm and not a fault: recording and detection are both working, and
+    a picture is still arriving. What has gone wrong is one level below all of
+    that - the same camera is being pulled across the link more than once, on a
+    link that barely carries it once, and the cost is paid by whatever needs the
+    room next. The band's amber is exactly this: nothing has failed, and this is
+    not healthy.
+
+    Written in the operator's own terms. He is not technical, has no terminal
+    and has never heard of a streaming server: what he has is a camera, a radio
+    link and this laptop, so those are the only three things named.
+    """
+    named = ", ".join(streams[:-1]) + " and " + streams[-1] if len(streams) > 1 else streams[0]
+    it = "them" if len(streams) > 1 else "it"
+    coming = "are" if len(streams) > 1 else "is"
+    return (
+        f"{named} {coming} coming straight from the camera instead of through this "
+        f"laptop - the link is carrying {it} twice"
+    )
+
+
 def _link_state(link: dict) -> str:
     """The link, in the bands `vmd/radio/panel.py` reads the signal against.
 
@@ -1166,6 +1189,22 @@ class ConsoleWindow(QMainWindow):
             # beside it - one tab away, for the moment somebody wants the
             # number rather than the reassurance.
             parts.append(("link", self._link_words(link), _link_state(link)))
+
+        # And whether that link is carrying anything twice. Last, beside the
+        # link it is about, and only when there is something to say: a chip that
+        # is present and quiet on a healthy machine is furniture, and this one
+        # has to be noticed the once in a year it appears.
+        #
+        # `.get`, because the services are handed in and one that has never
+        # heard of this must still produce a status line.
+        doubled = []
+        if state is not None:
+            try:
+                doubled = list(state.get("on_camera") or [])
+            except Exception:  # noqa: BLE001 - the band must go on being drawn
+                logger.exception("what the link is carrying could not be read")
+        if doubled:
+            parts.append(("camera", _doubled_words(doubled), "warn"))
 
         return parts
 

@@ -2897,3 +2897,223 @@ def _rooted(where: Path, root: Path) -> Settings:
         ),
         storage=StorageSettings(root=root),
     )
+
+
+# ------------------------------------- a stream crossing the radio link twice
+#
+# The founding constraint of this whole system is that the camera is pulled
+# exactly once across a >15 km, ~5 Mb/s link. Three components can each fall
+# back to the camera's own address when the local server does not look right,
+# and the detector's fallback is sticky: one go2rtc restart - which the console
+# itself performs on every material settings change - can move detection onto a
+# second direct connection for the life of the process.
+#
+# Both children now publish which side of the link each stream is coming from.
+# Until this, that fact reached the operator as one logger.warning in a ring of
+# five hundred lines, which is evicted in minutes: the one failure that can
+# quietly halve his bandwidth for months was announced where nobody would see
+# it.
+
+
+class Pulling:
+    """A streaming server that is up, and therefore holding the camera itself."""
+
+    api_port = 1984
+    rtsp_port = 8554
+
+    def __init__(self, up: bool = True) -> None:
+        self.up = up
+
+    def unadoptable(self, endpoint: dict) -> str:
+        return ""
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    @property
+    def running(self) -> bool:
+        return self.up
+
+
+def write_recording_status(
+    tmp_path: Path,
+    streams: list[dict],
+    written_at: float = 1_000_000.0,
+    interval: float = 5.0,
+) -> Path:
+    from vmd.desktop.services import RECORDING_STATUS_FILENAME
+
+    path = tmp_path / "rec" / RECORDING_STATUS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"streams": streams, "written_at": written_at, "interval": interval}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def console_with_streaming(tmp_path: Path, streaming, now=None):
+    settings_path = tmp_path / "settings.json"
+    settings = settings_for(tmp_path, detect=True)
+    return ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=streaming,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        detector=DetectorProcess(
+            settings_path, pid_path=tmp_path / "detector.pid", spawn=lambda c: FakeProcess()
+        ),
+        now=now or (lambda: 1_000_002.0),
+        disk=watching(settings),
+        executor=lambda work: work(),
+    )
+
+
+def test_a_detector_reading_from_the_camera_is_a_stream_carried_twice(
+    tmp_path: Path,
+) -> None:
+    """go2rtc is up, so it is holding its own connection to that camera. The
+    detector falling back to the camera's own address is the second one."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+    )
+    services = console_with_streaming(tmp_path, Pulling())
+    assert services.link_doubled() == ["thermal"]
+
+
+def test_a_recorder_reading_from_the_camera_is_a_stream_carried_twice(
+    tmp_path: Path,
+) -> None:
+    """The recorder's own file, read the same way. The two processes spell the
+    stream's name differently and mean the same thing by it."""
+    write_recording_status(
+        tmp_path, [{"name": "thermal", "running": True, "source": "camera"}]
+    )
+    services = console_with_streaming(tmp_path, Pulling())
+    assert services.link_doubled() == ["thermal"]
+
+
+def test_streams_read_through_the_local_server_are_not_reported(tmp_path: Path) -> None:
+    """The ordinary, healthy arrangement: one connection crosses the link and
+    everything on this machine reads that copy. Saying anything about it would
+    teach the operator to ignore the chip that one day says something true."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "local"}],
+    )
+    write_recording_status(
+        tmp_path, [{"name": "thermal", "running": True, "source": "local"}]
+    )
+    services = console_with_streaming(tmp_path, Pulling())
+    assert services.link_doubled() == []
+
+
+def test_one_child_on_the_camera_with_no_local_server_is_not_called_twice(
+    tmp_path: Path,
+) -> None:
+    """A stream with no streaming server behind it is read from the camera on
+    purpose, and that is one copy, not two. A console that called it doubled
+    would be crying wolf about the ordinary state of a machine with go2rtc off."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+    )
+    services = console_with_streaming(tmp_path, Pulling(up=False))
+    assert services.link_doubled() == []
+
+
+def test_both_children_on_the_camera_is_twice_with_no_server_at_all(
+    tmp_path: Path,
+) -> None:
+    """Two direct connections to the same camera is two crossings of the link,
+    whatever the streaming server is doing."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+    )
+    write_recording_status(
+        tmp_path, [{"name": "thermal", "running": True, "source": "camera"}]
+    )
+    services = console_with_streaming(tmp_path, Pulling(up=False))
+    assert services.link_doubled() == ["thermal"]
+
+
+def test_a_report_nobody_has_written_for_an_hour_says_nothing(tmp_path: Path) -> None:
+    """Stale is unknown, not healthy and not a fault. A detector that wedged an
+    hour ago left a file saying it was on the camera; repeating that as the
+    state of the link now is the console inventing news."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+        written_at=1_000_000.0,
+    )
+    services = console_with_streaming(tmp_path, Pulling(), now=lambda: 1_003_600.0)
+    assert services.link_doubled() == []
+
+
+def test_a_missing_recorder_report_costs_the_recorders_half_and_no_more(
+    tmp_path: Path,
+) -> None:
+    """The recorder may not be publishing yet, or at all. What the detector says
+    still has to reach the band."""
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+    )
+    services = console_with_streaming(tmp_path, Pulling())
+    assert services.link_doubled() == ["thermal"]
+
+
+def test_both_children_naming_the_same_stream_name_it_once(tmp_path: Path) -> None:
+    write_detection_status(
+        tmp_path,
+        [
+            {"stream": "thermal", "opened": True, "source": "camera"},
+            {"stream": "visible", "opened": True, "source": "camera"},
+        ],
+    )
+    write_recording_status(
+        tmp_path,
+        [
+            {"name": "thermal", "running": True, "source": "camera"},
+            {"name": "visible", "running": True, "source": "camera"},
+        ],
+    )
+    services = console_with_streaming(tmp_path, Pulling())
+    assert services.link_doubled() == ["thermal", "visible"]
+
+
+def test_the_state_the_window_reads_carries_it(tmp_path: Path) -> None:
+    write_detection_status(
+        tmp_path,
+        [{"stream": "thermal", "opened": True, "reason": "detecting", "source": "camera"}],
+    )
+
+    class Answering(Pulling):
+        def status(self):
+            from vmd.streaming.go2rtc import StreamingStatus
+
+            return StreamingStatus(True, "streaming", "http://127.0.0.1:1984", [], False)
+
+    services = console_with_streaming(tmp_path, Answering())
+    assert services.state()["on_camera"] == ["thermal"]
+
+
+def test_a_moved_recordings_folder_moves_the_recorders_report_with_it(
+    tmp_path: Path,
+) -> None:
+    """Left pointing at the old folder it would read a file nobody writes any
+    more, and go on reporting last week's link for ever."""
+    from vmd.desktop.services import RECORDING_STATUS_FILENAME
+
+    services = console_with_streaming(tmp_path, Pulling())
+    moved = settings_for(tmp_path, detect=True)
+    moved.storage.root = str(tmp_path / "elsewhere")
+    services.apply(moved)
+    assert (
+        services.recording_status_path == tmp_path / "elsewhere" / RECORDING_STATUS_FILENAME
+    )

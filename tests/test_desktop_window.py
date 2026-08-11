@@ -1892,3 +1892,108 @@ def test_a_remembered_window_with_no_size_at_all_is_given_one() -> None:
     where = fitted(QRect(10, 10, 0, 0), [laptop])
     assert where.width() > 0 and where.height() > 0
     assert laptop.contains(where)
+
+
+# ------------------------------------- the band, when the link is paying twice
+#
+# The invariant the whole design rests on is that the camera is pulled exactly
+# once across a >15 km, ~5 Mb/s link, and it is protected by convention in four
+# places and enforced nowhere. When it breaks, the operator's picture and his
+# recording are competing for a link that "barely carries one" - and until now
+# he was told about it by a single warning line in a 500-line ring that is
+# evicted in minutes.
+#
+# It is not an alarm: recording and detection are both working, and a stream
+# with no local server is read from the camera on purpose. It is the band's
+# other voice - something is not healthy and nothing has failed.
+
+
+class DoublingServices(FakeServices):
+    """Services reporting streams the link is carrying more than once."""
+
+    def __init__(self, doubled: list[str]) -> None:
+        super().__init__()
+        self.doubled = doubled
+
+    def state(self) -> dict:
+        state = super().state()
+        state["on_camera"] = list(self.doubled)
+        return state
+
+
+def band_parts(window) -> list[tuple[str, str, str]]:
+    return window.status_parts()
+
+
+def test_the_band_says_when_the_link_is_carrying_a_stream_twice(
+    qtbot, tmp_path: Path
+) -> None:
+    window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
+    said = [words for _glance, words, _state in band_parts(window)]
+    doubled = [line for line in said if "twice" in line]
+    assert doubled, said
+    assert "thermal" in doubled[0], doubled[0]
+    assert "camera" in doubled[0], doubled[0]
+    window.close()
+
+
+def test_a_link_carrying_a_stream_twice_is_not_drawn_as_an_alarm(
+    qtbot, tmp_path: Path
+) -> None:
+    """Both children are working. A console that shouted about this in the same
+    red it uses for "NOT recording" would be teaching him that red means
+    nothing."""
+    window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
+    states = [state for _glance, words, state in band_parts(window) if "twice" in words]
+    assert states == ["warn"], states
+    window.close()
+
+
+def test_two_streams_carried_twice_are_said_in_one_line(qtbot, tmp_path: Path) -> None:
+    window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal", "visible"]))
+    doubled = [words for _g, words, _s in band_parts(window) if "twice" in words]
+    assert len(doubled) == 1, doubled
+    assert "thermal" in doubled[0] and "visible" in doubled[0], doubled[0]
+    window.close()
+
+
+def test_the_band_says_nothing_about_it_while_the_link_is_carrying_one_copy(
+    qtbot, tmp_path: Path
+) -> None:
+    window, _ = build(qtbot, tmp_path, services=DoublingServices([]))
+    assert not [words for _g, words, _s in band_parts(window) if "twice" in words]
+    window.close()
+
+
+def test_services_that_have_never_heard_of_it_still_produce_a_band(
+    qtbot, tmp_path: Path
+) -> None:
+    """The services are handed in, and one that answers with three words must
+    not cost the operator the recording state as well."""
+    window, _ = build(qtbot, tmp_path, services=FakeServices())
+    assert [words for _g, words, _s in band_parts(window)], "the band went empty"
+    assert not [words for _g, words, _s in band_parts(window) if "twice" in words]
+    window.close()
+
+
+def test_the_line_reaches_the_chips_the_operator_can_actually_see(
+    qtbot, tmp_path: Path
+) -> None:
+    """status_parts is the sentence; the band is what is on the screen. A part
+    nothing draws is a part nobody reads."""
+    window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
+    window.heartbeat()
+    assert any("twice" in chip for chip in window.band.chips()), window.band.chips()
+    window.close()
+
+
+def test_the_words_do_not_ask_him_to_know_what_a_streaming_server_is(
+    qtbot, tmp_path: Path
+) -> None:
+    """He is not technical and has no terminal. The sentence has to be about a
+    camera, a link and a laptop."""
+    window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
+    doubled = [words for _g, words, _s in band_parts(window) if "twice" in words][0]
+    for jargon in ("go2rtc", "rtsp", "fallback", "source", "endpoint", "url"):
+        assert jargon not in doubled.lower(), doubled
+    window.close()
