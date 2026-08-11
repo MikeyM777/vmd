@@ -26,6 +26,7 @@ fails rather than hangs the suite.
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -265,6 +266,57 @@ def test_a_console_with_no_camera_address_gets_a_sentence_and_not_a_crash() -> N
     assert service.zoom_position("thermal") is None
     assert service.zoom_ready()["ok"] is False
     service.zoom_poll()  # must not raise
+
+
+def test_saving_settings_never_waits_for_a_camera_that_is_being_read() -> None:
+    """Save is a Qt slot. It runs on the thread that draws the window.
+
+    `ConsoleWindow.settings_saved` calls `PtzService.apply` there, and says in as
+    many words that it may: "the camera and the radio are asked here, because
+    both already answer from a thread of their own and neither waits". The
+    camera half of that was not true. `apply` took the lock that says "one call
+    to the camera at a time", and that lock is held across ONVIF round trips - a
+    zoom readback holds it for as many calls as there are lenses, and each of
+    those may take the full eight seconds the timeout allows on a link at 88% of
+    its airtime.
+
+    So pressing Save froze the console for as long as the camera felt like
+    taking, at the moment the operator is standing in front of it waiting for an
+    answer - and while a Qt handler is blocked, the window does not repaint, the
+    supervisor does not tick, and the alarm strip cannot appear. That is the
+    exact fault this whole file exists to keep off the GUI thread.
+    """
+    settings = Settings()
+    settings.camera.host = "10.0.0.9"
+    service = PtzService(settings)
+
+    began = threading.Event()
+    release = threading.Event()
+
+    class SlowLenses:
+        """A camera read that is out on the wire and has not come back."""
+
+        def poll(self) -> None:
+            began.set()
+            release.wait(WAIT)
+
+    service.lenses = SlowLenses()
+    reader = threading.Thread(target=service.zoom_poll, daemon=True)
+    reader.start()
+    try:
+        assert began.wait(WAIT), "the readback never started"
+
+        elsewhere = Settings()
+        elsewhere.camera.host = "10.0.0.10"
+        started = time.monotonic()
+        service.apply(elsewhere)
+        took = time.monotonic() - started
+    finally:
+        release.set()
+        reader.join(WAIT)
+
+    assert took < 0.5, f"the Save button waited {took:.1f} s for the camera"
+    assert service.camera is not None and service.camera.host == "10.0.0.10"
 
 
 def test_reading_a_zoom_position_never_talks_to_the_camera() -> None:

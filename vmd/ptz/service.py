@@ -33,26 +33,57 @@ class PtzService:
     released, and a rule that no failure ever escapes as an exception."""
 
     def __init__(self, settings: Settings) -> None:
+        # Two locks, and which one guards what is the whole of it.
+        #
+        # `_lock` means "one call to the camera at a time". It is held across
+        # ONVIF round trips, which on this link take seconds, so anything that
+        # takes it may be waiting for the far end of a radio hop.
+        #
+        # `_swap` means "which camera we are talking to". It is never held
+        # across anything that touches the wire, so taking it is always
+        # instantaneous. `apply` is the only writer, and `apply` is called from
+        # the Save slot - on the thread that draws the window. It used to take
+        # `_lock`, which made pressing Save a wait on whatever the camera
+        # happened to be doing: a zoom readback holds `_lock` for one call per
+        # lens, each of which may take the full eight seconds the timeout
+        # allows. A frozen Qt handler is a window that does not repaint and an
+        # alarm strip that cannot appear, which is the fault the whole command
+        # thread exists to prevent, arriving by a different door.
         self._lock = threading.Lock()
+        self._swap = threading.Lock()
         self.apply(settings)
 
     def apply(self, settings: Settings) -> None:
-        with self._lock:
+        """Point at whatever camera the operator has just saved. Never waits.
+
+        The new camera and its lens map are built first and swapped in
+        afterwards, because building them touches nothing: `OnvifPtz.__init__`
+        and `Lenses.__init__` only remember what they were given, and the first
+        call to the wire happens later, on the worker that makes it.
+
+        A call already out on the wire against the old camera is left to finish
+        against the old camera. It is bounded by the ONVIF timeout, its answer
+        goes into an object nothing reads any more, and waiting for it here
+        would be the freeze this is written to remove.
+        """
+        host = settings.camera.host.strip()
+        camera = (
+            OnvifPtz(host, settings.camera.username, settings.camera.password) if host else None
+        )
+        # Which lens is which picture, remade whenever the camera is. The
+        # mapping is a property of THIS camera at THIS address; carrying an
+        # old one across a settings change would point the thermal zoom at
+        # a profile token from a camera that is no longer there.
+        lenses = (
+            Lenses(camera, [stream.name for stream in settings.camera.streams])
+            if camera is not None
+            else None
+        )
+        with self._swap:
             self.settings = settings
-            host = settings.camera.host.strip()
-            self.camera = (
-                OnvifPtz(host, settings.camera.username, settings.camera.password) if host else None
-            )
+            self.camera = camera
             self._connected = False
-            # Which lens is which picture, remade whenever the camera is. The
-            # mapping is a property of THIS camera at THIS address; carrying an
-            # old one across a settings change would point the thermal zoom at
-            # a profile token from a camera that is no longer there.
-            self.lenses = (
-                Lenses(self.camera, [stream.name for stream in settings.camera.streams])
-                if self.camera is not None
-                else None
-            )
+            self.lenses = lenses
 
     def status(self) -> dict:
         with self._lock:
