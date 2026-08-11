@@ -1863,7 +1863,8 @@ def test_the_recorders_in_flight_segment_is_indexed_after_a_forced_restart(
 def test_a_pid_reused_by_something_else_is_not_adopted(tmp_path: Path) -> None:
     """The PID is alive - it is this test process - and it is not a recorder."""
     pid_file = tmp_path / "recorder.pid"
-    pid_file.write_text(
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    (tmp_path / "recorder.pid.started").write_text(
         json.dumps({"pid": os.getpid(), "started_at": 1000.0}), encoding="utf-8"
     )
 
@@ -1885,7 +1886,8 @@ def test_the_process_that_really_is_ours_is_still_adopted(tmp_path: Path) -> Non
     started_at = process_started_at(os.getpid())
     assert started_at is not None, "this platform cannot answer the question at all"
     pid_file = tmp_path / "recorder.pid"
-    pid_file.write_text(
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    (tmp_path / "recorder.pid.started").write_text(
         json.dumps({"pid": os.getpid(), "started_at": started_at}), encoding="utf-8"
     )
 
@@ -1938,7 +1940,7 @@ def test_the_pid_file_records_when_the_process_started(tmp_path: Path) -> None:
     )
     recorder.start()
 
-    written = json.loads((tmp_path / "recorder.pid").read_text(encoding="utf-8"))
+    written = json.loads((tmp_path / "recorder.pid.started").read_text(encoding="utf-8"))
     assert written["pid"] == os.getpid()
     assert written["started_at"] == process_started_at(os.getpid())
 
@@ -1951,3 +1953,77 @@ def test_when_a_process_started_can_be_read_for_this_process() -> None:
 
 def test_asking_when_a_process_that_is_not_there_started_is_not_an_exception() -> None:
     assert process_started_at(999_999) is None
+
+
+def test_the_claim_file_stays_a_bare_integer(tmp_path: Path) -> None:
+    """Three programs read this file and two of them parse it as one number:
+    `vmd.record_main.read_pid` does int(text.strip()) and
+    scripts\\recorder_service.ps1 does [int]::TryParse over the whole file.
+    Either of them failing to parse reads as "no recorder is running", and the
+    answer to that is to start a second recorder on the same directory. So
+    whatever else the console records about a child goes beside the file, never
+    in it."""
+    from vmd.record_main import read_pid
+
+    class RealEnough:
+        pid = os.getpid()
+
+        def poll(self):
+            return None
+
+    pid_file = tmp_path / "recorder.pid"
+    recorder = RecorderProcess(
+        tmp_path / "settings.json", pid_path=pid_file, spawn=lambda c: RealEnough()
+    )
+    recorder.start()
+
+    assert pid_file.read_text(encoding="utf-8").strip() == str(os.getpid())
+    assert read_pid(pid_file) == os.getpid()
+
+
+def test_the_start_time_does_not_collide_with_the_recorders_own_companion(
+    tmp_path: Path,
+) -> None:
+    """`vmd.record_main` keeps what it knows about itself in
+    `recorder.pid.json`. The console's note about when it spawned the child is a
+    different question asked by a different process, so it lives somewhere else
+    and neither overwrites the other."""
+    from vmd.record_main import identity_path
+
+    class RealEnough:
+        pid = os.getpid()
+
+        def poll(self):
+            return None
+
+    pid_file = tmp_path / "recorder.pid"
+    recorder = RecorderProcess(
+        tmp_path / "settings.json", pid_path=pid_file, spawn=lambda c: RealEnough()
+    )
+    recorder.start()
+
+    assert not identity_path(pid_file).exists(), "the console wrote the recorder's file"
+    written = json.loads((tmp_path / "recorder.pid.started").read_text(encoding="utf-8"))
+    assert written["pid"] == os.getpid()
+    assert written["started_at"] == process_started_at(os.getpid())
+
+
+def test_a_start_time_left_over_from_an_earlier_child_is_ignored(tmp_path: Path) -> None:
+    """The recorder claims the file itself now, so the number in it can have
+    been written by a process the console never spawned. A note about a
+    different PID says nothing about this one."""
+    pid_file = tmp_path / "recorder.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    (tmp_path / "recorder.pid.started").write_text(
+        json.dumps({"pid": 999_999, "started_at": 1000.0}), encoding="utf-8"
+    )
+
+    spawned: list = []
+    recorder = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=lambda c: (spawned.append(c), FakeProcess())[1],
+    )
+    recorder.start()
+
+    assert spawned == [], "an unrelated note must read as unverified, not as wrong"

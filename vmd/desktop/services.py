@@ -543,37 +543,47 @@ class ChildProcess:
         )
         return False
 
-    def _read_pid(self) -> tuple[int | None, float | None]:
-        """The PID this child was last started as, and when that process began.
+    @property
+    def started_at_path(self) -> Path:
+        """Where the console notes when it spawned this child.
 
-        A bare number is what older consoles wrote and is still read, so that an
-        upgrade does not orphan a running recorder.
+        Beside the PID file rather than in it. That file holds a bare integer
+        and must go on holding one: `vmd.record_main.read_pid` parses it with
+        int(text.strip()) and scripts\recorder_service.ps1 with [int]::TryParse
+        over the whole file, and either of them failing to parse reads as "no
+        recorder is running" - whose answer is to start a second recorder on the
+        same directory and the same index.
+
+        A suffix of its own, because the recorder keeps what it knows about
+        itself in `recorder.pid.json`. That is the recorder answering "which
+        interpreter am I"; this is the console answering "when did I spawn it",
+        and two processes writing one file is the accident both of them exist to
+        avoid.
+        """
+        return Path(str(self.pid_path) + ".started")
+
+    def _read_pid(self) -> tuple[int | None, float | None]:
+        """The PID in the claim file, and when the console saw that child start.
+
+        The start time is only believed when it names the same PID. The recorder
+        writes its own claim now, so the number in that file can belong to a
+        process this console never spawned, and a note about a different PID
+        says nothing at all about this one - which is "unverified", not "wrong".
         """
         try:
-            text = self.pid_path.read_text(encoding="utf-8").strip()
-        except OSError:
+            pid = int(self.pid_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
             return None, None
         try:
-            payload = json.loads(text)
-        except ValueError:
-            try:
-                return int(text), None
-            except ValueError:
-                return None, None
-        if isinstance(payload, int):
-            # A bare number is valid JSON, so the older format arrives here
-            # rather than in the ValueError above.
-            return payload, None
-        if not isinstance(payload, dict):
-            return None, None
-        try:
-            pid = int(payload["pid"])
-        except (KeyError, TypeError, ValueError):
-            return None, None
+            payload = json.loads(self.started_at_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return pid, None
+        if not isinstance(payload, dict) or payload.get("pid") != pid:
+            return pid, None
         started_at = payload.get("started_at")
         if not isinstance(started_at, (int, float)):
-            started_at = None
-        return pid, started_at
+            return pid, None
+        return pid, float(started_at)
 
     def _write_pid(self) -> None:
         pid = getattr(self._process, "pid", None)
@@ -581,12 +591,18 @@ class ChildProcess:
             return
         try:
             self.pid_path.parent.mkdir(parents=True, exist_ok=True)
-            self.pid_path.write_text(
+            self.pid_path.write_text(str(pid), encoding="utf-8")
+        except OSError:
+            logger.warning("could not write %s", self.pid_path, exc_info=True)
+        try:
+            self.started_at_path.write_text(
                 json.dumps({"pid": pid, "started_at": process_started_at(pid)}),
                 encoding="utf-8",
             )
         except OSError:
-            logger.warning("could not write %s", self.pid_path, exc_info=True)
+            # Not fatal: without it adoption falls back to "unverified", which
+            # is where this started.
+            logger.warning("could not write %s", self.started_at_path, exc_info=True)
 
     def stop(self, force: bool = False) -> None:
         """Stop a child this object started, and everything it started.
