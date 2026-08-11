@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -125,6 +126,56 @@ UNIDENTIFIED_NOTE = (
 # that about a command nobody has answered is the kind of quiet lie that has an
 # operator believing the head moved when it did not.
 UNANSWERED_NOTE = "the camera did not answer the last command yet"
+
+
+class WrappedNote(QLabel):
+    """A sentence that asks for the height its text really needs.
+
+    A word-wrapped QLabel asks for the height of ONE line unless its size policy
+    says its height depends on its width, and a layout short of room believes it:
+    the second line is drawn over the line beneath, and neither can be read. The
+    two sentences this is for are the two in the side column that do not fit in
+    one line of 340 px - the camera not having answered the last command, and why
+    a confidence cell is blank. The first is two lines and the second is four.
+
+    Both are whole on screen today, and for a reason that is not their own doing:
+    the column is a QScrollArea, and a scroll area asks its widget's layout how
+    tall it is at the width it has rather than trusting the width-independent
+    minimum. Take that away - a column that stops scrolling, one of these moved
+    into a layout that believes what it is told - and each says it can live in
+    one line. Squeezed to that, the camera note was measured at 16 px of the 42
+    its two lines need.
+
+    The link and storage panels below it fit their labels from the panel's own
+    resize, because there the labels are the panel's own children and the panel
+    knows the width they will get. These two sit inside boxes the tab does not
+    lay out itself, so each fits itself the moment it is given a width: the same
+    measurement, taken where the width is known rather than guessed at.
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(True)
+        policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+        self.setSizePolicy(policy)
+
+    def fit(self) -> None:
+        """Ask for the height this text needs at the width there is."""
+        needed = self.heightForWidth(max(self.width(), 1)) if self.text() else 0
+        # Only when it changes: setting it invalidates the layout, and a layout
+        # invalidated on every pass of itself does not settle.
+        if needed != self.minimumHeight():
+            self.setMinimumHeight(needed)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt naming
+        super().setText(text)
+        self.fit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self.fit()
 
 
 class SteeringOverlay(QWidget):
@@ -294,8 +345,7 @@ class LiveTab(QWidget):
         side = QWidget()
         self._side_layout = QVBoxLayout(side)
         self._moving = QLabel("idle")
-        self._ptz_note = QLabel("")
-        self._ptz_note.setWordWrap(True)
+        self._ptz_note = WrappedNote("")
 
         self._streams_box = QGroupBox("Streams")
         self._streams_layout = QVBoxLayout(self._streams_box)
@@ -344,6 +394,24 @@ class LiveTab(QWidget):
         self._side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._side)
 
+    def clipped(self) -> list[str]:
+        """Any sentence in the side column too short for the words in it.
+
+        The same question the link and storage panels answer about themselves,
+        asked for the whole column - the two sentences the tab draws itself, and
+        then each panel about its own.
+        """
+        cut: list[str] = []
+        for label in (self._ptz_note, self._movement_note):
+            if not label.text() or not label.isVisibleTo(self):
+                continue
+            if label.height() < label.heightForWidth(max(label.width(), 1)):
+                cut.append(label.text())
+        for panel in (self._link_panel, self._storage_panel):
+            if panel is not None:
+                cut += panel.clipped()
+        return cut
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._wall_area and event.type() == QEvent.Type.Resize:
             self.overlay.setGeometry(self._wall_area.rect())
@@ -387,8 +455,7 @@ class LiveTab(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         layout.addWidget(self._movement, 1)
-        self._movement_note = QLabel(UNIDENTIFIED_NOTE)
-        self._movement_note.setWordWrap(True)
+        self._movement_note = WrappedNote(UNIDENTIFIED_NOTE)
         self._movement_note.setStyleSheet(f"color: {PALETTE['muted']};")
         layout.addWidget(self._movement_note)
         return box
