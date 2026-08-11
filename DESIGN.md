@@ -82,11 +82,28 @@ One family in multiple weights, plus monospace for data. No paired display face.
 
 | Role | Size | Weight | Face |
 |---|---|---|---|
-| Site / camera name | 14px | 650 | UI |
-| Section heading | 11px, `0.06em` tracking, uppercase | 600 | UI |
-| Body / labels | 12.5px | 400 | UI |
-| **All numerics** | 11.5–13px | 400–600 | **Mono, `tabular-nums`** |
-| Video overlay | 11–11.5px | 400 | Mono |
+| System state band | 16px | 600 | UI |
+| Site / camera name, tab labels | 14px | 600 | UI |
+| Body / labels | 13px | 400 | UI |
+| Notes and captions | 12px | 400 | UI |
+| Section heading, table headers | 11px | 600 | UI |
+| **All numerics** | 11–13px | 400–600 | **Mono, `tabular-nums`** |
+| Video overlay | 11px | 600 | Mono |
+
+The sizes live in `vmd/desktop/style.py` as `SIZE_BAND`, `SIZE_TITLE`,
+`SIZE_BODY`, `SIZE_SMALL` and `SIZE_HEADING`, and nothing types a number at the
+point of use. They are logical pixels, and the case that sets them is Windows
+display scaling: a 1920×1080 laptop panel at 150% reports 1280×720 logical
+pixels to Qt, so one logical pixel is 1.5 real ones on the console's own screen
+and `SIZE_BAND` lands at 24 real pixels — which is what an operator two metres
+back has to read.
+
+**The section heading is not tracked or uppercased in the Qt console.** Qt
+stylesheets support neither `letter-spacing` nor `text-transform`, and the only
+ways to get them — uppercasing the strings, or a `QFont` on the group box, which
+every child then inherits — either change what the code says or leak into the
+body text. The heading is 11px/600 in `--muted` against 13px/400 body, which
+restores the hierarchy without either.
 
 **Every number is monospace with tabular figures.** Timestamps, bitrates, pixel counts and
 disk figures change constantly; proportional digits make them jitter, which reads as
@@ -103,13 +120,39 @@ start appearing above every block, that is the drift to catch.
 - Panel edges get `inset 0 1px 0 oklch(1 0 0 / 0.05)` — a one-pixel top highlight that
   reads as a physical bevel without becoming a gradient.
 - Spacing scale: 2 / 4 / 6 / 9 / 12 / 18 / 22px. Tight by web standards, correct for a
-  briefed operator reading dense telemetry.
-- Side column: fixed 292px. Video takes everything else.
+  briefed operator reading dense telemetry. Named in `style.py` as `SPACE_HAIR`
+  … `SPACE_WIDE`. The rhythm is **wide between groups, tight inside them**: what
+  separates two settings is the panel they are on, not the distance between them.
+- Side column: a fifth of the window, floored at 330px and capped at 420. A
+  fixed width is the same paragraph wrapped to four lines on a 1366 laptop panel
+  and on a 4K screen with a third of the width wasted beside it. The floor is
+  what the movement list needs before its columns start eliding values. Video
+  takes everything else.
+- Forms stop at 980px (`FORM_MAX_WIDTH`) and are centred. A thirteen-character
+  address field stretched across a 4K panel puts the label at one end of the
+  screen and the box it belongs to at the other.
 
 ## Components
 
-**Status chip** — bordered, `--raised`, glyph + label + monospace value. The border tints
-toward the state colour when not healthy; the glyph carries the state; the word names it.
+**Status band** — the first thing on the screen, above the tabs, because it is
+true of the machine rather than of whichever page is open. One chip per part of
+the system's health: recording, streaming, detection, link. Read at 16px from two
+metres, which is the whole reason it exists — it was eleven pixels of grey in a
+footer, the least prominent thing on screen and the most important.
+
+**Status chip** — bordered, `--surface`, glyph + sentence. The border tints
+toward the state colour when not healthy; the glyph carries the state; the word
+names it. Healthy chips are written in `--ink` with only the glyph in green: four
+green sentences across the top is a wall of colour that says nothing, and one red
+one among three quiet ones is seen from across the room.
+
+**Recording dot** — a circle in `--alarm` that pulses at 900 ms while footage is
+reaching the disk, and a still bar in the same colour when it is not. What
+separates the two is the movement, not the colour, so "not recording" cannot be
+mistaken for a glance that landed on the dim beat. It dims rather than going out,
+because a dot that vanishes is indistinguishable from no dot at all for as long
+as it is away. It follows whether anything was WRITTEN, never whether a process
+is alive.
 
 **Data row** — label left in `--muted`, value right in mono `--ink`, separated by a
 one-pixel rule. The workhorse of the side column. Not a card.
@@ -123,7 +166,20 @@ the video itself. An alarm is when the picture matters most; covering it with th
 about it is self-defeating.
 
 **Segmented control** — flush buttons in a bordered group, active state on `--raised` with
-weight 600. Used for layout and overlay switching.
+weight 600 and a 2px `--accent` bar along its bottom edge, which is the same mark
+the active tab carries. Used for choosing which view fills the video wall:
+everything side by side, or one of them alone. The buttons are built from the
+streams that exist, never from a fixed pair, because a camera names its views
+whatever it likes and offering one that is not configured is offering a black
+rectangle. Every button refuses focus: the tab is what steers the camera, and a
+button that took the keyboard would leave the next arrow key going nowhere.
+
+**Empty state** — nothing on this console is a black rectangle with nothing in
+it. A list with no rows, a report box nothing has written to, a wall with no
+views configured: each says which of "nothing has happened" and "this failed to
+load" it is, in one muted sentence where the content would be. The operator
+cannot tell those two apart by looking at a hole, and on the movement list the
+difference is whether anything has crossed the perimeter.
 
 Cards are not part of this system. The side column is rows and groups; the main area is
 video. Nothing is a card.
