@@ -196,7 +196,7 @@ NOTHING_YET = "Nothing has moved yet."
 # it. The floor is the width the longest storage and link sentences were written
 # against; the ceiling is where a wrapped sentence stops being a column and
 # starts being a page.
-SIDE_MIN_WIDTH = 300
+SIDE_MIN_WIDTH = 330
 SIDE_MAX_WIDTH = 420
 SIDE_FRACTION = 0.22
 
@@ -737,10 +737,32 @@ class LiveTab(QWidget):
         self._movement.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._movement.setShowGrid(False)
         self._movement.setAlternatingRowColors(False)
-        self._movement.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+        # The three narrow columns to their contents, the last to whatever is
+        # left. All four to their contents pushed "Confidence" off the right of
+        # a 300 px column on a laptop panel, and a movement list you have to
+        # scroll sideways to read is one nobody reads.
+        header = self._movement.horizontalHeader()
+        for column in (0, 1, 2):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setHighlightSections(False)
+        # Left-aligned, so a heading with less room than it wants loses its tail
+        # rather than both its ends: "Confide" is a word being cut short, and
+        # "nfiden" is something the operator has to stop and work out.
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        self._movement.horizontalHeader().setStretchLastSection(True)
+        # The list fits the column instead of scrolling sideways inside it.
+        # Three columns to their contents and the last to whatever is left: the
+        # time, the stream and what it was are the values an operator reads, and
+        # none of them may be elided. "Confidence" takes the remainder, and its
+        # heading is elided by Qt when the remainder is small - which is the
+        # right thing to lose, because "81%" is the part that carries anything.
+        #
+        # This is also why SIDE_MIN_WIDTH is what it is: those three columns and
+        # a readable percentage need about 290 px of list, and the column's
+        # borders, padding and scrollbar take the rest.
+        self._movement.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._movement, 1)
         # Shown in the table's place while there is nothing in it. An empty
         # table is a black rectangle, and a black rectangle is indistinguishable
