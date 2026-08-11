@@ -632,3 +632,55 @@ def test_rebuilding_the_panes_keeps_the_movement_already_listed(qtbot) -> None:
 
     tab.apply(settings_with("thermal", "visible"))
     assert len(tab.recent_rows()) == 1
+
+
+# ---------------------------------------------------------------- storage
+#
+# "Disk filling" is one of the failure states the design calls first-class, and
+# no tab showed free space, the budget, or how close either was to full.
+
+
+def test_the_live_tab_shows_storage(qtbot, tmp_path) -> None:
+    from vmd.desktop.disk import DiskWatcher
+
+    watcher = DiskWatcher(
+        settings_with("thermal"), executor=lambda work: work(), clock=lambda: 1000.0
+    )
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        storage=watcher,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings_with("thermal"))
+    assert tab.storage_lines(), "the right column has no storage in it"
+
+
+def test_the_live_tab_redraws_storage_on_a_refresh(qtbot, tmp_path) -> None:
+    from vmd.desktop.disk import DiskWatcher
+
+    settings = settings_with("thermal")
+    settings.storage.root = tmp_path / "rec"
+    (tmp_path / "rec").mkdir()
+    watcher = DiskWatcher(settings, executor=lambda work: work(), clock=lambda: 1000.0)
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        storage=watcher,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings)
+    watcher.poll()
+    tab.refresh()
+    assert any("Drive" in text for text, _ in tab.storage_lines())
+
+
+def test_a_live_tab_with_no_storage_watcher_still_works(qtbot) -> None:
+    """--no-services opens a console with no folder to watch. It must cost the
+    storage lines and nothing else."""
+    tab, _, panes = build(qtbot, "thermal")
+    tab.refresh()
+    assert tab.storage_lines() == []
+    assert set(panes) == {"thermal"}

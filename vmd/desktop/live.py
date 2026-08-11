@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vmd.desktop.disk import StoragePanel
 from vmd.desktop.steering import edge_velocity, key_velocity
 from vmd.desktop.style import PALETTE
 from vmd.desktop.video import VideoPane
@@ -169,6 +170,7 @@ class LiveTab(QWidget):
         make_pane: Callable[[str], VideoPane],
         local_url: Callable[[str], str | None],
         events=None,
+        storage=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -176,6 +178,10 @@ class LiveTab(QWidget):
         self._make_pane = make_pane
         self._local_url = local_url
         self._events = events
+        # A DiskWatcher, or None for a console started with --no-services, which
+        # has no folder to watch. It must cost the storage lines and nothing
+        # else - the pictures and the steering are not downstream of the disk.
+        self._storage = storage
         self._panes: dict[str, VideoPane] = {}
         self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
@@ -247,6 +253,13 @@ class LiveTab(QWidget):
         self._streams_box = QGroupBox("Streams")
         self._streams_layout = QVBoxLayout(self._streams_box)
         self._side_layout.addWidget(self._streams_box)
+        # Storage sits above the movement list, as the design's column order has
+        # it. The panel is built here rather than injected so the tab owns its
+        # own column; what it reads is injected, because reading it touches the
+        # filesystem and that must never happen on this thread.
+        self._storage_panel = StoragePanel(storage) if storage is not None else None
+        if self._storage_panel is not None:
+            self._side_layout.addWidget(self._storage_panel)
         self._side_layout.addWidget(self._build_movement_box(), 1)
 
         steering_box = QGroupBox("Steering")
@@ -404,6 +417,12 @@ class LiveTab(QWidget):
         frame = self._frames.get(name)
         return frame.styleSheet() if frame is not None else ""
 
+    def storage_lines(self) -> list[tuple[str, str]]:
+        """What the storage panel is saying, or nothing when there is no panel."""
+        if self._storage_panel is None:
+            return []
+        return self._storage_panel.lines()
+
     def movement_note(self) -> str:
         return self._movement_note.text()
 
@@ -475,6 +494,11 @@ class LiveTab(QWidget):
         # An alarm raised before the streams changed is still unacknowledged.
         self._outline(self._alarm_stream)
         self.overlay.raise_()
+        # A saved budget or a saved folder changes what the storage lines say
+        # about the reading already taken, so redraw them now rather than at the
+        # next heartbeat.
+        if self._storage_panel is not None:
+            self._storage_panel.refresh()
 
     def refresh(self) -> None:
         """Read every pane's state. Restart only what has actually failed.
@@ -493,6 +517,8 @@ class LiveTab(QWidget):
                 # A stream that flaps between failed and connecting has not.
                 self._restarts.pop(name, None)
         self._refresh_events()
+        if self._storage_panel is not None:
+            self._storage_panel.refresh()
 
     def _say_it_failed(self, name: str) -> None:
         """Report a restart, without reporting the same one every two seconds.
