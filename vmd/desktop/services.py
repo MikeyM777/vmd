@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from vmd.desktop.disk import DiskWatcher
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
 from vmd.streaming.go2rtc import Go2rtcService
@@ -60,12 +61,21 @@ DETECTION_STATUS_FILENAME = "detection.json"
 DETECTION_STATUS_STALE_SECONDS = 30.0
 DETECTION_STATUS_STALE_INTERVALS = 4
 
-# How a detector that will not stay up is recognised: more than this many
-# restarts inside this window and the console stops calling it detection. Two
-# minutes is long enough that a single restart plus a slow start does not trip
-# it, and short enough that the operator hears about it while it matters.
-DETECTION_FLAP_WINDOW = 120.0
-DETECTION_FLAP_LIMIT = 3
+# How a child that will not stay up is recognised: more than this many restarts
+# inside this window and the console stops calling it running. Two minutes is
+# long enough that a single restart plus a slow start does not trip it, and
+# short enough that the operator hears about it while it matters.
+#
+# One rule for both children, not two copies of it. The recorder is the more
+# important of the two and had none at all: the status line said "recording" or
+# "NOT recording" and never "restarted twenty times in the last two minutes",
+# which is the state a recorder pointed at an unwritable folder is actually in.
+FLAP_WINDOW = 120.0
+FLAP_LIMIT = 3
+
+# The names detection was written with, kept pointing at the shared rule.
+DETECTION_FLAP_WINDOW = FLAP_WINDOW
+DETECTION_FLAP_LIMIT = FLAP_LIMIT
 
 
 def detection_enabled(settings: Settings) -> bool:
@@ -79,6 +89,24 @@ def detection_enabled(settings: Settings) -> bool:
     if not settings.detection.enabled:
         return False
     return any(stream.enabled and stream.detect for stream in settings.camera.streams)
+
+
+def recordable(settings: Settings) -> bool:
+    """Is there anything for the recorder to record?
+
+    The same shape as `detection_enabled`, and for the same reason.
+    `vmd.record_main` prints "no enabled streams; nothing to record" and exits 1
+    when no stream is ticked with an address, so a supervisor holding it
+    respawns that exit every two seconds for the life of the console: measured
+    on an unconfigured machine, eleven spawns in thirty seconds, which is about
+    forty-three thousand processes overnight while the operator sleeps before
+    setting the camera up in the morning.
+
+    An address as well as the tick, because a stream ticked to record with an
+    empty address is not something to record either - that is the ordinary state
+    of a machine part way through being configured.
+    """
+    return any(stream.enabled and stream.url for stream in settings.camera.streams)
 
 
 def read_child_output(stream, emit: Callable[[str], None]) -> None:
@@ -600,6 +628,7 @@ class ConsoleServices:
         detector: DetectorProcess | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], float] = time.time,
+        disk: DiskWatcher | None = None,
     ) -> None:
         self.settings = settings
         self.settings_path = Path(settings_path)
@@ -607,6 +636,12 @@ class ConsoleServices:
         self.recorder = recorder
         self.detector = detector
         self.adopted_streaming = False
+        # What the recordings folder actually looks like. It is here rather than
+        # in the window because it answers a question about the children -
+        # whether the recorder is recording anything - as well as one about the
+        # disk, and because it must be read on a worker rather than on the GUI
+        # thread.
+        self.disk = disk if disk is not None else DiskWatcher(settings)
         self._clock = clock
         # Two clocks, deliberately. `clock` is monotonic and measures how long
         # ago this console restarted the detector; `now` is wall clock and is
@@ -622,19 +657,28 @@ class ConsoleServices:
         # supervisor holding it would respawn that exit every two seconds for
         # the life of the console.
         self.detecting = detector is not None and detection_enabled(settings)
+        # And a recorder with nothing to record is not supervised either, for
+        # exactly the same reason - see `recordable`.
+        self.recording = recordable(settings)
 
-        managed = [Managed(name="recorder", service=recorder)]
-        if streaming is not None:
-            managed.insert(0, Managed(name="streaming", service=streaming))
-        if self.detecting:
-            managed.append(Managed(name="detector", service=detector))
-        self.supervisor = Supervisor(managed, clock=clock)
+        self.supervisor = Supervisor(self._managed(), clock=clock)
 
-        # When the detector was restarted, not just how often since the console
-        # opened. A detector that died twice in March and is up now is healthy;
-        # one that has died four times in the last two minutes is not running,
+        # When each child was restarted, not just how often since the console
+        # opened. A child that died twice in March and is up now is healthy; one
+        # that has died four times in the last two minutes is not running,
         # whatever the count since boot says.
-        self._detector_restarts: list[float] = []
+        self._restarted_at: dict[str, list[float]] = {}
+
+    def _managed(self) -> list[Managed]:
+        """The children the supervisor holds, given what is configured now."""
+        managed: list[Managed] = []
+        if self.streaming is not None:
+            managed.append(Managed(name="streaming", service=self.streaming))
+        if self.recording:
+            managed.append(Managed(name="recorder", service=self.recorder))
+        if self.detecting and self.detector is not None:
+            managed.append(Managed(name="detector", service=self.detector))
+        return managed
 
     def start(self) -> None:
         """Bring the children up, adopting any that are already running.
@@ -662,28 +706,50 @@ class ConsoleServices:
             else:
                 self.adopted_streaming = False
                 self.streaming.start()
-        self.recorder.start()
+        if self.recording:
+            self.recorder.start()
+        else:
+            logger.info(
+                "no stream is ticked to record with an address, so no recorder "
+                "is started; enter one in Settings and save"
+            )
         if self.detecting and self.detector is not None:
             self.detector.start()
 
     def tick(self) -> list[str]:
         """Restart whatever has died. Called on a timer by the window."""
         started = self.supervisor.tick()
-        if "detector" in started:
+        for name in started:
             # Every start the supervisor performs is a restart: `start()` above
-            # already started it once. The supervisor's own `restarts` counter
-            # misses that first one, and would call the first death a first
-            # start.
-            self._detector_restarts.append(self._clock())
+            # already started each child once.
+            self._restarted_at.setdefault(name, []).append(self._clock())
             # Pruned here as well as when read, so a console nobody looks at for
             # months cannot accumulate a list of every restart it ever made.
-            self._recent_detector_restarts()
+            self._recent_restarts(name)
+        # Not on the caller's thread and not on every call; see DiskWatcher.
+        self.disk.poll()
         return started
 
-    def _recent_detector_restarts(self) -> int:
-        cutoff = self._clock() - DETECTION_FLAP_WINDOW
-        self._detector_restarts = [at for at in self._detector_restarts if at >= cutoff]
-        return len(self._detector_restarts)
+    def _recent_restarts(self, name: str) -> int:
+        """How often that child has been restarted inside the flap window.
+
+        One implementation for the recorder and the detector alike: the rule is
+        the same rule, and two copies of it would be two rules within a month.
+        """
+        cutoff = self._clock() - FLAP_WINDOW
+        recent = [at for at in self._restarted_at.get(name, []) if at >= cutoff]
+        self._restarted_at[name] = recent
+        return len(recent)
+
+    def _forget_restarts(self, name: str) -> None:
+        """A child this console deliberately restarted has not been flapping.
+
+        Applying a saved setting stops and starts a child on purpose. Counting
+        that as a death would have a second Save read as "restarted twice in the
+        last two minutes - NOT recording", which is a lie about a system doing
+        exactly what it was told.
+        """
+        self._restarted_at.pop(name, None)
 
     def apply(self, settings: Settings) -> None:
         """Take settings the operator has just saved.
@@ -710,6 +776,9 @@ class ConsoleServices:
         # Left pointing at the old folder, the status line would read a file
         # nobody writes any more and call detection unknown for ever.
         self.detection_status_path = Path(settings.storage.root) / DETECTION_STATUS_FILENAME
+        # The folder it watches may have moved too, and a saved folder is a new
+        # question rather than one to wait out the poll interval for.
+        self.disk.apply(settings)
 
         if self.streaming is not None:
             self.streaming.apply(settings)
@@ -717,19 +786,32 @@ class ConsoleServices:
             self.adopted_streaming = False
 
         wanted = self.detector is not None and detection_enabled(settings)
-        if wanted != self.detecting:
+        recording = recordable(settings)
+        if wanted != self.detecting or recording != self.recording:
             self.detecting = wanted
+            self.recording = recording
             # A fresh supervisor rather than a mutated one: its restart counts
             # and back-off belong to a configuration that no longer exists, and
             # there is no supported way to add or remove a service from the one
             # already running.
-            managed = [Managed(name="recorder", service=self.recorder)]
-            if self.streaming is not None:
-                managed.insert(0, Managed(name="streaming", service=self.streaming))
-            if wanted:
-                managed.append(Managed(name="detector", service=self.detector))
-            self.supervisor = Supervisor(managed, clock=self._clock)
-            self._detector_restarts.clear()
+            self.supervisor = Supervisor(self._managed(), clock=self._clock)
+            self._forget_restarts("detector")
+            self._forget_restarts("recorder")
+
+        # A recorder that now has something to record, or has just lost the last
+        # thing it had. Nothing else here starts or stops it: see `apply`'s note
+        # about not restarting a working recorder to apply a setting.
+        try:
+            if recording and not self.recorder.running:
+                self.recorder.start()
+            elif not recording and self.recorder.running:
+                logger.info(
+                    "no stream is ticked to record with an address any more; "
+                    "stopping the recorder"
+                )
+                self.recorder.stop()
+        except Exception:  # noqa: BLE001 - the file is saved either way
+            logger.exception("the recorder would not take the new settings")
 
         if self.detector is not None:
             try:
@@ -751,12 +833,80 @@ class ConsoleServices:
         streaming_state = "not enabled"
         if self.streaming is not None:
             streaming_state = self.streaming.status().reason
+        recording = self.recording_state()
         return {
-            "recording": self.recorder.running,
+            # Still a bool, and still the first thing the status line asks -
+            # but it is now the honest answer rather than "a process was alive
+            # when I looked".
+            "recording": recording["running"],
+            "recording_state": recording,
             "streaming": streaming_state,
             "detection": self.detection_state(),
             "restarts": dict(self.supervisor.restarts),
+            "storage": self.disk.reading,
         }
+
+    def recording_state(self) -> dict:
+        """Whether footage is reaching the disk, and if not, why not.
+
+        "Recording" used to mean `self.recorder.running` - that a process
+        existed at the instant the console looked. Pointed at a drive that does
+        not exist, that read "recording" in 41 of 79 samples over forty seconds
+        while twenty recorder processes came and went and nothing was ever
+        written. A process is not footage.
+
+        Four things can be wrong, and they are asked in the order in which each
+        makes the next one meaningless:
+
+        * nothing is ticked to record, so no recorder is supervised at all;
+        * the recorder is being restarted every few seconds, which is not
+          recording however alive it is in between - a process that lives two
+          seconds writes no usable segment;
+        * it is down right now and is about to be restarted;
+        * it is up, and nothing is arriving in the folder anyway.
+        """
+        minutes = FLAP_WINDOW / 60.0
+        if not self.recording:
+            return {
+                "running": False,
+                "restarts": 0,
+                "reason": "NOT recording - no stream is ticked to record",
+            }
+
+        restarts = self._recent_restarts("recorder")
+        if restarts > FLAP_LIMIT:
+            return {
+                "running": False,
+                "restarts": restarts,
+                "reason": (
+                    f"NOT recording - restarted {restarts} times "
+                    f"in the last {minutes:.0f} minutes"
+                ),
+            }
+        if not self.recorder.running:
+            return {
+                "running": False,
+                "restarts": restarts,
+                "reason": "NOT recording - restarting it",
+            }
+
+        reading = self.disk.reading
+        if reading is not None and not reading.writing:
+            return {
+                "running": False,
+                "restarts": restarts,
+                "reason": f"NOT recording - {reading.write_problem}",
+            }
+        if restarts:
+            return {
+                "running": True,
+                "restarts": restarts,
+                "reason": (
+                    f"recording - restarted {restarts} times "
+                    f"in the last {minutes:.0f} minutes"
+                ),
+            }
+        return {"running": True, "restarts": 0, "reason": "recording"}
 
     def detection_state(self) -> dict:
         """What detection is doing, in the three states it can honestly be in.
@@ -799,10 +949,10 @@ class ConsoleServices:
                 "streams_known": False,
             }
 
-        restarts = self._recent_detector_restarts()
+        restarts = self._recent_restarts("detector")
         streams, streams_known = self.detected_stream_states()
-        minutes = DETECTION_FLAP_WINDOW / 60.0
-        if restarts > DETECTION_FLAP_LIMIT:
+        minutes = FLAP_WINDOW / 60.0
+        if restarts > FLAP_LIMIT:
             return {
                 "enabled": True,
                 "running": False,

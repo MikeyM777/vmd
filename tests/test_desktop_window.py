@@ -448,3 +448,40 @@ def test_an_event_store_that_will_not_open_costs_detection_not_the_console(
     window.heartbeat()
     assert window.live.recent_rows() == []
     window.close()
+
+
+# --------------------------------------------- the recorder in the status line
+#
+# Detection has said "NOT running - restarted N times in the last 2 minutes"
+# since it was written. The recorder, which matters more, said only "recording"
+# or "NOT recording".
+
+
+class FlappingServices(FakeServices):
+    def state(self) -> dict:
+        state = super().state()
+        state["recording"] = False
+        state["recording_state"] = {
+            "running": False,
+            "restarts": 20,
+            "reason": "NOT recording - restarted 20 times in the last 2 minutes",
+        }
+        return state
+
+
+def test_the_status_line_says_the_recorder_died_and_was_restarted(
+    qtbot, tmp_path: Path
+) -> None:
+    window, _ = build(qtbot, tmp_path, services=FlappingServices())
+    text = window.status_text()
+    assert "restarted 20 times" in text
+    assert "NOT recording" in text
+
+
+def test_a_status_line_from_services_that_only_say_yes_or_no_still_reads(
+    qtbot, tmp_path: Path
+) -> None:
+    """The old shape, in case anything still hands one over."""
+    window, _ = build(qtbot, tmp_path)
+    text = window.status_text()
+    assert "recording" in text.lower()

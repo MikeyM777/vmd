@@ -13,9 +13,11 @@ import threading
 import time
 from pathlib import Path
 
+from vmd.desktop.disk import DiskWatcher
 from vmd.desktop.logs import LogBuffer, attach
 from vmd.desktop.services import (
     DETECTION_STATUS_FILENAME,
+    FLAP_LIMIT,
     ConsoleServices,
     DetectorProcess,
     RecorderProcess,
@@ -23,6 +25,7 @@ from vmd.desktop.services import (
     _default_spawn,
     _taskkill_tree,
     read_detection_status,
+    recordable,
 )
 from vmd.settings import CameraSettings, Settings, StorageSettings, StreamSettings
 
@@ -47,6 +50,15 @@ class FakeProcess:
 
 
 def settings_for(tmp_path: Path, detect: bool = False) -> Settings:
+    """Settings for a console that is genuinely recording.
+
+    The folder and a fresh segment are made here on purpose. "Recording" now
+    means footage is reaching the disk, not that a process was alive when the
+    console looked, so a test about anything else must not accidentally be a
+    test about an empty folder.
+    """
+    root = tmp_path / "rec"
+    recorded(root, "thermal")
     return Settings(
         camera=CameraSettings(
             host="10.0.0.2",
@@ -56,8 +68,24 @@ def settings_for(tmp_path: Path, detect: bool = False) -> Settings:
                 )
             ],
         ),
-        storage=StorageSettings(root=tmp_path / "rec"),
+        storage=StorageSettings(root=root),
     )
+
+
+def recorded(root: Path, stream: str, age: float = 1.0) -> Path:
+    """One segment file, written `age` seconds ago."""
+    directory = root / stream
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "2026-08-11_10-00-00.mp4"
+    path.write_bytes(b"\0" * 4096)
+    written = time.time() - age
+    os.utime(path, (written, written))
+    return path
+
+
+def watching(settings: Settings) -> DiskWatcher:
+    """A disk watcher that reads when told to, so no test waits on a thread."""
+    return DiskWatcher(settings, executor=lambda work: work(), clock=Clock())
 
 
 def test_the_recorder_is_started_as_its_own_process(tmp_path: Path) -> None:
@@ -1179,3 +1207,246 @@ def test_a_save_restarts_the_detector_so_it_reads_what_was_saved(tmp_path: Path)
     assert len(processes) == 2, "the detector kept the settings it started with"
     assert processes[0].alive is False
     assert services.detector.running is True
+
+
+# ------------------------------------------- what "recording" is allowed to mean
+#
+# It used to mean "a process was alive when the console last looked". With the
+# recordings folder on a drive that does not exist, that read "recording" in 41
+# of 79 samples taken over forty seconds, while twenty recorder processes came
+# and went and not one byte was ever written.
+
+
+def recording_console(tmp_path: Path, settings: Settings, spawn=None, clock=None):
+    settings_path = tmp_path / "settings.json"
+    return ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=spawn or (lambda c: FakeProcess()),
+        ),
+        clock=clock or Clock(),
+        disk=watching(settings),
+    )
+
+
+def test_recording_means_footage_is_reaching_the_disk(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    settings.storage.root = tmp_path / "not-a-drive"  # nothing was ever written
+    services = recording_console(tmp_path, settings)
+    services.start()
+    services.tick()
+
+    state = services.state()
+    assert services.recorder.running is True, "the process really is alive"
+    assert state["recording"] is False, "a live process is not footage on a disk"
+    assert "not recording" in state["recording_state"]["reason"].lower()
+
+
+def test_footage_arriving_reads_as_recording(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    services = recording_console(tmp_path, settings)
+    services.start()
+    services.tick()
+
+    state = services.state()
+    assert state["recording"] is True
+    assert state["recording_state"]["reason"] == "recording"
+
+
+def test_a_folder_that_stopped_growing_stops_reading_as_recording(tmp_path: Path) -> None:
+    """ffmpeg blocked on a dead RTSP socket keeps its process alive for ever."""
+    settings = settings_for(tmp_path)
+    recorded(settings.storage.root, "thermal", age=3 * settings.storage.segment_seconds)
+    services = recording_console(tmp_path, settings)
+    services.start()
+    services.tick()
+
+    assert services.recorder.running is True
+    assert services.state()["recording"] is False
+
+
+# ------------------------------------- a recorder that died and was restarted
+#
+# The detector has said this since it was written. The recorder, which matters
+# more, said only "recording" or "NOT recording".
+
+
+def test_a_recorder_that_will_not_stay_up_is_reported_not_hidden(tmp_path: Path) -> None:
+    """A recorder restarted every few seconds is not recording: a process that
+    lives two seconds writes no usable segment. The clock is hand-wound, so this
+    cannot hang however the restart policy is broken."""
+    clock = Clock()
+    settings = settings_for(tmp_path)
+    services = recording_console(
+        tmp_path, settings, spawn=lambda c: DeadOnArrival(), clock=clock
+    )
+    services.start()
+    for _ in range(6):
+        clock.advance(3.0)  # past the supervisor's restart delay
+        services.tick()
+
+    state = services.state()
+    recording = state["recording_state"]
+    assert state["recording"] is False
+    assert recording["restarts"] > FLAP_LIMIT
+    assert "not recording" in recording["reason"].lower()
+    assert str(recording["restarts"]) in recording["reason"], "the restarts must be named"
+
+
+def test_a_recorder_that_died_once_is_still_recording_and_says_it_was_restarted(
+    tmp_path: Path,
+) -> None:
+    """One death is not a failing recorder; it is what a supervisor is for. But
+    the operator is still told, because a restart is a gap in the footage."""
+    clock = Clock()
+    processes: list[FakeProcess] = []
+
+    def spawn(command):
+        processes.append(FakeProcess())
+        return processes[-1]
+
+    settings = settings_for(tmp_path)
+    services = recording_console(tmp_path, settings, spawn=spawn, clock=clock)
+    services.start()
+    processes[0].alive = False
+    clock.advance(3.0)
+    services.tick()
+
+    recording = services.state()["recording_state"]
+    assert len(processes) == 2
+    assert recording["running"] is True
+    assert recording["restarts"] == 1
+    assert "restarted" in recording["reason"], "a gap in the footage is not nothing"
+    assert "not recording" not in recording["reason"].lower()
+
+
+def test_the_recorder_and_the_detector_are_judged_by_one_flap_rule(tmp_path: Path) -> None:
+    """One rule, not two copies of it that drift apart."""
+    clock = Clock()
+    settings = settings_for(tmp_path, detect=True)
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: DeadOnArrival()
+        ),
+        detector=DetectorProcess(
+            settings_path, pid_path=tmp_path / "detector.pid", spawn=lambda c: DeadOnArrival()
+        ),
+        clock=clock,
+        now=lambda: 1_000_000.0,
+        disk=watching(settings),
+    )
+    services.start()
+    for _ in range(6):
+        clock.advance(3.0)
+        services.tick()
+
+    state = services.state()
+    tail = "in the last 2 minutes"
+    assert tail in state["recording_state"]["reason"]
+    assert tail in state["detection"]["reason"]
+
+
+# ------------------------------- a recorder with nothing to record is not held
+#
+# vmd.record_main prints "no enabled streams; nothing to record" and exits 1, so
+# a supervisor holding it respawns that exit for the life of the console.
+# Measured on an unconfigured machine: 11 spawns in 30 seconds, which is about
+# 43,000 overnight. Detection already had this guard.
+
+
+def test_a_stream_with_no_address_is_nothing_to_record() -> None:
+    assert recordable(Settings()) is False
+    assert (
+        recordable(
+            Settings(
+                camera=CameraSettings(
+                    streams=[StreamSettings(name="thermal", url="", enabled=True)]
+                )
+            )
+        )
+        is False
+    )
+    assert (
+        recordable(
+            Settings(
+                camera=CameraSettings(
+                    streams=[
+                        StreamSettings(name="thermal", url="rtsp://x/t", enabled=False)
+                    ]
+                )
+            )
+        )
+        is False
+    )
+    assert (
+        recordable(
+            Settings(
+                camera=CameraSettings(
+                    streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
+                )
+            )
+        )
+        is True
+    )
+
+
+def test_a_recorder_with_nothing_to_record_is_never_respawned(tmp_path: Path) -> None:
+    clock = Clock()
+    settings = Settings(storage=StorageSettings(root=tmp_path / "rec"))
+    spawned: list = []
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path,
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: (spawned.append(c), DeadOnArrival())[1],
+        ),
+        clock=clock,
+        disk=watching(settings),
+    )
+    services.start()
+    for _ in range(15):
+        clock.advance(3.0)
+        services.tick()
+
+    assert spawned == [], f"{len(spawned)} recorders started for nothing to record"
+    assert "recorder" not in [entry.name for entry in services.supervisor.managed]
+    state = services.state()
+    assert state["recording"] is False
+    assert "no stream" in state["recording_state"]["reason"].lower()
+
+
+def test_entering_a_stream_and_saving_starts_the_recorder(tmp_path: Path) -> None:
+    """The other side of the guard: the operator finishes setting up and the
+    recorder must start without the console being restarted."""
+    clock = Clock()
+    settings = Settings(storage=StorageSettings(root=tmp_path / "rec"))
+    settings_path = tmp_path / "settings.json"
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=settings_path,
+        streaming=None,
+        recorder=RecorderProcess(
+            settings_path, pid_path=tmp_path / "recorder.pid", spawn=lambda c: FakeProcess()
+        ),
+        clock=clock,
+        disk=watching(settings),
+    )
+    services.start()
+    assert services.recorder.running is False
+
+    services.apply(settings_for(tmp_path))
+
+    assert services.recorder.running is True
+    assert "recorder" in [entry.name for entry in services.supervisor.managed]

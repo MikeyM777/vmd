@@ -74,6 +74,11 @@ class ConsoleWindow(QMainWindow):
                 make_pane=make_pane,
                 local_url=services.local_url,
                 events=self.events,
+                # The same reading the status line asks about recording, drawn
+                # in the right column as the design has it. `getattr`, because
+                # services are handed in and one without a disk watcher must
+                # cost the storage lines and nothing else.
+                storage=getattr(services, "disk", None),
             )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
@@ -221,7 +226,16 @@ class ConsoleWindow(QMainWindow):
             logger.exception("the services could not say what they are doing")
             parts.append("the services could not be asked what they are doing")
         else:
-            parts.append("recording" if state.get("recording") else "NOT recording")
+            # The recorder's own sentence, which says whether it died and was
+            # restarted rather than only whether it is up - the treatment
+            # detection has had from the start. `.get` twice, because the
+            # services are handed in and one that answers only yes or no must
+            # still produce a status line.
+            recording = state.get("recording_state") or {}
+            parts.append(
+                recording.get("reason")
+                or ("recording" if state.get("recording") else "NOT recording")
+            )
             parts.append(f"streaming: {state.get('streaming')}")
             # `.get` twice: the services are handed in, and a state without a
             # word about detection must produce a status line, not a KeyError
