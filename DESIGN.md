@@ -123,7 +123,7 @@ start appearing above every block, that is the drift to catch.
   briefed operator reading dense telemetry. Named in `style.py` as `SPACE_HAIR`
   … `SPACE_WIDE`. The rhythm is **wide between groups, tight inside them**: what
   separates two settings is the panel they are on, not the distance between them.
-- Side column: a fifth of the window, floored at 330px and capped at 420. A
+- Side column: 0.22 of the window, floored at 330px and capped at 420. A
   fixed width is the same paragraph wrapped to four lines on a 1366 laptop panel
   and on a 4K screen with a third of the width wasted beside it. The floor is
   what the movement list needs before its columns start eliding values. Video
@@ -169,6 +169,39 @@ is alive.
 **Data row** — label left in `--muted`, value right in mono `--ink`, separated by a
 one-pixel rule. The workhorse of the side column. Not a card.
 
+**Headline word** — one word at 16px/600 in the state colour, with the state
+glyph beside it and one short line under it. Used at the top of the Link panel:
+`GOOD` / `FAIR` / `BUSY` / `FULL` / `WEAK` / `NO LINK`. It exists because the
+panel had grown to fourteen true sentences, and a paragraph is not something the
+person in front of this screen will read to find out whether the picture is
+about to break up. Colour never carries it alone — the word *is* the state.
+
+**Meter** — a bar 8px tall with its name at 11px on the left, the reading in
+mono on the right, and **the thresholds marked as hairlines on the track**. The
+marks are the point: `-66 dBm` means nothing without the scale it sits on, and a
+mark where the reading changes meaning says "past it" with a shape rather than
+with a colour. Painted rather than assembled out of widgets — three pieces of
+text and a rectangle do not need four `QLabel`s on a panel redrawn every two
+seconds. See Motion for the fill.
+
+**Behind `Details`** — anything the panel knows and does not need to say. A
+disclosure that starts shut and stays shut across restarts. Nothing is deleted
+to make a panel shorter: the sentences behind it are produced whether it is open
+or not, and they are decided by the same thresholds as the word above them, so
+the two views can never disagree about the same reading.
+
+**Zoom bar** — under each picture, in that picture's own frame: `−`, a slider,
+`+`, and a mono caption on the right. One per lens, because the camera is two
+sensors on a shared gimbal and a single zoom control is a command going to
+whichever lens the camera happened to list first. Two rules it must keep. The
+readout draws **what the camera reported, or nothing** — never a percentage
+counted from how long a button was held, because that number is right until the
+first command that does not arrive and looks right for ever afterwards. And
+"nobody has asked yet" (`checking the lens`) is a different caption from "the
+camera says it has none" (`zoom not reported`), set to the same width so the
+slider does not change length as the camera answers; a warning the operator
+meets every morning and that clears itself is a warning he learns to ignore.
+
 **Video pane** — `--well` background, sensor tag top-left, telemetry readout bottom-left,
 both on a translucent black plate. Panes are separated by `--line-strong`, never by a gap
 alone, since both wells are near-black.
@@ -185,6 +218,18 @@ streams that exist, never from a fixed pair, because a camera names its views
 whatever it likes and offering one that is not configured is offering a black
 rectangle. Every button refuses focus: the tab is what steers the camera, and a
 button that took the keyboard would leave the next arrow key going nowhere.
+
+**Fullscreen** — a mode, not a window. It hides the status band, the tab bar and
+the Live tab's side column, and asks the window it is already in to fill the
+screen. Nothing is reparented and nothing is rebuilt, and that is the design
+rather than a shortcut: the panes hand libVLC an HWND, and a picture moved into
+a window of its own leaves libVLC drawing into a surface that belongs somewhere
+else — a black rectangle with a frame counter still counting beside it. What the
+mode keeps is the view chooser, the splitter share between the pictures, the
+zoom bars, and the steering. The way out is a button that names its own key —
+`Leave fullscreen  (Esc)` — in the same row as the chooser, plus `Esc` and `F11`.
+An operator who cannot find his way out at three in the morning is a fault, not
+a preference; he has no second machine.
 
 **Empty state** — nothing on this console is a black rectangle with nothing in
 it. A list with no rows, a report box nothing has written to, a wall with no
@@ -206,14 +251,31 @@ this decision must be revisited along with everything else about its access mode
 
 ## Motion
 
-Minimal and functional. The only thing worth animating is a state change.
+Minimal and functional. The only thing worth animating is a state change, and
+there are exactly three things in this console that move.
 
 - Transitions: `0.16s cubic-bezier(0.22, 1, 0.36, 1)` on hover and active states only.
+- **The recording dot**, at 900 ms. Documented under Components: what separates
+  recording from not recording is the movement, not the colour.
+- **A meter's fill travels**, 420 ms on `OutCubic` (`vmd/radio/meter.py`). This
+  is the one place motion carries meaning rather than feedback: a figure that
+  changes by being redrawn is indistinguishable from a figure that was always
+  that, and the operator has already been taught once not to believe a screen
+  that looks calm. A bar that slides says "this changed", and says it in the
+  direction it changed. `OutCubic` and never a bounce — a bar that overshoots
+  has, for a moment, shown a reading the radio never gave. The cost is bounded
+  on purpose: it runs only when the value actually moves, it stops when it
+  arrives, it repaints one 28px widget, and a change under half a percent is
+  taken rather than travelled to, because the radio jitters between readings and
+  a bar that never settles is noise dressed as information.
 - No entrance animations, no staggered reveals, no scroll effects. Nothing in an
   operations console should ever move because it just appeared.
 - An arriving alarm changes state instantly — outline, strip, sound. It does not fade in.
-- `prefers-reduced-motion` collapses all transitions to ~0. Because motion here is only
-  ever hover feedback, nothing is lost.
+- `prefers-reduced-motion` collapses all transitions to ~0. The three above are
+  Qt animations rather than CSS transitions and are not covered by it; if that
+  setting is ever honoured here, the recording dot and the meter fill must both
+  become instant state changes rather than stopping — a dot that stops pulsing
+  reads as a recorder that stopped.
 
 ## Anti-patterns for this system
 

@@ -1,5 +1,37 @@
 # Latent failure risks
 
+**Written 2026-08-11.**
+
+---
+
+## Since this was written — 2026-08-12
+
+Added on top; **nothing below has been edited**. A risk register whose closed
+items are deleted cannot be audited, and the reasoning that found each of these
+is worth more than the tick beside it.
+
+| § | Now | Commit |
+|---|---|---|
+| **1** — the recorder decides where to read from once and can never change its mind | **Closed.** It re-asks, and says in the operator's hearing when the answer changes | `dfa3383` |
+| **2** — the clock, in both directions | **Closed.** Retention refuses a pass whose clock has jumped, and a segment written over is not silently trusted | `e64589d` |
+| **3** — one sqlite failure kills indexing and retention for the life of the process | **Closed.** Consecutive failures reopen the index | `31e23f4` |
+| **4** — go2rtc is the only supervised child with no rule for giving up | **Closed.** It has `held_back`, and the immediate-exit line is throttled, so a broken go2rtc no longer empties the Logs tab in seventeen minutes | `282b592` |
+| **5** — `SetVideoEncoderConfiguration` is sent without checking the answer | **Closed, and further.** Every write is read back, the camera's own permitted range is read and clamped to, a value the camera did not keep is reported as refused rather than counted as applied, and nothing is written that is already there | `729015b`, `7291f45` |
+| **6** — zero-byte segments are never removed | **Closed.** They are cleared away once reported and no longer the newest file | `f94c6e4` |
+| **14** — the recorder's `status()` reaches nobody | **Closed.** It writes `recording.json` beside the recordings, on the detector's pattern, and the console reads it | `a15b42e` |
+| **14** — Playback's hour ticks ignore the DST fix | **Closed.** The rules are stepped from real timestamps against the window's true span, at three spacings for the three zooms | `e1f83a3` |
+| **7**, **8**, **9**, **10**, **11**, **12**, **13** | **Open.** In particular: `Go2rtcService._recent` is still an unguarded deque across two threads (§9); `BackgroundValue._refresh` still overwrites the last good reading with `None` and stamps it fresh (§12); `_pid_alive` still has no `timeout=` and still matches by substring (§14) | — |
+
+One thing this register predates and should be read against: `vmd/ptz/autobitrate.py`
+now writes to the camera **unattended, every few minutes**, on the console's own
+heartbeat. Several risks here were ranked partly on "only reachable while the
+operator is pressing a button", and that is no longer true of the ONVIF write
+path. The one consequence already found and fixed is that `fit_encoders_to_link`
+used to hold `PtzService`'s lock for the whole exchange, so a stop queued behind
+it left the head slewing (`826444d`).
+
+---
+
 Read of `vmd/` in full, plus `scripts/recorder_service.ps1` because it is a second
 way the recorder is started and it changes what the recorder sees.
 

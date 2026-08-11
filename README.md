@@ -6,9 +6,18 @@ something moves, and lets an operator look back through what was recorded.
 
 The deployment it is built for: one FLIR-class thermal + visible PTZ head roughly
 700 m from the area of interest, reaching the laptop over a Ubiquiti point-to-point
-link more than 15 km long, at around 5 Mb/s. The laptop has no internet and no wifi:
-the system is entirely offline, nothing is published anywhere, and nothing but this
-one laptop ever sees the video.
+link more than 15 km long. **The laptop has no internet and no wifi: the system is
+entirely offline, nothing is published anywhere, and nothing but this one laptop
+ever sees the video.** That is a requirement of the deployment, not a preference,
+and it is why nothing here downloads anything at runtime.
+
+The link was designed against at "about 5 Mb/s", and that figure is still in code
+comments written before anyone had read the radio. What the radio actually
+reported, once it was read, is 10.7 Mb/s of video costing 88% of the link's
+airtime — so the whole link is worth **about 12 Mb/s**, not the 194 Mb/s the
+radio estimates from its own modulation rate. Airtime, not megabits, is what this
+link runs out of, and it is what the console reports and what the automatic
+bitrate loop acts on.
 
 ## What it deliberately does not do
 
@@ -18,35 +27,64 @@ classifier labels movement and raises confidence; it never gates the alarm.
 
 ## Status
 
-Working:
+Four processes, coordinating through small files beside `settings.json`:
+`go2rtc`, `vmd.record_main`, `vmd.detect_main` and the console window. Any of
+them can outlive any other, which is deliberate — recording is the product and
+the console is only the window onto it.
 
-- **Recording core** — segmented continuous recording, a SQLite segment index,
+- **Recording** — segmented continuous recording, a SQLite segment index,
   budget- and age-based retention, stall detection and restart, and a supervisor
   that keeps the whole thing alive across link drops, clock steps and full disks.
   Retention deletes the oldest footage rather than ever stopping the recorder.
-- **The console** — a desktop application: live video rendered by VLC, camera
-  steering, playback of what was recorded, settings and logs. It starts the
-  streaming server and the recorder as child processes and restarts them if they
-  stop; closing the window does not stop recording.
+  ffmpeg is given `-map 0:v:0 -c:v copy -an`: this camera offers `pcm_mulaw`
+  audio, MP4 cannot store it, and until that was fixed ffmpeg died before the
+  first frame while the console reported "recording".
+- **The console** — a desktop application (Qt, four tabs: Live, Playback,
+  Settings, Logs). Live video rendered by libVLC, camera steering from the arrow
+  keys and from drags on the picture itself, a zoom bar per lens, a fullscreen
+  mode, playback with a transport and clip export, settings and logs. It starts
+  the streaming server, the recorder and the detector as child processes,
+  adopts ones already running, and restarts them if they stop; closing the
+  window does not stop recording.
+- **Detection** — a detector process supervised like the recorder, an event
+  store for what moved, marks on the playback timeline, and an alarm strip that
+  takes the operator to the footage rather than describing where it is. Off per
+  camera view until it is asked for: pointed at a treeline with nothing ignored,
+  it alarms all day.
+- **The link** — the radio is read on a worker thread and reported as one word
+  (`GOOD` / `FAIR` / `BUSY` / `FULL` / `WEAK` / `NO LINK`), two bars with the
+  thresholds marked, and every sentence behind a `Details` toggle. An automatic
+  loop turns the camera's bitrate down when the link's airtime is sustained
+  above 60% and back up below 45%, never below the floor, and explains every
+  change in the Logs tab. It is on by default and never changes resolution.
 
-Being built now: the detection service — a detector process supervised like the
-recorder, an event store for what moved, and the alarm strip that lists it in the
-console. The `spike/` directory holds the throwaway tools that established how
-detection should work — motion-gated crop detection, a ground-truth labeller, a
-scorer, a miss classifier, a per-machine benchmark, and a camera prober for
+The `spike/` directory holds the throwaway tools that established how detection
+should work — motion-gated crop detection, a ground-truth labeller, a scorer, a
+miss classifier, a per-machine benchmark, and the camera and radio probers for
 commissioning day.
+
+What has **not** been tested against the real camera or the real radio is listed
+in [docs/FIRST-MORNING.md](docs/FIRST-MORNING.md), which is the checklist for the
+day this meets the hardware.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `vmd/` | The application: settings, recording, storage, supervisor |
+| `vmd/desktop/` | The console: the window, its tabs, the video panes, the zoom bars |
+| `vmd/detect/` | Movement detection: frames in, confirmed tracks out, events on disk |
+| `vmd/ptz/` | The camera over ONVIF: steering, per-lens zoom, encoder limits, the bitrate loop |
+| `vmd/radio/` | The airOS radio: the parser, the meters, and the Link panel |
+| `vmd/storage/` | Recording, the segment index, retention |
+| `vmd/streaming/` | go2rtc: pulling the camera once and re-serving it locally |
 | `tests/` | Test suite (`uv run pytest`) |
 | `scripts/` | Installers: `install.ps1`, the offline pair, and the autostart tasks |
-| `vmd/desktop/` | The console: the desktop window, its tabs, and the VLC video panes |
 | `mockup/` | Early visual explorations, kept for reference |
 | `spike/` | Experiments and field tools. Throwaway by intent, kept for their findings |
-| `docs/superpowers/` | Design specs and implementation plans |
+| `docs/FIRST-MORNING.md` | The field checklist for the day this meets the real camera |
+| `docs/review/` | Four reviews written on 2026-08-11, kept as a backlog and an audit trail |
+| `docs/superpowers/` | Design specs and implementation plans, dated. Not kept in step with the code |
 | `PRODUCT.md`, `DESIGN.md` | Who this is for, and the visual system it is built in |
 
 ## Install
@@ -54,6 +92,12 @@ commissioning day.
 **New to this? Read [INSTALL.md](INSTALL.md) instead** — the same thing written
 out click by click, with what every screen should say and what to do when it says
 something else.
+
+**The machine this runs on has no wifi and no internet, and nothing leaves it.**
+So the installation happens on a connected machine and is carried over on a USB
+stick — see [Offline machines](#offline-machines) — and everything the finished
+system needs, including the Python interpreter and the detector's weights, lives
+inside the project folder. Nothing is fetched at runtime, ever.
 
 ### Windows — double-click
 
@@ -206,16 +250,25 @@ environment will not run.
 thing without the executable.
 
 ```bash
-uv run python -m vmd.desktop     # the console, same as VMD.exe
-uv run python -m vmd.record_main # recording service
-uv run pytest                    # test suite
+uv run python -m vmd.desktop      # the console, same as VMD.exe
+uv run python -m vmd.record_main  # recording service
+uv run python -m vmd.detect_main  # detection service
+uv run pytest                     # test suite
 ```
 
+On the deployment laptop those are `uv run --offline --frozen --no-sync …`, for
+the reason given under [Check it worked](#check-it-worked); the launchers do it
+for you.
+
 Everything the operator configures is in the console's **Settings** tab: the
-camera's IP address, username and password, the RTSP stream addresses, the radio's
-address and credentials, and the storage budget. Press **Save**. Nobody hand-edits
+camera's IP address, username and password, the camera views and their RTSP
+addresses, whether each is watched for movement, the storage folder and budget
+(there is a **Scan this PC** button that reads the drive and proposes both), the
+radio's address and credentials, and whether the console is allowed to turn the
+picture down by itself when the link gets busy. Press **Save**. Nobody hand-edits
 a configuration file: the console writes `settings.json` beside the program so the
-values survive a restart, and the recording service reads that same file.
+values survive a restart, and the recording and detection services read that same
+file.
 Passwords are shown as typed rather than masked — deliberately: the laptop is
 offline and single-purpose, and a password that cannot be read back is the harder
 failure to recover from when the camera refuses the connection.

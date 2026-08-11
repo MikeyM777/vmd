@@ -1,5 +1,46 @@
 # Experience review — what is still hard to use
 
+**Written 2026-08-11.**
+
+---
+
+## Since this was written — 2026-08-12
+
+Added on top; **no finding below has been edited**. The measurements and the
+reasoning are the value here, and several of these were closed by doing exactly
+what the finding said, which cannot be checked if the finding is gone.
+
+| Finding | Now | Commit |
+|---|---|---|
+| **1** — no sentence in the app takes him where the fix is | **The two that were the whole win are done.** The alarm strip has **Show me** beside Acknowledge, and double-clicking a row in the movement list does the same thing: it switches to Playback and opens that moment. Still open: the band chips are inert, and `NO_VIEWS_NOTE` is still a sentence rather than a button | `e5db594` |
+| **2** — a radio that refuses the login is invisible in the band | **Closed.** A refusal reads as a refusal in the band, and the panel leads with a line he can act on rather than fourteen ending in a program to run | `952003b`, `615fddc` |
+| **3** — Playback has no transport and no way to step between events | **Closed, and past what was asked for.** Play/pause, ±1 s, ±10 s, ±1 min, six speeds, all as buttons with words on them and keys as an addition, plus a calendar, three zoom levels on a pannable bar, both cameras on one timeline with the drift between them measured and printed, and a clip export | `dee471d`, `6cd9dab`, `a1119cd`, `e1f83a3` |
+| **4** — a movement mark is under 1 px wide to click | **Closed.** The tolerance is at least as wide as what is drawn | `e19e18e` |
+| **6** — lowering the budget deletes footage with no warning | **Half.** Save now says roughly how much of the oldest footage the new budget will delete and requires a second press. `Remove` on a camera view still has no undo | `6a73bc2` |
+| **7** — words that name the machinery instead of the effect | **Mostly.** Four labels he read back as questions are renamed or explained on the form: `Name what moved` → **Try to say what it was**, `Sky line and ignored patches` → **Ignore parts of the picture**, `The camera` → **Check the camera**, and `Watch for movement` kept its name and got the sentence it was missing. `Use this view` and the auto/ffmpeg reader are off the screen entirely. Still open: `disk.py`'s *"Roughly 1 minutes left"* | `5d1946f`, `04bddaf`, `fcd32f2` |
+| **8** — `Delete the selected patch` is clipped | **Closed.** It says `Delete patch`, and the four numbers beside it are two lines | `352fbc7`, `5d1946f` |
+| **12** — remember the window size and position | **Closed**, on a screen that still exists | `a862b87` |
+| **5**, **9**, **10**, **11** | **Open.** Save is still inside the scroll area, `Saved.` is still muted grey, and there is still not one `QShortcut` in the codebase (5); the Logs filter still does not say which one is on (9); the wall still does not even its panes (10); the steering panel still contradicts itself in bright ink (11) | — |
+
+Also since: the Settings tab was cut down around the same complaint this review
+opens with — the two camera views are side by side rather than stacked,
+everything about detection folds away until the master switch is on, and Storage
+grew a **Scan this PC** button that reads the drive and proposes a budget and an
+age rule, with a slider that says what the budget means in days he can look back
+(`5d1946f`). And there is a fullscreen mode and a zoom bar per lens, neither of
+which this review covers.
+
+The **"Do not do this"** list at the end still stands, with one entry that has
+been argued against and should be read as amended rather than obeyed: **#8**,
+*"do not add a second progress bar … to the Live column"*. The Link panel now has
+two. The argument for them is that they did not *add* to that column — they
+replaced fourteen sentences of it, and everything they replaced is still there
+behind `Details` (`c476aee`). Whether that was the right call is a thing to look
+at on the screen, not in this document. Nothing else on the list has been
+contradicted, and it is still the most valuable page in this directory.
+
+---
+
 Every finding below was rendered and looked at, at 1920×1080, using an extended
 copy of the console harness. Nothing here is inferred from reading alone. Where
 a number appears (pixel widths, click tolerances) it was measured, not estimated.

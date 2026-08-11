@@ -1,10 +1,12 @@
 """The link, in the Live tab's side column, in words an operator can act on.
 
-The radio was read and then thrown away. `LinkStatus` carries signal, noise,
-CCQ, throughput, capacity, distance, uptime and the device's name; the console
-showed one of them, `signal_dbm`, in the status bar, and the design's side
-column - "steering, zoom, link, storage, recent movement" - had no link in it at
-all.
+The radio was read and then thrown away. `LinkStatus` carries signal, the far
+end's signal, noise, link quality, airtime, throughput, capacity, uptime and the
+device's name; the console showed one of them, `signal_dbm`, in the status bar,
+and the design's side column - "steering, zoom, link, storage, recent movement" -
+had no link in it at all. (There is no distance on it. The radio reports two
+fields that look like one and neither is in metres, so it was removed rather
+than printed - see `parse_status` in `vmd/radio/airos.py`.)
 
 That mattered more here than it would elsewhere. **The link is the bottleneck of
 this entire system**: one camera at the far end of a Ubiquiti point-to-point hop

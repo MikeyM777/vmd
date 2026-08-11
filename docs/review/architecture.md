@@ -6,6 +6,38 @@
 `docs/superpowers/specs/2026-08-11-detection-design.md`.
 **Status:** a backlog. Nothing here was changed.
 
+---
+
+## Since this was written — 2026-08-12
+
+Added on top rather than folded into the findings below. **The findings are left
+exactly as they were**: a review whose fixed items are quietly deleted cannot be
+audited, and "this was true on 11 August and is not true now" is the useful
+sentence.
+
+| Finding | Now | Commit |
+|---|---|---|
+| **1** — console imports OpenCV, three comments insist it does not | **Closed.** `vmd/detect/__init__.py` resolves its re-exports through a PEP 562 `__getattr__`, so `from vmd.detect.events import EventStore` costs sqlite3. The two duplicated rules in `services.py` are gone; it imports `STATUS_FILENAME` and `detected_streams` from `vmd.detect_main` | `40121ba`, `a457244` |
+| **2** — three processes can each open their own connection to the camera | **Substantially addressed, invariant still unenforced.** The detector's rotation is no longer sticky on success — it goes back to the local server when that server returns; the recorder re-asks where it reads from instead of deciding once at start-up and says so when the answer changes; and the status band says when the radio link is carrying a stream twice. Nothing yet *counts* the connections | `c2ba3de`, `9766b36`, `dfa3383`, `bef1f47` |
+| **3** — the 2 s heartbeat reads the recordings folder on the GUI thread | **Closed.** `detection.json` and the recorder's report are behind `Watched`; the events list is read on a worker; Playback asks SQLite for one day and for the distinct stream names rather than reading every row | `ae9ad27`, `3bffef5`, `9a4bfe5`, `3c750bc` |
+| **4** — pressing Save can freeze the window for tens of seconds | **Closed.** `apply` runs off the GUI thread and the message line says what it is doing | `60c8dd6` |
+| **6** — six password redactors, three rule sets | **Half.** The live leak is gone: `airos.password_forms` now covers typed, percent-, form-, JSON- and Python-escaped forms, longest first. There is still no `vmd/secrets.py`, and the other five sites still know two encodings | `b1feecf` |
+| **5**, **7**, **8**, **9**, **10**, **11** | **Open**, unchanged. No `vmd/process.py`; `vmd/updater.py`, `vmd/streaming/check.py`, `Supervisor.health()` and the three `PtzService` methods are all still there; `video_mode` and `video_buffer_ms` are still read by `_report_header` and still validated | — |
+
+Two rows of **Where the documents and the code disagree** have resolved
+themselves in the code's favour: `disk.py`'s rule is now true of the heartbeat
+(finding 3), and the detector no longer permanently violates the
+"pulled once across the link" invariant (finding 2).
+
+The console has also grown things this review predates and does not cover: a
+fullscreen mode (`vmd/desktop/fullscreen.py`), per-lens ONVIF zoom
+(`vmd/ptz/lenses.py`, `vmd/desktop/zoombar.py`, lanes in `PtzCommands`), clip
+export (`vmd/desktop/export.py`), a playback transport (`vmd/desktop/transport.py`)
+and an automatic bitrate loop (`vmd/ptz/autobitrate.py`) driven from
+`ConsoleServices.tick`. Nothing below has been read against any of them.
+
+---
+
 Written for somebody picking this up weeks from now with no memory of today. It
 is deliberately split into **worth doing** and **worth knowing**, because most of
 what is imperfect here is imperfect for a reason that was paid for in the field,

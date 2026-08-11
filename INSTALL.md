@@ -559,16 +559,36 @@ There is **no file to edit**. Everything goes in the console:
    and **Password**. The password is shown as you type it and is never hidden
    behind dots. That is on purpose: this laptop is offline and does nothing else,
    and a password you cannot read back is far more trouble than one you can.
-4. Under **Streams**, put in the RTSP address of each camera view and tick
-   **Use this view** next to the ones you want. That tick is the whole view, not
-   just its recording: a view that is not ticked is not shown in the Live tab,
-   is not recorded, and is not watched for movement. If you do not know the
-   addresses, the camera prober in the table above finds them for you.
-5. Under **Storage**, set the folder and how many GB the recordings may use.
+4. Under **Streams**, press **Add a stream** for each camera view and put in its
+   name and its RTSP address. The two views sit side by side as cards. There is
+   no tick saying whether to use one: **every view on this list is used** — it
+   is shown in the Live tab, it is recorded, and it is watched for movement if
+   you ask for that. To stop using a view, press **Remove** on its card. If you
+   do not know the addresses, the camera prober in the table above finds them
+   for you.
+5. Under **Storage**, set the folder, then press **Scan this PC**. It looks at
+   the drive that folder is on — how big it is, how much is free, how much VMD
+   is already using — and fills in a budget and an age rule that fit, with a
+   report you can read line by line. Both are suggestions and both stay yours to
+   change; the slider beside the budget says what the number means in days you
+   can look back. Nothing is written until you press Save.
 6. Press **Save**. It says `Saved.` in green.
 
 Do the same for the **Radio** — its address, username and password — under its
-own heading, if the link has one.
+own heading, if the link has one. In that same box is
+**Turn the picture down by itself when the link gets busy**, which is **on**.
+With a radio and a camera both configured, the console watches how busy the link
+is and asks the camera for a smaller picture when it is struggling, then a
+better one again once it has been quiet for a while. It never goes below the
+lowest picture you allow, it never changes the resolution, and every change it
+makes is written into the **Logs** tab. Each change makes the picture blip for a
+moment. Untick it to leave the camera exactly as it is set; it stops within a
+couple of seconds and nothing needs restarting.
+
+If you lower the budget below what is already on the disk, Save does not write
+straight away: it tells you roughly how much of the oldest footage that will
+delete and asks you to press Save again. This is the only irreversible thing on
+the page.
 
 The console writes all of this into a file called `settings.json` next to the
 program, so it is still there next time. **You never open that file, and nobody
@@ -584,14 +604,18 @@ the button. Nothing is written until it is valid.
 > stops. Once you have pressed Save, the console starts recording immediately,
 > and every restart after that starts it on its own.
 
-**One honest note about what you are looking at.** The console is real: the live
-panels show the camera through VLC, and steering, playback, settings and logs all
-work. Recording is real too, and it keeps running whether the console window is
-open or closed. The part still being built is the detection service — the thing
-that decides something moved and says so.
+**One honest note about what you are looking at.** All four parts are real and
+running: the live panels show the camera through VLC; steering, zoom, playback,
+settings and logs all work; recording keeps going whether the console window is
+open or closed; and the detector is a separate program the console starts and
+looks after, off per camera view until you switch it on. What none of it has met
+is your camera and your radio — see [docs/FIRST-MORNING.md](docs/FIRST-MORNING.md)
+for the list of things only the real hardware can answer.
 
 **Nothing here goes anywhere.** The video stays on this laptop's disk. There is no
-account, no upload, no cloud, and no wifi on the machine at all.
+account, no upload, no cloud, and no wifi on the machine at all. Nothing this
+program runs reaches the network except the camera and the radio on the other end
+of the radio link.
 
 ---
 

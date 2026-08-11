@@ -6,16 +6,30 @@ product
 
 ## Users
 
-**Trained operators, rotating.** The owner built the system. Others take shifts on it, and
-**every one of them is briefed on the software before using it.** Nobody meets this screen
-cold.
+**One person, and he is not an engineer.** This was written as "trained operators,
+rotating, every one of them briefed before using it". That is not what happened. One man
+owns this system, uses it, and is the only person who ever will. He has **no terminal, no
+second machine, and nobody standing behind him.** He is a fast, daily user of the screens
+he watches and a first-time reader of every control he has to set.
 
-That permits real density: abbreviations, compact numerics, keyboard shortcuts, and status
-encoded in a glance rather than spelled out in sentences. The design does not need to teach
-— it needs to be fast to read for someone who already knows what the fields mean.
+The two halves of that pull in opposite directions and both are real:
 
-What training does **not** solve is physics. Glare, viewing distance and colour-blindness
-are unaffected by a briefing, so contrast and non-colour-coded status remain hard
+- **What he reads all day may be dense.** The status band, the video panes, the link and
+  storage panels, the movement list — abbreviations, compact numerics, keyboard steering,
+  status encoded in a glance. He is in front of these for months; they should be fast, not
+  chatty.
+- **What he has to decide must explain itself on the page.** He read four of the Settings
+  tab's own labels back as questions — *"'Name what moved' — what is that?"*, *"what is the
+  difference between auto and ffmpeg?"* — and one as an answer: *"'Use this view' is
+  useless, of course use that view, if it's added."* Every one of those was a label we
+  wrote. **A control he cannot parse is not a control.** A tooltip is not the fix; a
+  control whose name only makes sense on hover has the wrong name.
+
+Anything that only a terminal, a second screen, or a phone call to the author can resolve
+is a dead end, not a fallback. Sentences that name a destination must go there.
+
+What none of this solves is physics. Glare, viewing distance and colour-blindness are
+unaffected by familiarity, so contrast and non-colour-coded status remain hard
 requirements.
 
 The screen lives on a **normal desk under office or daylight conditions**, not in a
@@ -69,10 +83,11 @@ instruments, broadcast equipment. Things whose seriousness comes from restraint.
    operator actually needs to see. Surround the video with the quietest surface that still
    reads in daylight, and put nothing beside it that does not earn its place.
 
-2. **Dense, but legible under glare.** Operators are briefed, so abbreviations and compact
-   numerics are fair game — density is a feature, not a risk. But the screen sits in
-   daylight, so contrast is non-negotiable and status must never depend on colour alone.
-   Fast to read for someone who knows the system; still readable when the sun is out.
+2. **Dense where it is watched, plain where it is set.** On the screens he reads all day,
+   abbreviations and compact numerics are fair game — density is a feature there. On the
+   screens where he makes a decision, every control says what it does on the page, in
+   words he used himself. The screen sits in daylight either way, so contrast is
+   non-negotiable and status must never depend on colour alone.
 
 3. **Never imply certainty the system does not have.** If the link is down, say so and say
    how long. If the detector cannot classify a 13-pixel blob, say "movement", not "person".
@@ -94,7 +109,12 @@ instruments, broadcast equipment. Things whose seriousness comes from restraint.
 - **Never colour alone.** Every state carries a shape, an icon, or a word as well as a
   colour. Red/green status pairs are the most common colour-blindness failure and this
   interface is full of them.
-- **Reduced motion respected.** The only motion that matters is an alarm arriving; under
-  `prefers-reduced-motion` it becomes an instant state change rather than a flash.
+- **Reduced motion — not honoured, and here is why.** `prefers-reduced-motion` is a CSS
+  media query and this is a Qt application; nothing reads it. What was written here as a
+  promise is instead a constraint on what may move at all: an arriving alarm is an instant
+  state change and never a flash, and the only three things in the console that animate
+  are the recording dot, a meter's fill, and hover feedback (see `DESIGN.md` → Motion).
+  If the setting is ever honoured, the dot and the fill must become instant rather than
+  still — a dot that stops pulsing reads as a recorder that stopped.
 - **Keyboard reachable.** The owner wants speed; steering, layout switching and
   acknowledging an alarm are all reachable without a mouse.

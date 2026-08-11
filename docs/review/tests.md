@@ -1,5 +1,43 @@
 # The test suite, reviewed
 
+**Written 2026-08-11.** The counts and timings below are from that day and are
+no longer current — a great deal has been added since.
+
+---
+
+## Since this was written — 2026-08-12
+
+Added on top; **no finding below has been edited or removed**. A review whose
+closed items are deleted cannot be audited, and several of these were closed by
+doing the thing the finding asked for, which is only visible if the finding is
+still here to read.
+
+| Finding | Now | Commit |
+|---|---|---|
+| **4.1** — "recording" is still a lie the suite cannot detect | **Closed.** A backwards clock step, a 1-byte segment and a `ConsoleServices` that has never polled the disk all now read as *not* recording, and the reason names the cause | `6a50fa9`, `e64589d` |
+| **4.3** — the redaction regression test cannot fail against the current defect | **Closed.** `password_forms` covers typed, percent-, form-, JSON- and Python-escaped forms; the tests are parametrised over an adversarial alphabet rather than one friendly password | `b1feecf` |
+| **4.5** — nothing stops a test hanging | **Closed.** `pytest-timeout` at 30 s (120 s for `integration`, applied in `tests/conftest.py` so a new one cannot be written without it) and an autouse socket guard that fails any test reaching off loopback, naming the address | `f1d8e12` |
+| **4.7** — the fullscreen suite measures the wrong sentence | **Closed.** The clock is forwarded into `LiveTab`, the failure is provoked inside the loop, and the layout assertions are made against the sentence the fixture names | `71fc571` |
+| **4.12** — `--ff-only` is the updater's whole safety story and is untested | **Closed** for the branch that mattered: whether the update landed is decided from the commit rather than from git's wording | `ff4f1d4` |
+| **4.13** — Playback's hour ruler ignores the DST fix | **Closed.** The rules come off real timestamps against the window's true span | `e1f83a3` |
+| **4.4** — passwords reach files meant for strangers, by three routes | **One of three.** The probe's `notes` line is redacted (`c00400e`). Still open: `diagnose.py:246` prints the typed stream URL verbatim and `secrets_of` knows only the two password *fields*, so a password inside an RTSP address still lands in the saved report; `vmd/streaming/check.py` still prints the camera password by policy | `c00400e` |
+| **4.6** — the settings form says "Saved." for four states that break recording | **Partly.** A stream with no name, a stream with no address, a recordings folder that is a file / on a missing drive / unwritable, and several numbers that parse and cannot mean anything are all refused now. Still accepted: a bare-word address (deliberately — a local file path is a supported source) and a 0.0000001 GB budget | `239b38a`, `fe76b46`, `ccb334b`, `1dae42e` |
+| **4.2**, **4.8**, **4.9**, **4.10**, **4.11**, **4.14**–**4.20** | **Open.** Notably: nothing yet writes an event into `events.db` from a second process while the console holds it open (4.2); `VMD_REQUIRE_INTEGRATION` does not exist (4.9); `fit_to_link` still allocates 1708 kb/s against a 1000 kb/s ceiling with five streams, because the 256 kb/s floor is applied per stream (4.10); `addopts` still lacks `--strict-markers` (4.17) | — |
+
+**What the suite has gained that this review predates**, and which no finding
+here covers: `test_autobitrate`, `test_ptz_lenses`, `test_ptz_profiles`,
+`test_ptz_commands`, `test_desktop_zoombar`, `test_desktop_transport`,
+`test_desktop_export`, `test_desktop_export_integration`,
+`test_desktop_live_fullscreen`, `test_radio_panel` and `test_radio_summary`. Two
+are worth knowing about because they answer §7's complaint that the strongest
+coverage in the repo covers a cause and not a symptom:
+`test_desktop_export_integration` records real segments with the real recorder,
+cuts a clip with the real exporter and **decodes every frame of the result**
+rather than believing the container; and the zoom work was mutation-checked as it
+was written, with the counts in the commit messages.
+
+---
+
 1197 tests: 1184 unit (~2m45s) and 13 integration (~1m45s). All green on this machine,
 with ffmpeg, ffprobe, go2rtc, libVLC and `yolo11n.pt` present, so nothing skipped.
 
