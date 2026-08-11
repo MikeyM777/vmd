@@ -5,17 +5,30 @@ console must not be able to stop detection, and detection must not be able to
 stop the console. It shares nothing with the recorder but the local stream, so
 **detection stopping never stops recording.**
 
-    go2rtc  --> detector process --> events.db --> console
+    go2rtc  --> detector process --> events.db      --> console
+                                 \\-> detection.json --> console
        \\----> recorder --> segments + segments.db
 
-Logging goes to stdout, which is where the console's Logs tab reads it from.
+Two things leave this process, and neither of them is a function call:
+
+* Logging, which `logging.basicConfig` sends to stderr. The console spawns this
+  process with stderr merged into a pipe and pumps that pipe into its Logs tab,
+  so what is written here is what the operator reads. A detector this console
+  adopted from an earlier run is the exception - its pipe belongs to the console
+  that started it, and the Logs tab says so rather than showing nothing.
+* `detection.json`, written beside events.db every few seconds. `status()` knows
+  per stream whether the capture opened and, if not, why; the console is another
+  process and cannot ask, so the answer is published rather than kept.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import signal
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -35,6 +48,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 
 EVENTS_FILENAME = "events.db"
+
+# Where the per-stream state is published for the console, beside events.db.
+# `vmd.desktop.services` repeats this name rather than importing it: importing
+# this module would pull cv2 and numpy into the window's process.
+STATUS_FILENAME = "detection.json"
 
 
 def detected_streams(settings: Settings) -> list:
@@ -73,6 +91,9 @@ class DetectionService:
         # Beside segments.db, because the two are reclaimed together: an event
         # that outlives its footage points at a file that is not there.
         self.events_path = self.root / EVENTS_FILENAME
+        # Beside the events for the same reason: they describe the same run, and
+        # a status file that outlived the directory it describes is a lie.
+        self.status_path = self.root / STATUS_FILENAME
 
         self._store_factory = store_factory
         self._pipeline_factory = pipeline_factory or (lambda config: DetectionPipeline(config))
@@ -157,13 +178,19 @@ class DetectionService:
         self.start()
         if not self.detectors:
             logger.warning("no streams to detect on; nothing to do")
+        # Published before the first wait, so a console that opens beside a
+        # detector already running does not have to sit through an interval
+        # before it can name the streams.
+        self.write_status(interval)
         try:
             while not self._stop.wait(interval):
                 self._log_state_changes()
+                self.write_status(interval)
         except KeyboardInterrupt:
             pass
         finally:
             self.stop()
+            self.clear_status()
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the detector threads to finish."""
@@ -195,6 +222,49 @@ class DetectionService:
             "events_db": str(self.events_path),
         }
 
+    def write_status(self, interval: float = 5.0) -> None:
+        """Publish `status()` where the console can read it. Never raises.
+
+        The console is a separate process on purpose, so per-stream state that
+        stays in this one is state the operator never sees - the console is left
+        able to say only "detection is running", and a visible stream that has
+        been unreachable since Tuesday looks exactly like one that is fine.
+        A small JSON file is the seam this codebase already uses for a process
+        publishing state; `streaming.json` is the same shape, read the same way.
+
+        Written whole or not at all: a temporary file in the same directory,
+        flushed to the platter, renamed over the destination. A rename is atomic
+        within a filesystem, so a console reading at the wrong moment gets the
+        whole of the previous write rather than half of this one - which it
+        would otherwise report as a detector that has no streams.
+
+        `written_at` and `interval` go in because the reader has to be able to
+        tell stale from fresh, and cannot know how often this was told to write.
+
+        A failure is logged and swallowed. A full disk should make the console
+        say "unknown", which is true; it is not a reason to stop watching the
+        perimeter.
+        """
+        payload = dict(self.status())
+        payload["written_at"] = time.time()
+        payload["interval"] = float(interval)
+        try:
+            _write_json_atomically(payload, self.status_path)
+        except OSError:
+            logger.warning("could not publish %s", self.status_path, exc_info=True)
+
+    def clear_status(self) -> None:
+        """Take the claim down on the way out.
+
+        A detector that stopped cleanly and left its last report behind would
+        have the console reading a dead process's words as current until the
+        staleness window ran out.
+        """
+        try:
+            self.status_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove %s", self.status_path, exc_info=True)
+
     def _log_state_changes(self) -> None:
         """Say something only when something changed.
 
@@ -211,6 +281,28 @@ class DetectionService:
                 logger.info("%s: detecting", state["stream"])
             else:
                 logger.warning("%s: %s", state["stream"], state["reason"])
+
+
+def _write_json_atomically(payload: dict, path: Path) -> None:
+    """Write JSON so that the file on disk is never half written.
+
+    The same shape as `save_settings`, and for the same reason: a plain write
+    truncates first, so a reader arriving mid-write finds an empty or spliced
+    file. The temporary file is in the destination's own directory because
+    os.replace is only atomic within one filesystem.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(json.dumps(payload, indent=2))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def install_signal_handlers(service: DetectionService):

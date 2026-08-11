@@ -290,6 +290,149 @@ def test_status_says_where_the_events_are(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Publishing that per-stream state to the console
+#
+# The console is a different process. Per-stream state that never leaves this
+# one is per-stream state the operator never sees, and the console is reduced to
+# "detection is running" at process level.
+# --------------------------------------------------------------------------
+
+
+def read_status_file(path, attempts=50):
+    """Read the published status, retrying a rename we lost a race with.
+
+    On Windows os.replace fails while another handle is open, so a reader and a
+    writer can briefly miss each other. Bounded: this gives up rather than
+    waiting for ever.
+    """
+    for _ in range(attempts):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            time.sleep(0.01)
+    raise AssertionError(f"{path} was never readable")
+
+
+def test_the_detector_publishes_what_each_stream_is_doing(tmp_path):
+    """Beside events.db, the same seam streaming.json already uses."""
+    settings = build_settings(tmp_path, thermal_detect=True, visible_detect=True)
+
+    def open_capture(url):
+        return None if url.endswith("visible") else FakeCapture()
+
+    service = service_for(tmp_path, settings, open_capture=open_capture)
+    try:
+        for detector in service.detectors:
+            detector.step()
+        service.write_status(interval=5.0)
+        payload = read_status_file(service.status_path)
+    finally:
+        service.stop()
+
+    assert service.status_path == tmp_path / "recordings" / "detection.json"
+    by_name = {stream["stream"]: stream for stream in payload["streams"]}
+    assert by_name["thermal"]["opened"] is True
+    assert by_name["visible"]["opened"] is False
+    assert "could not be opened" in by_name["visible"]["reason"]
+    assert payload["interval"] == 5.0
+    assert payload["written_at"] > 0, "without a timestamp the console cannot tell stale from fresh"
+
+
+def test_the_status_file_is_never_half_written(tmp_path, monkeypatch):
+    """A console that read a spliced file would name streams that do not exist.
+    Written to a temporary file in the same directory and renamed over the
+    destination, so what is read is always the whole of one write."""
+    import vmd.detect_main as detect_main
+
+    service = service_for(tmp_path)
+    try:
+        service.write_status(interval=5.0)
+        complete = service.status_path.read_text(encoding="utf-8")
+        assert json.loads(complete)["streams"] is not None
+
+        def no_space(*args, **kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(detect_main.os, "replace", no_space)
+        service.write_status(interval=5.0)  # must not raise, and must not damage the file
+
+        assert service.status_path.read_text(encoding="utf-8") == complete
+        leftovers = sorted(p.name for p in service.status_path.parent.glob("detection.json.*"))
+        assert leftovers == [], f"a failed write must not leave scratch files: {leftovers}"
+    finally:
+        service.stop()
+
+
+def test_a_status_file_that_cannot_be_written_does_not_stop_detection(tmp_path, monkeypatch):
+    """A full disk is a console that says "unknown". It is not a reason to stop
+    watching the perimeter."""
+    import vmd.detect_main as detect_main
+
+    service = service_for(tmp_path)
+    try:
+
+        def no_space(*args, **kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(detect_main.tempfile, "mkstemp", no_space)
+        service.write_status(interval=5.0)  # no exception escapes
+        assert service.status_path.exists() is False
+    finally:
+        service.stop()
+
+
+def test_a_running_detector_keeps_its_status_file_fresh(tmp_path):
+    """Stale means unknown to the console, so a detector that publishes once and
+    never again is the same as one that never published at all.
+
+    Run on a daemon thread: a loop that never writes fails this in five seconds
+    rather than hanging the suite.
+    """
+    import threading
+
+    service = service_for(tmp_path)
+    threading.Thread(target=lambda: service.run_forever(interval=0.02), daemon=True).start()
+    try:
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not service.status_path.exists():
+            time.sleep(0.01)
+        assert service.status_path.exists(), "nothing published the detector's state"
+
+        first = read_status_file(service.status_path)["written_at"]
+        latest = first
+        deadline = time.time() + 5.0
+        while time.time() < deadline and latest <= first:
+            latest = read_status_file(service.status_path)["written_at"]
+            time.sleep(0.01)
+        assert latest > first, "a file written once and never again is a file the console ignores"
+    finally:
+        service.stop()
+
+
+def test_a_detector_that_stops_takes_its_claim_down_with_it(tmp_path):
+    """Leaving the file behind would have the console reading a dead detector's
+    last words as current for as long as the staleness window lasts."""
+    import threading
+
+    service = service_for(tmp_path)
+    finished = threading.Event()
+
+    def go():
+        service.run_forever(interval=0.02)
+        finished.set()
+
+    threading.Thread(target=go, daemon=True).start()
+    deadline = time.time() + 5.0
+    while time.time() < deadline and not service.status_path.exists():
+        time.sleep(0.01)
+    assert service.status_path.exists()
+
+    service.stop()
+    assert finished.wait(5.0), "run_forever must return once the service is stopped"
+    assert service.status_path.exists() is False
+
+
+# --------------------------------------------------------------------------
 # The command line
 # --------------------------------------------------------------------------
 
