@@ -37,11 +37,11 @@ from vmd.desktop.style import (
     MONO,
     PALETTE,
     SIZE_BAND,
-    SIZE_HEADING,
     SIZE_TITLE,
+    SPACE_GROUP,
+    SPACE_HAIR,
     SPACE_ROOM,
     SPACE_SNUG,
-    SPACE_STEP,
     SPACE_WIDE,
     WEIGHT_HEADING,
     WEIGHT_VALUE,
@@ -156,14 +156,20 @@ class StatusChip(QFrame):
     DESIGN.md: colour never says anything on its own, so the glyph says the same
     thing for anyone who cannot tell green from amber, and the sentence beside
     it says it in words for everyone else.
+
+    Quiet chips are the name of the part and nothing else - the glyph has
+    already said it is fine, and `streaming: streaming` says it a second time in
+    the vertical space this console owes to the pictures. The border and the
+    panel behind it arrive with the fault, so the one chip that is worth reading
+    is the only one drawn as a box.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("statusChip")
         row = QHBoxLayout(self)
-        row.setContentsMargins(SPACE_ROOM, SPACE_SNUG, SPACE_ROOM, SPACE_SNUG)
-        row.setSpacing(SPACE_STEP)
+        row.setContentsMargins(SPACE_SNUG, 0, SPACE_SNUG, 0)
+        row.setSpacing(SPACE_SNUG)
         self._glyph = QLabel("")
         self._glyph.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         # A WrappedNote, because the longest of these is a whole sentence -
@@ -176,6 +182,31 @@ class StatusChip(QFrame):
         # one the state would give it. None means "whatever the state says".
         self._own_glyph: tuple[str, str] | None = None
         self.show_state("", "muted")
+
+    def sizeHint(self):  # noqa: N802 - Qt naming
+        """As wide as saying it in one line, and no wider.
+
+        A word-wrapped QLabel asks for a squarish block rather than for its
+        sentence, so four chips left to their own hints wrap on a 1920 px screen
+        with half the band empty beside them. This asks for the line, which the
+        layout grants while there is room and squeezes when there is not - and
+        squeezing is the case the wrapping was built for.
+        """
+        hint = super().sizeHint()
+        text = self._words.text()
+        if text:
+            layout = self.layout()
+            margins = layout.contentsMargins()
+            hint.setWidth(
+                margins.left()
+                + margins.right()
+                + self._glyph.sizeHint().width()
+                + layout.spacing()
+                + self._words.fontMetrics().horizontalAdvance(text)
+                # The frame's own border, on both sides.
+                + 2
+            )
+        return hint
 
     def text(self) -> str:
         return self._words.text()
@@ -217,12 +248,21 @@ class StatusChip(QFrame):
             f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
         )
         self._words.setText(text)
-        # The border tints toward the state, as DESIGN.md has it, and stays the
-        # ordinary line colour when there is nothing to report.
-        edge = PALETTE["line"] if state in ("ok", "muted") else colour
+        # The sentence just changed, so the width this chip is asking for has
+        # changed with it. Without this the layout keeps handing out the room the
+        # previous words needed.
+        self.updateGeometry()
+        # The border tints toward the state, as DESIGN.md has it. A chip with
+        # nothing to report is not a box at all: no panel behind it and an edge
+        # the colour of the page. It keeps the border rather than dropping it so
+        # that a fault arriving does not move the row by two pixels - the reflow
+        # this band accepts is the sentence getting longer, which is meaning, and
+        # not an outline appearing, which is decoration.
+        quiet = state in ("ok", "muted")
+        panel = "transparent" if quiet else PALETTE["surface"]
+        edge = "transparent" if quiet else colour
         self.setStyleSheet(
-            f"QFrame#statusChip {{ background: {PALETTE['surface']}; "
-            f"border: 1px solid {edge}; }}"
+            f"QFrame#statusChip {{ background: {panel}; border: 1px solid {edge}; }}"
         )
 
 
@@ -235,6 +275,12 @@ class StatusBand(QFrame):
     the radio link is up. It is the most important thing on the screen and it
     was the least prominent, which is the wrong way round for a console someone
     is standing in front of all day.
+
+    One line of it, and no more. What earns the band its place at the top of
+    every tab is the 16 px - what an operator two metres back can read - and not
+    the padding around it: this is a screen whose whole purpose is showing
+    video, and a band that is a block rather than a line is charging the
+    pictures for space it is not using.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -245,8 +291,11 @@ class StatusBand(QFrame):
             f"border-bottom: 1px solid {PALETTE['line']}; }}"
         )
         row = QHBoxLayout(self)
-        row.setContentsMargins(SPACE_ROOM, SPACE_STEP, SPACE_ROOM, SPACE_STEP)
-        row.setSpacing(SPACE_SNUG)
+        row.setContentsMargins(SPACE_ROOM, SPACE_HAIR, SPACE_ROOM, SPACE_HAIR)
+        # Wide between chips, because they are no longer boxes: with the borders
+        # gone from the quiet ones, the gap is the only thing separating one
+        # reading from the next.
+        row.setSpacing(SPACE_GROUP)
         name = QLabel("VMD")
         name.setStyleSheet(
             f"background: transparent; color: {PALETTE['muted']}; "
@@ -256,6 +305,12 @@ class StatusBand(QFrame):
         name.setContentsMargins(0, 0, SPACE_WIDE, 0)
         row.addWidget(name)
         self._row = row
+        # The room to the right of the chips, so that each is as wide as what it
+        # is saying rather than a quarter of the window. Four words used to be
+        # stretched across four boxes the width of the longest sentence any of
+        # them might one day carry; now the chip with the fault takes the room
+        # it needs and the quiet ones take none.
+        row.addStretch(1)
         self._chips: list[StatusChip] = []
 
     def chips(self) -> list[str]:
@@ -288,16 +343,26 @@ class StatusBand(QFrame):
         else:
             self._chips[0].set_glyph("■", PALETTE["alarm"])
 
-    def show_parts(self, parts: list[tuple[str, str]]) -> None:
+    def show_parts(self, parts: list[tuple[str, str, str]]) -> None:
         """Draw one chip per part. The number of them varies: a services object
-        that cannot be asked anything answers with one sentence, not three."""
+        that cannot be asked anything answers with one sentence, not three.
+
+        Each part arrives as the word it goes by, the sentence it would say in
+        full, and the state. Healthy is the word; anything else is the sentence.
+        The rule is one rule and it is the honest way round: a chip says its own
+        name while there is nothing to add, and says everything the moment there
+        is - and "nobody could be asked" counts as something to add.
+        """
         while len(self._chips) < len(parts):
             chip = StatusChip()
-            self._row.addWidget(chip, 1)
+            # Before the stretch that holds the right-hand room, so the chips
+            # stay in the order they were given and the space stays at the end.
+            self._row.insertWidget(self._row.count() - 1, chip)
             self._chips.append(chip)
         for index, chip in enumerate(self._chips):
             if index < len(parts):
-                chip.show_state(*parts[index])
+                glance, words, state = parts[index]
+                chip.show_state(glance if state == "ok" else words, state)
                 chip.setVisible(True)
             else:
                 chip.setVisible(False)
@@ -610,25 +675,38 @@ class ConsoleWindow(QMainWindow):
     def status_text(self) -> str:
         """One line, always. A status bar that raises has told the operator
         nothing, and taken the heartbeat down with it."""
-        return " · ".join(text for text, _state in self.status_parts())
+        return " · ".join(words for _glance, words, _state in self.status_parts())
 
-    def status_parts(self) -> list[tuple[str, str]]:
+    def status_parts(self) -> list[tuple[str, str, str]]:
         """The same sentences the status line has always carried, each with the
-        state it is reporting.
+        word it goes by and the state it is reporting.
 
         Split out so the band across the top can draw each one as a chip of its
         own with a glyph and a colour, instead of the whole thing being one grey
-        sentence in a footer. The words are unchanged and `status_text` still
-        joins them exactly as before: what changed is that the console now knows
-        which of them is the bad one.
+        sentence in a footer. The sentences are unchanged and `status_text`
+        still joins them exactly as before: what changed is that the console now
+        knows which of them is the bad one, and what each is called when there
+        is nothing to say about it.
+
+        The glance word and the sentence come from here together rather than
+        from two methods, because two lists of four things are two lists that
+        can end up describing different parts of the system in the same column.
         """
-        parts: list[tuple[str, str]] = []
+        parts: list[tuple[str, str, str]] = []
 
         try:
             state = self._services.state()
         except Exception:  # noqa: BLE001
             logger.exception("the services could not say what they are doing")
-            parts.append(("the services could not be asked what they are doing", "alarm"))
+            # No glance word: this is never the healthy case, so nothing would
+            # ever draw one.
+            parts.append(
+                (
+                    "services",
+                    "the services could not be asked what they are doing",
+                    "alarm",
+                )
+            )
         else:
             # The recorder's own sentence, which says whether it died and was
             # restarted rather than only whether it is up - the treatment
@@ -642,19 +720,23 @@ class ConsoleWindow(QMainWindow):
             is_recording = bool(state.get("recording"))
             parts.append(
                 (
+                    "recording",
                     recording.get("reason")
                     or ("recording" if is_recording else "NOT recording"),
                     "ok" if is_recording else "alarm",
                 )
             )
             streaming = state.get("streaming")
-            parts.append((f"streaming: {streaming}", _streaming_state(streaming)))
+            parts.append(
+                ("streaming", f"streaming: {streaming}", _streaming_state(streaming))
+            )
             # `.get` twice: the services are handed in, and a state without a
             # word about detection must produce a status line, not a KeyError
             # that costs the operator the recording state as well.
             detection = state.get("detection") or {}
             parts.append(
                 (
+                    "detection",
                     f"detection: {detection.get('reason', 'unknown')}",
                     _detection_state(detection),
                 )
@@ -664,9 +746,14 @@ class ConsoleWindow(QMainWindow):
             link = self._radio.status()
         except Exception:  # noqa: BLE001
             logger.exception("the radio could not be asked about the link")
-            parts.append(("link unknown", "alarm"))
+            parts.append(("link", "link unknown", "alarm"))
         else:
-            parts.append((self._link_words(link), _link_state(link)))
+            # The signal figure is not in the glance word on purpose. A reading
+            # inside the healthy band is the same news every four seconds, and
+            # the Live tab's link panel carries it in full - with what it means
+            # beside it - one tab away, for the moment somebody wants the
+            # number rather than the reassurance.
+            parts.append(("link", self._link_words(link), _link_state(link)))
 
         return parts
 

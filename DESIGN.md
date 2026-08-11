@@ -140,11 +140,23 @@ the system's health: recording, streaming, detection, link. Read at 16px from tw
 metres, which is the whole reason it exists — it was eleven pixels of grey in a
 footer, the least prominent thing on screen and the most important.
 
-**Status chip** — bordered, `--surface`, glyph + sentence. The border tints
-toward the state colour when not healthy; the glyph carries the state; the word
-names it. Healthy chips are written in `--ink` with only the glyph in green: four
-green sentences across the top is a wall of colour that says nothing, and one red
-one among three quiet ones is seen from across the room.
+**One line, and 16px of it.** What earns the band its place is the type size, not
+the padding: this is a screen whose purpose is showing video, and every pixel the
+band takes it takes from the pictures. Chips are as wide as what they are saying
+and the room to their right is left empty.
+
+**Status chip** — glyph + words. Healthy is the *name of the part* and nothing
+else — `recording`, `streaming`, `detection`, `link` — drawn in `--ink` on no
+panel, with no border, and only the glyph in green: `streaming: streaming` is the
+same news every four seconds, and four green sentences across the top is a wall
+of colour that says nothing. Anything that is not healthy — a fault, or a reading
+nobody could take — carries the whole sentence, on `--surface`, inside a border
+in the state colour. So the one chip worth reading is the only one drawn as a
+box, and it is seen from across the room. The border is there when quiet too, in
+`transparent`: the reflow this band accepts is a sentence getting longer, which
+is meaning, not an outline appearing, which is decoration. The figure behind a
+healthy reading — `-63 dBm` — is one tab away in the Live tab's link panel, with
+what it means beside it.
 
 **Recording dot** — a circle in `--alarm` that pulses at 900 ms while footage is
 reaching the disk, and a still bar in the same colour when it is not. What

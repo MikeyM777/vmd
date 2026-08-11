@@ -861,6 +861,14 @@ class NotRecordingServices(FakeServices):
         return state
 
 
+class LinkedRadio(FakeRadio):
+    """A link that is up and was read a moment ago: the state the console spends
+    almost all of its life in, and the one the band has to be quiet about."""
+
+    def status(self) -> dict:
+        return {"connected": True, "signal_dbm": -63.0, "age_seconds": 2.0}
+
+
 class SickServices(FakeServices):
     def state(self) -> dict:
         return {
@@ -871,13 +879,62 @@ class SickServices(FakeServices):
         }
 
 
-def test_the_band_says_exactly_what_the_status_line_says(qtbot, tmp_path: Path) -> None:
-    """Re-placed, not rewritten. The words were chosen for an operator who is
-    not technical, and moving them out of the footer may not change one of
-    them."""
+def test_a_healthy_band_says_the_name_of_each_part_and_no_more(
+    qtbot, tmp_path: Path
+) -> None:
+    """`streaming: streaming` is reassurance, not information.
+
+    A console with nothing wrong has four things to say and says them in four
+    words, because the glyph beside each already says it is fine. What that buys
+    is height, on a screen whose whole purpose is showing video."""
+    window, _ = build(qtbot, tmp_path, radio=LinkedRadio())
+    window.heartbeat()
+    assert window.band.chips() == ["recording", "streaming", "detection", "link"]
+
+
+def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
+    qtbot, tmp_path: Path
+) -> None:
+    """The short form is only ever the healthy form. The moment something is
+    wrong the chip carries the whole sentence, unchanged - those words were
+    chosen for an operator who is not technical, and shortening the one sentence
+    that has to be read would be shortening the wrong one."""
+    window, _ = build(qtbot, tmp_path, services=SickServices())
+    window.heartbeat()
+    said = window.band.chips()
+    assert "streaming: go2rtc is not installed - run install.bat" in said
+    assert "detection: not running" in said
+    # And the sentence in the band is a sentence the footer would have said.
+    for chip in said:
+        assert chip in window.status_text() or chip in ("recording", "link")
+
+
+def test_the_sentences_themselves_are_unchanged(qtbot, tmp_path: Path) -> None:
+    """The band draws less; nothing about what the console KNOWS got shorter.
+    `status_text` is what the logs and every other test read."""
     window, _ = build(qtbot, tmp_path)
     window.heartbeat()
-    assert window.band.chips() == window.status_text().split(" · ")
+    assert window.status_text().startswith("recording · streaming: streaming · ")
+
+
+def test_the_band_is_one_line_of_its_own_type_and_not_a_block(
+    qtbot, tmp_path: Path
+) -> None:
+    """It was 53 px of a 720 px screen. The band earns its place by being read
+    from two metres, which is the 16 px - not by the padding around it."""
+    from vmd.desktop.style import SIZE_BAND
+
+    window, _ = build(qtbot, tmp_path / "well", radio=LinkedRadio())
+    window.heartbeat()
+    assert window.band.sizeHint().height() <= 2 * SIZE_BAND
+
+    # And a console with everything wrong is still a line. A chip asks for the
+    # width of its sentence rather than for the squarish block a wrapped label
+    # would choose, so the words go sideways into the room beside them before
+    # they ever go downwards into the pictures.
+    sick, _ = build(qtbot, tmp_path / "ill", services=SickServices())
+    sick.heartbeat()
+    assert sick.band.sizeHint().height() <= 2 * SIZE_BAND
 
 
 def test_the_band_knows_which_of_its_chips_is_the_bad_one(qtbot, tmp_path: Path) -> None:
@@ -885,11 +942,11 @@ def test_the_band_knows_which_of_its_chips_is_the_bad_one(qtbot, tmp_path: Path)
     now carries the state it is reporting, so the one that is wrong can be the
     one that is red."""
     healthy, _ = build(qtbot, tmp_path / "well", services=FakeServices())
-    states = dict((text, state) for text, state in healthy.status_parts())
+    states = dict((words, state) for _glance, words, state in healthy.status_parts())
     assert states["streaming: streaming"] == "ok"
 
     sick, _ = build(qtbot, tmp_path / "ill", services=SickServices())
-    states = dict((text, state) for text, state in sick.status_parts())
+    states = dict((words, state) for _glance, words, state in sick.status_parts())
     assert states["streaming: go2rtc is not installed - run install.bat"] == "alarm"
 
 
