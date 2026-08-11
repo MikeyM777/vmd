@@ -209,9 +209,14 @@ answer. Send that sentence.
 Enter the same address, username and password in **Settings** and press Save.
 
 The status line at the bottom shows the signal at a glance. The **Link** panel
-in the Live tab's right-hand column shows the rest: signal, how far above the
-noise it is, what is going through the link against what the link will carry,
-link quality, distance, and which radio it is.
+in the Live tab's right-hand column shows the rest: signal at both ends of the
+hop, how far above the noise it is, how much of the link's **airtime** is spent,
+what it is carrying, link quality, and which radio it is.
+
+There is no distance on the panel. Your radio reports two of them — `0` in one
+field and `1` in another, on a path that is really 15 km — so neither is in
+metres, nothing here can say what they are, and a distance nobody can justify is
+left off rather than printed.
 
 The panel should go from `Checking the radio...` to real figures within a few
 seconds. If it stays on dashes or says the radio reported no signal strength,
@@ -228,32 +233,48 @@ that is the probe's job — go back and run it.
 | Weaker than −80 dBm | Marginal. This is where the picture starts breaking up. |
 
 These come from what airOS radios generally do — a noise floor around −90 to
-−96 dBm — and not from measurements of your link, because nobody has measured
-your link yet. They are set one step pessimistic on purpose: being told a
+−96 dBm — and not from measurements of your link. Yours reads −66 dBm at this
+end and −63 dBm at the far end, which is the amber band: it works, and it has
+little left over. They are set one step pessimistic on purpose: being told a
 working link is marginal costs a phone call, being told a marginal link is fine
 costs the picture on the day it matters.
 
-**Coming in / going out.** This is the line that explains the video. Your link
-carries about 5 Mb/s. If "coming in" is close to the number beside it, the link
-is full, and a picture that stutters, falls behind, or drops during a pan is the
-link and not the camera or the console. The fix for that is the camera's
-bitrate — **Fit the camera to the link** in Settings, or the second stream
-turned off — not anything in this program.
+**Airtime.** This is the line that explains the video, and it is the one to look
+at before any other. A wireless link runs out of *time on the air*, not of
+megabits: how many megabits a given slice of airtime carries depends on the
+modulation rate, which falls as the signal does. Your radio reported **88%**
+while carrying 10.7 Mb/s.
 
-Note both figures the first time you look, next to what the radio's own web
-interface says. The console reads the capacity in kb/s and the older rate fields
-in Mb/s; that is what airOS is understood to do and it has not been confirmed on
-a real radio. If the console's numbers and the radio's own page disagree, tell
-me — that is a five-minute fix too.
+| Reading | What it means |
+|---|---|
+| Below 60% | Room to spare. Another stream would fit. |
+| 60–80% | Little room left. No headroom for a burst — a key frame, or a pan — and latency builds from here. |
+| 80% and up | Full. A picture that stutters, falls behind, or drops during a pan is this, not the camera and not the console. |
+
+At 88% the panel also says what that arithmetic implies: 10.9 Mb/s costing 88%
+of the air means the whole link is worth about 12 Mb/s. That is the number to
+hold against any question about a second stream or a 4K one. The fix is the
+camera's bitrate — **Fit the camera to the link** in Settings, or the second
+stream turned off — not anything in this program.
+
+**The capacity figures are an estimate.** The panel shows them grey and says so.
+Your radio claims 194 Mb/s in and 227 Mb/s out; that is a modulation rate worked
+out from the signal, not a ceiling this link has ever reached, and printing
+"13% of capacity" beside 88% airtime is how a full link came to look healthy.
+The units are settled now — the capacity and the throughput are both in kb/s,
+confirmed against your own radio rather than assumed.
 
 **Link quality.** Shown as a percentage. Below about 80% the link is spending
-its time retrying rather than carrying data.
+its time retrying rather than carrying data. Yours reports 100% both ways.
 
-### What is still unproven
+### What is no longer unproven
 
-The parser has now been written twice against documentation and never once
-against a device. The probe is the thing that settles it, and running it once is
-what turns everything on this page from "should" into "does".
+The parser had been written twice against documentation and never once against a
+device. It has now met yours, and the probe is what did it: the signal of a
+station is not where the code was looking, there is no CCQ figure on your
+firmware, and the airtime — the reading that mattered most — was not being read
+at all. All three are fixed, and your radio's own answer is kept in the tests so
+they cannot quietly stop being true.
 
 ---
 
@@ -262,8 +283,11 @@ what turns everything on this page from "should" into "does".
 - **The real camera** — no thermal head, no visible head, no real ONVIF, no 4K.
 - **The radio link failure the rewrite exists to fix.** The clean ten-minute run
   here was over loopback.
-- **The airOS radio**, at all. Section 9 is how that stops being true: run
-  `spike/probe_radio.py` once and send me what it prints.
+- **The airOS radio** — no longer "at all". The probe has now read yours and the
+  parser is built on what it sent: signal, far-end signal, noise, airtime,
+  throughput, link quality and uptime all come off your own answer, and that
+  answer is kept in the tests. What is still unread is the radio under a FAULT —
+  a link that has actually dropped, or a far end that has lost power.
 - **The two-machine offline install.** The mechanism is proved on one machine;
   the USB handoff to a second is not. Do it with someone who can read a screen,
   not on the day the camera goes up.
