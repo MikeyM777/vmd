@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from vmd.settings import SettingsError, load_settings
+from vmd.storage.recorder import find_tool
 from vmd.streaming.go2rtc import build_config, find_binary, probe_target
 
 
@@ -107,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             probe = subprocess.run(
                 [
-                    "ffprobe", "-hide_banner", "-loglevel", "error",
+                    find_tool("ffprobe"), "-hide_banner", "-loglevel", "error",
                     "-rtsp_transport", "tcp", "-timeout", "5000000",
                     "-show_entries", "stream=codec_name,width,height",
                     "-of", "default=noprint_wrappers=1",

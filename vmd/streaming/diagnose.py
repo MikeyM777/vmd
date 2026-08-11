@@ -15,6 +15,10 @@ import subprocess
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from vmd.settings import Settings
+# The same bin\ lookup the recorder uses: the offline install puts ffmpeg.exe
+# beside go2rtc, and a diagnostic that reports "ffprobe is not installed"
+# because it only ever asked PATH is a diagnostic that lies.
+from vmd.storage.recorder import find_tool
 from vmd.streaming.go2rtc import build_config, find_binary, probe_target
 
 PROBE_TIMEOUT = 15
@@ -97,7 +101,7 @@ def measure_bitrate(url: str, seconds: int = 4) -> float | None:
     try:
         run = subprocess.run(
             [
-                "ffmpeg", "-hide_banner", "-rtsp_transport", "tcp",
+                find_tool("ffmpeg"), "-hide_banner", "-rtsp_transport", "tcp",
                 "-i", url, "-t", str(seconds), "-c", "copy", "-f", "null", "-",
             ],
             capture_output=True, text=True, timeout=seconds + 20, check=False,
@@ -133,7 +137,7 @@ def try_path(base_url: str, path: str) -> tuple[bool, str]:
     try:
         probe = subprocess.run(
             [
-                "ffprobe", "-hide_banner", "-loglevel", "error",
+                find_tool("ffprobe"), "-hide_banner", "-loglevel", "error",
                 "-rtsp_transport", "tcp", "-timeout", "4000000",
                 "-show_entries", "stream=codec_name,width,height",
                 "-of", "default=noprint_wrappers=1",
@@ -260,7 +264,7 @@ def _diagnose(settings: Settings) -> list[str]:
         try:
             probe = subprocess.run(
                 [
-                    "ffprobe", "-hide_banner", "-loglevel", "error",
+                    find_tool("ffprobe"), "-hide_banner", "-loglevel", "error",
                     "-rtsp_transport", "tcp", "-timeout", "5000000",
                     "-show_entries", "stream=codec_name,width,height,avg_frame_rate",
                     "-of", "default=noprint_wrappers=1",
