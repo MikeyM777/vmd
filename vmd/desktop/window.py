@@ -622,18 +622,35 @@ class ConsoleWindow(QMainWindow):
     def _open_events(events_path: str | Path | None):
         """The movement events, or None and a line in the log.
 
-        The import is here rather than at the top of the file for the same
-        reason the failure is swallowed: `vmd.detect` pulls in the detector's
-        stack, and the console has to open on a laptop where the detector was
-        never installed, where its database has been corrupted, or where the
-        disk holding it is not mounted. None of those is a reason to lose the
-        window - the Settings and Logs tabs behind it are how they get fixed.
+        What is guarded here is the database, not the import. A file that has
+        been corrupted, a disk that is not mounted, a folder that cannot be
+        written - none of those is a reason to lose the window, because the
+        Settings and Logs tabs behind it are how they get fixed.
+
+        It used to be guarding something else as well, and that was the harm:
+        `vmd.detect` pulled the whole vision stack in, so on a laptop without it
+        this caught the ImportError and the operator silently lost the movement
+        list and every mark on the timeline, with the reason only in the Logs
+        tab. A console that opens with no movement in it looks like a quiet
+        perimeter. `vmd/detect/__init__.py` resolves its re-exports on first use
+        now, so `EventStore` costs sqlite3 and that case no longer exists - and
+        if it ever comes back, an unimportable module is a broken installation
+        and is said as loudly as everything else here.
         """
         if events_path is None:
             return None
         try:
             from vmd.detect.events import EventStore
-
+        except ImportError:
+            # Not "the database is unreadable". Part of VMD is missing, which is
+            # a different fault with a different fix, and it must not be filed
+            # away under a corrupt file.
+            logger.exception(
+                "the movement events could not be opened because part of VMD is "
+                "missing; reinstall VMD"
+            )
+            return None
+        try:
             return EventStore(events_path)
         except Exception:  # noqa: BLE001 - a console with no movement list still helps
             logger.exception("the movement events could not be opened: %s", events_path)

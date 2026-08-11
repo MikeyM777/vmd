@@ -25,6 +25,7 @@ from vmd.desktop.watch import Watched
 # files, and a second copy of the number would be a second opinion within a
 # month. `vmd.record_main` costs the console nothing to import - it pulls the
 # standard library and vmd.storage, which the Playback tab already imports.
+from vmd.detect_main import STATUS_FILENAME, detected_streams
 from vmd.record_main import ALREADY_RECORDING_EXIT
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
@@ -76,11 +77,16 @@ CHILD_LINE_LIMIT = 2000
 CHILD_READ_CHUNK = 8192
 
 # Where the detector publishes what each stream is doing, beside events.db in
-# the recording root. The name is repeated here rather than imported for the
-# same reason `detection_enabled` repeats its rule: importing `vmd.detect_main`
-# would pull cv2, numpy and eventually the classifier's weights into the
-# window's process, which must open on a laptop where none of that is installed.
-DETECTION_STATUS_FILENAME = "detection.json"
+# the recording root. The detector's own name for it, imported rather than
+# spelled again: two copies of a filename is how a rename breaks one side of a
+# protocol silently, and this one is a protocol between exactly two files.
+#
+# It used to be a copy, because importing `vmd.detect_main` dragged in cv2,
+# numpy and eventually the classifier's weights - and the console has to open on
+# a laptop where none of that is installed. That is no longer true: the detector
+# package resolves its own re-exports on first use, so this import costs the
+# standard library and `vmd.settings`.
+DETECTION_STATUS_FILENAME = STATUS_FILENAME
 
 # How old that file may be before the console stops believing it. The detector
 # rewrites it every `interval` seconds - five by default - so thirty seconds is
@@ -140,14 +146,13 @@ DETECTION_FLAP_LIMIT = FLAP_LIMIT
 def detection_enabled(settings: Settings) -> bool:
     """Has anyone actually asked for detection?
 
-    The same rule as `vmd.detect_main.detected_streams`, spelled out again
-    rather than imported: importing the detector package here would pull cv2,
-    numpy and eventually the classifier's weights into the window's process,
-    which must open on a laptop where none of that is installed.
+    The detector's own rule, asked of the detector. It was spelled out here a
+    second time because importing the detector package pulled cv2 and numpy into
+    the window's process; it no longer does, and "which streams are watched"
+    should have one definition - the one that belongs with the thing that
+    watches them.
     """
-    if not settings.detection.enabled:
-        return False
-    return any(stream.enabled and stream.detect for stream in settings.camera.streams)
+    return bool(detected_streams(settings))
 
 
 def recordable(settings: Settings) -> bool:

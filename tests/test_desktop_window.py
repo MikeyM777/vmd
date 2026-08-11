@@ -1505,3 +1505,66 @@ def test_a_save_that_threw_still_answers_the_operator(qtbot, tmp_path: Path) -> 
     assert "Saved" in window.settings_tab.message
     assert "would not take" in window.settings_tab.message
     window.close()
+
+
+# ------------------------------------------- what opening the console costs
+#
+# Three comments in `services.py` and `window.py` used to say that importing the
+# detector would drag cv2, numpy and eventually the classifier's weights into
+# the window's process - and each had a copied constant or a duplicated rule
+# behind it, paid for on that reasoning. The detector package resolves its
+# re-exports on first use now, so the copies are gone and the imports are
+# direct. This is what stops that being quietly undone.
+#
+# Checked in a process of its own, with the vision stack made genuinely
+# unimportable, because a check inside this interpreter proves nothing: pytest
+# has already imported cv2 for the detection tests.
+
+BLOCK_THE_VISION_STACK = """
+import sys
+
+
+class Blocked:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in ("cv2", "numpy", "ultralytics", "torch"):
+            raise ImportError(name + " is not installed on this machine")
+        return None
+
+
+sys.meta_path.insert(0, Blocked())
+"""
+
+# Long enough that a cold interpreter on a busy laptop is not a failure, short
+# enough that a hang fails this test rather than stopping the suite.
+IMPORT_TIMEOUT = 120
+
+
+def test_the_console_opens_on_a_laptop_with_no_vision_stack() -> None:
+    """The window, its services and its entry point, with cv2 unimportable.
+
+    This is the laptop the console has to open on: opencv missing, or present
+    and refusing to load because a Visual C++ runtime is not there. A console
+    that will not open is a perimeter nobody is watching.
+    """
+    import subprocess
+    import sys as _sys
+
+    body = """
+import vmd.desktop.app
+import vmd.desktop.services
+import vmd.desktop.window
+from vmd.detect.events import EventStore
+
+import sys
+for unwanted in ("cv2", "numpy", "ultralytics", "torch"):
+    assert unwanted not in sys.modules, unwanted
+print("opened")
+"""
+    done = subprocess.run(
+        [_sys.executable, "-c", BLOCK_THE_VISION_STACK + body],
+        capture_output=True,
+        text=True,
+        timeout=IMPORT_TIMEOUT,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "opened" in done.stdout
