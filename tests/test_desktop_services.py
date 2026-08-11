@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+from tests.test_streaming import FakeGo2rtc
 from vmd.desktop.disk import DiskWatcher
 from vmd.desktop.logs import LogBuffer, attach
 from vmd.desktop.services import (
@@ -2242,51 +2243,23 @@ def test_a_pid_that_cannot_be_asked_about_is_read_as_still_there(
 # cost this whole architecture exists to avoid.
 
 
-class LiveGo2rtc:
-    """A streaming server that is listening and says what it is serving.
+def live_endpoint(tmp_path: Path, streams: list[str] | None = None, serves=None):
+    """A streaming server that answers, so streaming.json can be believed.
 
-    A bare socket is not enough any more, and that is the point of the change
-    this stands for: the console adopts on what the server answers, not on the
-    port being open. Bounded by nothing - it answers from memory - and shut down
-    by every caller in a finally.
+    Two ports and not one, because a streaming server is two listeners and the
+    console now asks both: the API for what it knows about, and the RTSP port
+    for the picture itself. `FakeGo2rtc` is the streaming module's own fake -
+    the same one its tests adopt and refuse - so this file cannot drift into
+    testing against a go2rtc that could not exist.
     """
-
-    def __init__(self, streams: list[str]) -> None:
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-        body = json.dumps({name: {"producers": [], "consumers": []} for name in streams})
-        payload = body.encode("utf-8")
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802 - http.server's name
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *args) -> None:
-                return
-
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.port = self._server.server_address[1]
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-
-
-def live_endpoint(tmp_path: Path, streams: list[str] | None = None):
-    """A streaming server that answers, so streaming.json can be believed."""
-    server = LiveGo2rtc(["thermal"] if streams is None else streams)
-    (tmp_path / "streaming.json").write_text(
-        json.dumps(
-            {"api_port": server.port, "rtsp_port": server.port, "streams": {}}
-        ),
-        encoding="utf-8",
+    server = FakeGo2rtc(
+        {name: f"rtsp://camera/{name}" for name in (["thermal"] if streams is None else streams)},
+        serves=serves,
     )
-    return server, server.port
+    (tmp_path / "streaming.json").write_text(
+        json.dumps(server.endpoint), encoding="utf-8"
+    )
+    return server, server.endpoint["api_port"]
 
 
 def go2rtc_claim(tmp_path: Path, pid: int = 4242) -> None:

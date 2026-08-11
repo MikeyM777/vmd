@@ -154,6 +154,27 @@ LIVENESS_SECONDS = 2.0
 # companion does not say. go2rtc is one binary with one name.
 GO2RTC_IMAGES = ("go2rtc.exe", "go2rtc")
 
+# How long one stream is given to prove it has a picture in it, and how the
+# proof is made.
+#
+# DESCRIBE is the first thing VLC sends and the first thing that fails: the
+# operator's `Failed to setup RTSP session` is what the pane makes of go2rtc
+# answering `404 Not Found` to this exact request. It is also the request that
+# makes go2rtc go to the camera - measured against the bundled 1.9.14, a
+# DESCRIBE for a stream nothing had subscribed to produced `wrong user/pass` in
+# the server's own log within a hundredth of a second - which is why it can tell
+# "idle" from "broken" when `/api/streams` cannot. That list carries a producer
+# with a URL in it and nothing else whether the producer has ever connected or
+# not, so reading it for health would be the same mistake one layer down.
+#
+# Three seconds, and every stream is asked at once rather than in turn. This is
+# paid at console start, in front of a window with no picture in it yet; a
+# healthy loopback answers in about half a second, a refusal in a hundredth, and
+# the bound is what a camera at the end of a >15 km radio link is given before
+# the console stops waiting and starts a server of its own.
+PROBE_TIMEOUT = 3.0
+PROBE_AGENT = "vmd-console"
+
 # How long anything is given to answer the API on the loopback. Two seconds is
 # a long time for a local socket and is paid twice at most: once while the
 # console decides whether the server from the last run can be adopted, and
@@ -198,6 +219,50 @@ def free_port(preferred: int) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def rtsp_describe(port: int, name: str, timeout: float = PROBE_TIMEOUT) -> tuple[bool, str]:
+    """Ask the streaming server on the loopback for one stream, as VLC would.
+
+    True when the server answered with a description of a stream it is holding,
+    which it can only do once it has the camera's tracks - so this is a picture
+    proved rather than a name recognised. False, and what it said instead, for
+    everything else: a refusal, a connection nothing accepted, an answer that
+    never came.
+
+    Only DESCRIBE, and no SETUP or PLAY after it. Reading an actual packet would
+    be the fuller proof and it costs a keyframe interval per stream, which on
+    this camera is seconds of blank window at every console start; DESCRIBE
+    already forces the connection to the camera, which is the part that fails.
+    That is the whole of the difference between this and `vmd/detect/runner.py`,
+    which reads a frame because it is about to read every frame after it.
+
+    127.0.0.1 always. This asks about a server on this machine and there is no
+    argument for it to reach anywhere else.
+    """
+    request = (
+        f"DESCRIBE rtsp://127.0.0.1:{int(port)}/{name} RTSP/1.0\r\n"
+        f"CSeq: 1\r\nAccept: application/sdp\r\nUser-Agent: {PROBE_AGENT}\r\n\r\n"
+    ).encode("utf-8")
+    answer = b""
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            while b"\r\n\r\n" not in answer and len(answer) < 8192:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                answer += chunk
+    except (OSError, ValueError) as exc:
+        return False, f"the connection failed: {exc}"
+    first = answer.split(b"\r\n", 1)[0].decode("utf-8", "replace").strip()
+    if not first:
+        return False, "it accepted the connection and then said nothing"
+    parts = first.split()
+    if len(parts) >= 2 and parts[1] == "200":
+        return True, first
+    return False, first
 
 
 def _project_root() -> Path:
@@ -1056,7 +1121,99 @@ class Go2rtcService:
             return None
         return raw if isinstance(raw, dict) else None
 
-    def unadoptable(self, endpoint: dict) -> str:
+    def api_log(self, api_port: int | None = None, timeout: float = API_TIMEOUT) -> list[dict]:
+        """What the server has lately said about itself, in its own words.
+
+        This is the only way to read an adopted server's output at all. It was
+        started by a console that has closed, its pipe went with that console,
+        and `_pump_output` has nothing to pump - so "401 Unauthorized", the one
+        line that says why there is no picture, is inside a process nobody can
+        hear. `/api/log` is that same output, kept by the server, and it is how
+        the sentence in the Logs tab can be go2rtc's rather than ours.
+
+        The body is one JSON object per line - go2rtc answers it as
+        `application/jsonlines` - and a line that will not parse is skipped
+        rather than losing the rest.
+        """
+        port = self.api_port if api_port is None else api_port
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{int(port)}/api/log", timeout=timeout
+            ) as response:
+                body = response.read().decode("utf-8", "replace")
+        except (OSError, ValueError, TypeError):
+            return []
+        entries: list[dict] = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+        return entries
+
+    def said_about(self, name: str, api_port: int | None = None) -> str:
+        """The last thing the server itself said about that stream, or "".
+
+        The newest matching line wins: go2rtc repeats itself for as long as the
+        camera keeps refusing, and the most recent attempt is the one the
+        operator is being told about.
+        """
+        for entry in reversed(self.api_log(api_port)):
+            if str(entry.get("stream") or "") != name:
+                continue
+            said = str(entry.get("error") or entry.get("message") or "").strip()
+            if said:
+                return said[:MAX_LINE_CHARS]
+        return ""
+
+    def without_a_picture(
+        self,
+        names: list[str] | None = None,
+        rtsp_port: int | None = None,
+        api_port: int | None = None,
+        timeout: float = PROBE_TIMEOUT,
+    ) -> dict[str, str]:
+        """Which of these streams the server cannot actually hand over, and why.
+
+        Empty is the healthy answer. Every stream is asked at once, because they
+        fail together - a camera that has refused one connection refuses both -
+        and asking in turn would multiply the wait by the number of views.
+
+        The reason is go2rtc's own where go2rtc gives one, and the refusal it
+        sent otherwise. Both beat a blank pane.
+        """
+        wanted = list(self.stream_names if names is None else names)
+        if not wanted:
+            return {}
+        port = self.rtsp_port if rtsp_port is None else rtsp_port
+        answers: dict[str, tuple[bool, str]] = {}
+        threads = []
+        for name in wanted:
+            def ask(name: str = name) -> None:
+                answers[name] = rtsp_describe(port, name, timeout)
+
+            thread = threading.Thread(target=ask, name=f"go2rtc-probe-{name}", daemon=True)
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            # Bounded twice over: the socket has the same timeout, and this
+            # cannot outlast it by more than the moment it takes to return.
+            thread.join(timeout + 1.0)
+        broken: dict[str, str] = {}
+        for name in wanted:
+            served, said = answers.get(name, (False, "it was not asked in time"))
+            if served:
+                continue
+            in_its_own_words = self.said_about(name, api_port)
+            broken[name] = in_its_own_words or said
+        return broken
+
+    def unadoptable(self, endpoint: dict, probe_timeout: float = PROBE_TIMEOUT) -> str:
         """Why the server that file names cannot be taken on, or "" if it can.
 
         A port in a file is a claim, not an answer. The console adopted on the
@@ -1067,9 +1224,18 @@ class Go2rtcService:
         this one. Both leave the operator with no picture and no sentence
         saying why, which is the worst state this console can be in.
 
-        So it is asked, twice: is anything listening where the recorder is being
-        told to look, and does the thing that answers serve the streams this
-        settings file asks for. go2rtc answers the second itself.
+        Asking whether it has heard of the names was not enough, and the third
+        morning of this proved it: the server was listening, it did list both
+        names, and every pane got `Failed to setup RTSP session` for as long as
+        the console stayed open, because that server could not get the picture
+        from the camera at all. A name is not a picture.
+
+        So it is asked four times, cheapest first: is anything listening where
+        the recorder is being told to look; does the thing that answers know the
+        streams this settings file asks for; was it started on the settings that
+        are on disk now; and - the only one of the four that is evidence rather
+        than agreement - can it actually hand each of those streams over. The
+        last is a DESCRIBE per stream, all at once, bounded by `probe_timeout`.
         """
         if not is_live(endpoint):
             return (
@@ -1091,6 +1257,19 @@ class Go2rtcService:
             return (
                 f"it is serving {serving}, not {', '.join(missing)} - it was "
                 "started before these streams were set up"
+            )
+        try:
+            rtsp_port = int(endpoint.get("rtsp_port") or 0)
+        except (TypeError, ValueError):
+            rtsp_port = 0
+        broken = self.without_a_picture(
+            rtsp_port=rtsp_port or None, api_port=api_port, timeout=probe_timeout
+        )
+        if broken:
+            return "; ".join(
+                f"it is listening, and it knows the name {name}, but it has no "
+                f"picture to give for it: {said}"
+                for name, said in sorted(broken.items())
             )
         return ""
 

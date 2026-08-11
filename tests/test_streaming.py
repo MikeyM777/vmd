@@ -812,59 +812,242 @@ class _AliveProcess:
 # talks to. Adoption is now on that answer.
 
 
-def api_server(streams: list[str]):
-    """A go2rtc that answers /api/streams with those names, and nothing else."""
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+class FakeGo2rtc:
+    """A go2rtc that answers on both of its ports, because the real one does.
 
-    body = json.dumps(
-        {name: {"producers": [{"type": "rtsp"}], "consumers": []} for name in streams}
-    ).encode("utf-8")
+    The API port answers `/api/streams` and `/api/log`; the RTSP port answers
+    DESCRIBE. The two ports are the whole point of this fake: on the operator's
+    laptop the API listed both stream names all morning while every DESCRIBE
+    against the RTSP port was refused, and the console adopted on the strength
+    of the first without ever making the second.
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 - http.server's name
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+    `serves` is the set of names DESCRIBE answers 200 for. `said` is what the
+    server has written in its own log, in the shape `/api/log` really uses -
+    one JSON object per line, `error` and `stream` among the keys.
+    """
 
-        def log_message(self, *args) -> None:  # keep pytest's output readable
-            return
+    SDP = (
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=go2rtc\r\nt=0 0\r\n"
+        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:trackID=0\r\n"
+    )
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+    def __init__(
+        self,
+        streams,
+        serves=None,
+        said=(),
+        answers: bool = True,
+    ) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from socketserver import StreamRequestHandler, ThreadingTCPServer
 
+        if not isinstance(streams, dict):
+            streams = {name: "" for name in streams}
+        self.streams = dict(streams)
+        self.serves = set(self.streams if serves is None else serves)
+        self.said = list(said)
+        # Every name DESCRIBE was asked about, so a test can prove the proof was
+        # actually made rather than assumed.
+        self.described: list[str] = []
+        outer = self
 
-def endpoint_of(server) -> dict:
-    port = server.server_address[1]
-    return {"api_port": port, "rtsp_port": port, "streams": {}}
+        api_body = {
+            name: {
+                "producers": [{"url": source}] if source else [{}],
+                "consumers": None,
+            }
+            for name, source in self.streams.items()
+        }
+
+        class Api(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - http.server's name
+                if self.path.startswith("/api/log"):
+                    body = "".join(
+                        json.dumps(entry) + "\n" for entry in outer.said
+                    ).encode("utf-8")
+                else:
+                    body = json.dumps(api_body).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args) -> None:  # keep pytest's output readable
+                return
+
+        class Rtsp(StreamRequestHandler):
+            def handle(self) -> None:
+                self.connection.settimeout(5.0)
+                try:
+                    head = b""
+                    while b"\r\n\r\n" not in head and len(head) < 8192:
+                        chunk = self.connection.recv(1024)
+                        if not chunk:
+                            return
+                        head += chunk
+                except OSError:
+                    return
+                request = head.decode("utf-8", "replace")
+                name = request.split(" ", 2)[1].rsplit("/", 1)[-1] if " " in request else ""
+                outer.described.append(name)
+                if not outer.answers:
+                    # A server that accepts the connection and then says
+                    # nothing. Bounded here by the socket's own timeout above,
+                    # so this fake can never wedge the suite.
+                    try:
+                        self.connection.recv(1)
+                    except OSError:
+                        pass
+                    return
+                cseq = "1"
+                for line in request.splitlines():
+                    if line.lower().startswith("cseq:"):
+                        cseq = line.split(":", 1)[1].strip()
+                if name in outer.serves:
+                    body = outer.SDP
+                    answer = (
+                        f"RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n"
+                        f"Content-Type: application/sdp\r\n"
+                        f"Content-Length: {len(body)}\r\n\r\n{body}"
+                    )
+                else:
+                    answer = f"RTSP/1.0 404 Not Found\r\nCSeq: {cseq}\r\n\r\n"
+                try:
+                    self.connection.sendall(answer.encode("utf-8"))
+                except OSError:
+                    return
+
+        self.answers = answers
+        self._api = ThreadingHTTPServer(("127.0.0.1", 0), Api)
+        self._rtsp = ThreadingTCPServer(("127.0.0.1", 0), Rtsp)
+        self._rtsp.daemon_threads = True
+        for server in (self._api, self._rtsp):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    @property
+    def endpoint(self) -> dict:
+        return {
+            "api_port": self._api.server_address[1],
+            "rtsp_port": self._rtsp.server_address[1],
+            "streams": {},
+        }
+
+    def close(self) -> None:
+        for server in (self._api, self._rtsp):
+            server.shutdown()
+            server.server_close()
 
 
 def test_a_server_that_is_serving_these_streams_can_be_adopted(tmp_path: Path) -> None:
     """The half that must not break: adoption is why closing the console does
     not stop recording."""
-    server = api_server(["thermal"])
+    server = FakeGo2rtc({"thermal": "rtsp://cam/t"})
     try:
         svc = claiming_service(tmp_path)
-        assert svc.unadoptable(endpoint_of(server)) == ""
+        assert svc.unadoptable(server.endpoint) == ""
+        assert server.described == ["thermal"], (
+            "adoption must prove the video, not the name"
+        )
     finally:
-        server.shutdown()
+        server.close()
 
 
 def test_a_server_serving_other_streams_is_not_adopted(tmp_path: Path) -> None:
     """Alive, listening, and holding a config written before these streams
     existed. Adopting it points every pane at a name it has never heard of."""
-    server = api_server(["door", "gate"])
+    server = FakeGo2rtc({"door": "rtsp://cam/d", "gate": "rtsp://cam/g"})
     try:
         svc = claiming_service(tmp_path)
-        why = svc.unadoptable(endpoint_of(server))
+        why = svc.unadoptable(server.endpoint)
     finally:
-        server.shutdown()
+        server.close()
 
     assert why, "a server that does not serve thermal must not be adopted"
     assert "thermal" in why, why
+
+
+# ------------------------------------------- and that it can produce a picture
+#
+# The operator's second morning, and the reason this file grew the fake above.
+# The console adopted a go2rtc that was listening on 8554 and did list both
+# stream names - and every pane got `Failed to setup RTSP session`, for three
+# minutes, indefinitely. Nothing was wrong with the port and nothing was wrong
+# with the names. What was wrong was that the server could not get the picture
+# from the camera at all: it had been started before the password was corrected
+# in one round of this, and in the next round the camera would not give it a
+# session because the recorder already held the only one it offers.
+#
+# A name is not a picture. `/api/streams` cannot tell the two apart - it lists a
+# producer with a URL and nothing else whether that producer has ever connected
+# or not, which was measured against the bundled go2rtc 1.9.14 and is why none
+# of this reads that list for health. DESCRIBE can: it is the first thing VLC
+# sends, it makes go2rtc go to the camera, and it answers 404 when go2rtc
+# cannot.
+
+
+def test_a_server_that_cannot_produce_the_picture_is_not_adopted(tmp_path: Path) -> None:
+    """Listening, and it knows the name. It still has no video to give."""
+    server = FakeGo2rtc({"thermal": "rtsp://cam/t"}, serves=set())
+    try:
+        svc = claiming_service(tmp_path)
+        why = svc.unadoptable(server.endpoint)
+    finally:
+        server.close()
+
+    assert why, "a server with no picture in it must not be adopted"
+    assert "thermal" in why, why
+
+
+def test_the_reason_is_go2rtcs_own_words(tmp_path: Path) -> None:
+    """"401 Unauthorized" is the single most useful string this system can show,
+    and on an adopted server it is trapped inside a process whose output goes to
+    a console that has closed. `/api/log` is where it can still be read."""
+    server = FakeGo2rtc(
+        {"thermal": "rtsp://cam/t"},
+        serves=set(),
+        said=[
+            {"level": "warn", "error": "streams: dial tcp: refused", "stream": "other"},
+            {"level": "warn", "error": "streams: 401 Unauthorized", "stream": "thermal"},
+        ],
+    )
+    try:
+        svc = claiming_service(tmp_path)
+        why = svc.unadoptable(server.endpoint)
+    finally:
+        server.close()
+
+    assert "401 Unauthorized" in why, why
+
+
+def test_a_stream_nobody_has_asked_for_yet_is_not_called_broken(tmp_path: Path) -> None:
+    """Idle is not broken, and go2rtc does not connect to a camera until
+    something subscribes: a server whose producers have never run must still be
+    adoptable if it can produce when it is asked. That is exactly why the proof
+    is a DESCRIBE and not a reading of `/api/streams`."""
+    server = FakeGo2rtc({"thermal": ""}, serves={"thermal"})
+    try:
+        svc = claiming_service(tmp_path)
+        assert svc.unadoptable(server.endpoint) == ""
+    finally:
+        server.close()
+
+
+def test_the_proof_cannot_hang_the_console(tmp_path: Path) -> None:
+    """It runs at every console start, in front of a blank window. A server that
+    accepts the connection and never answers must cost the probe's own bound and
+    not a second more."""
+    server = FakeGo2rtc({"thermal": "rtsp://cam/t"}, answers=False)
+    try:
+        svc = claiming_service(tmp_path)
+        started = time.monotonic()
+        why = svc.unadoptable(server.endpoint, probe_timeout=0.5)
+        took = time.monotonic() - started
+    finally:
+        server.close()
+
+    assert why, "a server that will not answer must not be adopted"
+    assert took < 3.0, f"the proof took {took:.1f}s in front of the operator"
 
 
 def test_a_port_nothing_answers_on_is_not_adopted(tmp_path: Path) -> None:
