@@ -145,3 +145,36 @@ def test_the_reading_is_cached_so_every_page_does_not_log_in(radio: str) -> None
     assert service.status(now=101.0) == first
     # Past the window it goes back to the radio, and reports the new failure.
     assert service.status(now=200.0)["connected"] is False
+
+
+def test_a_slow_reading_is_still_cached(monkeypatch) -> None:
+    """A read that takes longer than the cache window must still be cached.
+
+    A radio that is not answering costs both login attempts' timeouts before it
+    says so. The console asks for this on its heartbeat, on the thread that
+    draws the window, so a cache stamped with the time the read *started* is
+    already stale when it is written: every heartbeat then makes the same
+    blocking call again and the window stops repainting for as long as the link
+    is down. Nothing here touches a radio or a clock that can move on its own.
+    """
+    ticks = [0.0]
+    monkeypatch.setattr("vmd.radio.service.time.monotonic", lambda: ticks[0])
+
+    class SlowRadio:
+        calls = 0
+
+        def status(self):
+            SlowRadio.calls += 1
+            ticks[0] += 12.0  # both login timeouts, far past CACHE_SECONDS
+            raise RadioError("cannot reach 10.0.0.9")
+
+    service = RadioService(
+        Settings(radio=RadioSettings(host="10.0.0.9", username=USER, password=PASSWORD, enabled=True))
+    )
+    service.radio = SlowRadio()
+
+    first = service.status()
+    assert first["connected"] is False
+    second = service.status()
+    assert second == first
+    assert SlowRadio.calls == 1, "the slow reading was not cached, so the console blocks again"

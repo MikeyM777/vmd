@@ -343,3 +343,15 @@ def test_an_unknown_encoder_is_named_not_guessed(camera: tuple[str, int]) -> Non
     result = service.set_encoder("does-not-exist", width=1280, height=720)
     assert result["ok"] is False
     assert "does-not-exist" in result["error"]
+
+
+def test_stop_and_home_with_no_camera_say_so_instead_of_raising() -> None:
+    """The state every first run is in: an address has not been typed yet.
+
+    The Live tab calls stop() on every key release and home() on Home, both from
+    a Qt key handler. An exception there is not a message the operator can read,
+    it is the console going down - so these must answer the same way move() does.
+    """
+    service = PtzService(Settings())
+    assert service.stop() == {"ok": False, "error": "no camera address set"}
+    assert service.home() == {"ok": False, "error": "no camera address set"}

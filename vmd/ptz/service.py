@@ -148,8 +148,13 @@ class PtzService:
     def move(self, pan: float, tilt: float, zoom: float) -> dict:
         return self._do("move", lambda: self.camera.move(pan, tilt, zoom))
 
+    # Lambdas, not bound methods. `self.camera.stop` is evaluated before `_do`
+    # is entered, so on a console with no camera address yet - the state every
+    # first run is in - it raised AttributeError on None instead of returning
+    # the sentence `_do` exists to return. That escapes into a Qt key handler,
+    # which is the one place in this program an exception must never reach.
     def stop(self) -> dict:
-        return self._do("stop", self.camera.stop)
+        return self._do("stop", lambda: self.camera.stop())
 
     def home(self) -> dict:
-        return self._do("home", self.camera.home)
+        return self._do("home", lambda: self.camera.home())

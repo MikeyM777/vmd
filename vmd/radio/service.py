@@ -35,7 +35,11 @@ class RadioService:
             self._cached = None
 
     def status(self, now: float | None = None) -> dict:
-        now = time.monotonic() if now is None else now
+        # Whether the caller supplied the time matters below: a test drives this
+        # clock and must keep driving it, while the console must be timed by the
+        # clock that actually ran during the read.
+        supplied = now is not None
+        now = time.monotonic() if not supplied else now
         with self._lock:
             if self.radio is None:
                 enabled = self.settings.radio.enabled
@@ -58,5 +62,13 @@ class RadioService:
                 payload = {"connected": False, "reason": str(exc)}
 
             self._cached = payload
-            self._cached_at = now
+            # When the read finished, not when it started. A radio that is not
+            # answering takes both login attempts' timeouts to say so - longer
+            # than the cache window - so stamping the cache with the time before
+            # the call left it already expired the moment it was written, and
+            # the console's two-second heartbeat went straight back into another
+            # blocking read. The window then froze for as long as the radio
+            # stayed down, which is exactly when the operator needs the Settings
+            # tab to find out why.
+            self._cached_at = now if supplied else time.monotonic()
             return payload
