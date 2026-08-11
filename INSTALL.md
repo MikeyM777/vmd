@@ -6,6 +6,11 @@ this sort of thing before, the short version in [README.md](README.md) is enough
 Every step says what to click, what you should see, and what to do if you see
 something else instead.
 
+**If the laptop this has to run on has no internet**, do not start here. Go to
+[Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet)
+and read it first: you install on a connected machine, prepare a copy, and
+carry it over. The steps below are the first half of that.
+
 ---
 
 ## Before you start
@@ -13,22 +18,25 @@ something else instead.
 **You need:**
 
 - A computer running **Windows 10 or Windows 11**.
-- **About 6 GB of free space** on the C: drive. Most of that is the detector
-  (the AI part), which is large.
+- **About 10 GB of free space** on the C: drive. The finished folder is about
+  2 GB. The rest is a download cache that `uv` keeps outside the folder and
+  reuses — see [What ended up on your computer](#what-ended-up-on-your-computer),
+  which says exactly where it is and how to empty it.
 - **An internet connection**, for the installation only. The finished system is
   entirely offline: the laptop it runs on has no wifi and no internet, nothing it
   records is uploaded or shared anywhere, and nothing outside that one laptop can
-  see the video — see [Installing on a machine with no
-  internet](#installing-on-a-machine-with-no-internet) below.
-- **The Windows password of an administrator account.** Windows will ask for
-  permission once or twice while installing. If you normally use this computer
-  and can install programs on it, you already have this.
+  see the video.
+- **The Windows password of an administrator account.** Windows asks for
+  permission once. If you normally use this computer and can install programs on
+  it, you already have this.
 
-**How long it takes:** 5 to 20 minutes, depending on your internet speed. Most of
-that is one large download that runs on its own — you do not have to watch it.
+**How long it takes:** 10 to 30 minutes, depending on your internet speed. Most
+of that is two large downloads that run on their own — you do not have to watch
+them.
 
-**You do not need to install Python.** The installer brings its own. If you
-already have Python, it is not touched or changed.
+**You do not need to install Python.** The installer brings its own, and keeps
+it inside the project folder. If you already have Python, it is not touched or
+changed.
 
 ---
 
@@ -42,20 +50,26 @@ to receive updates later.
 1. Open this page in your browser:
    **https://github.com/noamsolomon123/vmd**
 
-2. Find the green button near the top right that says **`<> Code`**. Click it.
+2. Above the file list there is a button that says **`desktop-console`** with a
+   branch icon. If it says something else — `main`, or `master` — click it and
+   choose **desktop-console** from the list. That is the version this document
+   describes.
 
-3. A small menu opens. Click **Download ZIP** at the bottom of that menu.
+3. Find the green button near the top right that says **`<> Code`**. Click it.
 
-4. The file **`vmd-master.zip`** downloads. It usually lands in your **Downloads**
-   folder. Your browser may show it at the bottom of the window or at the top
-   right — either way, it is in Downloads.
+4. A small menu opens. Click **Download ZIP** at the bottom of that menu.
 
-5. Open the **Downloads** folder (press `Windows key + E` to open File Explorer,
+5. A file whose name starts with **`vmd-`** downloads — `vmd-desktop-console.zip`
+   if you followed step 2. It usually lands in your **Downloads** folder. Your
+   browser may show it at the bottom of the window or at the top right — either
+   way, it is in Downloads.
+
+6. Open the **Downloads** folder (press `Windows key + E` to open File Explorer,
    then click **Downloads** in the left-hand list).
 
-6. **Right-click** `vmd-master.zip` and choose **Extract All…**
+7. **Right-click** the `vmd-…zip` file and choose **Extract All…**
 
-7. A window appears asking where to put the files. Delete whatever is in the box
+8. A window appears asking where to put the files. Delete whatever is in the box
    and type exactly:
 
    ```
@@ -69,10 +83,10 @@ to receive updates later.
    > Desktop, or Documents if you can avoid it — OneDrive in particular syncs
    > files while the program is trying to use them.
 
-8. When it finishes, a folder opens. **You may see one folder inside called
-   `vmd-master`.** If you do, open it — the real files are in there. You are in
-   the right place when you can see files named `install.bat`, `README.md` and
-   `pyproject.toml` side by side.
+9. When it finishes, a folder opens. **You may see one folder inside** with a
+   name like `vmd-desktop-console`. If you do, open it — the real files are in
+   there. You are in the right place when you can see files named `install.bat`,
+   `README.md` and `pyproject.toml` side by side.
 
 ### Way B — Use git (if you have it)
 
@@ -82,7 +96,7 @@ to receive updates later.
 
    ```powershell
    cd C:\
-   git clone https://github.com/noamsolomon123/vmd.git VMD
+   git clone --branch desktop-console https://github.com/noamsolomon123/vmd.git VMD
    cd C:\VMD
    ```
 
@@ -126,31 +140,50 @@ block the file. Close the window and continue.
    - Click the small text **More info**.
    - Then click the button **Run anyway**.
 
-4. **Windows may ask "Do you want to allow this app to make changes to your
-   device?"** — click **Yes**. This is Windows installing the components, and it
-   can appear more than once.
+4. **A second black window opens and Windows asks "Do you want to allow this app
+   to make changes to your device?"** — click **Yes**.
 
-5. **Now wait and watch.** The window prints eight steps. Here is what each one is
-   doing and what "good" looks like:
+   That second window installs the two things that have to go on the computer
+   itself rather than into the folder: **uv** and **VLC**. It closes by itself
+   after a minute or two, and the first window carries on. Do not close either
+   of them.
+
+   > If you click **No**, nothing breaks immediately — Windows will just ask
+   > again, once per item. If you click No to all of them, the installer says
+   > plainly what is missing at the end.
+
+5. **Now wait and watch.** The first window prints twelve steps. Here is what
+   each one is doing and what "good" looks like:
 
    | Step | What it is doing | You should see |
    |---|---|---|
-   | `[1/8]` | Checking that Windows can install software | `winget is available.` |
-   | `[2/8]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
-   | `[3/8]` | Installing **ffmpeg** — the thing that records video | `ffmpeg is already installed.` or `ffmpeg installed.` |
-   | `[4/8]` | Installing **VLC** — the thing that draws the live picture in the console | `VLC is already installed.` or `VLC installed.` |
-   | `[5/8]` | Downloading **go2rtc** — it takes the camera's video once and passes it to the console | `go2rtc installed to bin\go2rtc.exe` |
-   | `[6/8]` | Downloading Python and all the libraries | A long list of lines starting with `+`, then `Environment ready.` |
-   | `[7/8]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (6.7 MB)` |
-   | `[8/8]` | Starting the console | `Installed.`, then the console window opens |
+   | `[1/12]` | Checking that Windows can install software | `winget is available.` |
+   | `[2/12]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
+   | `[3/12]` | Installing **VLC** — the thing that draws the live picture in the console | `VLC is already installed.` or `VLC installed.` |
+   | `[4/12]` | Downloading **ffmpeg** — the thing that records video — into `bin\` | `ffmpeg installed to bin\ffmpeg.exe` |
+   | `[5/12]` | Downloading **go2rtc** — it takes the camera's video once and passes it to the console | `go2rtc installed to bin\go2rtc.exe` |
+   | `[6/12]` | Downloading the **detector's weights** — the file that lets it name what moved | `yolo11n.pt downloaded.` |
+   | `[7/12]` | Putting a copy of **uv** inside the folder, and the folder's `bin\` on your PATH | `uv copied to bin\uv.exe` |
+   | `[8/12]` | Installing **Python itself**, inside the folder | `Python installed into bin\python\` |
+   | `[9/12]` | Downloading every library the program uses | A long list of lines starting with `+`, then `Environment ready.` |
+   | `[10/12]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (6.7 MB)` |
+   | `[11/12]` | Making the system come back by itself after a restart | `"VMD Recorder" created` and `"VMD Console" created` |
+   | `[12/12]` | Starting the console | `Installed.`, then the console window opens |
 
-   **Step 6 is the long one.** It downloads roughly 3 GB. The screen may look
-   frozen for minutes at a time. It is not frozen. Leave it alone.
+   **Steps 4 and 9 are the long ones.** Step 4 downloads about 170 MB and step 9
+   about 1.5 GB. The screen may look frozen for minutes at a time. It is not
+   frozen. Leave it alone.
 
 6. **When it is done** you will see the word **`Installed.`** in green and the
    console itself opens — its own window, a dark screen with two video panels and
    a column of readings on the right. There is no web page and no address to
    type anywhere.
+
+   **The first time the console opens it can take fifteen seconds**, with
+   nothing on the screen while you wait. That is VLC building an index of its
+   own parts. The installer tries to do that for you in step 3, so usually you
+   will not see it — but if you do, it is not stuck. Every start after the first
+   takes about five seconds.
 
 7. **Leave the black window open while the console is open.** The console runs
    from it; closing the black window closes the console. Closing the console does
@@ -183,35 +216,102 @@ Optional, but it takes thirty seconds and tells you for certain.
 3. Type `powershell` over it and press **Enter**. A blue window opens, already
    pointed at the right folder.
 
-4. Type this and press **Enter**:
+4. Type this and press **Enter**, all on one line:
 
    ```powershell
-   uv run pytest
+   uv run --offline --frozen --no-sync pytest
    ```
 
    After a moment you should see a row of dots and a line ending in `passed`.
    Dots are good. Letters like `F` or `E` mean something is wrong — see the
    table below.
 
+   > The three words after `run` mean "do not go to the internet for this".
+   > They are how the console starts too, and they are the difference between a
+   > command that works on the offline laptop and one that hangs there.
+
 5. Type this and press **Enter**:
 
    ```powershell
-   ffmpeg -version
+   .\bin\ffmpeg.exe -version
    ```
 
-   You should see several lines of version information. `not recognized` means
-   ffmpeg did not install — see the table below.
+   You should see several lines of version information. `not recognized` or
+   `cannot find the path` means ffmpeg did not install — see the table below.
 
 6. Type this and press **Enter**, all on one line:
 
    ```powershell
-   uv run python -c "import vlc; vlc.Instance(); print('vlc ok')"
+   uv run --offline --frozen --no-sync python -c "import vlc; vlc.Instance(); print('vlc ok')"
    ```
 
    `vlc ok` on the last line means the console will be able to draw the live
-   picture. VLC often prints a few lines about a `stale plugins cache` first —
-   ignore those, they are harmless. No `vlc ok` at all means VLC is missing, or
-   is the 32-bit one — see the table below.
+   picture. VLC may print a long list of lines about a `stale plugins cache`
+   first — ignore those, they are harmless, and they are the reason a first
+   start can be slow. No `vlc ok` at all means VLC is missing, or is the 32-bit
+   one — see the table below.
+
+---
+
+## Part 5 — It starts by itself now
+
+This laptop is meant to be on all the time, recording all the time. Windows
+restarts anyway: an update, a power cut, somebody pressing the wrong thing. Step
+11 of the installer set that up so a restart costs nothing.
+
+**What was created.** Two entries in Windows Task Scheduler:
+
+| Name | When | What it does |
+|---|---|---|
+| **VMD Recorder** | When you sign in to Windows | Starts the recording, on its own, without the console |
+| **VMD Console** | 45 seconds later | Opens the console window |
+
+They are separate on purpose. **Recording is the product; the console is only
+the window onto it.** If the console ever fails to open — a broken settings
+file, a VLC that will not load — the disk keeps filling anyway. The console,
+when it does open, notices the recorder is already running and uses that one
+rather than starting a second.
+
+Also set, because a laptop that goes to sleep records nothing:
+
+- it never sleeps, never hibernates, and never spins its disks down
+- **closing the lid does nothing**
+
+**What is still missing, and it matters.** All of that happens when somebody
+*signs in* to Windows. After a power cut the laptop comes back on and stops at
+the sign-in screen, recording nothing, until a person types the password.
+
+To close that gap, Windows can sign itself in:
+
+1. Open the `C:\VMD\scripts` folder.
+2. **Right-click** `autostart-on.bat` and choose **Run as administrator**.
+3. It explains what it costs, then asks you to type `YES` in capitals, then asks
+   for the Windows password of this account.
+
+**What it costs, plainly:** anyone who opens the laptop gets a signed-in desktop
+with no password, and the password is written into the Windows registry in clear
+text, where any administrator of the machine can read it. In exchange, a power
+cut costs nothing at all.
+
+For this deployment — one laptop, no network of any kind, physically inside the
+perimeter it is watching, doing nothing but recording — that is usually the
+right trade. It is still your decision, so nothing switches it on for you.
+
+**To turn all of this off:** open `C:\VMD\scripts` and double-click
+**`autostart-off.bat`**. If you switched the automatic sign-in on, right-click it
+and choose **Run as administrator** instead, so it can switch that off too and
+delete the stored password. Nothing that is currently running stops, and no
+recording is deleted.
+
+**To see what is on right now:** double-click **`autostart-on.bat`**. It sets
+everything up again — which is harmless, it is the same two entries — and then
+prints the current state:
+
+```
+    VMD Recorder       on   (Ready)
+    VMD Console        on   (Ready)
+    Automatic sign-in  off  (somebody must sign in after a restart)
+```
 
 ---
 
@@ -219,18 +319,23 @@ Optional, but it takes thirty seconds and tells you for certain.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| The black window flashes and vanishes instantly | The file was run in a way that closes on its own | Do not run it from inside the ZIP. Extract it first (Part 1, step 6) and double-click the extracted copy |
+| The black window flashes and vanishes instantly | The file was run in a way that closes on its own | Do not run it from inside the ZIP. Extract it first (Part 1, step 8) and double-click the extracted copy |
 | `winget is not available on this machine.` | Windows is missing its package installer | Open the Microsoft Store, search for **App Installer**, install it, restart the computer, run `install.bat` again |
 | `Could not download go2rtc` | The download was blocked or the connection dropped | Everything else still installed. Download the file yourself from https://github.com/AlexxIT/go2rtc/releases/latest — take `go2rtc_win64.zip`, open it, and drag `go2rtc.exe` into the `bin` folder inside `C:\VMD` |
-| `WARNING - ffmpeg is not installed` | The recorder cannot record without it | Open PowerShell and run `winget install --id Gyan.FFmpeg -e`, then close PowerShell, reopen it, and run `install.bat` again |
+| `Could not put ffmpeg in bin\` | The recorder cannot record without it | Download the *release essentials* zip from https://www.gyan.dev/ffmpeg/builds/, open it, and drag `ffmpeg.exe` into `C:\VMD\bin\`. Then run `install.bat` again |
+| `Without this file, movement is still detected but never named` | `yolo11n.pt` did not download | Detection still works; it just cannot say *what* moved. Download it from https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt and save it into `C:\VMD` |
 | `WARNING - VLC is not installed` | The console opens but shows no live picture | Install VLC from https://www.videolan.org/vlc/ — take the **64-bit Windows installer**, click through it, then run `install.bat` again |
 | A video panel says `No video here:` | The console could not find VLC, or found a 32-bit one | Install the **64-bit** VLC from https://www.videolan.org/vlc/ and start the console again. Everything except the picture keeps working meanwhile |
+| The console takes fifteen seconds to appear, once | VLC is rebuilding its own index of parts | Nothing to do. Later starts take about five seconds. To fix it for good, run `install.bat` again — step 3 rebuilds that index while it has permission to |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
+| `No Python at '…\python.exe'` | The folder was copied from another machine without being prepared | Do not copy the folder by hand. See [Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet) |
+| `uv is not installed, so nothing can run yet` on a machine where it is | `bin\` is not on this account's PATH yet | Sign out of Windows and back in. If it persists, run `install.bat` again |
 | Antivirus blocks or deletes something | Some antivirus tools dislike newly downloaded `.exe` files | Allow the `C:\VMD` folder in your antivirus, then run `install.bat` again |
 | `Access is denied` | The folder is protected | Move the whole `VMD` folder to `C:\VMD` and try again. Avoid `C:\Program Files` |
 | The console window does not open at the end | Only the last step failed; everything else is installed | Double-click `VMD.exe` in `C:\VMD` yourself |
 | You cannot see the console after starting it | Its window opened behind the others | Click its icon in the taskbar, or hold `Alt` and press `Tab` |
 | `Could not build VMD.exe` | Only the convenience launcher failed | Everything works — double-click `VMD.bat` instead |
+| Two console windows are open at once | One was left over from before | Close both, then double-click `VMD.exe` once. They share one settings file and one recording folder, and two of them fighting over it is worth avoiding |
 | It asks about Python or opens the Microsoft Store | Windows is offering its own Python | Close that window. You do not need it. `uv` installs the Python this project uses |
 
 **Running `install.bat` again is always safe.** It skips whatever is already
@@ -242,26 +347,44 @@ done. If you are stuck, that is the first thing to try.
 
 | Thing | Where | What it does |
 |---|---|---|
-| **uv** | Installed by Windows, system-wide | Manages Python and the libraries |
-| **ffmpeg** | Installed by Windows, system-wide | Records the video to disk |
+| **uv** | Installed by Windows, system-wide, **and** copied to `C:\VMD\bin\uv.exe` | Manages Python and the libraries. The copy in `bin\` is the one that travels to the offline laptop |
 | **VLC** | Installed by Windows, system-wide | Draws the live picture inside the console window |
+| **ffmpeg** | `C:\VMD\bin\ffmpeg.exe` | Records the video to disk |
 | **go2rtc** | `C:\VMD\bin\go2rtc.exe` | Takes the camera's video once and passes it to the console |
-| **Python + libraries** | `C:\VMD\.venv\` | Everything the program itself runs on |
+| **Python** | `C:\VMD\bin\python\` | Deliberately inside the folder, so the folder can be copied to a machine that has no internet and still run |
+| **The libraries** | `C:\VMD\.venv\` | About 1.5 GB. Everything the program itself runs on |
+| **The detector's weights** | `C:\VMD\yolo11n.pt` | What lets it say *person* rather than only *something moved* |
 | **The project** | `C:\VMD\` | The code, the console, the documents |
 
-Nothing was placed anywhere else, and nothing starts by itself when Windows
-starts. The one thing that does run in the background is the recorder, and only
-once you have opened the console: the console starts it, and it deliberately
-keeps running after the console is closed so that closing a window never stops
-the recording. Deleting the `C:\VMD` folder removes the project completely.
+Four things live **outside** that folder, and deleting `C:\VMD` does not remove
+any of them:
 
-To remove the system-wide tools as well:
+| Thing | Where | How to remove it |
+|---|---|---|
+| **uv's download cache** | `%LOCALAPPDATA%\uv\cache` — on the machine this was written on it had grown to **21.7 GB** (it is shared with any other project that uses uv) | `uv cache clean` |
+| **The PATH entry** | `C:\VMD\bin` added to your account's PATH | `scripts\autostart-off.bat` does not do this. Remove it in Windows Settings → *Edit environment variables for your account* |
+| **The two scheduled tasks** | Windows Task Scheduler | Double-click `scripts\autostart-off.bat` |
+| **uv and VLC themselves** | Installed system-wide | See below |
+
+### Removing it completely
+
+Do these in order:
 
 ```powershell
+# 1. stop things starting by themselves (run as administrator if you switched
+#    the automatic Windows sign-in on)
+C:\VMD\scripts\autostart-off.bat
+
+# 2. empty the download cache - this is the big one
+uv cache clean
+
+# 3. remove the system-wide tools
 winget uninstall --id astral-sh.uv -e
-winget uninstall --id Gyan.FFmpeg -e
 winget uninstall --id VideoLAN.VLC -e
 ```
+
+Then delete the `C:\VMD` folder, and remove `C:\VMD\bin` from your PATH in
+Windows Settings → *Edit environment variables for your account*.
 
 ---
 
@@ -272,9 +395,13 @@ Open PowerShell in `C:\VMD` (Part 4, steps 1–3), then:
 | To do this | Type this |
 |---|---|
 | Open the console | `.\VMD.exe` — or just double-click it |
-| Start recording | `uv run python -m vmd.record_main` |
-| Run the tests | `uv run pytest` |
-| Find out what camera is on the network | `uv run python spike\probe_camera.py 192.168.1.64 --user admin --password YOURPASSWORD` |
+| Start recording | `uv run --offline --frozen --no-sync python -m vmd.record_main` |
+| Run the tests | `uv run --offline --frozen --no-sync pytest` |
+| Find out what camera is on the network | `uv run --offline --frozen --no-sync python spike\probe_camera.py 192.168.1.64 --user admin --password YOURPASSWORD` |
+
+> On a machine that has internet you can leave out `--offline --frozen
+> --no-sync`. On the laptop that does not, leaving them out is how you get a
+> command that hangs with no way out.
 
 ## Entering the camera details
 
@@ -303,6 +430,12 @@ recording service — which is a separate program — reads exactly what you typ
 If you type something impossible, Save refuses and says why, in words, next to
 the button. Nothing is written until it is valid.
 
+> **Nothing records until this is filled in.** There is no camera to record
+> before it, so the recorder that starts at sign-in looks at the missing
+> settings file, writes one line saying so into `bin\logs\autostart.log`, and
+> stops. Once you have pressed Save, the console starts recording immediately,
+> and every restart after that starts it on its own.
+
 **One honest note about what you are looking at.** The console is real: the live
 panels show the camera through VLC, and steering, playback, settings and logs all
 work. Recording is real too, and it keeps running whether the console window is
@@ -314,31 +447,97 @@ account, no upload, no cloud, and no wifi on the machine at all.
 
 ---
 
-## Installing on a machine with no internet
+## Installing on a laptop with no internet
 
 The console is meant to run on a laptop with no network of any kind. You cannot
-install directly on such a machine, so you build it elsewhere and carry it over.
+install directly on such a machine, so you build it on one that has internet,
+prepare the copy, and carry it over.
 
-1. On a computer **that has internet**, follow Parts 1 to 3 above.
-2. Copy the **entire `C:\VMD` folder** to a USB drive. This must include the
-   hidden-looking `.venv` folder and the `bin` folder — that is where Python,
-   the libraries and go2rtc actually live.
-3. Put two more things on the same USB drive. They are installed system-wide and
-   do **not** travel inside the `C:\VMD` folder:
-   - **ffmpeg** — download it from https://www.gyan.dev/ffmpeg/builds/ (take the
-     *release essentials* zip). On the offline machine, unpack it and copy
-     `ffmpeg.exe` into `C:\VMD\bin\`.
-   - **VLC** — download the **64-bit Windows installer** from
-     https://www.videolan.org/vlc/. On the offline machine, double-click it and
-     click through it. Without VLC the console opens but shows no live picture.
-4. Copy the folder from the USB drive to `C:\VMD` on the offline machine.
-5. Open PowerShell there and run `uv run pytest`. If the tests pass, the
-   transfer worked.
+**You cannot do this by copying the folder in File Explorer.** A folder copied
+by hand does not work, and it fails in a way that looks like a bug rather than a
+mistake: the copy carries `.venv`, but `.venv` only contains a note saying where
+Python is, and Python was in `C:\Users\<your name>\AppData\...` on the machine
+you copied *from*. On the offline laptop that folder does not exist, and every
+launcher stops with `No Python at '…\python.exe'`. `uv` does not travel by hand
+either, and nothing starts without it. The two scripts below exist so that none
+of that can happen.
+
+### Stage 1 — on the machine that has internet
+
+1. Follow **Parts 1 to 3** above. Let the installer finish.
+
+2. Plug in a USB drive with **at least 8 GB** free.
+
+3. Open the folder `C:\VMD\scripts`.
+
+4. **Double-click `offline-kit.bat`.**
+
+   It fetches the VLC installer — the one thing that cannot live inside the
+   folder — then checks, item by item, that everything else the other laptop
+   needs is actually inside it:
+
+   ```
+   [2/3] Checking that everything the other laptop needs is inside this folder
+         the Python environment (.venv)
+         uv, in bin\uv.exe
+         ffmpeg, in bin\ffmpeg.exe
+         go2rtc, in bin\go2rtc.exe
+         the detector's weights (yolo11n.pt)
+         VMD.exe
+         the VLC installer
+         the project's own Python (bin\python\), and .venv is built against it
+   ```
+
+   Anything it cannot find, it prints as `MISSING` and tells you what to do.
+   **If it says the environment was built against an interpreter outside this
+   folder**, delete the `.venv` folder inside `C:\VMD` and run `install.bat`
+   again — that rebuilds it correctly, and takes a few minutes.
+
+5. It then asks for the **drive letter** of the USB drive — type `E`, or
+   whichever it is, and press Enter. It copies the whole folder across. This is
+   about 2 GB and takes a few minutes.
+
+   It deliberately leaves behind: your recordings, the recording index, and
+   `settings.json`. Camera addresses and passwords are typed on the laptop that
+   will use them, in the Settings tab, like everything else.
+
+### Stage 2 — on the laptop with no internet
+
+1. Plug in the USB drive.
+
+2. Copy the **`VMD`** folder from the USB drive to **`C:\VMD`**. (Drag it onto
+   the C: drive in File Explorer. Any folder works — the installer corrects
+   itself — but `C:\VMD` is what the rest of this document assumes.)
+
+3. Open the folder `C:\VMD\scripts`.
+
+4. **Double-click `offline-install.bat`.** Not `install.bat` — that one needs an
+   internet connection and this one does not.
+
+5. It prints seven steps. Windows asks for permission once, when it installs
+   VLC; click **Yes**. When it says `Installed.` in green, the console opens.
+
+6. Fill in the camera details in the **Settings** tab and press **Save**, as
+   described above. Recording starts as soon as you do.
+
+7. Restart the laptop once and check that the console comes back on its own.
+   That is the whole point of the exercise, and it is worth seeing it happen
+   before you walk away from the machine. Read
+   [Part 5 — It starts by itself](#part-5--it-starts-by-itself) about signing in
+   automatically, because until you set that up, coming back on its own still
+   means somebody types the Windows password first.
 
 **Both machines must run the same version of Windows and the same kind of
 processor** (both 64-bit Intel/AMD, or both ARM). Python and the libraries are
 compiled for the machine they were downloaded for, and will not run on a
 different kind.
+
+**What has not been tested end to end.** The mechanism above was proved on one
+machine — a project-local Python, a folder moved to a different path, its
+recorded paths repaired, and `uv run --offline --frozen --no-sync` running from
+it afterwards. The *two-machine* case has not been run, because that needs a
+second machine. Do Stage 2 with somebody who can read a message on the screen the
+first time you do it, not on the day the camera goes up.
 
 ---
 
