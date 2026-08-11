@@ -49,6 +49,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping
 
+from vmd import app_folder
+
 logger = logging.getLogger(__name__)
 
 # The architectures a Windows binary announces in its header. There is no other
@@ -65,6 +67,10 @@ ARM64 = 0xAA64
 BITS = {X86: 32, X64: 64, ARM64: 64}
 
 LIBRARY = "libvlc.dll"
+# The library that libvlc.dll is a thin wrapper around. It is checked for by
+# name because its absence is not an error anyone can read: python-vlc ends the
+# process rather than raising.
+CORE = "libvlccore.dll"
 PLUGINS = "plugins"
 
 # Where VLC records itself. Each hive is read in both views, because a 32-bit
@@ -128,9 +134,13 @@ def machine_of(path: Path | str) -> int | None:
 def _candidates(
     read_install_dir: Callable[[str, int], str | None],
     environ: Mapping[str, str],
+    app_folder: Path | None,
 ) -> tuple[list[Path], list[Path]]:
     """Every folder worth opening, and the ones worth naming if none of them
     hold anything.
+
+    The order is an order of intent. A folder somebody chose beats a folder
+    something happened to write, and both beat a guess.
 
     The named list is deliberately shorter: `PATH` is searched because a folder
     on it might hold VLC, but reciting forty system folders at an operator is
@@ -151,6 +161,18 @@ def _candidates(
     hand_set = environ.get("PYTHON_VLC_LIB_PATH")
     if hand_set:
         add(Path(hand_set).parent)
+
+    # Then a VLC carried beside the console, which is how it reaches a laptop
+    # that has no network to install one from: the folder travels inside the
+    # project, on the same stick as everything else, and needs nobody to run an
+    # installer as an administrator on the day the camera goes up. It is ahead
+    # of the registry and the usual folders on purpose - someone put it there
+    # for this machine, where a machine-wide install is only whatever was on
+    # the laptop already. It is checked exactly like the rest: shipping a
+    # 32-bit one is easier than installing a 32-bit one, because it is copied
+    # once, elsewhere, by someone who cannot try it here.
+    if app_folder is not None:
+        add(Path(app_folder) / "VLC")
 
     for hive, view in HIVES:
         recorded = read_install_dir(hive, view)
@@ -176,6 +198,7 @@ def find_libvlc(
     read_machine: Callable[[Path], int | None],
     environ: Mapping[str, str],
     python_bits: int,
+    app_folder: Path | None = None,
 ) -> LibVlc:
     """The whole search, over inputs that are handed in. Raises `VlcUnavailable`
     with one sentence when there is nothing here this console can use.
@@ -185,10 +208,11 @@ def find_libvlc(
     wrong architecture is a two-minute fix and must be named as such, and one
     missing its plugins is a different two-minute fix.
     """
-    folders, named = _candidates(read_install_dir, environ)
+    folders, named = _candidates(read_install_dir, environ, app_folder)
 
     wrong_bits: list[tuple[Path, int]] = []
     no_plugins: list[Path] = []
+    half_there: list[Path] = []
 
     for folder in folders:
         dll = folder / LIBRARY
@@ -203,12 +227,28 @@ def find_libvlc(
         if bits != python_bits:
             wrong_bits.append((folder, bits))
             continue
+        # libvlc.dll is a wrapper: everything is in libvlccore.dll beside it,
+        # and without that file python-vlc gets far enough to try the load and
+        # answers sys.exit(1) - the one exit the console cannot survive
+        # cleanly. Measured by copying a VLC folder and leaving that one file
+        # out, which is what half-copying a folder onto a stick looks like.
+        if not exists(folder / CORE):
+            half_there.append(folder)
+            continue
         plugins = folder / PLUGINS
         if not exists(plugins):
             no_plugins.append(folder)
             continue
         logger.info("using the VLC in %s", folder)
         return LibVlc(folder=folder, dll=dll, plugins=plugins)
+
+    if half_there:
+        folder = half_there[0]
+        raise VlcUnavailable(
+            f"The VLC in {folder} is missing a file it needs, so it would not "
+            f"start. Copy the whole VideoLAN\\VLC folder across, or install VLC "
+            f"for Windows ({python_bits}-bit) again. {RESTART} {RECORDING}"
+        )
 
     if no_plugins:
         folder = no_plugins[0]
@@ -288,6 +328,27 @@ def announce(
     if add_dll_directory is None:  # pragma: no cover - Windows always has it
         add_dll_directory = getattr(os, "add_dll_directory", _no_dll_directory)
 
+    # PYTHON_VLC_LIB_PATH is not a convenience and must not be removed as one.
+    #
+    # It is the only branch of python-vlc's search that returns before the
+    # Windows one, and the Windows one does this (vlc.py, lines 149-154):
+    #
+    #     p = os.getcwd()
+    #     os.chdir(plugin_path)
+    #     dll = ctypes.CDLL(".\\" + libname)
+    #     os.chdir(p)
+    #
+    # There is no try/finally around it. A CDLL that raises - the 32-bit
+    # library, a missing dependency, anything - leaves this process sitting in
+    # C:\Program Files\VideoLAN\VLC for the rest of its life. The console
+    # resolves paths against the working directory when it is not frozen, and
+    # settings.json is one of them, so the settings file would then be read
+    # from and written to inside the VLC installation. That is a data loss that
+    # looks like nothing at all.
+    #
+    # Setting this variable means that branch is never reached. There is a test
+    # that loads VLC in a fresh interpreter and checks the working directory
+    # came back where it started; it is guarding this line.
     environ["PYTHON_VLC_LIB_PATH"] = str(found.dll)
     environ["PYTHON_VLC_MODULE_PATH"] = str(found.plugins)
     environ["VLC_PLUGIN_PATH"] = str(found.plugins)
@@ -324,6 +385,7 @@ def prepare() -> LibVlc:
         read_machine=machine_of,
         environ=os.environ,
         python_bits=struct.calcsize("P") * 8,
+        app_folder=app_folder(),
     )
     announce(found)
     _found = found

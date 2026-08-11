@@ -31,6 +31,9 @@ HERE = Path(r"C:\Program Files\VideoLAN\VLC")
 THERE = Path(r"C:\Program Files (x86)\VideoLAN\VLC")
 PER_USER = Path(r"C:\Users\op\AppData\Local\Programs\VideoLAN\VLC")
 ELSEWHERE = Path(r"D:\Tools\VLC")
+# Where the console itself lives, which on the deployment laptop is a folder in
+# somebody's profile and not the one any document says it is.
+BESIDE = Path(r"C:\Users\op\vmd")
 
 WINDOWS = {
     "ProgramFiles": PROGRAM_FILES,
@@ -72,7 +75,7 @@ def an_installation(folder: Path, machine: int = X64):
     """The three things a working VLC folder has: the library, its neighbour and
     the plugins tree."""
     return (
-        a_disk(folder, folder / "libvlc.dll", folder / "plugins"),
+        a_disk(folder, folder / "libvlc.dll", folder / "libvlccore.dll", folder / "plugins"),
         {str(folder / "libvlc.dll").lower(): machine},
     )
 
@@ -83,6 +86,7 @@ def look(
     machines: dict[str, int] | None = None,
     environ: dict[str, str] | None = None,
     python_bits: int = 64,
+    app_folder: Path | None = None,
 ) -> LibVlc:
     machines = machines or {}
     return find_libvlc(
@@ -91,6 +95,7 @@ def look(
         read_machine=lambda path: machines.get(str(path).lower()),
         environ=WINDOWS if environ is None else environ,
         python_bits=python_bits,
+        app_folder=app_folder,
     )
 
 
@@ -156,6 +161,67 @@ def test_vlc_in_a_usual_folder_is_found_with_nothing_in_the_registry(folder: Pat
     assert found.folder == folder
 
 
+# --------------------------------------------------- a VLC that travels with us
+
+
+def test_a_vlc_carried_in_the_app_folder_is_found() -> None:
+    """The offline laptop cannot install anything: no network, no store, and a
+    person at the far end of a USB stick on the day the camera goes up. A VLC
+    folder that travels inside the project and is simply found needs none of
+    that."""
+    exists, machines = an_installation(BESIDE / "VLC")
+    found = look(exists=exists, machines=machines, app_folder=BESIDE)
+
+    assert found.folder == BESIDE / "VLC"
+
+
+def test_the_vlc_carried_with_the_app_wins_over_whatever_is_installed() -> None:
+    """Someone put that folder there on purpose, and on this machine on purpose.
+    What a machine-wide installer once did is the weaker claim of the two."""
+    exists = a_disk(
+        HERE,
+        HERE / "libvlc.dll",
+        HERE / "libvlccore.dll",
+        HERE / "plugins",
+        BESIDE / "VLC",
+        BESIDE / "VLC" / "libvlc.dll",
+        BESIDE / "VLC" / "libvlccore.dll",
+        BESIDE / "VLC" / "plugins",
+    )
+    machines = {
+        str(HERE / "libvlc.dll").lower(): X64,
+        str(BESIDE / "VLC" / "libvlc.dll").lower(): X64,
+    }
+    found = look(
+        registry=a_registry(HKLM_64=str(HERE)),
+        exists=exists,
+        machines=machines,
+        app_folder=BESIDE,
+    )
+
+    assert found.folder == BESIDE / "VLC", "the carried VLC lost to an installed one"
+
+
+def test_a_32_bit_vlc_carried_with_the_app_is_refused_in_those_words() -> None:
+    """Shipping the wrong one is easier than installing the wrong one - it is
+    copied once, on a different machine, by someone who cannot test it here. It
+    has to fail as loudly as an installed one, naming the folder that travelled."""
+    exists, machines = an_installation(BESIDE / "VLC", machine=X86)
+    said = refusal(exists=exists, machines=machines, app_folder=BESIDE)
+
+    assert "32-bit" in said and "64-bit" in said
+    assert str(BESIDE / "VLC") in said
+
+
+def test_a_carried_vlc_that_is_not_there_falls_through_to_everything_else() -> None:
+    """Nothing beside the app is the ordinary case, not a fault: an installed
+    VLC must still be found, exactly as it is now."""
+    exists, machines = an_installation(HERE)
+    found = look(exists=exists, machines=machines, app_folder=BESIDE)
+
+    assert found.folder == HERE
+
+
 def test_a_folder_named_by_the_operator_is_tried_before_anything_else() -> None:
     exists, machines = an_installation(ELSEWHERE)
     found = look(
@@ -214,9 +280,11 @@ def test_a_32_bit_vlc_is_ignored_when_a_64_bit_one_is_also_installed() -> None:
     exists = a_disk(
         HERE,
         HERE / "libvlc.dll",
+        HERE / "libvlccore.dll",
         HERE / "plugins",
         THERE,
         THERE / "libvlc.dll",
+        THERE / "libvlccore.dll",
         THERE / "plugins",
     )
     machines = {
@@ -228,11 +296,26 @@ def test_a_32_bit_vlc_is_ignored_when_a_64_bit_one_is_also_installed() -> None:
     assert found.folder == HERE
 
 
+def test_half_a_vlc_folder_is_refused_before_it_can_end_the_program() -> None:
+    """Measured, not imagined: a folder holding libvlc.dll and the plugins tree
+    but not libvlccore.dll gets as far as python-vlc, which cannot load it and
+    answers `sys.exit(1)`. That is the one exit this console cannot survive
+    cleanly, and it is exactly what half-copying a folder onto a USB stick
+    produces - which is now a thing this system invites people to do."""
+    exists = a_disk(HERE, HERE / "libvlc.dll", HERE / "plugins")
+    machines = {str(HERE / "libvlc.dll").lower(): X64}
+    said = refusal(registry=a_registry(HKLM_64=str(HERE)), exists=exists, machines=machines)
+
+    assert str(HERE) in said
+    assert "missing" in said or "incomplete" in said
+    assert "whole" in said, "nobody is told to copy the whole folder"
+
+
 def test_vlc_without_its_plugins_is_refused_rather_than_left_to_play_nothing() -> None:
     """A library with no plugins beside it starts, reports itself well and shows
     a black rectangle for ever. Refusing is the kinder failure: it says what to
     do, where a black rectangle says nothing."""
-    exists = a_disk(HERE, HERE / "libvlc.dll")
+    exists = a_disk(HERE, HERE / "libvlc.dll", HERE / "libvlccore.dll")
     machines = {str(HERE / "libvlc.dll").lower(): X64}
     said = refusal(registry=a_registry(HKLM_64=str(HERE)), exists=exists, machines=machines)
 
@@ -293,14 +376,24 @@ def test_a_library_whose_header_cannot_be_read_is_not_guessed_at() -> None:
 # --------------------------------------------------------------- how it reads
 
 
+def a_case(*present: Path, machine: int = X64) -> dict:
+    """A refusal built from a folder that holds only these files."""
+    return {
+        "registry": a_registry(HKLM_64=str(HERE)),
+        "exists": a_disk(HERE, *present),
+        "machines": {str(HERE / "libvlc.dll").lower(): machine},
+    }
+
+
 @pytest.mark.parametrize(
     "case",
     [
         {},
-        {"registry": a_registry(HKLM_32=str(THERE)), **dict(zip(("exists", "machines"), an_installation(THERE, X86)))},
-        {"registry": a_registry(HKLM_64=str(HERE)), "exists": a_disk(HERE, HERE / "libvlc.dll"), "machines": {str(HERE / "libvlc.dll").lower(): X64}},
+        a_case(HERE / "libvlc.dll", HERE / "libvlccore.dll", HERE / "plugins", machine=X86),
+        a_case(HERE / "libvlc.dll", HERE / "libvlccore.dll"),
+        a_case(HERE / "libvlc.dll", HERE / "plugins"),
     ],
-    ids=["nothing-installed", "wrong-bitness", "no-plugins"],
+    ids=["nothing-installed", "wrong-bitness", "no-plugins", "half-copied"],
 )
 def test_every_refusal_is_a_sentence_the_operator_can_act_on(case: dict) -> None:
     said = refusal(**case)
