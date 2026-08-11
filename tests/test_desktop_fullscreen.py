@@ -40,7 +40,12 @@ from PySide6.QtWidgets import (
 )
 
 from vmd.desktop.disk import DiskReading, DiskWatcher
-from vmd.desktop.live import UNANSWERED_NOTE
+from vmd.desktop.live import (
+    GIVEN_UP_WORDS,
+    GIVING_UP_AFTER,
+    RESTART_BACKOFF_MAX,
+    UNANSWERED_NOTE,
+)
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.window import ConsoleWindow
 from vmd.settings import Settings, StreamSettings, save_settings
@@ -199,10 +204,37 @@ def in_the_worst_state(window: ConsoleWindow) -> None:
     live = window.live
     live._alarm_label.setText("Movement on thermal at 03:41:08")
     live._alarm.setVisible(True)
-    for pane in live._panes.values():
-        pane.pretend_failed()
-    for _ in range(8):  # past GIVING_UP_AFTER, which is the longest stream line
+
+    # The stream line, which is the longest sentence on the Live tab and the
+    # reason this file measures it at all.
+    #
+    # It was not being measured. `pretend_failed()` was called once, before the
+    # loop; the first refresh restarted the pane, which puts it back to
+    # "connecting", and the seven refreshes after it read "connecting" and
+    # overwrote the label with it. The result was 'thermal  -  connecting' - 22
+    # characters - against the 66 of GIVEN_UP_WORDS, so nineteen layout
+    # assertions in this file were sizing a string a third of the length of the
+    # one that matters.
+    #
+    # Two things were missing. The pane has to be put back into "failed" before
+    # every refresh, because the console restarting it is what takes it out of
+    # that state; and the clock has to move, because `_restart_when_due` refuses
+    # to try again until the backoff has elapsed and every refresh inside it is
+    # a refresh that counts nothing. Hand-wound rather than slept through: this
+    # would otherwise be a five-minute test, and a real clock in a layout test
+    # is a flake waiting for a slow machine.
+    wound = [0.0]
+    live._clock = lambda: wound[0]
+    for _ in range(GIVING_UP_AFTER + 1):
+        for pane in live._panes.values():
+            pane.pretend_failed()
         live.refresh()
+        wound[0] += RESTART_BACKOFF_MAX + 1.0
+    for name in live.stream_names():
+        assert GIVEN_UP_WORDS in live.stream_label_text(name), (
+            f"the longest stream line never appeared: {live.stream_label_text(name)!r}"
+        )
+
     # After the refreshes, which ask the camera what it last said and would put
     # this back to nothing.
     live._ptz_note.setText(UNANSWERED_NOTE)
@@ -280,6 +312,21 @@ def as_fullscreen(qtbot, window: ConsoleWindow, width: int, height: int) -> list
     # measured; a deleted parent takes its children with it.
     window._fullscreen_host = host
     return pages
+
+
+def still_given_up(window: ConsoleWindow) -> str:
+    """The stream line, checked at the moment the measurement is taken.
+
+    Laying the pages out runs the console's own code, and anything that put a
+    pane back to "connecting" on the way would silently shrink the longest
+    sentence on the Live tab back to 22 characters - which is exactly the way
+    this file stopped measuring what it says it measures. Asserted here rather
+    than assumed, and returned so a failure names the string that was sized.
+    """
+    for name in window.live.stream_names():
+        text = window.live.stream_label_text(name)
+        assert GIVEN_UP_WORDS in text, f"{name} was measured as {text!r}"
+    return window.live.stream_label_text(window.live.stream_names()[0])
 
 
 def speakers(page: QWidget) -> list[QWidget]:
@@ -379,8 +426,10 @@ def test_no_tab_draws_a_sentence_through_another_one_when_fullscreen(
     """
     window = console(qtbot, tmp_path)
     in_the_worst_state(window)
+    pages = as_fullscreen(qtbot, window, width, height)
+    still_given_up(window)
     problems: list[str] = []
-    for page, name in zip(as_fullscreen(qtbot, window, width, height), ["Live", "Playback", "Settings", "Logs"]):
+    for page, name in zip(pages, ["Live", "Playback", "Settings", "Logs"]):
         problems += [f"{name}: {line}" for line in mushed(page)]
     assert problems == [], "text drawn through text at %dx%d:\n%s" % (
         width,
@@ -397,6 +446,7 @@ def test_no_sentence_in_the_side_column_is_cut_in_half(
     window = console(qtbot, tmp_path)
     in_the_worst_state(window)
     live, _playback, _settings, _logs = as_fullscreen(qtbot, window, width, height)
+    still_given_up(window)
     assert live.camera_note(), "the camera note has to be saying something"
     assert live.clipped() == [], "half a sentence is worse than none"
 
@@ -423,6 +473,7 @@ def test_the_side_columns_wrapped_sentences_ask_for_the_height_they_need(
     window = console(qtbot, tmp_path)
     in_the_worst_state(window)
     live, _playback, _settings, _logs = as_fullscreen(qtbot, window, 1366, 768)
+    still_given_up(window)
 
     for note in (live._ptz_note, live._movement_note):
         needed = note.heightForWidth(max(note.width(), 1))
@@ -442,8 +493,10 @@ def test_no_tab_is_squeezed_below_the_words_it_holds_when_fullscreen(
     """
     window = console(qtbot, tmp_path)
     in_the_worst_state(window)
+    pages = as_fullscreen(qtbot, window, width, height)
+    still_given_up(window)
     problems: list[str] = []
-    for page, name in zip(as_fullscreen(qtbot, window, width, height), ["Live", "Playback", "Settings", "Logs"]):
+    for page, name in zip(pages, ["Live", "Playback", "Settings", "Logs"]):
         problems += [f"{name}: {line}" for line in starved(page)]
     assert problems == [], "squeezed below what the words need at %dx%d:\n%s" % (
         width,
