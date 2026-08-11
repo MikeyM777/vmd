@@ -19,6 +19,12 @@ from typing import Callable
 
 from vmd.background import BackgroundValue
 from vmd.desktop.disk import DiskWatcher
+# The recorder's own exit code for "another recorder already holds the claim",
+# imported rather than repeated: it is a protocol between exactly these two
+# files, and a second copy of the number would be a second opinion within a
+# month. `vmd.record_main` costs the console nothing to import - it pulls the
+# standard library and vmd.storage, which the Playback tab already imports.
+from vmd.record_main import ALREADY_RECORDING_EXIT
 from vmd.settings import Settings
 from vmd.streaming.endpoint import is_live, read_endpoint
 from vmd.streaming.go2rtc import Go2rtcService
@@ -97,6 +103,19 @@ DETECTION_STATUS_STALE_INTERVALS = 4
 # which is the state a recorder pointed at an unwritable folder is actually in.
 FLAP_WINDOW = 120.0
 FLAP_LIMIT = 3
+
+# And how many times a child may be spawned inside that same window before the
+# console stops spawning it at all. One more than the flap limit, so the status
+# line has already crossed into "NOT recording - restarted N times" before the
+# console gives up: the operator is told it is not recording before, not after,
+# the console stops trying.
+#
+# Without this the supervisor starts a child that exits immediately every two
+# seconds for ever. That is thirty processes a minute, three lines in the Logs
+# tab per cycle, and a 500-line buffer in which nothing that explains the fault
+# survives more than a couple of minutes - so the one diagnostic the operator
+# has is destroyed by the fault it is meant to describe.
+SPAWN_LIMIT = FLAP_LIMIT + 2
 
 # The names detection was written with, kept pointing at the shared rule.
 DETECTION_FLAP_WINDOW = FLAP_WINDOW
@@ -331,6 +350,15 @@ class ChildProcess:
     pid_filename = ""
     label = ""
 
+    # Whether the child writes its own claim, in which case this console must
+    # not write one for it. See `start`, and RecorderProcess below.
+    claims_own_pid = False
+
+    # The exit code that means "another one of me is already running, so I stood
+    # down", or None for a child that has no such code. It is not a death and
+    # must never be answered by starting another one.
+    deferral_exit: int | None = None
+
     def __init__(
         self,
         settings_path: str | Path,
@@ -338,6 +366,7 @@ class ChildProcess:
         spawn=None,
         kill_tree=None,
         alive=None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.settings_path = Path(settings_path)
         self.pid_path = (
@@ -346,6 +375,11 @@ class ChildProcess:
         self._spawn = spawn or _default_spawn
         self._kill_tree = kill_tree or _taskkill_tree
         self._alive = alive or _pid_alive
+        self._clock = clock or time.monotonic
+        # When this child was last spawned, so that one which will not stay up
+        # stops being spawned; see SPAWN_LIMIT and `_held_back`.
+        self._spawned_at: list[float] = []
+        self.held_back = False
         self._process: subprocess.Popen | None = None
         self._adopted_pid: int | None = None
         # Whether that adopted PID is still alive, kept off the GUI thread. See
@@ -420,15 +454,53 @@ class ChildProcess:
         if self.running:
             return
 
+        # A child that exited because another copy of it already holds the claim
+        # did not fail: it did the one thing it exists to do. Read as an
+        # ordinary death it is the whole storm - the console starts another,
+        # which stands down as well, every two seconds for as long as the window
+        # is open. What that exit means is that the claim file now names the
+        # process that is really running, and that one is what to adopt.
+        stood_down = self._stood_down()
+
         adopted, recorded_start = self._read_pid()
         if adopted is not None and self._alive(adopted) and self._is_ours(adopted, recorded_start):
-            logger.info("a %s is already running (pid %s); adopting it", self.label, adopted)
+            if stood_down:
+                self._child_logger.info(
+                    "%s: the one this console started stood down to the %s that "
+                    "was already running (pid %s), so that one is adopted and "
+                    "no second one is started",
+                    self.label,
+                    self.label,
+                    adopted,
+                )
+            else:
+                logger.info(
+                    "a %s is already running (pid %s); adopting it", self.label, adopted
+                )
+            # The child this console started, if there was one, has gone: it is
+            # what stood down. Forgetting it is what makes `running` read the
+            # adopted PID rather than the exit code of a process nobody has any
+            # further use for.
+            self._process = None
             self._adopted_pid = adopted
             self._watch_adopted(adopted)
             self._announce_adoption(adopted)
             return
         self._adopted_pid = None
         self._forget_adopted()
+        if stood_down:
+            self._child_logger.warning(
+                "%s: it stood down to another %s, but nothing that is running "
+                "holds %s now, so a fresh one is being started",
+                self.label,
+                self.label,
+                self.pid_path,
+            )
+
+        # And whatever the reason a child will not stay up, the console stops
+        # starting it rather than starting it for ever. See `_held_back`.
+        if self._held_back():
+            return
 
         command = [
             sys.executable,
@@ -442,15 +514,68 @@ class ChildProcess:
             "--settings",
             str(self.settings_path),
         ]
+        self._spawned_at.append(self._clock())
         try:
             self._process = self._spawn(command)
         except OSError:
             logger.exception("could not start the %s", self.label)
             self._process = None
             return
-        self._write_pid()
+        # Only for a child that does not claim its own. The console does not
+        # know the number of the process it starts: `sys.executable` in the
+        # environment uv builds is a trampoline which runs the real interpreter
+        # as a child of itself, so Popen.pid is the launcher's number and
+        # os.getpid() inside the child is a different one. Writing the
+        # launcher's number into recorder.pid had the recorder find a live
+        # process behind the claim - its own launcher, running python.exe -
+        # conclude that another recorder held it, stand down and exit. Sixteen
+        # recorders in thirty seconds on the operator's laptop, and nothing
+        # recorded at all. The claim belongs to the process that is recording,
+        # because it is the only one that knows its own number.
+        if not self.claims_own_pid:
+            self._write_pid()
         self._read_output(self._process)
         logger.info("%s started", self.label)
+
+    def _stood_down(self) -> bool:
+        """Did the child that has just gone exit saying another one holds the claim?"""
+        code = self.deferral_exit
+        if code is None or self._process is None:
+            return False
+        return self._process.poll() == code
+
+    def _held_back(self) -> bool:
+        """Has this child been started so often, so recently, that starting it
+        again is no longer supervision but a fault of its own?
+
+        The detector had this rule in the console's status line and the recorder
+        had none at all, and neither of them stopped the spawning: the supervisor
+        starts anything that is not running, every two seconds, for ever. A
+        child that dies as soon as it starts therefore costs thirty processes a
+        minute and three lines in a 500-line Logs tab per cycle, which evicts
+        everything that explains the fault within a couple of minutes.
+
+        Bounded by a window rather than latched, so that giving up is never
+        permanent: a recorder that failed at breakfast and would work now is
+        tried again once its flapping is older than FLAP_WINDOW.
+        """
+        cutoff = self._clock() - FLAP_WINDOW
+        self._spawned_at = [at for at in self._spawned_at if at >= cutoff]
+        if len(self._spawned_at) < SPAWN_LIMIT:
+            self.held_back = False
+            return False
+        if not self.held_back:
+            self.held_back = True
+            self._child_logger.error(
+                "%s: it has been started %d times in the last %.0f minutes and "
+                "stops each time, so it is not being started again until that "
+                "has quietened down. Something it needs is wrong - the lines "
+                "above are the only place it says what.",
+                self.label,
+                len(self._spawned_at),
+                FLAP_WINDOW / 60.0,
+            )
+        return True
 
     def restart(self, why: str) -> bool:
         """Stop this child - adopted or not - and start a fresh one.
@@ -582,6 +707,31 @@ class ChildProcess:
         than about a process, catches a ghost within one poll either way.
         """
         if recorded_start is None:
+            claimed_at = self._claimed_at(pid)
+            if claimed_at is not None:
+                actual = process_started_at(pid)
+                if actual is None:
+                    self._child_logger.warning(
+                        "%s: adopting pid %s, which claimed %s itself, but which "
+                        "program holds that number could not be verified on this "
+                        "machine",
+                        self.label,
+                        pid,
+                        self.pid_path,
+                    )
+                    return True
+                if actual <= claimed_at + PID_START_TOLERANCE_SECONDS:
+                    return True
+                self._child_logger.warning(
+                    "%s: pid %s is held by a program that started after the claim "
+                    "in %s was written, so it cannot be the %s that wrote it - "
+                    "probably a power cut. Starting a fresh one.",
+                    self.label,
+                    pid,
+                    self.pid_path,
+                    self.label,
+                )
+                return False
             self._child_logger.warning(
                 "%s: adopting pid %s, but which program holds that number could "
                 "not be checked - the PID file was written by an older console",
@@ -627,6 +777,37 @@ class ChildProcess:
         avoid.
         """
         return Path(str(self.pid_path) + ".started")
+
+    def _claimed_at(self, pid: int) -> float | None:
+        """When the child itself said it took that claim, if it says so at all.
+
+        `vmd.record_main` writes its own claim and, beside it, what it knows
+        about itself - including the moment it wrote it. That is not the same
+        number as when the process started, and it is deliberately not compared
+        as though it were: a claim can only have been written by a process that
+        was already running, so a process which started AFTER the claim was
+        written cannot be the one that wrote it. That is a sharper answer than
+        the boot time to the question this whole check exists for - "is the
+        program wearing this number the child we mean, or an unrelated one that
+        was handed the number after a power cut" - and it needs nothing this
+        file does not already have.
+
+        None whenever there is no companion, which includes every claim written
+        by an older recorder. The caller reads that as "less is known", never as
+        "the claim is bad".
+        """
+        try:
+            payload = json.loads(
+                Path(str(self.pid_path) + ".json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return None
+        if not isinstance(payload, dict) or payload.get("pid") != pid:
+            return None
+        written_at = payload.get("written_at")
+        if not isinstance(written_at, (int, float)) or written_at <= 0:
+            return None
+        return float(written_at)
 
     def _read_pid(self) -> tuple[int | None, float | None]:
         """The PID in the claim file, and when the console saw that child start.
@@ -787,6 +968,11 @@ class RecorderProcess(ChildProcess):
     module = "vmd.record_main"
     pid_filename = "recorder.pid"
     label = "recorder"
+    # The recorder writes recorder.pid itself, and is the only process that can:
+    # see the comment above PID_FILENAME in vmd\record_main.py, and the one
+    # beside `_write_pid` for what the console writing it on its behalf cost.
+    claims_own_pid = True
+    deferral_exit = ALREADY_RECORDING_EXIT
 
 
 class DetectorProcess(ChildProcess):
@@ -1158,6 +1344,12 @@ class ConsoleServices:
         """Restart whatever has died. Called on a timer by the window."""
         started = self.supervisor.tick()
         for name in started:
+            # A child the console decided not to spawn was not restarted. The
+            # supervisor calls start() on everything that is not running and
+            # cannot know that this one was held back; counting those would have
+            # the status line report hundreds of restarts that never happened.
+            if getattr(self._child(name), "held_back", False):
+                continue
             # Every start the supervisor performs is a restart: `start()` above
             # already started each child once.
             self._restarted_at.setdefault(name, []).append(self._clock())
@@ -1167,6 +1359,14 @@ class ConsoleServices:
         # Not on the caller's thread and not on every call; see DiskWatcher.
         self.disk.poll()
         return started
+
+    def _child(self, name: str):
+        """The service the supervisor knows by that name, or None."""
+        return {
+            "streaming": self.streaming,
+            "recorder": self.recorder,
+            "detector": self.detector,
+        }.get(name)
 
     def _recent_restarts(self, name: str) -> int:
         """How often that child has been restarted inside the flap window.
@@ -1372,6 +1572,14 @@ class ConsoleServices:
             }
 
         restarts = self._recent_restarts("recorder")
+        # And whether the console has stopped starting it, which is a different
+        # thing from "it is down" and must not be reported as "restarting it".
+        # See `ChildProcess._held_back`.
+        held_back = bool(getattr(self.recorder, "held_back", False))
+        stopped = (
+            ", and it stops as soon as it is started, so it is not being "
+            "started again for now"
+        )
         if restarts > FLAP_LIMIT:
             return {
                 "running": False,
@@ -1379,6 +1587,16 @@ class ConsoleServices:
                 "reason": (
                     f"NOT recording - restarted {restarts} times "
                     f"in the last {minutes:.0f} minutes"
+                    + (stopped if held_back else "")
+                ),
+            }
+        if held_back:
+            return {
+                "running": False,
+                "restarts": restarts,
+                "reason": (
+                    "NOT recording - the recorder stops as soon as it is "
+                    "started, so it is not being started again for now"
                 ),
             }
         if not self.recorder.running:

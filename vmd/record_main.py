@@ -55,6 +55,18 @@ EVENTS_FILENAME = "events.db"
 
 PID_FILENAME = "recorder.pid"
 
+# What this process exits with when another recorder already holds the claim.
+#
+# Not 0, and not 1. Whoever started this one has to be able to tell the three
+# apart: 0 is "it ran and finished", 1 is "it cannot record at all", and this is
+# "somebody else is already recording, and that is the right outcome". The
+# console read a 0 here as an ordinary death and started another recorder two
+# seconds later, which stood down as well - sixteen processes in thirty seconds
+# on the operator's laptop. With a code of its own the console adopts the
+# recorder that answered instead of starting another. See
+# vmd\desktop\services.py, which names this constant.
+ALREADY_RECORDING_EXIT = 3
+
 # The claim file holds a bare integer and nothing else, because two other
 # programs already parse it that way - vmd\desktop\services.py does
 # int(text.strip()) and scripts\recorder_service.ps1 does [int]::TryParse over
@@ -1182,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.info("%s", message)
         print(message)
-        return 0
+        return ALREADY_RECORDING_EXIT
 
     # The path, not only the loaded settings: this process outlives the console
     # window, so re-reading this file is the only way the Settings tab can ever

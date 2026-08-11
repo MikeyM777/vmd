@@ -1223,7 +1223,16 @@ def test_main_leaves_a_running_recorder_alone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(record_main_module, "RecordingService", refuse)
 
-    assert main(["--settings", str(path), "--once"]) == 0
+    # Not 0. Standing down is a success, but a success the console has to be
+    # able to tell from "it ran and finished": read as an ordinary death, the
+    # console starts another recorder, which stands down as well, every two
+    # seconds for as long as it is open. Not 1 either, which is what a settings
+    # file it cannot read exits with and means the opposite - nothing is
+    # recording.
+    assert main(["--settings", str(path), "--once"]) == (
+        record_main_module.ALREADY_RECORDING_EXIT
+    )
+    assert record_main_module.ALREADY_RECORDING_EXIT not in (0, 1)
     assert record_main_module.read_pid(pid_path) == 4242
     assert not (tmp_path / "recordings" / "segments.db").exists()
 

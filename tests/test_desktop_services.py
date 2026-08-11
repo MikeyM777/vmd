@@ -18,6 +18,8 @@ from vmd.desktop.logs import LogBuffer, attach
 from vmd.desktop.services import (
     DETECTION_STATUS_FILENAME,
     FLAP_LIMIT,
+    FLAP_WINDOW,
+    SPAWN_LIMIT,
     ConsoleServices,
     DetectorProcess,
     RecorderProcess,
@@ -1246,6 +1248,7 @@ def recording_console(tmp_path: Path, settings: Settings, spawn=None, clock=None
             settings_path,
             pid_path=tmp_path / "recorder.pid",
             spawn=spawn or (lambda c: FakeProcess()),
+            clock=clock,
         ),
         clock=clock or Clock(),
         disk=watching(settings),
@@ -1927,20 +1930,26 @@ def test_a_pid_file_from_an_older_console_is_adopted_but_said_to_be_unverified(
 
 
 def test_the_pid_file_records_when_the_process_started(tmp_path: Path) -> None:
+    """The detector's, because it is the console that claims that one.
+
+    The recorder claims its own file now - see the storm at the end of this
+    file - so the only child the console still writes a PID for is this one.
+    """
+
     class RealEnough:
         pid = os.getpid()
 
         def poll(self):
             return None
 
-    recorder = RecorderProcess(
+    detector = DetectorProcess(
         tmp_path / "settings.json",
-        pid_path=tmp_path / "recorder.pid",
+        pid_path=tmp_path / "detector.pid",
         spawn=lambda c: RealEnough(),
     )
-    recorder.start()
+    detector.start()
 
-    written = json.loads((tmp_path / "recorder.pid.started").read_text(encoding="utf-8"))
+    written = json.loads((tmp_path / "detector.pid.started").read_text(encoding="utf-8"))
     assert written["pid"] == os.getpid()
     assert written["started_at"] == process_started_at(os.getpid())
 
@@ -1962,7 +1971,8 @@ def test_the_claim_file_stays_a_bare_integer(tmp_path: Path) -> None:
     Either of them failing to parse reads as "no recorder is running", and the
     answer to that is to start a second recorder on the same directory. So
     whatever else the console records about a child goes beside the file, never
-    in it."""
+    in it. Shown on the detector's, which is the one the console still writes;
+    the recorder claims its own, and `vmd.record_main` keeps the same rule."""
     from vmd.record_main import read_pid
 
     class RealEnough:
@@ -1971,11 +1981,11 @@ def test_the_claim_file_stays_a_bare_integer(tmp_path: Path) -> None:
         def poll(self):
             return None
 
-    pid_file = tmp_path / "recorder.pid"
-    recorder = RecorderProcess(
+    pid_file = tmp_path / "detector.pid"
+    detector = DetectorProcess(
         tmp_path / "settings.json", pid_path=pid_file, spawn=lambda c: RealEnough()
     )
-    recorder.start()
+    detector.start()
 
     assert pid_file.read_text(encoding="utf-8").strip() == str(os.getpid())
     assert read_pid(pid_file) == os.getpid()
@@ -1985,9 +1995,14 @@ def test_the_start_time_does_not_collide_with_the_recorders_own_companion(
     tmp_path: Path,
 ) -> None:
     """`vmd.record_main` keeps what it knows about itself in
-    `recorder.pid.json`. The console's note about when it spawned the child is a
-    different question asked by a different process, so it lives somewhere else
-    and neither overwrites the other."""
+    `recorder.pid.json`, and the console now writes nothing there at all: not
+    the claim, not a note beside it. It cannot - the number it has is its
+    launcher's, not the recorder's - and the storm at the end of this file is
+    what writing one anyway cost.
+
+    The detector is the child the console does still claim, and the rule that
+    the note lives beside the file rather than in it is shown on that one.
+    """
     from vmd.record_main import identity_path
 
     class RealEnough:
@@ -2003,7 +2018,17 @@ def test_the_start_time_does_not_collide_with_the_recorders_own_companion(
     recorder.start()
 
     assert not identity_path(pid_file).exists(), "the console wrote the recorder's file"
-    written = json.loads((tmp_path / "recorder.pid.started").read_text(encoding="utf-8"))
+    assert not pid_file.exists(), "the console claimed the recorder's file for it"
+    assert not (tmp_path / "recorder.pid.started").exists()
+
+    detector_pid = tmp_path / "detector.pid"
+    detector = DetectorProcess(
+        tmp_path / "settings.json", pid_path=detector_pid, spawn=lambda c: RealEnough()
+    )
+    detector.start()
+
+    assert not identity_path(detector_pid).exists()
+    written = json.loads((tmp_path / "detector.pid.started").read_text(encoding="utf-8"))
     assert written["pid"] == os.getpid()
     assert written["started_at"] == process_started_at(os.getpid())
 
@@ -2317,3 +2342,199 @@ def test_a_streaming_server_nobody_can_name_is_reported_rather_than_duplicated(
 
     assert spawned == [], "a second go2rtc was started on top of a live one"
     assert any("could not be stopped" in problem for problem in problems), problems
+
+
+# ------------------------------------------------- the recorder respawn storm
+#
+# From the operator's Logs tab, with the repeats removed:
+#
+#   10:45:50 INFO  recorder started
+#   10:45:51 INFO  recorder: a recorder is already running (pid 2712); leaving
+#                  it alone rather than recording the same folder twice
+#   10:45:53 INFO  recorder started
+#   10:45:54 INFO  recorder: a recorder is already running (pid 55704); ...
+#
+# every two seconds for as long as the console stayed open - sixteen recorder
+# processes in thirty seconds, and a different pid named every single time.
+#
+# The reason is that the console cannot see the process it starts. It spawns
+# `sys.executable -u -m vmd.record_main`, and `sys.executable` in the
+# environment uv builds is .venv\Scripts\python.exe, which is a trampoline: it
+# runs the real interpreter as a CHILD of itself. `Popen.pid` is therefore the
+# trampoline's number and `os.getpid()` inside the recorder is a different one.
+# Measured on this machine: Popen.pid 50468, the recorder's own pid 49500.
+#
+# The console wrote the trampoline's number into recorder.pid. The recorder read
+# it, found a live process behind it - its own launcher - running python.exe,
+# and correctly concluded that another recorder already held the claim. So it
+# stood down and exited; the trampoline exited with it; the console saw a dead
+# child and started another one, for ever, and nothing was ever recorded.
+#
+# The claim belongs to the process that is recording, because it is the only one
+# that knows its own number. See the comment above PID_FILENAME in
+# vmd\record_main.py, which says exactly that and was already true.
+
+
+class Launcher(FakeProcess):
+    """What Popen hands back for a trampoline: a pid that is not the child's."""
+
+    pid = 4242
+
+
+def test_the_console_does_not_claim_the_recorder_s_pid_for_it(tmp_path: Path) -> None:
+    """The storm, reproduced across the two files that make it.
+
+    The console starts a recorder and the recorder claims the file, using
+    `vmd.record_main`'s own claim code - and it must not find the console
+    standing in the way of it, wearing a number the console guessed.
+    """
+    from vmd.record_main import RecorderIdentity, claim_recorder, read_pid
+
+    recorder_pid = Launcher.pid + 1  # the interpreter behind the trampoline
+    pid_file = tmp_path / "recorder.pid"
+    child = RecorderProcess(
+        tmp_path / "settings.json", pid_path=pid_file, spawn=lambda c: Launcher()
+    )
+    child.start()
+
+    holder = claim_recorder(
+        pid_file,
+        RecorderIdentity(
+            pid=recorder_pid, executable="python.exe", written_at=time.time()
+        ),
+        image_of=lambda pid: "python.exe" if pid in (Launcher.pid, recorder_pid) else None,
+        booted=lambda: 0.0,
+    )
+
+    assert holder is None, (
+        "the recorder stood down to the launcher that started it, so it recorded "
+        "nothing and the console started another one two seconds later"
+    )
+    assert read_pid(pid_file) == recorder_pid, "the claim must name the recorder"
+
+
+class StoodDown:
+    """A recorder that found another one holding the claim and exited saying so."""
+
+    pid = 4242
+
+    def poll(self):
+        from vmd.record_main import ALREADY_RECORDING_EXIT
+
+        return ALREADY_RECORDING_EXIT
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    def wait(self, timeout=None):
+        return self.poll()
+
+
+def test_a_recorder_that_stood_down_is_adopted_rather_than_started_again(
+    tmp_path: Path,
+) -> None:
+    """The exit that says "somebody else is recording" is a success.
+
+    Read as a death it is the whole storm: the console starts another recorder,
+    which stands down as well, for ever. What it means is that the claim file
+    now names the recorder that is really running, and that one is what to
+    adopt.
+    """
+    holder = 4243
+    pid_file = tmp_path / "recorder.pid"
+    spawned: list = []
+
+    def spawn(command):
+        spawned.append(command)
+        # The recorder that holds the claim wrote this. The one we just started
+        # read it, said so and exited.
+        pid_file.write_text(str(holder), encoding="utf-8")
+        (tmp_path / "recorder.pid.json").write_text(
+            json.dumps(
+                {"pid": holder, "executable": "python.exe", "written_at": time.time()}
+            ),
+            encoding="utf-8",
+        )
+        return StoodDown()
+
+    child = RecorderProcess(
+        tmp_path / "settings.json",
+        pid_path=pid_file,
+        spawn=spawn,
+        alive=lambda pid: pid == holder,
+    )
+    with console_log_buffer() as buffer:
+        child.start()
+        assert child.running is False, "the child we started is gone"
+
+        child.start()  # the next heartbeat
+        said = " ".join(child_lines(buffer, "recorder")).lower()
+
+    assert child.running is True, "the recorder that is recording must be adopted"
+    assert len(spawned) == 1, "a second recorder was started on the same folder"
+    assert "stood down" in said, (
+        "the Logs tab must say that this was the recorder deferring to the one "
+        "that is recording, not a recorder dying: they look identical otherwise"
+    )
+
+
+def test_a_recorder_that_exits_at_once_over_and_over_stops_being_started_again(
+    tmp_path: Path,
+) -> None:
+    """The backstop, which the detector has had and the recorder has not.
+
+    Whatever the reason - an unwritable folder, a claim that will not clear, a
+    fault nobody has thought of - a child that dies as soon as it is started
+    must stop being started, and be reported as not running. Thirty spawns a
+    minute is not recording; it is a Logs tab in which nothing else survives.
+    The clock is hand-wound, so this cannot hang however the policy is broken.
+    """
+    clock = Clock()
+    spawned: list = []
+    services = recording_console(
+        tmp_path,
+        settings_for(tmp_path),
+        spawn=lambda c: (spawned.append(c), DeadOnArrival())[1],
+        clock=clock,
+    )
+    services.start()
+    for _ in range(30):
+        clock.advance(3.0)  # past the supervisor's restart delay
+        services.tick()
+
+    assert len(spawned) <= SPAWN_LIMIT, (
+        f"{len(spawned)} recorders in a minute and a half: the console never "
+        "stopped trying"
+    )
+    state = services.state()
+    assert state["recording"] is False
+    assert "not being started again" in state["recording_state"]["reason"].lower()
+
+
+def test_a_recorder_that_is_healthy_is_still_started_after_a_quiet_spell(
+    tmp_path: Path,
+) -> None:
+    """The other half: giving up must not be permanent.
+
+    A recorder that failed at breakfast and would work now has to be tried
+    again, or the backstop is just a slower way of not recording.
+    """
+    clock = Clock()
+    spawned: list = []
+    services = recording_console(
+        tmp_path,
+        settings_for(tmp_path),
+        spawn=lambda c: (spawned.append(c), DeadOnArrival())[1],
+        clock=clock,
+    )
+    services.start()
+    for _ in range(20):
+        clock.advance(3.0)
+        services.tick()
+    held = len(spawned)
+
+    clock.advance(FLAP_WINDOW + 1.0)  # a quiet spell longer than the window
+    services.tick()
+
+    assert len(spawned) > held, "it must be tried again once the flapping is history"
