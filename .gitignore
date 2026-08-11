@@ -26,6 +26,24 @@ recordings/
 settings.json
 smoke_record.*
 
+# What a run leaves behind beside the settings. *.db above already covers
+# events.db and segments.db; these are the rest of the same set - the ports
+# go2rtc took, the config written for it, the state the detector publishes, and
+# the PID files the console adopts its children by. Every one of them is written
+# by a run and rebuilt by the next, and every one of them carries something
+# about the machine it ran on.
+go2rtc.json
+streaming.json
+detection.json
+*.pid
+*.db-wal
+*.db-shm
+
+# Test and type-checker scratch.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Downloaded binaries (go2rtc). The installer refetches them.
 bin/
 
