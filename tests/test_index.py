@@ -137,3 +137,106 @@ def test_adding_a_duplicate_path_returns_that_path_s_own_id(tmp_path):
         assert again == first
     finally:
         index.close()
+
+
+# ------------------------------------------------- reading a window, not the lot
+#
+# Playback used to load every row a stream had, on every redraw, to draw one
+# day. A month of five-minute segments on two streams is ~17,000 rows, and the
+# console reads them on the thread that draws the window. These three questions
+# are the ones the tab actually asks, answered in SQL against the index that is
+# already there.
+
+
+def test_a_window_holds_only_the_segments_that_touch_it(tmp_path):
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/before.mp4", 100.0, 200.0, 10)
+        index.add("thermal", "/rec/inside.mp4", 300.0, 400.0, 10)
+        index.add("thermal", "/rec/after.mp4", 900.0, 1000.0, 10)
+        found = index.between("thermal", 250.0, 500.0)
+        assert [s.path for s in found] == ["/rec/inside.mp4"]
+    finally:
+        index.close()
+
+
+def test_a_segment_overlapping_either_edge_of_the_window_is_in_it(tmp_path):
+    """A recording that started before midnight and ran into the day is part of
+    that day, and dropping it would draw a gap where there is footage."""
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/straddles_start.mp4", 100.0, 300.0, 10)
+        index.add("thermal", "/rec/straddles_end.mp4", 400.0, 600.0, 10)
+        found = index.between("thermal", 200.0, 500.0)
+        assert {s.path for s in found} == {
+            "/rec/straddles_start.mp4",
+            "/rec/straddles_end.mp4",
+        }
+    finally:
+        index.close()
+
+
+def test_a_window_is_ordered_by_start(tmp_path):
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/c.mp4", 300.0, 400.0, 10)
+        index.add("thermal", "/rec/a.mp4", 100.0, 200.0, 10)
+        index.add("thermal", "/rec/b.mp4", 200.0, 300.0, 10)
+        assert [s.path for s in index.between("thermal", 0.0, 1000.0)] == [
+            "/rec/a.mp4",
+            "/rec/b.mp4",
+            "/rec/c.mp4",
+        ]
+    finally:
+        index.close()
+
+
+def test_a_window_belongs_to_one_stream(tmp_path):
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/t.mp4", 100.0, 200.0, 10)
+        index.add("visible", "/rec/v.mp4", 100.0, 200.0, 10)
+        assert [s.path for s in index.between("thermal", 0.0, 1000.0)] == ["/rec/t.mp4"]
+    finally:
+        index.close()
+
+
+def test_the_bounds_of_a_stream_are_its_first_start_and_its_last_end(tmp_path):
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/a.mp4", 100.0, 400.0, 10)
+        index.add("thermal", "/rec/b.mp4", 800.0, 900.0, 10)
+        index.add("visible", "/rec/v.mp4", 1.0, 5000.0, 10)
+        assert index.bounds("thermal") == (100.0, 900.0)
+    finally:
+        index.close()
+
+
+def test_the_last_end_is_the_latest_end_not_the_end_of_the_latest_row(tmp_path):
+    """A recorder killed mid-segment writes a short file after a long one. The
+    archive still reaches as far as the longest one did."""
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/long.mp4", 100.0, 900.0, 10)
+        index.add("thermal", "/rec/short.mp4", 200.0, 300.0, 10)
+        assert index.bounds("thermal") == (100.0, 900.0)
+    finally:
+        index.close()
+
+
+def test_a_stream_with_nothing_has_no_bounds(tmp_path):
+    index = build(tmp_path)
+    try:
+        assert index.bounds("thermal") is None
+    finally:
+        index.close()
+
+
+def test_bounds_with_no_stream_named_covers_everything(tmp_path):
+    index = build(tmp_path)
+    try:
+        index.add("thermal", "/rec/t.mp4", 100.0, 200.0, 10)
+        index.add("visible", "/rec/v.mp4", 50.0, 900.0, 10)
+        assert index.bounds() == (50.0, 900.0)
+    finally:
+        index.close()

@@ -125,6 +125,52 @@ class SegmentIndex:
             ).fetchall()
         return [self._to_segment(row) for row in rows]
 
+    def between(self, stream: str, window_start: float, window_end: float) -> list[Segment]:
+        """The segments of one stream that touch this window, oldest first.
+
+        A recording that started before the window and ran into it is in it: a
+        file straddling midnight is part of both days, and dropping it would
+        draw a gap over footage that exists.
+
+        This is the question Playback asks, and it used to ask it by reading
+        every row the stream had and filtering in Python. A month of five-minute
+        segments on two cameras is around 17,000 rows, read on the thread that
+        draws the window, every time the day or the stream changed. The index on
+        (stream, start) is already there; this is the query that uses it.
+        """
+        rows = self._connection.execute(
+            'SELECT * FROM segments WHERE stream = ? AND "end" > ? AND start < ? '
+            "ORDER BY start, id",
+            (stream, window_start, window_end),
+        ).fetchall()
+        return [self._to_segment(row) for row in rows]
+
+    def bounds(self, stream: str | None = None) -> tuple[float, float] | None:
+        """How far back and how far forward this stream's recordings reach.
+
+        One row out of SQLite rather than a list of every segment, because the
+        two questions it answers - is this moment older than anything we still
+        hold, is it newer than anything written down - are asked every time an
+        operator clicks a gap.
+
+        MAX("end") rather than the end of the last row: a recorder killed
+        mid-segment writes a short file after a long one, and the archive still
+        reaches as far as the longest one did.
+        """
+        if stream is None:
+            row = self._connection.execute(
+                'SELECT MIN(start) AS first, MAX("end") AS last FROM segments'
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                'SELECT MIN(start) AS first, MAX("end") AS last FROM segments '
+                "WHERE stream = ?",
+                (stream,),
+            ).fetchone()
+        if row is None or row["first"] is None:
+            return None
+        return (float(row["first"]), float(row["last"]))
+
     def oldest(self, stream: str | None = None) -> Segment | None:
         segments = self.all(stream)
         return segments[0] if segments else None
