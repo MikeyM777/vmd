@@ -27,6 +27,18 @@ def stub_run(monkeypatch, calls: list[dict]):
     return calls
 
 
+def launch(calls):
+    """The call that started the console.
+
+    Not simply the first one: the launcher asks each uv it finds for its
+    version before trusting it, so the recorded calls begin with a probe.
+    """
+    for call in calls:
+        if "vmd.desktop" in call["command"]:
+            return call
+    raise AssertionError(f"the console was never started: {calls}")
+
+
 def project(tmp_path: Path, monkeypatch, *, uv_on_path: str | None = "uv") -> Path:
     (tmp_path / "vmd" / "desktop").mkdir(parents=True)
     monkeypatch.setattr(launcher, "project_root", lambda: tmp_path)
@@ -46,7 +58,7 @@ def test_it_runs_the_desktop_module(monkeypatch, tmp_path: Path) -> None:
     calls = stub_run(monkeypatch, [])
 
     assert launcher.main([]) == 0
-    assert calls[0]["command"][-2:] == ["-m", "vmd.desktop"]
+    assert launch(calls)["command"][-2:] == ["-m", "vmd.desktop"]
 
 
 def test_a_folder_without_the_app_is_reported(monkeypatch, tmp_path: Path) -> None:
@@ -70,7 +82,7 @@ def test_starting_the_console_is_never_a_network_operation(monkeypatch, tmp_path
     calls = stub_run(monkeypatch, [])
 
     launcher.main([])
-    command = calls[0]["command"]
+    command = launch(calls)["command"]
     for flag in ("--offline", "--frozen", "--no-sync"):
         assert flag in command, f"{flag} missing from {command}"
     # Before `python`, or uv reads them as arguments to the program instead.
@@ -94,7 +106,7 @@ def test_uv_beside_the_app_is_used_without_asking_path(monkeypatch, tmp_path: Pa
     calls = stub_run(monkeypatch, [])
 
     assert launcher.main([]) == 0
-    assert calls[0]["command"][0] == str(bundled)
+    assert launch(calls)["command"][0] == str(bundled)
 
 
 def test_the_bundled_uv_wins_over_one_on_the_path(monkeypatch, tmp_path: Path) -> None:
@@ -104,7 +116,7 @@ def test_the_bundled_uv_wins_over_one_on_the_path(monkeypatch, tmp_path: Path) -
     calls = stub_run(monkeypatch, [])
 
     launcher.main([])
-    assert calls[0]["command"][0] == str(bundled)
+    assert launch(calls)["command"][0] == str(bundled)
 
 
 def test_uv_on_the_path_still_works(monkeypatch, tmp_path: Path) -> None:
@@ -113,7 +125,7 @@ def test_uv_on_the_path_still_works(monkeypatch, tmp_path: Path) -> None:
     calls = stub_run(monkeypatch, [])
 
     launcher.main([])
-    assert calls[0]["command"][0] == r"C:\tools\uv.exe"
+    assert launch(calls)["command"][0] == r"C:\tools\uv.exe"
 
 
 def test_no_uv_anywhere_is_still_the_install_message(monkeypatch, tmp_path: Path) -> None:
@@ -142,7 +154,7 @@ def test_the_console_is_started_with_bin_on_its_path(monkeypatch, tmp_path: Path
     calls = stub_run(monkeypatch, [])
 
     launcher.main([])
-    path = calls[0]["env"]["PATH"]
+    path = launch(calls)["env"]["PATH"]
     assert path.split(";")[0] == str(root / "bin"), path
 
 
@@ -152,7 +164,7 @@ def test_a_project_without_a_bin_folder_still_starts(monkeypatch, tmp_path: Path
     calls = stub_run(monkeypatch, [])
 
     assert launcher.main([]) == 0
-    assert "PATH" in calls[0]["env"] or "Path" in calls[0]["env"]
+    assert "PATH" in launch(calls)["env"] or "Path" in launch(calls)["env"]
 
 
 def test_the_double_click_batch_file_starts_offline_too() -> None:
@@ -166,3 +178,105 @@ def test_the_double_click_batch_file_starts_offline_too() -> None:
     assert launch, "VMD.bat no longer starts the console"
     for flag in ("--offline", "--frozen", "--no-sync"):
         assert flag in launch[0], f"{flag} missing from: {launch[0]}"
+
+
+# ------------------------------------------------- a uv that is there and dead
+
+
+def stub_run_with_broken(monkeypatch, calls: list[dict], broken: str):
+    """subprocess.run, where one particular executable will not execute.
+
+    A half-downloaded uv.exe is the ordinary way to arrive here: the installer
+    fetches it over the same link this laptop keeps losing, and what is left is
+    a file of the right name that Windows refuses with "%1 is not a valid Win32
+    application".
+    """
+
+    def run(command, **kwargs):
+        if command and str(command[0]) == broken:
+            raise OSError(8, "%1 is not a valid Win32 application")
+        calls.append({"command": command, **kwargs})
+        return Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    return calls
+
+
+def test_a_uv_that_will_not_run_is_not_the_uv_that_is_used(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Finding an executable is not that executable working.
+
+    `is_file()` is true of a half-downloaded uv.exe, and it was the only
+    question asked. The launcher then handed it to subprocess, got a Windows
+    error number back, and printed it - on a machine with a working uv on PATH
+    the whole time.
+    """
+    root = project(tmp_path, monkeypatch, uv_on_path=r"C:\tools\uv.exe")
+    bundled = bundled_uv(root)
+    calls = stub_run_with_broken(monkeypatch, [], str(bundled))
+
+    assert launcher.main([]) == 0
+    assert launch(calls)["command"][0] == r"C:\tools\uv.exe", calls
+
+
+def test_a_uv_that_will_not_run_and_no_other_is_said_in_words_that_help(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """"uv is not installed" is false and sends the operator the wrong way.
+
+    There is no terminal on this machine and the operator is not technical.
+    The message has to name what is wrong and what to double-click.
+    """
+    root = project(tmp_path, monkeypatch, uv_on_path=None)
+    bundled = bundled_uv(root)
+    stub_run_with_broken(monkeypatch, [], str(bundled))
+    held: list[str] = []
+    monkeypatch.setattr(launcher, "hold", lambda message: (held.append(message), 1)[1])
+
+    assert launcher.main([]) == 1
+    assert "will not run" in held[0], held[0]
+    assert "install.bat" in held[0]
+
+
+def test_a_uv_that_answers_with_a_failure_is_not_used_either(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """It ran, and it said it could not work. That is not a working uv."""
+
+    class Failed:
+        returncode = 1
+
+    root = project(tmp_path, monkeypatch, uv_on_path=None)
+    bundled = bundled_uv(root)
+
+    def run(command, **kwargs):
+        if str(command[0]) == str(bundled):
+            return Failed()
+        return Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    held: list[str] = []
+    monkeypatch.setattr(launcher, "hold", lambda message: (held.append(message), 1)[1])
+
+    assert launcher.main([]) == 1
+    assert "will not run" in held[0], held[0]
+
+
+def test_the_check_that_uv_works_cannot_hang_the_launcher(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A wedged probe would be a console that never opens, which is worse than
+    the thing being probed for."""
+    root = project(tmp_path, monkeypatch, uv_on_path=None)
+    bundled = bundled_uv(root)
+    seen: list[dict] = []
+
+    def run(command, **kwargs):
+        seen.append({"command": command, **kwargs})
+        return Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    launcher.main([])
+    probe = next(call for call in seen if call["command"][:2] == [str(bundled), "--version"])
+    assert probe.get("timeout"), "the probe waits for ever on a uv that has wedged"

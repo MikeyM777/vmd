@@ -25,8 +25,15 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def find_uv(root: Path) -> str | None:
-    """uv: the copy installed beside the app first, then whatever is on PATH.
+# How long the "does this uv actually run" check may take. It is `uv --version`
+# against a local executable - milliseconds - so this is only here so that a uv
+# which has wedged costs the operator ten seconds rather than a console that
+# never opens.
+UV_PROBE_SECONDS = 10.0
+
+
+def uv_candidates(root: Path) -> list[str]:
+    """Where uv might be, best first.
 
     The installer puts uv.exe in bin\\ and adds bin\\ to the user PATH, but the
     environment-change broadcast does not always reach Explorer before the
@@ -38,10 +45,66 @@ def find_uv(root: Path) -> str | None:
     Looked for by full path rather than by asking PATH again, because the point
     is to not depend on PATH at all.
     """
-    for candidate in (root / "bin" / "uv.exe", root / "bin" / "uv"):
-        if candidate.is_file():
-            return str(candidate)
-    return shutil.which("uv")
+    found = [
+        str(candidate)
+        for candidate in (root / "bin" / "uv.exe", root / "bin" / "uv")
+        if candidate.is_file()
+    ]
+    on_path = shutil.which("uv")
+    if on_path and on_path not in found:
+        found.append(on_path)
+    return found
+
+
+def uv_runs(path: str) -> bool:
+    """Whether this file is a uv that works, rather than a file called uv.
+
+    `is_file()` is true of a half-downloaded uv.exe, and a half-downloaded
+    uv.exe is the ordinary way to get one: the installer fetches it over the
+    same radio link this laptop keeps losing. Windows then refuses it with
+    "%1 is not a valid Win32 application", which reached the operator as a
+    number, on a machine that may have had a working uv on PATH the whole time.
+    """
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=UV_PROBE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def working_uv(root: Path) -> tuple[str | None, str]:
+    """The first uv that answers, and - when none does - why not.
+
+    The two failures are told apart because they send the operator to
+    different places: nothing to find at all is an install that never ran,
+    while a uv that is there and will not start is an install that ran and
+    brought down a broken file.
+    """
+    candidates = uv_candidates(root)
+    for candidate in candidates:
+        if uv_runs(candidate):
+            return candidate, ""
+    if candidates:
+        return None, (
+            f"\n  uv is installed here but will not run on this machine:\n"
+            f"    {candidates[0]}\n\n"
+            "  The file is usually a download that did not finish.\n"
+            "  Double-click install.bat once; it fetches a fresh copy."
+        )
+    return None, (
+        "\n  uv is not installed, so the console cannot start.\n"
+        "  Double-click install.bat once; it sets everything up."
+    )
+
+
+def find_uv(root: Path) -> str | None:
+    """The uv to start the console with, or None if there is not a working one."""
+    return working_uv(root)[0]
 
 
 def child_environment(root: Path) -> dict[str, str]:
@@ -81,12 +144,9 @@ def main(argv: list[str] | None = None) -> int:
             "  Keep VMD.exe in the folder it was installed into."
         )
 
-    uv = find_uv(root)
+    uv, why_not = working_uv(root)
     if uv is None:
-        return hold(
-            "\n  uv is not installed, so the console cannot start.\n"
-            "  Double-click install.bat once; it sets everything up."
-        )
+        return hold(why_not)
 
     # --no-sync --frozen --offline, because starting the console must not be a
     # network operation. `uv run` on its own re-checks the lock file and syncs,
