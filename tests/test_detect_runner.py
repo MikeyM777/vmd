@@ -1084,3 +1084,81 @@ def test_a_stream_with_no_fallback_keeps_trying_the_one_address_it_has(tmp_path)
     finally:
         detector.close()
         store.close()
+
+
+# --------------------------------------------------------------------------
+# A classifier that is on and has never answered
+# --------------------------------------------------------------------------
+
+
+class SilentClassifier:
+    """Switched on, and never able to say anything - a wedged model, a budget
+    that is always missed, a weights file that would not load."""
+
+    def classify(self, frame, box):
+        return ("", 0.0)
+
+
+def test_a_classifier_that_has_never_named_anything_is_visible(tmp_path):
+    """"Unnamed" is the normal, correct answer here, which is what hides this.
+
+    At 700 m a person is 13 pixels and nothing can name it, so the operator
+    who switched the classifier on sees exactly what they would see if it were
+    working: events with no label. A classifier that has been asked a hundred
+    times and answered nothing is a broken install, and the only thing that
+    can tell it from a quiet correct one is the count.
+    """
+    pipeline = StubPipeline({index: [detection_at(index)] for index in range(4)})
+    detector, store = build(
+        tmp_path,
+        pipeline=pipeline,
+        captures=[FakeCapture(frames=4)],
+        classifier=SilentClassifier(),
+    )
+    try:
+        for _ in range(4):
+            detector.step()
+        state = detector.state()
+        assert state["classifying"] is True
+        assert state["named_asked"] == 4
+        assert state["named"] == 0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_classifier_that_is_off_is_not_reported_as_one_that_has_failed(tmp_path):
+    """The default classifier names nothing on purpose. It is not a fault."""
+    pipeline = StubPipeline({0: [detection_at(0)]})
+    detector, store = build(tmp_path, pipeline=pipeline)
+    try:
+        detector.step()
+        state = detector.state()
+        assert state["classifying"] is False
+        assert state["named_asked"] == 0, "nothing was asked, because nothing was on"
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_names_a_working_classifier_produces_are_counted(tmp_path):
+    class Naming:
+        def classify(self, frame, box):
+            return ("person", 0.8)
+
+    pipeline = StubPipeline({0: [detection_at(0)], 1: [detection_at(1)]})
+    detector, store = build(
+        tmp_path,
+        pipeline=pipeline,
+        captures=[FakeCapture(frames=2)],
+        classifier=Naming(),
+    )
+    try:
+        detector.step()
+        detector.step()
+        state = detector.state()
+        assert state["named_asked"] == 2
+        assert state["named"] == 2
+    finally:
+        detector.close()
+        store.close()

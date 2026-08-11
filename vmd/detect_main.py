@@ -78,6 +78,18 @@ STALLED_AFTER_SECONDS = 60.0
 # from frames that are all the same, whichever of the two is true.
 FROZEN_AFTER_SECONDS = 300.0
 
+# How many things the classifier may be asked to name, and name none of, before
+# the operator is told. It is the one failure here whose symptom is the correct
+# answer: at 700 m a person is 13 pixels, nothing can name that, and an event
+# with no label is what a working classifier produces most of the time. So a
+# model that would not load, a weights file copied half over, or a budget missed
+# on every call all look exactly like a classifier doing its job.
+#
+# Twenty-five, because a run of that many unnameable crops is entirely ordinary
+# on the thermal and a run of that many on a stream the operator switched the
+# classifier on for is worth one line.
+NEVER_NAMED_AFTER = 25
+
 # The frame rate below which the confirmation rule stops being able to confirm
 # a person crossing.
 #
@@ -291,6 +303,10 @@ class DetectionService:
             # Open, delivering, and delivering too slowly for the confirmation
             # rule to confirm anything. See SLOW_STREAM_FPS.
             "slow": sum(1 for s in streams if _too_slow(s)),
+            # The classifier is on for this stream and has never once named
+            # anything. See NEVER_NAMED_AFTER: unlike everything else here this
+            # is a note about an install, not about the perimeter.
+            "never_named": sum(1 for s in streams if _never_named(s)),
             "configured": len(streams),
             "events": sum(s["events"] for s in streams),
             # Movement that was seen and confirmed but never reached the
@@ -352,6 +368,7 @@ class DetectionService:
         """
         for detector in self.detectors:
             state = detector.state()
+            self._say_if_never_named(detector, state)
             stalled = _stalled(state)
             slow = _too_slow(state)
             blind = bool(state.get("blind"))
@@ -405,6 +422,27 @@ class DetectionService:
             else:
                 logger.info("%s: detecting", state["stream"])
 
+    def _say_if_never_named(self, detector, state: dict) -> None:
+        """Once per stream, and separate from its health.
+
+        This is a note about an install - missing weights, a model that will
+        not load, a budget missed on every call - and not a statement about the
+        perimeter, so it does not belong in the chain above and must not
+        displace a sentence that is.
+        """
+        if not _never_named(state) or getattr(detector, "_said_never_named", False):
+            return
+        detector._said_never_named = True
+        logger.warning(
+            "%s: the classifier has been asked to name %d things and has named "
+            "none of them. Either everything it has seen is too small to name, "
+            "which is normal at this range, or it is not working - look above "
+            "for a line about the weights. Movement is still being reported "
+            "either way; it just arrives without a label.",
+            state["stream"],
+            state.get("named_asked", 0),
+        )
+
 
 def _stalled(state: dict) -> bool:
     """True when an open stream has gone quiet for longer than any camera would."""
@@ -412,6 +450,13 @@ def _stalled(state: dict) -> bool:
         return False
     since = state.get("seconds_since_frame")
     return since is not None and since > STALLED_AFTER_SECONDS
+
+
+def _never_named(state: dict) -> bool:
+    """True when the classifier is on for this stream and has named nothing."""
+    if not state.get("classifying"):
+        return False
+    return state.get("named_asked", 0) >= NEVER_NAMED_AFTER and state.get("named", 0) == 0
 
 
 def _frozen(state: dict) -> bool:

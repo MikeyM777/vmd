@@ -184,6 +184,16 @@ class StreamDetector:
         # names nothing, which on the thermal is the correct answer and not a
         # placeholder.
         self.classifier = classifier or NullClassifier()
+        # Whether anything is being asked at all, and how it is going. "Unnamed"
+        # is the normal and correct answer on this system - at 700 m a person is
+        # 13 pixels and nothing can name it - which is exactly what hides a
+        # classifier that is switched on and has never once worked. A model that
+        # would not load, a budget that is always missed, a weights file copied
+        # half over: every one of those looks like a quiet, correct classifier,
+        # and only the counts tell them apart.
+        self.classifying = not isinstance(self.classifier, NullClassifier)
+        self.named_asked = 0
+        self.named = 0
 
         self._open_capture = open_capture
         self._clock = clock
@@ -321,6 +331,13 @@ class StreamDetector:
             # How long the picture has been identical. None until two frames
             # have arrived to compare. A stream that never changes can never
             # produce a detection, whatever its frame rate says.
+            # Is anything being asked to name what moved, how often, and how
+            # often it managed to. Published because an unnamed event is the
+            # right answer here and a classifier that has never once answered
+            # produces the same picture as one that is working perfectly.
+            "classifying": self.classifying,
+            "named_asked": self.named_asked,
+            "named": self.named,
             "seconds_since_change": (
                 None
                 if self._picture_changed_at is None
@@ -605,12 +622,21 @@ class StreamDetector:
         cannot be held up by a model that has wedged. Whatever comes back -
         including nothing - the caller writes the event.
         """
+        if not self.classifying:
+            # Nothing was asked, so nothing failing to answer is not a fact
+            # about anything. Counting it would make the thermal's correct and
+            # deliberate silence look like a broken model.
+            return UNNAMED
+        self.named_asked += 1
         try:
-            return named(self.classifier.classify(frame, box))
+            answer = named(self.classifier.classify(frame, box))
         except Exception:  # noqa: BLE001 - a name is never worth an event
             self.errors += 1
             logger.exception("%s: classifying failed; the event is unnamed", self.stream)
             return UNNAMED
+        if answer[0]:
+            self.named += 1
+        return answer
 
     def _record(self, detection, now: float, frame=None) -> None:
         """Write one confirmed track, whether or not anything can name it.

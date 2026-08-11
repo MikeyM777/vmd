@@ -797,3 +797,46 @@ def test_a_stream_read_straight_from_the_camera_has_no_second_address(tmp_path):
         assert service.detectors[0].sources == ["rtsp://10.0.0.2/thermal"]
     finally:
         service.stop()
+
+
+def test_a_classifier_that_has_named_nothing_at_all_is_said_once(tmp_path, caplog):
+    """It is the one failure whose symptom is the correct answer.
+
+    Events arrive with no label, which at 700 m is exactly what a working
+    classifier produces most of the time - so a model that would not load, or
+    one that misses its budget on every call, looks identical to one doing its
+    job. Said once, because it is a note about an install and not a state of
+    the perimeter.
+    """
+    from vmd.detect_main import NEVER_NAMED_AFTER
+
+    service = service_for(tmp_path)
+    try:
+        detector = service.detectors[0]
+        detector.classifying = True
+        detector.named_asked = NEVER_NAMED_AFTER
+        detector.named = 0
+        assert service.status()["never_named"] == 1
+
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+            service._log_state_changes()
+        said = [r.getMessage() for r in caplog.records if "named none" in r.getMessage()]
+        assert len(said) == 1, said
+    finally:
+        service.stop()
+
+
+def test_a_classifier_that_names_things_is_not_complained_about(tmp_path, caplog):
+    service = service_for(tmp_path)
+    try:
+        detector = service.detectors[0]
+        detector.classifying = True
+        detector.named_asked = 100
+        detector.named = 3
+        assert service.status()["never_named"] == 0
+        with caplog.at_level("WARNING", logger="vmd.detect_main"):
+            service._log_state_changes()
+        assert not [r for r in caplog.records if "named none" in r.getMessage()]
+    finally:
+        service.stop()
