@@ -382,20 +382,35 @@ class StreamRowWidget(QWidget):
         self.regions_list.setMaximumHeight(90)
         details_layout.addWidget(self.regions_list)
 
+        # Two lines, and for the same reason the row of switches above is two
+        # lines: the form column stops growing, so a row that asks for more
+        # than it than it can have is not shrunk by Qt - it is clipped, at both
+        # ends. Six controls here needed about 1020 px in a 964 px column, and
+        # what came out was `elete the selected patc` beside four spin boxes
+        # that had lost the words saying which number was which. A control
+        # whose label is cut in half is a control nobody can act on.
+        #
+        # The four numbers first, then the two buttons that act on them, which
+        # is also the order they are used in.
         region_line = QHBoxLayout()
         region_line.setSpacing(6)
         self.region_x = _region_box("across")
         self.region_y = _region_box("down")
         self.region_w = _region_box("wide")
         self.region_h = _region_box("tall")
-        self.add_region_button = QPushButton("Add this patch")
-        self.remove_region_button = QPushButton("Delete the selected patch")
         for box in (self.region_x, self.region_y, self.region_w, self.region_h):
             region_line.addWidget(box)
-        region_line.addWidget(self.add_region_button)
-        region_line.addWidget(self.remove_region_button)
         region_line.addStretch(1)
         details_layout.addLayout(region_line)
+
+        region_buttons = QHBoxLayout()
+        region_buttons.setSpacing(6)
+        self.add_region_button = QPushButton("Add this patch")
+        self.remove_region_button = QPushButton("Delete the selected patch")
+        region_buttons.addWidget(self.add_region_button)
+        region_buttons.addWidget(self.remove_region_button)
+        region_buttons.addStretch(1)
+        details_layout.addLayout(region_buttons)
 
         self.add_region_button.clicked.connect(self.add_region)
         self.remove_region_button.clicked.connect(self.remove_selected_region)

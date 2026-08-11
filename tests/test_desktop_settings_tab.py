@@ -876,3 +876,47 @@ def test_the_report_box_says_what_it_is_for_before_anything_has_used_it(
     qtbot.addWidget(tab)
     assert tab.output_text() == ""
     assert tab._output.placeholderText(), "an empty box has to say what it is for"
+
+
+def test_no_button_on_a_stream_row_is_clipped_by_its_own_label(
+    qtbot, tmp_path: Path
+) -> None:
+    """`Delete the selected patch` rendered as `elete the selected patc`.
+
+    The form column stops at FORM_MAX_WIDTH, so a wider screen does not fix it,
+    and Qt clips both ends rather than eliding one - which is how a button ends
+    up with no first letter and no last. The comment above the row of switches
+    describes fixing exactly this failure one row up; it did not reach this row.
+    """
+    from vmd.desktop.style import FORM_MAX_WIDTH
+
+    from vmd.desktop.style import stylesheet
+
+    tab = SettingsTab(settings_path=tmp_path / "settings.json")
+    qtbot.addWidget(tab)
+    # The console's own stylesheet, because that is where the padding around a
+    # button's label comes from: without it the measurement is of a button
+    # nobody ever sees.
+    tab.setStyleSheet(stylesheet())
+    tab.load()
+    row = tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
+    row.details_button.setChecked(True)
+    tab.show()
+    tab.setGeometry(0, 0, FORM_MAX_WIDTH, 1400)
+    QApplication.processEvents()
+
+    cut = [
+        (control.text(), control.width(), control.minimumSizeHint().width())
+        for control in (
+            row.pick_button,
+            row.add_region_button,
+            row.remove_region_button,
+            row.horizon_enabled_field,
+            row.region_x,
+            row.region_y,
+            row.region_w,
+            row.region_h,
+        )
+        if control.width() < control.minimumSizeHint().width()
+    ]
+    assert cut == [], f"cut off: {cut}"

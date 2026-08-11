@@ -912,3 +912,34 @@ def test_the_dialog_puts_its_failure_on_the_picture(qtbot, tmp_path: Path) -> No
     assert "did not send a picture" in dialog.picker.state_words()
     # And the labels that were there before have not been taken away.
     assert dialog.problem_text()
+
+
+def test_no_button_in_the_picker_is_clipped_by_its_own_label(qtbot) -> None:
+    """The same failure the stream row had: a label cut at both ends.
+
+    Measured with the console's own stylesheet, because the padding around a
+    button's text is in it - without it the measurement is of a button nobody
+    ever sees. The dialog is sized to a laptop panel, which is what Windows
+    display scaling actually produces on this machine.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from vmd.desktop.style import stylesheet
+
+    dialog = a_dialog(qtbot, horizon=200, regions=[(10, 20, 30, 40)])
+    dialog.setStyleSheet(stylesheet())
+    dialog.show()
+    dialog.resize(1000, 700)
+    QApplication.processEvents()
+
+    cut = [
+        (button.text(), button.width(), button.minimumSizeHint().width())
+        for button in (
+            dialog.clear_horizon_button,
+            dialog.remove_button,
+            dialog.cancel_button,
+            dialog.use_button,
+        )
+        if button.width() < button.minimumSizeHint().width()
+    ]
+    assert cut == [], f"cut off: {cut}"
