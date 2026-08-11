@@ -33,6 +33,11 @@ class UpdateState:
     message: str = ""
     output: list[str] = field(default_factory=list)
     finished_at: float | None = None
+    # The commit this copy was on before the pull and after it. The evidence
+    # behind `message`, kept as well as said, because "did the update actually
+    # land" is a question that gets asked over a phone.
+    moved_from: str = ""
+    moved_to: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -42,6 +47,8 @@ class UpdateState:
             "message": self.message,
             "output": self.output[-200:],
             "finished_at": self.finished_at,
+            "from": self.moved_from,
+            "to": self.moved_to,
         }
 
 
@@ -81,15 +88,28 @@ class Updater:
         threading.Thread(target=self._work, daemon=True).start()
         return True, ""
 
+    def _head(self) -> str:
+        """The commit this copy is on, or "" when git will not say.
+
+        This is what makes "updated" a fact rather than a hope. `git pull`
+        exiting 0 says the command ran; it does not say new code reached the
+        disk, and the two came apart in every ordinary way - git translated
+        into another language, a rebase configuration, a detached HEAD, a
+        filesystem that quietly refused the write.
+        """
+        result = self._run(["git", "rev-parse", "HEAD"])
+        return result.stdout.strip() if result.returncode == 0 else ""
+
     def _work(self) -> None:
         try:
+            before = self._head()
             pull = self._run(["git", "pull", "--ff-only"])
             self._record("git pull --ff-only", pull)
             if pull.returncode != 0:
                 self._finish(False, self._pull_failure(pull))
                 return
-
-            already = "Already up to date" in pull.stdout or "Already up-to-date" in pull.stdout
+            after = self._head()
+            self._record_versions(before, after)
 
             # Only when there is something to install. uv needs a pyproject to
             # act on, and reporting a dependency failure for a copy that has no
@@ -106,15 +126,38 @@ class Updater:
                     )
                     return
 
-            if already:
-                self._finish(True, "Already up to date. Nothing changed.")
-            else:
-                self._finish(
-                    True,
-                    "Updated. Close this window and start VMD.exe again to run the new version.",
-                )
+            # None, not True, when the two readings did not both come back:
+            # "I cannot tell whether this worked" is a state, and it is not the
+            # same as success. The console can show it as its own thing.
+            told = bool(before) and bool(after)
+            self._finish(True if told else None, self._outcome(before, after))
         except Exception as exc:  # noqa: BLE001 - the console must survive its own updater
             self._finish(False, f"The update stopped unexpectedly: {exc}")
+
+    def _outcome(self, before: str, after: str) -> str:
+        """What the pull actually did, said in the words the operator acts on.
+
+        "Updated, restart to run the new version" is an instruction, and an
+        operator who follows it believes afterwards that they are running the
+        new code. It must never be printed for a copy that did not move.
+        """
+        if not before or not after:
+            return (
+                "The pull ran without complaining, but this copy's version could not "
+                "be read either side of it, so I cannot tell whether anything changed. "
+                "Check the output below."
+            )
+        if before == after:
+            return "Already up to date. Nothing changed."
+        return (
+            f"Updated from {before[:7]} to {after[:7]}. Close this window and start "
+            f"VMD.exe again to run the new version."
+        )
+
+    def _record_versions(self, before: str, after: str) -> None:
+        with self._lock:
+            self.state.moved_from = before
+            self.state.moved_to = after
 
     def _pull_failure(self, result: subprocess.CompletedProcess) -> str:
         text = (result.stderr + result.stdout).lower()
@@ -154,7 +197,7 @@ class Updater:
         with self._lock:
             self.state.step = step
 
-    def _finish(self, ok: bool, message: str) -> None:
+    def _finish(self, ok: bool | None, message: str) -> None:
         with self._lock:
             self.state.running = False
             self.state.ok = ok

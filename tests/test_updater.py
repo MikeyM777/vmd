@@ -138,3 +138,85 @@ def test_a_real_new_commit_is_pulled_and_reported(checkout: Path) -> None:
     assert (checkout / "file.txt").read_text(encoding="utf-8") == "second version\n"
     assert (checkout / "added.txt").exists(), "a new file did not arrive"
     assert updater.version()["version"] != before, "the reported version did not change"
+
+
+def push_a_commit(checkout: Path, name: str = "publisher") -> None:
+    other = checkout.parent / name
+    git("clone", str(checkout.parent / "origin"), str(other), cwd=checkout.parent)
+    git("config", "user.email", "test@example.com", cwd=other)
+    git("config", "user.name", "Test", cwd=other)
+    (other / "file.txt").write_text(f"changed by {name}\n", encoding="utf-8")
+    git("add", "-A", cwd=other)
+    git("commit", "-m", f"a change from {name}", cwd=other)
+    git("push", "origin", "main", cwd=other)
+
+
+def test_a_pull_that_exited_zero_but_changed_nothing_is_not_called_an_update(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit code zero is not new code on the disk.
+
+    Whether anything was pulled was decided by looking for the English words
+    "Already up to date" in git's output. Git is translated, `pull.rebase` and
+    a detached HEAD both produce output that says neither thing, and a
+    filesystem that refused the write leaves git cheerful. Any of those had the
+    console telling the operator to restart to run the new version, on a copy
+    that was the same copy. The operator restarts, believes they are running
+    the fix, and nothing anywhere contradicts them.
+
+    The commit this copy is on before and after is the only thing that answers
+    the question that was being asked.
+    """
+    updater = Updater(checkout)
+    passthrough = updater._run
+
+    def pull_that_did_nothing(command: list[str]) -> subprocess.CompletedProcess:
+        if command[:2] == ["git", "pull"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="Updating 1234567..89abcde\nFast-forward\n", stderr=""
+            )
+        return passthrough(command)
+
+    monkeypatch.setattr(updater, "_run", pull_that_did_nothing)
+    assert updater.start()[0]
+    state = wait_for(updater)
+
+    assert state["ok"] is True
+    assert "start vmd.exe again" not in state["message"].lower(), state["message"]
+    assert "nothing changed" in state["message"].lower(), state["message"]
+
+
+def test_the_update_says_which_version_it_moved_from_and_to(checkout: Path) -> None:
+    """The evidence, not the claim. The operator can read it back over a phone."""
+    push_a_commit(checkout)
+    before = Updater(checkout)._head()
+    assert before
+
+    updater = Updater(checkout)
+    assert updater.start()[0]
+    state = wait_for(updater)
+
+    assert state["ok"] is True, state["message"]
+    assert state["from"] == before
+    assert state["to"] and state["to"] != before
+    assert state["to"][:7] in state["message"], state["message"]
+
+
+def test_a_copy_whose_commit_cannot_be_read_is_not_reported_as_updated(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"I cannot tell" is a legitimate answer and a false "updated" is not."""
+    updater = Updater(checkout)
+    passthrough = updater._run
+
+    def no_rev_parse(command: list[str]) -> subprocess.CompletedProcess:
+        if command[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(command, 128, stdout="", stderr="fatal: bad object")
+        return passthrough(command)
+
+    monkeypatch.setattr(updater, "_run", no_rev_parse)
+    assert updater.start()[0]
+    state = wait_for(updater)
+
+    assert state["ok"] is None, "not knowing is not the same as it having worked"
+    assert "cannot tell" in state["message"].lower(), state["message"]
