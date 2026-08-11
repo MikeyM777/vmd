@@ -3,21 +3,124 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from vmd.radio.airos import AirOsRadio, RadioError, hidden_fields, parse_status
+from vmd.radio.airos import (
+    REDACTED,
+    AirOsRadio,
+    RadioError,
+    hidden_fields,
+    parse_status,
+    redact,
+)
 from vmd.radio.service import RadioService
 from vmd.settings import RadioSettings, Settings
 
 USER, PASSWORD = "ubnt", "linkpass"
-# Deliberately full of characters a form encodes, so a message that leaked the
-# password in either form fails the test that says it must not.
-TRICKY_PASSWORD = "p@ss word/1"
+
+# ------------------------------------------------------------ the password set
+#
+# The redaction regression test used to run on `p@ss word/1`, which is drawn
+# entirely from the alphabet `redact` already handled - so the test written to
+# catch a redaction failure could not catch one. That is the original defect
+# repeated: the leak was found in the first place because a password contained
+# characters somebody had not thought about, and the replacement chose a
+# password made only of characters somebody had.
+#
+# So the passwords below are chosen for the encodings they force, not for how
+# they look, and every redaction test runs over all of them:
+#
+#   * a quote and a backslash, which JSON escapes and nothing else does;
+#   * a space and URL-reserved characters, which the two percent-encodings
+#     disagree about;
+#   * a percent sign, so a password can be mistaken for its own encoding;
+#   * non-ASCII, which `json.dumps` writes as \uXXXX by default - the form in
+#     which a password left this program fully intact until it was fixed.
+ADVERSARIAL_PASSWORDS = [
+    "p@ss word/1",          # the old one: percent-encoded in two disagreeing forms
+    'a b"c\\d',             # a quote and a backslash: JSON escapes both
+    "pa#ss?q=1&r",          # URL-reserved throughout
+    "pw%20x",               # already looks like its own percent-encoding
+    "סיסמה",                  # non-ASCII: six \uXXXX escapes once json.dumps has had it
+    'a b"c\\d/e?f&g=h%i+j#k סוד',  # all of it at once
+]
+
+# What the old test used. Kept under its own name because it is the *weak* case
+# and the point is that it is no longer the only one.
+TRICKY_PASSWORD = ADVERSARIAL_PASSWORDS[0]
+
+_SHORT_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_JSON_ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])')
+
+
+def _json_unescape(text: str) -> str:
+    """Undo JSON string escaping on a fragment that is not itself a JSON string.
+
+    A radio that echoes what it was sent hands back the *escaped* password, and
+    the console then quotes it. Searching the output for the password as typed
+    finds nothing and proves nothing; this is how the output is read back.
+    """
+
+    def one(match: re.Match) -> str:
+        if match.group(1):
+            return chr(int(match.group(1), 16))
+        return _SHORT_ESCAPES.get(match.group(2), match.group(2))
+
+    return _JSON_ESCAPE.sub(one, text)
+
+
+def encodings(password: str) -> dict[str, str]:
+    """Every form this program can write a password in on its way to a screen.
+
+    Four, and the fourth is the one that was missed: the airOS 8 login is posted
+    as `json.dumps(...)`, which turns `"` into `\\"` and every non-ASCII
+    character into `\\uXXXX`, so the string that lands in the output is not the
+    string anybody was searching for.
+    """
+    return {
+        "typed": password,
+        "percent-encoded": urllib.parse.quote(password, safe=""),
+        "form-encoded": urllib.parse.quote_plus(password),
+        "JSON-escaped": json.dumps(password)[1:-1],
+        "JSON-escaped, non-ASCII kept": json.dumps(password, ensure_ascii=False)[1:-1],
+        # What `repr()` and `%r` write. `spike/probe_radio.py` prints every value
+        # the radio sent with `!r`, so this is not hypothetical either.
+        "Python-escaped": repr(password)[1:-1],
+    }
+
+
+def leaks(text: str, password: str) -> list[str]:
+    """Every way the password is still readable in `text`. Empty is the only pass.
+
+    Deliberately not `password not in text`. It asks the question from both
+    ends: is any *encoding* of the password present, and does any *decoding* of
+    the output yield it - the second of which catches an encoding nobody here
+    thought of.
+    """
+    if not password:
+        return []
+    found: list[str] = []
+    for name, form in encodings(password).items():
+        if form and form in text:
+            found.append(f"{name}: {form!r}")
+    decoded = {
+        "percent-decoded": urllib.parse.unquote(text),
+        "form-decoded": urllib.parse.unquote_plus(text),
+        "JSON-unescaped": _json_unescape(text),
+        "JSON-unescaped then percent-decoded": urllib.parse.unquote(_json_unescape(text)),
+    }
+    for name, plain in decoded.items():
+        if password in plain:
+            found.append(f"{name}: {plain[:80]!r}")
+    return found
+
 
 STATUS = {
     "host": {"hostname": "LOCO-north", "uptime": 84231, "devmodel": "NanoStation 5AC loco"},
@@ -101,6 +204,18 @@ class FakeRadio(BaseHTTPRequestHandler):
             }
         )
         if self.path.startswith("/api/"):
+            if Behaviour.echo:
+                # An airOS 8 endpoint that quotes the request it rejected. The
+                # body it is quoting is JSON, so what comes back is the password
+                # JSON-escaped - `a b\"c\\d`, `ס...` - which is a fourth
+                # encoding on top of the two the form login produces, and the
+                # one that left this console with the password intact.
+                self._send(
+                    200,
+                    json.dumps({"error": f"rejected {body}"}).encode(),
+                    (("Content-Type", "application/json"),),
+                )
+                return
             # This fake is a login.cgi radio. The airOS 8 endpoint is not here.
             self._send(404)
             return
@@ -342,23 +457,46 @@ def test_a_session_that_needs_its_token_repeating_keeps_reading(radio: str) -> N
     assert device.status().signal_dbm == -63
 
 
-def test_the_password_is_never_in_the_message_in_either_form(radio: str) -> None:
-    """It has bitten this project once already. A password masked in one form and
-    printed percent-encoded in the other is a password that has been printed.
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_the_password_is_never_in_the_message_in_any_encoding(
+    radio: str, password: str
+) -> None:
+    """It has bitten this project twice. A password masked in one form and
+    printed in another is a password that has been printed.
 
-    This radio quotes the form it rejected, which is how the console would come
-    to repeat one: the login is posted encoded, so what comes back is
-    `p%40ss+word%2F1` and not the password as it was typed.
+    This radio quotes what it was sent, which is how the console comes to repeat
+    a password it never printed itself. It is quoted in two different encodings
+    depending on which login it refused: the form logins are posted
+    percent-encoded, so what comes back is `p%40ss+word%2F1`; the airOS 8 API
+    login is posted as JSON, so what comes back is `a b\\"c\\\\d` and
+    `\\u05e1\\u05d9...`, and neither of those is the string anybody searches for.
+
+    The test asserts the radio's words DID reach the message before asserting
+    that the password did not, so it cannot pass by the message being empty.
     """
     Behaviour.mode = "forbidden"
     Behaviour.echo = True
     with pytest.raises(RadioError) as caught:
-        AirOsRadio(radio, USER, TRICKY_PASSWORD).status()
+        AirOsRadio(radio, USER, password).status()
     said = str(caught.value)
-    assert "403" in said, "the radio's own words are still reported"
-    assert TRICKY_PASSWORD not in said
-    assert "p%40ss%20word%2F1" not in said
-    assert "p%40ss+word%2F1" not in said
+    assert "rejected" in said, "the radio's own words still have to reach the operator"
+    assert leaks(said, password) == [], f"the password reached the operator: {said!r}"
+
+
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_redaction_covers_every_encoding_the_password_leaves_in(password: str) -> None:
+    """`redact` on its own, against every form this program writes a password in.
+
+    Four encodings and not two: the console posts a form login percent-encoded
+    (twice over, since `quote` and `quote_plus` disagree about spaces) and an
+    API login as JSON. A password containing `"`, `\\` or any non-ASCII
+    character left `_login_api` fully intact until this was fixed, because
+    `json.dumps` had already rewritten it into something the search missed.
+    """
+    for name, form in encodings(password).items():
+        hidden = redact(f"the radio rejected {form} and said so", password)
+        assert leaks(hidden, password) == [], f"{name} survived redaction: {hidden!r}"
+        assert REDACTED in hidden, f"{name} was not recognised as the password at all"
 
 
 def test_an_unexplained_code_is_reported_as_itself(radio: str) -> None:
@@ -551,15 +689,15 @@ def test_the_evidence_is_more_than_one_english_string() -> None:
     assert login_accepted(REFUSED_BODY, {}) is False
 
 
-def test_the_quoted_words_are_bounded_and_redacted(real_radio: str) -> None:
+@pytest.mark.parametrize("password", ADVERSARIAL_PASSWORDS)
+def test_the_quoted_words_are_bounded_and_redacted(real_radio: str, password: str) -> None:
     """A sentence built out of a device's own text is a device's own text. It is
     quoted, cut, and passed through the redaction like everything else - a login
     answer can echo what it was sent."""
     with pytest.raises(RadioError) as caught:
-        AirOsRadio(real_radio, USER, TRICKY_PASSWORD).status()
+        AirOsRadio(real_radio, USER, password).status()
     said = str(caught.value)
-    assert TRICKY_PASSWORD not in said
-    assert "p%40ss+word%2F1" not in said
+    assert leaks(said, password) == []
     assert len(said) < 400
 
 

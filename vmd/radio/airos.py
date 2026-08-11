@@ -107,25 +107,67 @@ class LoginRefused(RadioError):
         self.said = said
 
 
-def redact(text: str, password: str) -> str:
-    """Hide the password in every form this program could have written it.
+def password_forms(password: str) -> list[str]:
+    """Every form this program can write a password in on the way out.
 
-    Both forms, and this is not belt and braces: the login is posted as an
-    encoded form, so a radio that echoes what it was sent - or a message that
-    quotes the URL it was sent to - shows `p%40ss`, not `p@ss`. Masking one and
-    printing the other is printing it. That has already happened once here.
+    Four encodings, longest first, and each of them has been the one that leaked:
+
+    * **as typed.** The obvious one, and the only one the first version masked.
+    * **percent-encoded**, `safe=""` on purpose: the default leaves "/" alone,
+      which would leave half of a password containing a slash on the screen. A
+      form login is posted encoded, so a radio that echoes what it was sent
+      shows `p%40ss`, not `p@ss`.
+    * **form-encoded**, which is the same thing except that a space becomes `+`
+      rather than `%20`. `urlencode` uses this one; `quote` does not.
+    * **JSON-escaped.** `_login_api` posts `json.dumps(...)`, which writes `"` as
+      `\\"`, `\\` as `\\\\` and every non-ASCII character as `\\uXXXX`. A password
+      containing any of those left this program **fully intact** through the API
+      login: the string that landed in the output was not the string being
+      searched for. Both `ensure_ascii` settings are covered, because a radio
+      that echoes JSON of its own may have written it either way, and the
+      `\\uXXXX` escapes are covered in upper case too - the hex case is the
+      encoder's choice and not the password's.
+
+    And one more, because a report is written by whatever is to hand:
+
+    * **Python-escaped**, which is what `repr()` and `%r` write. Backslashes are
+      doubled and the quote character in use is escaped. `spike/probe_radio.py`
+      prints every value the radio sent with `!r`, so a password echoed back
+      inside one arrives in the report as `a b"c\\\\d` - readable, and not the
+      string anybody is searching for.
+
+    Longest first so that a password which is a prefix of its own encoding
+    cannot half-mask the longer one: `\\` would otherwise eat the `\\\\` that
+    JSON wrote for it and leave a stray backslash behind.
     """
-    if not password:
-        return text
-    # safe="" on purpose: the default leaves "/" alone, which would leave half
-    # of a password containing a slash on the screen.
-    for form in (
+    escaped = json.dumps(password)[1:-1]
+    doubled = password.replace("\\", "\\\\")
+    forms = {
         password,
         urllib.parse.quote(password, safe=""),
         urllib.parse.quote_plus(password),
-    ):
-        if form:
-            text = text.replace(form, REDACTED)
+        escaped,
+        json.dumps(password, ensure_ascii=False)[1:-1],
+        re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: "\\u" + m.group(1).upper(), escaped),
+        # repr() picks its own quote character, so both of its answers count.
+        doubled,
+        doubled.replace("'", "\\'"),
+    }
+    return sorted((form for form in forms if form), key=len, reverse=True)
+
+
+def redact(text: str, password: str) -> str:
+    """Hide the password in every form this program could have written it.
+
+    Not belt and braces: masking one encoding and printing another is printing
+    the password, and that has now happened twice here - once percent-encoded,
+    once JSON-escaped. See `password_forms` for what "every form" means and why
+    each one is in the list.
+    """
+    if not password:
+        return text
+    for form in password_forms(password):
+        text = text.replace(form, REDACTED)
     return text
 
 
