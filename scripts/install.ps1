@@ -49,6 +49,22 @@ Write-Host ""
 Write-Host "  VMD installer" -ForegroundColor White
 Write-Host "  $root" -ForegroundColor DarkGray
 
+# A prepared offline copy carries a VLC installer, which nothing else puts
+# there. Running this script on such a folder is the mistake somebody makes on
+# the day they are standing at the laptop that has no network, and it fails at
+# winget with a message about the Microsoft Store. Say the right thing instead.
+# Informative rather than fatal: this file is also what built that copy, and
+# re-running it on the connected machine has to keep working.
+if ((Test-Path (Join-Path $binDir 'vendor\vlc-win64.exe')) -and
+    (Test-Path (Join-Path $root '.venv'))) {
+    Write-Host ""
+    Write-Warn "This folder looks like a copy prepared for a machine with no internet."
+    Write-Warn "If this machine has no internet, close this window and double-click"
+    Write-Warn "scripts\offline-install.bat instead - it needs no connection."
+    Write-Warn "If this machine does have internet, carry on; nothing is wrong."
+    Write-Host ""
+}
+
 function Update-PathFromRegistry {
     # A winget install writes the new folder into the stored PATH, not into
     # this already-running process. Without this the command stays "missing"

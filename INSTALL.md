@@ -109,6 +109,12 @@ to receive updates later.
 Windows marks every file that came from the internet as untrusted, and will
 refuse to run it properly until you say otherwise. This takes ten seconds.
 
+> **Quicker, if you have not extracted the ZIP yet:** right-click the
+> `vmd-…zip` file itself, choose **Properties**, tick **Unblock** at the bottom,
+> click **OK**, and *then* extract it. Doing it on the ZIP unblocks every file
+> inside it at once, including the ones in the `scripts` folder you will need
+> later. If you have already extracted, do the steps below instead.
+
 1. In the folder, **right-click** on **`install.bat`**.
 
 2. Click **Properties** (at the bottom of the menu).
