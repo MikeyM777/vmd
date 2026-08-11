@@ -15,8 +15,10 @@ something else instead.
 - A computer running **Windows 10 or Windows 11**.
 - **About 6 GB of free space** on the C: drive. Most of that is the detector
   (the AI part), which is large.
-- **An internet connection**, for the installation only. The system itself runs
-  with no internet at all — see [Installing on a machine with no
+- **An internet connection**, for the installation only. The finished system is
+  entirely offline: the laptop it runs on has no wifi and no internet, nothing it
+  records is uploaded or shared anywhere, and nothing outside that one laptop can
+  see the video — see [Installing on a machine with no
   internet](#installing-on-a-machine-with-no-internet) below.
 - **The Windows password of an administrator account.** Windows will ask for
   permission once or twice while installing. If you normally use this computer
@@ -128,36 +130,42 @@ block the file. Close the window and continue.
    device?"** — click **Yes**. This is Windows installing the components, and it
    can appear more than once.
 
-5. **Now wait and watch.** The window prints seven steps. Here is what each one is
+5. **Now wait and watch.** The window prints eight steps. Here is what each one is
    doing and what "good" looks like:
 
    | Step | What it is doing | You should see |
    |---|---|---|
-   | `[1/7]` | Checking that Windows can install software | `winget is available.` |
-   | `[2/7]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
-   | `[3/7]` | Installing **ffmpeg** — the thing that records video | `ffmpeg is already installed.` or `ffmpeg installed.` |
-   | `[4/7]` | Downloading **go2rtc** — the thing that shows live video, instead of VLC | `go2rtc installed to bin\go2rtc.exe` |
-   | `[5/7]` | Downloading Python and all the libraries | A long list of lines starting with `+`, then `Environment ready.` |
-   | `[6/7]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (12 MB)` |
-   | `[7/7]` | Starting the console | `Installed.` and your browser opens |
+   | `[1/8]` | Checking that Windows can install software | `winget is available.` |
+   | `[2/8]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
+   | `[3/8]` | Installing **ffmpeg** — the thing that records video | `ffmpeg is already installed.` or `ffmpeg installed.` |
+   | `[4/8]` | Installing **VLC** — the thing that draws the live picture in the console | `VLC is already installed.` or `VLC installed.` |
+   | `[5/8]` | Downloading **go2rtc** — it takes the camera's video once and passes it to the console | `go2rtc installed to bin\go2rtc.exe` |
+   | `[6/8]` | Downloading Python and all the libraries | A long list of lines starting with `+`, then `Environment ready.` |
+   | `[7/8]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (6.7 MB)` |
+   | `[8/8]` | Starting the console | `Installed.`, then the console window opens |
 
-   **Step 5 is the long one.** It downloads roughly 3 GB. The screen may look
+   **Step 6 is the long one.** It downloads roughly 3 GB. The screen may look
    frozen for minutes at a time. It is not frozen. Leave it alone.
 
-6. **When it is done** you will see the word **`Installed.`** in green, and your
-   web browser will open showing the console — a dark screen with two video
-   panels and a column of readings on the right.
+6. **When it is done** you will see the word **`Installed.`** in green and the
+   console itself opens — its own window, a dark screen with two video panels and
+   a column of readings on the right. There is no web page and no address to
+   type anywhere.
 
-7. **Leave the black window open while you use the console.** It is the console.
-   Closing it stops the server and the page goes dead. To stop it, press
-   `Ctrl` + `C` in that window, or just close it.
+7. **Leave the black window open while the console is open.** The console runs
+   from it; closing the black window closes the console. Closing the console does
+   **not** stop the recording — the recorder is a separate program that keeps
+   filling the disk either way.
 
 ---
 
 ## Starting it again, any time after that
 
-**Double-click `VMD.exe`** in the `C:\VMD` folder. That is all. A window opens
-saying `http://127.0.0.1:8723/`, and your browser opens at the console.
+**Double-click `VMD.exe`** in the `C:\VMD` folder. That is all. The console
+window opens. There is no web page and no address to type.
+
+A small black window appears beside it. That is normal — leave it open while you
+use the console. Closing it closes the console.
 
 You do not run `install.bat` again unless something is broken.
 
@@ -181,8 +189,9 @@ Optional, but it takes thirty seconds and tells you for certain.
    uv run pytest
    ```
 
-   After a moment you should see a row of dots and `119 passed`. Dots are good.
-   Letters like `F` or `E` mean something is wrong — see the table below.
+   After a moment you should see a row of dots and a line ending in `passed`.
+   Dots are good. Letters like `F` or `E` mean something is wrong — see the
+   table below.
 
 5. Type this and press **Enter**:
 
@@ -192,6 +201,17 @@ Optional, but it takes thirty seconds and tells you for certain.
 
    You should see several lines of version information. `not recognized` means
    ffmpeg did not install — see the table below.
+
+6. Type this and press **Enter**, all on one line:
+
+   ```powershell
+   uv run python -c "import vlc; vlc.Instance(); print('vlc ok')"
+   ```
+
+   `vlc ok` on the last line means the console will be able to draw the live
+   picture. VLC often prints a few lines about a `stale plugins cache` first —
+   ignore those, they are harmless. No `vlc ok` at all means VLC is missing, or
+   is the 32-bit one — see the table below.
 
 ---
 
@@ -203,11 +223,13 @@ Optional, but it takes thirty seconds and tells you for certain.
 | `winget is not available on this machine.` | Windows is missing its package installer | Open the Microsoft Store, search for **App Installer**, install it, restart the computer, run `install.bat` again |
 | `Could not download go2rtc` | The download was blocked or the connection dropped | Everything else still installed. Download the file yourself from https://github.com/AlexxIT/go2rtc/releases/latest — take `go2rtc_win64.zip`, open it, and drag `go2rtc.exe` into the `bin` folder inside `C:\VMD` |
 | `WARNING - ffmpeg is not installed` | The recorder cannot record without it | Open PowerShell and run `winget install --id Gyan.FFmpeg -e`, then close PowerShell, reopen it, and run `install.bat` again |
+| `WARNING - VLC is not installed` | The console opens but shows no live picture | Install VLC from https://www.videolan.org/vlc/ — take the **64-bit Windows installer**, click through it, then run `install.bat` again |
+| A video panel says `No video here:` | The console could not find VLC, or found a 32-bit one | Install the **64-bit** VLC from https://www.videolan.org/vlc/ and start the console again. Everything except the picture keeps working meanwhile |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
 | Antivirus blocks or deletes something | Some antivirus tools dislike newly downloaded `.exe` files | Allow the `C:\VMD` folder in your antivirus, then run `install.bat` again |
 | `Access is denied` | The folder is protected | Move the whole `VMD` folder to `C:\VMD` and try again. Avoid `C:\Program Files` |
-| The browser does not open at the end | Only the last step failed; everything is installed | Open http://127.0.0.1:8723/ in your browser yourself |
-| `Cannot start on 127.0.0.1:8723` | The console is already running | Look for a black window already open, or a browser tab at that address. Otherwise close the window and double-click `VMD.exe` again |
+| The console window does not open at the end | Only the last step failed; everything else is installed | Double-click `VMD.exe` in `C:\VMD` yourself |
+| You cannot see the console after starting it | Its window opened behind the others | Click its icon in the taskbar, or hold `Alt` and press `Tab` |
 | `Could not build VMD.exe` | Only the convenience launcher failed | Everything works — double-click `VMD.bat` instead |
 | It asks about Python or opens the Microsoft Store | Windows is offering its own Python | Close that window. You do not need it. `uv` installs the Python this project uses |
 
@@ -222,18 +244,23 @@ done. If you are stuck, that is the first thing to try.
 |---|---|---|
 | **uv** | Installed by Windows, system-wide | Manages Python and the libraries |
 | **ffmpeg** | Installed by Windows, system-wide | Records the video to disk |
-| **go2rtc** | `C:\VMD\bin\go2rtc.exe` | Will serve the live video to the browser, replacing VLC |
+| **VLC** | Installed by Windows, system-wide | Draws the live picture inside the console window |
+| **go2rtc** | `C:\VMD\bin\go2rtc.exe` | Takes the camera's video once and passes it to the console |
 | **Python + libraries** | `C:\VMD\.venv\` | Everything the program itself runs on |
 | **The project** | `C:\VMD\` | The code, the console, the documents |
 
-Nothing was placed anywhere else, and nothing runs at startup or in the
-background. Deleting the `C:\VMD` folder removes the project completely.
+Nothing was placed anywhere else, and nothing starts by itself when Windows
+starts. The one thing that does run in the background is the recorder, and only
+once you have opened the console: the console starts it, and it deliberately
+keeps running after the console is closed so that closing a window never stops
+the recording. Deleting the `C:\VMD` folder removes the project completely.
 
-To remove the two system-wide tools as well:
+To remove the system-wide tools as well:
 
 ```powershell
 winget uninstall --id astral-sh.uv -e
 winget uninstall --id Gyan.FFmpeg -e
+winget uninstall --id VideoLAN.VLC -e
 ```
 
 ---
@@ -255,26 +282,35 @@ There is **no file to edit**. Everything goes in the console:
 
 1. Start the console (double-click `VMD.exe`).
 2. Click the **Settings** tab at the top.
-3. Fill in the camera **Address**, **Username** and **Password**.
+3. Fill in the camera's **Address** (its IP address on the network), **Username**
+   and **Password**. The password is shown as you type it and is never hidden
+   behind dots. That is on purpose: this laptop is offline and does nothing else,
+   and a password you cannot read back is far more trouble than one you can.
 4. Under **Streams**, put in the RTSP address of each camera stream and tick
    **record** next to the ones you want recorded. If you do not know the
    addresses, the camera prober in the table above finds them for you.
 5. Under **Storage**, set the folder and how many GB the recordings may use.
 6. Press **Save**. It says `Saved.` in green.
 
-The console writes these into a file called `settings.json` next to the program,
-so they are still there next time. **You never open that file.** It exists so the
-settings survive a restart, and so the recording service — which is a separate
-program — reads exactly what you typed.
+Do the same for the **Radio** — its address, username and password — under its
+own heading, if the link has one.
+
+The console writes all of this into a file called `settings.json` next to the
+program, so it is still there next time. **You never open that file, and nobody
+edits it by hand.** It exists so the settings survive a restart, and so the
+recording service — which is a separate program — reads exactly what you typed.
 
 If you type something impossible, Save refuses and says why, in words, next to
 the button. Nothing is written until it is valid.
 
-**One honest note about what you are looking at.** The console shows the real
-interface, but the live video layer is not built yet, so the picture in it is
-drawn by the page rather than streamed from a camera. Steering, layout, playback
-and settings all behave for real. The recording service is real and works. The
-live stream is the next thing to be built.
+**One honest note about what you are looking at.** The console is real: the live
+panels show the camera through VLC, and steering, playback, settings and logs all
+work. Recording is real too, and it keeps running whether the console window is
+open or closed. The part still being built is the detection service — the thing
+that decides something moved and says so.
+
+**Nothing here goes anywhere.** The video stays on this laptop's disk. There is no
+account, no upload, no cloud, and no wifi on the machine at all.
 
 ---
 
@@ -287,9 +323,14 @@ install directly on such a machine, so you build it elsewhere and carry it over.
 2. Copy the **entire `C:\VMD` folder** to a USB drive. This must include the
    hidden-looking `.venv` folder and the `bin` folder — that is where Python,
    the libraries and go2rtc actually live.
-3. On the offline machine, also install **ffmpeg**. Download it beforehand from
-   https://www.gyan.dev/ffmpeg/builds/ (take the *release essentials* zip),
-   unpack it, and copy `ffmpeg.exe` into `C:\VMD\bin\`.
+3. Put two more things on the same USB drive. They are installed system-wide and
+   do **not** travel inside the `C:\VMD` folder:
+   - **ffmpeg** — download it from https://www.gyan.dev/ffmpeg/builds/ (take the
+     *release essentials* zip). On the offline machine, unpack it and copy
+     `ffmpeg.exe` into `C:\VMD\bin\`.
+   - **VLC** — download the **64-bit Windows installer** from
+     https://www.videolan.org/vlc/. On the offline machine, double-click it and
+     click through it. Without VLC the console opens but shows no live picture.
 4. Copy the folder from the USB drive to `C:\VMD` on the offline machine.
 5. Open PowerShell there and run `uv run pytest`. If the tests pass, the
    transfer worked.

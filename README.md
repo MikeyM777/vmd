@@ -6,8 +6,9 @@ something moves, and lets an operator look back through what was recorded.
 
 The deployment it is built for: one FLIR-class thermal + visible PTZ head roughly
 700 m from the area of interest, reaching the laptop over a Ubiquiti point-to-point
-link more than 15 km long, at around 5 Mb/s. The laptop has no internet. The console
-binds to `127.0.0.1` and shares nothing.
+link more than 15 km long, at around 5 Mb/s. The laptop has no internet and no wifi:
+the system is entirely offline, nothing is published anywhere, and nothing but this
+one laptop ever sees the video.
 
 ## What it deliberately does not do
 
@@ -23,15 +24,17 @@ Working:
   budget- and age-based retention, stall detection and restart, and a supervisor
   that keeps the whole thing alive across link drops, clock steps and full disks.
   Retention deletes the oldest footage rather than ever stopping the recorder.
-- **The console** — a local web server on `127.0.0.1` serving the interface:
-  live, playback and settings, with edge-of-frame and keyboard steering. Camera
-  address, credentials, stream addresses and storage budget are typed into the
-  Settings tab and saved from there. Start it by double-clicking `VMD.exe`.
+- **The console** — a desktop application: live video rendered by VLC, camera
+  steering, playback of what was recorded, settings and logs. It starts the
+  streaming server and the recorder as child processes and restarts them if they
+  stop; closing the window does not stop recording.
 
-Not built yet: the live streaming layer, and the detection service itself. The
-`spike/` directory holds the throwaway tools that established how detection should
-work — motion-gated crop detection, a ground-truth labeller, a scorer, a miss
-classifier, a per-machine benchmark, and a camera prober for commissioning day.
+Being built now: the detection service — a detector process supervised like the
+recorder, an event store for what moved, and the alarm strip that lists it in the
+console. The `spike/` directory holds the throwaway tools that established how
+detection should work — motion-gated crop detection, a ground-truth labeller, a
+scorer, a miss classifier, a per-machine benchmark, and a camera prober for
+commissioning day.
 
 ## Layout
 
@@ -39,7 +42,7 @@ classifier, a per-machine benchmark, and a camera prober for commissioning day.
 |---|---|
 | `vmd/` | The application: settings, recording, storage, supervisor |
 | `tests/` | Test suite (`uv run pytest`) |
-| `vmd/webui/` | The console: local web server and the page it serves |
+| `vmd/desktop/` | The console: the desktop window, its tabs, and the VLC video panes |
 | `mockup/` | Early visual explorations, kept for reference |
 | `spike/` | Experiments and field tools. Throwaway by intent, kept for their findings |
 | `docs/superpowers/` | Design specs and implementation plans |
@@ -61,7 +64,8 @@ console when it finishes:
 |---|---|
 | **uv** | fetches Python itself and every Python library |
 | **ffmpeg** | records the video |
-| **go2rtc** | serves the live stream to the browser, in place of VLC |
+| **go2rtc** | takes the camera's RTSP once and re-serves it locally to the console |
+| **VLC** | draws the live picture inside the console window |
 | **VMD.exe** | built at the end — one file you double-click to start the console |
 
 Anything already on the machine is left alone, so running it again is quick. The
@@ -75,6 +79,7 @@ from the Microsoft Store and run it again.
 ```powershell
 winget install --id astral-sh.uv -e
 winget install --id Gyan.FFmpeg -e
+winget install --id VideoLAN.VLC -e
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
 uv sync --extra detect
@@ -84,6 +89,7 @@ uv sync --extra detect
 
 ```bash
 brew install uv ffmpeg go2rtc
+brew install --cask vlc
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
 uv sync --extra detect
@@ -92,7 +98,7 @@ uv sync --extra detect
 ### Linux (Debian / Ubuntu)
 
 ```bash
-sudo apt update && sudo apt install -y ffmpeg git
+sudo apt update && sudo apt install -y ffmpeg git vlc
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/noamsolomon123/vmd.git
 cd vmd
@@ -115,32 +121,38 @@ uv run pytest
 ```
 
 All three should succeed. If `ffmpeg` is not found, the recorder cannot record —
-fix that before anything else.
+fix that before anything else. The console draws its live video with libVLC, so
+VLC must be installed too, and on Windows it must be the 64-bit build: a 32-bit
+VLC cannot be loaded by 64-bit Python, and the video pane will say so.
 
 ### Offline machines
 
-The console runs on a machine with no internet, so install on a connected machine
-first and carry it over. Run `install.bat` on the connected machine, then copy the
-whole project directory across — `.venv/` and `bin/` included — plus an `ffmpeg`
-binary. Match the operating system and CPU architecture between the two machines,
-or the environment will not run.
+The console runs on a machine with no internet and no wifi at all, so install on a
+connected machine first and carry it over. Run `install.bat` on the connected
+machine, then copy the whole project directory across — `.venv/` and `bin/`
+included — plus the `ffmpeg` and VLC installers, which live outside the project
+folder and do not travel with it. Match the operating system and CPU architecture
+between the two machines, or the environment will not run.
 
 ## Running
 
-**Double-click `VMD.exe`.** It starts the console and opens it in your browser.
-`VMD.bat` does the same thing without the executable.
+**Double-click `VMD.exe`.** It opens the console window. `VMD.bat` does the same
+thing without the executable.
 
 ```bash
-uv run python -m vmd.webui       # the console, same as VMD.exe
+uv run python -m vmd.desktop     # the console, same as VMD.exe
 uv run python -m vmd.record_main # recording service
 uv run pytest                    # test suite
 ```
 
-Everything the operator configures is in the console's **Settings** tab: camera
-address, username, password, the RTSP stream addresses, the radio, and the storage
-budget. Press **Save**. The console keeps them in `settings.json` beside the
-program so they survive a restart — you never open that file yourself, and the
-recording service reads the same one.
+Everything the operator configures is in the console's **Settings** tab: the
+camera's IP address, username and password, the RTSP stream addresses, the radio's
+address and credentials, and the storage budget. Press **Save**. Nobody hand-edits
+a configuration file: the console writes `settings.json` beside the program so the
+values survive a restart, and the recording service reads that same file.
+Passwords are shown as typed rather than masked — deliberately: the laptop is
+offline and single-purpose, and a password that cannot be read back is the harder
+failure to recover from when the camera refuses the connection.
 
 Nothing is preset. Field of view is unknown until commissioning and is a setting, not a
 guess.
