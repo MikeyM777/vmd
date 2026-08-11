@@ -322,7 +322,17 @@ def _warning_text(
     headroom = max(budget_bytes - used_bytes, 0)
     if bytes_per_second > 0:
         hours = headroom / (bytes_per_second * 3600.0)
-        timing = f"in about {hours:.0f} hours" if hours >= 1 else "within the hour"
+        # The figure is rounded first and the word chosen from what it rounded
+        # to, never from the unrounded one: 1.4 hours is drawn as `1` and so has
+        # to read `1 hour`. This is the last warning before footage starts being
+        # deleted, and a sentence that looks unfinished at that moment reads as a
+        # console that is broken rather than a drive that is filling.
+        whole = round(hours)
+        timing = (
+            f"in about {whole:.0f} hour" + ("" if whole == 1 else "s")
+            if hours >= 1
+            else "within the hour"
+        )
     else:
         timing = "once recording resumes"
     return f"Storage {percent:.0f}% full. Footage from {when} will be deleted {timing}."

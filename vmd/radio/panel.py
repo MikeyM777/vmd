@@ -703,13 +703,28 @@ def _sentence(reason) -> str:
 
 
 def _age(seconds: float) -> str:
-    if seconds < 90:
-        return f"{seconds:.0f} seconds"
-    if seconds < 5400:
-        return f"{seconds / 60.0:.0f} minutes"
-    if seconds < 172800:
-        return f"{seconds / 3600.0:.0f} hours"
-    return f"{seconds / 86400.0:.0f} days"
+    """A span in the largest unit that keeps it readable, said properly.
+
+    The count is rounded first and the word chosen from what it rounded to, not
+    from the unrounded figure - `1 seconds` is what the uptime of a radio that
+    has just rebooted read as, and that is the moment somebody is reading this
+    line rather than glancing at it: a one-second uptime is the whole of the
+    answer to "why did the picture stop". A sentence that looks unfinished there
+    reads as a console that is broken rather than a radio that restarted.
+    """
+    for limit, size, word in (
+        (90.0, 1.0, "second"),
+        (5400.0, 60.0, "minute"),
+        (172800.0, 3600.0, "hour"),
+    ):
+        if seconds < limit:
+            return _plural(seconds / size, word)
+    return _plural(seconds / 86400.0, "day")
+
+
+def _plural(count: float, word: str) -> str:
+    whole = round(count)
+    return f"{whole:.0f} {word}" + ("" if whole == 1 else "s")
 
 
 

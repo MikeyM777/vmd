@@ -88,6 +88,33 @@ def test_warning_appears_near_the_budget():
     assert "will be deleted" in plan.warning
 
 
+def test_the_last_hour_before_the_drive_fills_reads_as_one_hour():
+    """`1 hours` is the state this sentence matters most in.
+
+    It is the last warning before footage starts being deleted, read in the Logs
+    tab by somebody who has to decide whether to do something about it now. A
+    sentence that looks unfinished at exactly that moment is the one place the
+    plural is worth the line of code.
+    """
+    segments = [segment(i, i * 300.0) for i in range(1, 10)]  # 9 GB of 10
+    plan = plan_retention(
+        segments, now=10000.0, budget_bytes=10 * GB, budget_enabled=True,
+        retention_days=None, warn_at_fraction=0.9, bytes_per_second=GB / HOUR,
+    )
+    assert plan.warning is not None
+    assert "1 hours" not in plan.warning, plan.warning
+    assert "in about 1 hour." in plan.warning, plan.warning
+
+
+def test_more_than_one_hour_is_still_plural():
+    segments = [segment(i, i * 300.0) for i in range(1, 10)]  # 9 GB of 10
+    plan = plan_retention(
+        segments, now=10000.0, budget_bytes=10 * GB, budget_enabled=True,
+        retention_days=None, warn_at_fraction=0.9, bytes_per_second=GB / (3 * HOUR),
+    )
+    assert plan.warning is not None and "in about 3 hours" in plan.warning, plan.warning
+
+
 def test_no_warning_when_comfortably_under_budget():
     segments = [segment(1, 0.0)]
     plan = plan_retention(

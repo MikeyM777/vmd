@@ -363,6 +363,25 @@ def test_the_things_that_are_known_are_all_shown() -> None:
     assert "up for" in said, "uptime"
 
 
+def test_a_radio_that_has_just_come_back_is_up_for_one_second_not_one_seconds() -> None:
+    """The uptime that matters, said properly.
+
+    A radio reporting a one-second uptime is a radio that has just rebooted -
+    which is the whole of the answer to "why did the picture stop", and the
+    moment somebody is reading this line rather than glancing at it. The panel's
+    own rule is that a figure without its meaning is not information; a figure
+    whose sentence looks unfinished is worse, because it reads as a console that
+    is broken rather than a radio that restarted.
+    """
+    said = texts(link_lines(reading(uptime_s=1)))
+    assert "up for 1 second" in said
+    assert "1 seconds" not in said
+
+
+def test_a_longer_uptime_is_still_plural() -> None:
+    assert "up for 42 seconds" in texts(link_lines(reading(uptime_s=42)))
+
+
 def test_no_distance_is_shown_because_none_of_the_fields_is_metres() -> None:
     """`wireless.distance` came back 0 and `sta[0].distance` came back 1 on a
     link that is really 15 km. "Distance: 1 m" is not a smaller error than
