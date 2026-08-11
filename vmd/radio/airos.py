@@ -303,13 +303,25 @@ class LinkStatus:
     connected: bool
     reason: str = ""
     signal_dbm: int | None = None
+    # What the OTHER radio hears. A point-to-point link can be strong one way
+    # and weak the other - a dish knocked out of alignment at one end does
+    # exactly that - and until this was read the asymmetry was invisible.
+    remote_signal_dbm: int | None = None
     noise_dbm: int | None = None
+    # The raw airOS field, kept as it came for the probe's report. `ccq` does
+    # not exist on the firmware that was measured; `quality_percent` is the one
+    # to read, and it is normalised to 0-100 whichever field filled it.
     ccq: float | None = None
+    quality_percent: float | None = None
+    # Airtime: the share of the medium's TIME that is spent, which is what
+    # actually fills a wireless link. See `parse_status`.
+    airtime_percent: float | None = None
+    rx_airtime_percent: float | None = None
+    tx_airtime_percent: float | None = None
     tx_mbps: float | None = None
     rx_mbps: float | None = None
     tx_capacity_mbps: float | None = None
     rx_capacity_mbps: float | None = None
-    distance_m: int | None = None
     uptime_s: int | None = None
     device: str = ""
 
@@ -318,13 +330,17 @@ class LinkStatus:
             "connected": self.connected,
             "reason": self.reason,
             "signal_dbm": self.signal_dbm,
+            "remote_signal_dbm": self.remote_signal_dbm,
             "noise_dbm": self.noise_dbm,
             "ccq": self.ccq,
+            "quality_percent": self.quality_percent,
+            "airtime_percent": self.airtime_percent,
+            "rx_airtime_percent": self.rx_airtime_percent,
+            "tx_airtime_percent": self.tx_airtime_percent,
             "tx_mbps": self.tx_mbps,
             "rx_mbps": self.rx_mbps,
             "tx_capacity_mbps": self.tx_capacity_mbps,
             "rx_capacity_mbps": self.rx_capacity_mbps,
-            "distance_m": self.distance_m,
             "uptime_s": self.uptime_s,
             "device": self.device,
         }
@@ -343,15 +359,115 @@ def _int(value) -> int | None:
 
 
 def _capacity(polled, rate) -> float | None:
-    """The negotiated capacity in Mb/s, from whichever field reported it."""
+    """The negotiated capacity in Mb/s, from whichever field reported it.
+
+    `polling.*_capacity` is kbps and `txrate`/`rxrate` are already Mb/s. That
+    was an assumption when it was written and it is now CONFIRMED: the radio
+    that was read reports `dl_capacity: 194400` beside a `throughput.rx` of
+    `10692` for 10.7 Mb/s of camera video, so both are kbps and the ratio
+    between them is the one airMAX claims.
+    """
     kbps = _number(polled)
     if kbps:
         return kbps / 1000.0
     return _number(rate)
 
 
+def _mbps(kbps) -> float | None:
+    """kbps as Mb/s, and nothing at all when the field is absent.
+
+    Explicitly not `or 0`: a throughput of nought is a quiet link and a missing
+    throughput is a radio that did not say, and they may not read the same.
+    """
+    number = _number(kbps)
+    return None if number is None else number / 1000.0
+
+
+def _percent(value) -> float | None:
+    """A figure the radio already reports as a percentage, left on that scale."""
+    return _number(value)
+
+
+def _station(wireless: dict) -> tuple[dict, bool]:
+    """The one station entry that matters, and whether the list was there.
+
+    On a point-to-point link `wireless.sta` holds exactly one entry - the radio
+    at the other end - and on this firmware it is where the signal lives. The
+    second half of the answer is what tells an EMPTY list apart from a firmware
+    that has no such list at all: the first is the link being down, and the
+    second is only a shape this file has not met.
+    """
+    stations = wireless.get("sta")
+    if not isinstance(stations, list):
+        return {}, False
+    first = stations[0] if stations else None
+    return (first if isinstance(first, dict) else {}), True
+
+
+def _above_noise(source: dict, noise: int | None) -> int | None:
+    """A signal worked out from rssi, which is a count of dB above the noise."""
+    rssi = _int(source.get("rssi"))
+    floor = _int(source.get("noisefloor"))
+    if floor is None:
+        floor = noise
+    if rssi is None or floor is None:
+        return None
+    return floor + rssi
+
+
+def _quality(wireless: dict, station: dict) -> float | None:
+    """Link quality as a percentage, from whichever figure this build reports.
+
+    There is no `ccq` on airOS 8.7.11. airMAX reports `dl_avg_linkscore` and
+    `ul_avg_linkscore` instead, and those are ALREADY 0-100 - run through the
+    divide-by-ten that `ccq` needs they would report a perfect link as 10%.
+
+    The worse of the two directions is the one kept. A link that scores 100 down
+    and 40 up is a link with a problem, and a panel showing the average would be
+    reporting 70% of a problem it should be naming.
+    """
+    scores = [
+        _number(station.get(key))
+        for key in ("dl_avg_linkscore", "ul_avg_linkscore", "dl_linkscore", "ul_linkscore")
+        if station.get(key) is not None
+    ]
+    scores = [score for score in scores if score is not None]
+    if scores:
+        return min(scores)
+    ccq = _number(wireless.get("ccq"))
+    if ccq is None:
+        return None
+    # airOS reports ccq on a 0-1000 scale on the builds that have it at all,
+    # and "985%" is not something anyone can read. The scale is decided here
+    # rather than in the panel: which field was read is the parser's business.
+    return ccq / 10.0 if ccq > 100 else ccq
+
+
 def parse_status(payload: dict) -> LinkStatus:
     """Pull what matters out of airOS status JSON.
+
+    Written from general knowledge of airOS, and then POINTED AT A REAL RADIO -
+    a NanoStation 5AC loco on v8.7.11, in `sta-ptp` mode, the station end of the
+    15 km hop this console watches. It reported the signal as unknown, and the
+    reason is the shape of the answer:
+
+    * **The signal of a station is not at `wireless.signal`.** That key does not
+      exist on this firmware. The per-station entry carries it - `sta[0].signal`
+      - because from a station's point of view there is one other radio and that
+      is what "the signal" means. An access point reports differently, so both
+      are read, in that order.
+    * **`sta` may be empty**, and that is not "unknown": it is the radio being
+      up with nothing associated to it, which is the link being DOWN. It is
+      reported as such, in words, because it is the one state the operator has
+      to be told about and a blank signal would have hidden it.
+    * **There is no `ccq`.** `dl_avg_linkscore` / `ul_avg_linkscore` are what
+      airMAX reports instead, on a 0-100 scale rather than 0-1000.
+    * **`polling.use` is the figure that mattered most and was not read at all.**
+      See below.
+    * **`wireless.distance` is 0 and `sta[0].distance` is 1** on a link that is
+      really 15 km, so neither of them is metres and nothing here can say what
+      they are. No distance is reported: "Distance: 1 m" on a 15 km path is not
+      a smaller error than showing nothing, it is a worse one.
 
     Defensive on purpose: the shape differs between airOS versions and between
     models, and a missing field must read as unknown rather than as zero. A
@@ -362,36 +478,87 @@ def parse_status(payload: dict) -> LinkStatus:
     host = payload.get("host") or {}
     throughput = wireless.get("throughput") or {}
     polling = wireless.get("polling") or {}
+    station, has_station_list = _station(wireless)
+    remote = station.get("remote") or {}
+
+    noise = _int(wireless.get("noisef") or wireless.get("noise"))
+    if noise is None:
+        noise = _int(station.get("noisefloor"))
 
     signal = _int(wireless.get("signal"))
-    # Some builds report only rssi (a positive number above the noise floor).
-    noise = _int(wireless.get("noisef") or wireless.get("noise"))
-    if signal is None and wireless.get("rssi") is not None and noise is not None:
-        signal = noise + _int(wireless.get("rssi"))
+    if signal is None:
+        signal = _int(station.get("signal"))
+    # Some builds report only rssi (a positive number above the noise floor),
+    # at either level.
+    if signal is None:
+        signal = _above_noise(wireless, noise)
+    if signal is None:
+        signal = _above_noise(station, noise)
+
+    remote_signal = _int(remote.get("signal"))
+    if remote_signal is None:
+        remote_signal = _above_noise(remote, None)
+
+    # A station list that exists and is empty is the whole answer: the radio is
+    # up, the essid is still configured, and there is nothing on the far end.
+    associated = station or not has_station_list
+    connected = bool(associated) and (
+        bool(wireless.get("essid")) or _int(wireless.get("count")) not in (None, 0)
+    )
+    reason = (
+        ""
+        if connected or associated
+        else "the radio is up but nothing is associated to it: the link is down"
+    )
 
     return LinkStatus(
-        connected=bool(wireless.get("essid")) or _int(wireless.get("count")) not in (None, 0),
+        connected=connected,
+        reason=reason,
         signal_dbm=signal,
+        remote_signal_dbm=remote_signal,
         noise_dbm=noise,
         ccq=_number(wireless.get("ccq")),
-        # throughput is in kbps in airOS; rates are the negotiated link speed.
-        tx_mbps=(_number(throughput.get("tx")) or 0) / 1000 if throughput.get("tx") is not None else None,
-        rx_mbps=(_number(throughput.get("rx")) or 0) / 1000 if throughput.get("rx") is not None else None,
-        # Two fields, two units, and everything downstream compares them with the
-        # throughput above. The airMAX polling capacity is reported in kbps, the
-        # same as the throughput beside it; txrate and rxrate are already Mb/s.
-        # Treated as one unit, a 24 Mb/s link reads as 24000 and the panel says
-        # the link is 0.02% used at the moment the picture is breaking up.
+        quality_percent=_quality(wireless, station),
+        # Airtime, and it is the headline. `polling.use` is the percentage of
+        # the medium's TIME that is spent, which is what a wireless link runs
+        # out of - not bits per second. His link was at 88% while the panel,
+        # comparing throughput against an airMAX capacity estimate, reported it
+        # as 13% used and looking healthy.
+        airtime_percent=_percent(polling.get("use")),
+        rx_airtime_percent=_percent(polling.get("rx_use")),
+        tx_airtime_percent=_percent(polling.get("tx_use")),
+        # kbps, confirmed on the device rather than assumed. See `_capacity`.
+        tx_mbps=_mbps(throughput.get("tx")),
+        rx_mbps=_mbps(throughput.get("rx")),
+        # `dl` and `ul` are the LINK's directions and not this radio's: the
+        # downlink runs from the access point to the station. So on a station
+        # the downlink is what arrives - which the radio itself confirms, with
+        # rx carrying 10.7 Mb/s at 73% of the airtime against tx's 15%, and the
+        # far end reporting that it is transmitting that same stream. Read the
+        # other way round, the 194 Mb/s estimate sits beside the 0.2 Mb/s of PTZ
+        # traffic and the two figures are swapped.
         #
-        # UNPROVEN against a real radio: which of these fields your airOS build
-        # fills in, and in which unit, is exactly what spike/probe_radio.py is
-        # for - it prints the raw JSON next to these numbers.
-        tx_capacity_mbps=_capacity(polling.get("dl_capacity"), wireless.get("txrate")),
-        rx_capacity_mbps=_capacity(polling.get("ul_capacity"), wireless.get("rxrate")),
-        distance_m=_int(wireless.get("distance")),
+        # A radio that does not say which end it is keeps the old reading: an
+        # access point is the other side of the same sentence, and guessing
+        # would break the one shape that already worked.
+        **_capacities(wireless, polling),
         uptime_s=_int(host.get("uptime")),
         device=str(host.get("hostname") or host.get("devmodel") or ""),
     )
+
+
+def _capacities(wireless: dict, polling: dict) -> dict:
+    """The two capacity figures, named from the end that is reporting them."""
+    down = _capacity(polling.get("dl_capacity"), wireless.get("rxrate"))
+    up = _capacity(polling.get("ul_capacity"), wireless.get("txrate"))
+    if str(wireless.get("mode") or "").lower().startswith("sta"):
+        return {"rx_capacity_mbps": down, "tx_capacity_mbps": up}
+    # An access point, or a radio that did not say. The downlink is what it
+    # sends, which is the reading this file has always had.
+    return {
+        "tx_capacity_mbps": _capacity(polling.get("dl_capacity"), wireless.get("txrate")),
+        "rx_capacity_mbps": _capacity(polling.get("ul_capacity"), wireless.get("rxrate")),
+    }
 
 
 def _telling(headers) -> dict[str, str]:

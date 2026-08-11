@@ -138,6 +138,79 @@ STATUS = {
     },
 }
 
+# ----------------------------------------------- the radio that was actually read
+#
+# Everything above this line was invented from general knowledge of airOS. This
+# is not: it is what the owner's own radio sent back, captured by
+# spike/probe_radio.py - a NanoStation 5AC loco on firmware v8.7.11, in
+# `sta-ptp` mode, the station end of the 15 km hop that carries the camera.
+#
+# Both fixtures are kept, and on purpose. An access point and a station do not
+# report the same way, and the shape above is the one every existing test was
+# written against: a change that reads a station correctly and breaks the radio
+# that already worked has not fixed anything.
+#
+# What this capture settled - and what it cost - is written out in
+# vmd/radio/airos.py. In one line: the signal of a station is not at
+# `wireless.signal`, there is no `ccq` on this firmware, and `polling.use`, the
+# one figure that explains why the link is in trouble, was not read at all.
+REAL_STATUS = {
+    "host": {
+        "hostname": "NanoStation 5AC loco",
+        "devmodel": "NanoStation 5AC loco",
+        "uptime": 22419,
+        "fwversion": "v8.7.11",
+        "cpuload": 55.5,
+    },
+    "wireless": {
+        "essid": "LOCO",
+        "mode": "sta-ptp",
+        "count": 1,
+        "noisef": -89,
+        "distance": 0,
+        "chanbw": 40,
+        "frequency": 5180,
+        "throughput": {"rx": 10692, "tx": 219},
+        "polling": {
+            "use": 88,
+            "rx_use": 73,
+            "tx_use": 15,
+            "dl_capacity": 194400,
+            "ul_capacity": 226800,
+            "cb_capacity": 210600,
+        },
+        "sta": [
+            {
+                "signal": -66,
+                "rssi": 30,
+                "noisefloor": -89,
+                "chainrssi": [27, 27, 0],
+                "distance": 1,
+                "dl_avg_linkscore": 100,
+                "ul_avg_linkscore": 100,
+                "dl_linkscore": 100,
+                "ul_linkscore": 100,
+                "dl_capacity_expect": 156000,
+                "ul_capacity_expect": 156000,
+                "dl_signal_expect": -80,
+                "ul_signal_expect": -80,
+                "uptime": 22348,
+                "lastip": "192.168.1.20",
+                "remote": {
+                    "signal": -63,
+                    "rssi": 33,
+                    "noisefloor": -88,
+                    "hostname": "NanoStation 5AC loco",
+                    "tx_throughput": 10173,
+                    "rx_throughput": 132,
+                    "uptime": 49502,
+                    "version": "WA.ar934x.v8.7.11.67615.240514.1610",
+                },
+            }
+        ],
+    },
+}
+
 
 # The login page a token-requiring airOS serves on GET /login.cgi: a session
 # cookie in the headers and a token in a hidden field. Both have to come back on
@@ -306,7 +379,7 @@ def test_it_reads_the_link(radio: str) -> None:
     assert status.noise_dbm == -96
     assert status.rx_mbps == pytest.approx(4.2)
     assert status.device == "LOCO-north"
-    assert status.distance_m == 15400
+    assert status.quality_percent == 98.5
 
 
 def test_a_missing_field_reads_as_unknown_not_zero() -> None:
@@ -344,6 +417,137 @@ def test_the_capacity_is_in_megabits_whichever_field_reported_it() -> None:
     assert rated.rx_capacity_mbps == 117.0
 
     assert parse_status({"wireless": {"essid": "x"}}).tx_capacity_mbps is None
+
+
+# ------------------------------------------ what the real radio actually reports
+#
+# The probe was run against the owner's radio and reported the signal as
+# UNKNOWN. Every assertion below is a number that device sent.
+
+
+def test_the_signal_of_a_station_is_read_off_its_station_entry() -> None:
+    """The defect. `wireless.signal` does not exist on this radio: it is a
+    station, and a station's signal is the one entry in `wireless.sta`. The
+    panel said "this radio did not report a signal strength" about a link that
+    was reporting -66 dBm."""
+    status = parse_status(REAL_STATUS)
+    assert status.signal_dbm == -66
+    assert status.noise_dbm == -89
+    assert status.connected is True
+
+
+def test_an_access_point_still_reports_the_way_it_did() -> None:
+    """An access point reports differently and this must not break a radio that
+    already worked: `wireless.signal` is still read first where it exists."""
+    assert parse_status(STATUS).signal_dbm == -63
+    assert parse_status({"wireless": {"essid": "x", "signal": -55, "sta": [{"signal": -70}]}}).signal_dbm == -55
+
+
+def test_a_station_that_reports_only_rssi_is_still_read() -> None:
+    """Same rule one level down: rssi is a positive number above the station's
+    own noise floor, and neither of them is where the old code looked."""
+    status = parse_status(
+        {"wireless": {"essid": "x", "sta": [{"rssi": 30, "noisefloor": -89}]}}
+    )
+    assert status.signal_dbm == -59
+
+
+def test_nothing_associated_is_a_link_that_is_down_and_says_so() -> None:
+    """An empty `sta` is a real state and a bad one: the radio is up, the essid
+    is still configured, and nothing is on the other end. Read as "unknown" that
+    is a link panel with a signal missing; read correctly it is the link being
+    down, which is the one thing the operator has to be told."""
+    status = parse_status({"wireless": {"essid": "LOCO", "mode": "sta-ptp", "sta": []}})
+    assert status.connected is False
+    assert "associated" in status.reason or "link is down" in status.reason
+    assert status.signal_dbm is None, "and never a zero"
+
+
+def test_the_far_ends_signal_is_read_too() -> None:
+    """A link can be strong one way and weak the other, and that asymmetry was
+    invisible: the radio knows what the other end hears and nothing read it."""
+    assert parse_status(REAL_STATUS).remote_signal_dbm == -63
+    assert parse_status(STATUS).remote_signal_dbm is None
+
+
+def test_the_link_quality_comes_from_the_linkscores_on_this_firmware() -> None:
+    """There is no `ccq` on airOS 8.7.11 - `dl_avg_linkscore` / `ul_avg_linkscore`
+    are airMAX's equivalent, and they are ALREADY a percentage. Run through the
+    old code's divide-by-ten they would read as 10%, which is a healthy link
+    reported as a broken one."""
+    assert parse_status(REAL_STATUS).quality_percent == 100.0
+    # The worse direction is the one that governs: a link that scores 100 one
+    # way and 40 the other is a link with a problem.
+    lopsided = parse_status(
+        {"wireless": {"essid": "x", "sta": [{"dl_avg_linkscore": 100, "ul_avg_linkscore": 40}]}}
+    )
+    assert lopsided.quality_percent == 40.0
+    # And a radio that reports ccq on the 0-1000 scale is normalised here, not
+    # in the panel: the scales are the parser's business.
+    assert parse_status(STATUS).quality_percent == 98.5
+    assert parse_status({"wireless": {"essid": "x", "ccq": 94}}).quality_percent == 94.0
+    assert parse_status({"wireless": {"essid": "x"}}).quality_percent is None
+
+
+def test_the_airtime_is_read_because_it_is_what_fills_a_wireless_link() -> None:
+    """`polling.use` is 88 on his radio: 88% of the airtime is spent. Nothing
+    read it, so the panel said "3.1 Mb/s of 24 Mb/s (13%)" about a link with no
+    room left in it at all."""
+    status = parse_status(REAL_STATUS)
+    assert status.airtime_percent == 88.0
+    assert status.rx_airtime_percent == 73.0
+    assert status.tx_airtime_percent == 15.0
+    assert parse_status(STATUS).airtime_percent is None
+
+
+def test_the_throughput_is_kbps_on_the_firmware_that_was_measured() -> None:
+    """Confirmed rather than assumed now: 10692 is the 10.7 Mb/s of camera
+    video the link is carrying, which is what the far end says it is sending."""
+    status = parse_status(REAL_STATUS)
+    assert status.rx_mbps == pytest.approx(10.692)
+    assert status.tx_mbps == pytest.approx(0.219)
+
+
+def test_the_capacity_is_named_from_the_end_that_is_reporting_it() -> None:
+    """`dl` and `ul` are the link's directions, not this radio's. On a station
+    the downlink is what comes IN, and reading it as what goes out puts the
+    194 Mb/s estimate against the 0.2 Mb/s of PTZ traffic - the two figures
+    swapped over.
+
+    Confirmed by the radio itself: rx carries 10.7 Mb/s, rx_use is 73% of the
+    airtime against tx_use's 15%, and the far end says it is TRANSMITTING that
+    same 10.2 Mb/s. The downlink is the video coming in.
+    """
+    status = parse_status(REAL_STATUS)
+    assert status.rx_capacity_mbps == pytest.approx(194.4)
+    assert status.tx_capacity_mbps == pytest.approx(226.8)
+    # An access point is the other end of that sentence, and the fixture above
+    # it - which names no mode at all - keeps the reading it always had.
+    assert parse_status(STATUS).tx_capacity_mbps == 24.0
+
+
+def test_no_distance_is_claimed_from_fields_that_are_not_metres() -> None:
+    """`wireless.distance` is 0 and `sta[0].distance` is 1 on a link that is
+    really 15 km. Neither is metres, and nothing here knows what they are: the
+    panel showed "Distance: 15.4 km" only because the invented fixture had been
+    written to make it do so. A figure nobody can justify is left out."""
+    assert not hasattr(parse_status(REAL_STATUS), "distance_m")
+    assert "distance" not in parse_status(REAL_STATUS).as_dict()
+
+
+def test_every_new_field_is_unknown_rather_than_zero_when_it_is_absent() -> None:
+    """The rule that survives every change here. A console that reports 0
+    because it could not find the field is worse than one that reports nothing."""
+    status = parse_status({"wireless": {"essid": "x"}})
+    assert status.airtime_percent is None
+    assert status.rx_airtime_percent is None
+    assert status.tx_airtime_percent is None
+    assert status.remote_signal_dbm is None
+    assert status.quality_percent is None
+    # And an airtime of nought really is nought: a link nobody is using is not
+    # a link nobody could read.
+    quiet = parse_status({"wireless": {"essid": "x", "polling": {"use": 0}}})
+    assert quiet.airtime_percent == 0.0
 
 
 # ------------------------------------------------------------- the black hole
@@ -606,7 +810,13 @@ class RealFirmware(BaseHTTPRequestHandler):
         if self._cookie() not in RealFirmware.sessions:
             self._send(403, b"", (("Server", "lighttpd/1.4.54"),))
             return
-        self._send(200, json.dumps(STATUS).encode(), (("Content-Type", "application/json"),))
+        # What this radio actually answers, not the invented shape: the login
+        # and the reading were captured from the same device, and a fixture that
+        # logs in like it and then answers like something else would prove the
+        # two halves separately and the whole thing never.
+        self._send(
+            200, json.dumps(REAL_STATUS).encode(), (("Content-Type", "application/json"),)
+        )
 
     def do_POST(self) -> None:  # noqa: N802
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
@@ -674,9 +884,15 @@ def test_a_login_refused_behind_an_http_200_is_not_a_login(real_radio: str) -> N
 
 def test_the_right_password_gets_in_on_that_same_firmware(real_radio: str) -> None:
     """The check may not cost a login that works. This firmware marks a real one
-    with a fresh cookie and a redirect page rather than with words."""
+    with a fresh cookie and a redirect page rather than with words.
+
+    And what comes back down that login is the whole point of it: -66 dBm, off
+    `sta[0].signal`, on the radio that reported the signal as unknown.
+    """
     device = AirOsRadio(real_radio, USER, PASSWORD)
-    assert device.status().signal_dbm == -63
+    status = device.status()
+    assert status.signal_dbm == -66
+    assert status.airtime_percent == 88.0
     assert device.login_method == "session"
 
 
