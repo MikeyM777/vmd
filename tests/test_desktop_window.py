@@ -932,8 +932,15 @@ def test_the_status_line_admits_it_has_not_heard_from_the_radio(
 
 def test_a_link_reading_that_has_gone_stale_says_how_old_it_is() -> None:
     """Never a stale value presented as current."""
-    fresh = ConsoleWindow._link_words({"signal_dbm": -63, "age_seconds": 2.0})
-    stale = ConsoleWindow._link_words({"signal_dbm": -63, "age_seconds": 41.0})
+    # `connected` in both, because a payload that never said the link was up is
+    # a payload describing a link that is down - and the sentence now asks the
+    # panel what it makes of the whole reading rather than only of the signal.
+    fresh = ConsoleWindow._link_words(
+        {"connected": True, "signal_dbm": -63, "age_seconds": 2.0}
+    )
+    stale = ConsoleWindow._link_words(
+        {"connected": True, "signal_dbm": -63, "age_seconds": 41.0}
+    )
     assert fresh == "link -63 dBm"
     assert "41" in stale and "ago" in stale
 
@@ -1166,6 +1173,13 @@ def test_the_band_and_the_link_panel_never_disagree_about_the_same_radio(
     assert link, window.status_parts()
     assert link[0][2] == panel["state"], "the band is calmer than the panel below it"
     assert "full" in link[0][0], link[0]
+    # And the sentence, not only the short word. When this chip is the one doing
+    # the talking - which at 88% airtime it will be - it said "link -66 dBm": a
+    # perfectly healthy-looking number about a link with nothing left in it. The
+    # signal is not always what is wrong with a link, and it was the only thing
+    # this sentence could say.
+    assert "stutter" in link[0][1] or "fits" in link[0][1], link[0][1]
+    assert "-66" in link[0][1], "the number he asked for went missing"
 
 
 def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(

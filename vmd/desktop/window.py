@@ -1164,6 +1164,22 @@ class ConsoleWindow(QMainWindow):
                 "be opened"
             )
             return
+        # Out of fullscreen first, and this is a trap rather than a nicety.
+        # Fullscreen hides the tab bar and the status band, because it exists to
+        # show pictures and nothing else. Changing tab underneath that left him
+        # on Playback with no tab bar to leave it by, no band, and a Live tab's
+        # Esc key that was no longer the thing with focus - at the one moment
+        # this console is under pressure, which is while an alarm is up.
+        #
+        # Leaving is also the right thing on its own account: he pressed a
+        # button that means "show me the recording", and the recording is on a
+        # tab, and a tab is not what fullscreen is for.
+        leave = getattr(getattr(self, "fullscreen", None), "leave", None)
+        if leave is not None:
+            try:
+                leave()
+            except Exception:  # noqa: BLE001 - the footage matters more
+                logger.exception("could not leave fullscreen to show that movement")
         index = self.tabs.indexOf(self.playback)
         if index >= 0:
             self.tabs.setCurrentIndex(index)
@@ -1512,6 +1528,20 @@ class ConsoleWindow(QMainWindow):
         age = link.get("age_seconds")
         if isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS:
             return f"link {signal} dBm ({age:.0f} s ago)"
+        # The signal is not always what is wrong with the link, and it was the
+        # only thing this said. At -66 dBm with 88% of the airtime spent, this
+        # sentence read "link -66 dBm" - a perfectly healthy-looking number
+        # about a link with nothing left in it. When there is something else to
+        # say, the panel has already worked out what it is; say that, and put
+        # the number after it rather than instead of it.
+        from vmd.radio.panel import link_summary
+
+        summary = link_summary(link)
+        if summary["state"] in ("warn", "alarm") and summary["note"]:
+            # Through `_link_glance` rather than the headline directly, so the
+            # sentence and the short word are the same words - and so that
+            # "no link" does not come out as "link no link".
+            return f"{_link_glance(link)}: {summary['note']} ({signal} dBm)"
         return f"link {signal} dBm"
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming

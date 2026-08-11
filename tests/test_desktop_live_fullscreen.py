@@ -649,6 +649,38 @@ def test_the_zoom_bars_are_under_the_pictures_in_fullscreen_too(
         assert bar is not None and bar.isVisible()
 
 
+def test_show_me_leaves_fullscreen_instead_of_stranding_him_on_playback(
+    qtbot, tmp_path: Path
+) -> None:
+    """Fullscreen hides the tab bar and the status band, because it exists to
+    show pictures and nothing else. `Show me` changed tab underneath that: he
+    ended on Playback with no tab bar to leave it by, no band, and the Live
+    tab's Esc no longer the thing with focus.
+
+    At the one moment this console is under pressure, which is while an alarm is
+    up, the button that means "show me the recording" put him somewhere with no
+    visible way out.
+    """
+    window = console(qtbot, tmp_path)
+    window.fullscreen.enter()
+    settle()
+    assert window.fullscreen.active()
+
+    class Moved:
+        stream = "thermal"
+        started = 1_760_000_000.0
+        ended = started + 4.0
+        label = ""
+        confidence = 0.0
+
+    window.show_footage(Moved())
+    settle()
+
+    assert not window.fullscreen.active(), "left on a tab he cannot leave"
+    assert window.tabs.tabBar().isVisible(), "no way back to Live"
+    assert window.tabs.currentWidget() is window.playback
+
+
 def test_the_first_seconds_of_the_morning_do_not_read_as_a_broken_zoom(qtbot) -> None:
     """Lens discovery happens on the worker thread, so for the first heartbeat
     or two after every start-up the camera has genuinely not answered yet. Drawn

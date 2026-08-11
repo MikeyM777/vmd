@@ -943,6 +943,17 @@ class LinkPanel(QGroupBox):
         self._details.setText(("▾ Less" if opened else "▸ Details"))
         for index, label in enumerate(self._labels):
             label.setVisible(bool(opened) and index < len(self._shown))
+        # The note under the word goes away while the sentences are up, because
+        # it IS one of them, shortened. Opened, the panel said "Nothing else
+        # fits - the picture can stutter or drop during a pan", then "Airtime:
+        # 88% used - the link is full", then "Nothing else will fit on it. A
+        # picture that stutters, falls behind, or drops during a pan is this" -
+        # the same fact three times, in a panel he asked to have less text in.
+        #
+        # The sentences keep their full wording rather than the note keeping
+        # its: they are what somebody reads out over the phone, and they have to
+        # stand up without the word above them.
+        self._note.setVisible(bool(self._note.text()) and not opened)
         self._fit()
 
     def _fit(self) -> None:
@@ -1045,7 +1056,9 @@ class LinkPanel(QGroupBox):
             f"color: {word_colour}; font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
         )
         self._note.setText(summary["note"])
-        self._note.setVisible(bool(summary["note"]))
+        # Hidden while the sentences are up: see `_show_details`. Set through
+        # that rather than here so there is one rule about it and not two.
+        self._note.setVisible(bool(summary["note"]) and not self._details.isChecked())
         self._note.setStyleSheet(f"color: {word_colour}; font-size: {SIZE_SMALL}px;")
         self._carrying.setText(summary["carrying"])
         self._carrying.setVisible(bool(summary["carrying"]))

@@ -301,6 +301,46 @@ def test_shutting_the_details_gives_the_room_back(qtbot) -> None:
     assert panel.sizeHint().height() < open_height
 
 
+def test_the_panel_does_not_say_the_same_thing_three_times_when_opened(qtbot) -> None:
+    """Opened on his own link, the panel said "Nothing else fits - the picture
+    can stutter or drop during a pan", then "Airtime: 88% used - the link is
+    full", then "Nothing else will fit on it. A picture that stutters, falls
+    behind, or drops during a pan is this" - one fact, three times, in a panel
+    he asked to have less text in.
+
+    The note under the word is a shortened one of those sentences, so it stands
+    down while they are up. The sentences keep their full wording rather than
+    the note keeping its: they are what somebody reads out over the phone, and
+    they have to stand up without the word above them.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    panel = LinkPanel(FakeRadioService(his_link()))
+    qtbot.addWidget(panel)
+    panel.resize(340, 900)
+    panel.show()
+    QApplication.processEvents()
+
+    shut = [
+        label.text()
+        for label in panel.findChildren(type(panel._note))
+        if label.isVisibleTo(panel) and label.text()
+    ]
+    assert any("stutter" in text for text in shut), "the short warning went missing"
+
+    panel.show_details(True)
+    QApplication.processEvents()
+    opened = [
+        label.text()
+        for label in panel.findChildren(type(panel._note))
+        if label.isVisibleTo(panel) and label.text()
+    ]
+    stutter = [text for text in opened if "stutter" in text]
+    assert len(stutter) == 1, stutter
+    # And the one that survived is the full sentence, not the summary.
+    assert "not the camera" in stutter[0], stutter
+
+
 def test_a_radio_that_throws_still_gets_a_word(qtbot) -> None:
     class Angry:
         def status(self) -> dict:
