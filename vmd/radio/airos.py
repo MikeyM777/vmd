@@ -5,16 +5,27 @@ could say nothing about the link at all - the panel showed dashes because
 nothing ever read the radio. This talks to airOS the way its own web interface
 does: a form login that sets a cookie, then status.cgi, which returns JSON.
 
-**Nobody here has ever reached a real radio.** The first time this was pointed at
-one it answered 403, and the code called that a rejected username or password
-and told the operator so - which sent them looking for a password problem that
-may not exist. airOS answers 403 for several reasons that are not the password:
-a POST that arrives without the session cookie it sets on its own login page, a
-POST that does not look like it came from that page, a lockout after repeated
-tries. So the login is now a list of flows to try and a record of what each one
-said, and 401 and 403 are reported as the different things they are. What the
-owner's radio actually wants is still an open question, and `spike/probe_radio.py`
-is the thing that answers it.
+This has now been pointed at a real radio - `lighttpd/1.4.54` airOS, by
+`spike/probe_radio.py` - and two things came back from it.
+
+The **session flow is right**: the GET of the login page set a cookie, the POST
+carried it and was answered, and the cold POST without it was refused with
+"Missing session id". That part is no longer a guess.
+
+The **403 was not the password being refused, and it was not a mystery either**.
+The radio answered the login itself with HTTP 200 and the words `Invalid
+credentials.` in the body, set no new session cookie, and only then refused
+status.cgi with 403 - and this file, judging the login on its status code alone,
+believed it was in and reported the later 403 as something that "need not mean
+the password is wrong". It did mean that, and the radio had said so. A login is
+now checked against what came back rather than against its code: see
+`check_login`, and the third case in `_refusal` that passes the radio's own words
+on to the operator.
+
+401 and 403 are still reported as the different things they are, because airOS
+answers 403 for several reasons that are not the password: a POST without the
+session cookie, a POST that does not look like it came from the login page, a
+lockout after repeated tries.
 
 Read-only. Nothing here changes a radio setting; a console that can reconfigure
 the link it depends on is a console that can cut itself off.
@@ -25,6 +36,7 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import logging
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -35,6 +47,25 @@ from html.parser import HTMLParser
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 6.0
+
+# How much of a login answer is read before deciding what it says. A login page
+# is tens of kilobytes of HTML and nothing after this changes the verdict.
+LOGIN_BODY_LIMIT = 8000
+
+# The longest run of a device's own words that counts as a sentence about the
+# login. Past this it is a page, not an answer, and quoting it on the link panel
+# would be quoting a form at the operator.
+SAID_LIMIT = 200
+
+# And the longest quotation that reaches the operator, once it is a sentence.
+QUOTE_LIMIT = 120
+
+# Where an airOS API answer puts its refusal. Order is the order they are read.
+REFUSAL_KEYS = ("error", "message", "detail", "reason")
+
+# Answers that say nothing. A login that replies "ok" has not named a failure,
+# and a check that read it as one would break every firmware that does this.
+NOT_A_REFUSAL = ("", "ok", "success", "true", "1", "none", "forbidden", "unauthorized")
 
 LOGIN_PATH = "/login.cgi"
 # airOS 8 logs in through its own API rather than the form. python-airos, the
@@ -62,6 +93,20 @@ class RadioError(Exception):
     """The radio could not be read, with a sentence saying why."""
 
 
+class LoginRefused(RadioError):
+    """The radio answered the login and said, in its own words, that it was not
+    accepted - whatever HTTP code it wrapped that in.
+
+    Carries the words, because they are the most useful sentence the radio has:
+    `Invalid credentials.` is what a non-technical operator needs, and it is what
+    the console spent a morning failing to pass on.
+    """
+
+    def __init__(self, said: str = "") -> None:
+        super().__init__(said or "the radio did not accept the login")
+        self.said = said
+
+
 def redact(text: str, password: str) -> str:
     """Hide the password in every form this program could have written it.
 
@@ -82,6 +127,93 @@ def redact(text: str, password: str) -> str:
         if form:
             text = text.replace(form, REDACTED)
     return text
+
+
+def refusal_words(body: str) -> str:
+    """What the radio called its own refusal, if the answer names one.
+
+    Two shapes, because the radio answers in two: `/api/auth` refuses in JSON -
+    `{"error":"Invalid credentials."}` - and `login.cgi` refuses in the body of
+    an otherwise ordinary page, as plain text.
+
+    Deliberately not a search for an English string. This firmware is one build
+    of many and the next one may refuse in another language: what is matched is
+    the SHAPE of an answer that names something - a JSON field meant for a
+    reason, or a body short enough to be a sentence rather than a page. A whole
+    login form re-served is not a quote, and returns nothing.
+    """
+    text = (body or "")[:LOGIN_BODY_LIMIT]
+    stripped = text.strip()
+    if stripped[:1] in ("{", "["):
+        try:
+            payload = json.loads(stripped)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            for key in REFUSAL_KEYS:
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return _quoted(value)
+            # JSON that names nothing is not a refusal, and reading its braces as
+            # a sentence would make one up.
+            return ""
+    said = " ".join(re.sub(r"<[^>]+>", " ", text).split())
+    if len(said) > SAID_LIMIT or said.strip(" .!").lower() in NOT_A_REFUSAL:
+        return ""
+    return _quoted(said)
+
+
+def _quoted(said: str) -> str:
+    """A device's own words, collapsed and cut to something a status line can
+    carry. Never trusted to be short: this is text from a device."""
+    words = " ".join(said.split())
+    return words[:QUOTE_LIMIT] + "..." if len(words) > QUOTE_LIMIT else words
+
+
+def login_accepted(body: str, headers) -> bool:
+    """Whether an answer to a login POST is evidence that a login happened.
+
+    Three signals, any one of which is enough, and none of which is a word:
+
+    * a `Set-Cookie` - the radio issued a session. On the real device the POST
+      that worked came back with a fresh `AIROS_...` value and the one that was
+      refused came back with none;
+    * a `Location` - it redirected, which is what a login does;
+    * a meta refresh in the page, which is that same redirect written in HTML.
+      It is what the observed firmware actually sends.
+
+    Anything else is not evidence either way, and this returns False so that the
+    body gets a say. It is not "the login failed" - see `check_login`.
+    """
+    if headers is None:
+        headers = {}
+    if headers.get("Set-Cookie") or headers.get("Location"):
+        return True
+    head = (body or "")[:LOGIN_BODY_LIMIT].lower()
+    return "http-equiv" in head and "refresh" in head
+
+
+def check_login(body: str, headers) -> None:
+    """Raise if the radio answered the login and refused it.
+
+    **HTTP 200 is not evidence of a login.** The device this was first pointed at
+    answers a wrong password with 200, sets no new cookie, and says `Invalid
+    credentials.` in the body - and the console, judging on the code alone,
+    believed it was in. The failure then surfaced as an unexplained 403 from
+    status.cgi and the operator was told the radio "refused the request, which
+    need not mean the password is wrong", when the radio had already said in
+    those words that it was.
+
+    Nothing is claimed without evidence, in either direction: a refusal is
+    declared only when the body names one AND the answer carries none of the
+    marks of a login that took. A firmware that says nothing either way is left
+    exactly as it was, with status.cgi as the thing that finds out.
+    """
+    if login_accepted(body, headers):
+        return
+    said = refusal_words(body)
+    if said:
+        raise LoginRefused(said)
 
 
 class _HiddenFields(HTMLParser):
@@ -256,6 +388,20 @@ def _words(attempt: LoginAttempt, limit: int = 60) -> str:
     return f" ({said})"
 
 
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    """The body of a refusal, bounded, or nothing.
+
+    An HTTPError is a response and can be read like one - and on this radio the
+    /api/auth refusal puts the only useful sentence there. Guarded: a body that
+    will not read is not a reason to lose the code that came with it.
+    """
+    try:
+        return exc.read(LOGIN_BODY_LIMIT).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - the status code is the fallback
+        logger.debug("the refusal's body could not be read", exc_info=True)
+        return ""
+
+
 def _carried(headers: dict[str, str], token: str | None) -> dict[str, str]:
     """What a successful login leaves behind that later requests must repeat.
 
@@ -297,6 +443,10 @@ class LoginAttempt:
     status: int | None = None
     detail: str = ""
     headers: dict = field(default_factory=dict)
+    # Whether the radio itself said this login was not accepted, as opposed to
+    # this end having decided so from a status code. The strongest thing any of
+    # these attempts can carry, and the only one that quotes the device.
+    refused: bool = False
 
     def sentence(self) -> str:
         if self.status is not None:
@@ -378,12 +528,25 @@ class AirOsRadio:
                 attempts.append(attempt)
                 try:
                     headers = getattr(self, f"_login_{flow}")(opener, scheme, attempt)
+                except LoginRefused as exc:
+                    # The radio answered and said no, in its own words. Another
+                    # flow is still tried - a build that refuses the cold POST
+                    # with "Missing session id" refuses it in words too - but
+                    # what it said is kept, because it is the whole answer.
+                    attempt.refused = True
+                    attempt.detail = redact(exc.said, self.password)
+                    continue
                 except urllib.error.HTTPError as exc:
                     # The radio answered. Another flow may still be the one it
                     # wanted, so a 403 here is no longer the end of the road.
                     attempt.status = exc.code
                     attempt.headers = _telling(exc.headers)
-                    attempt.detail = redact(str(exc.reason or ""), self.password)
+                    # The body first: /api/auth refuses in JSON behind a 403, and
+                    # `{"error":"Invalid credentials."}` is worth more to the
+                    # operator than the word "Forbidden".
+                    said = refusal_words(_error_body(exc))
+                    attempt.refused = bool(said)
+                    attempt.detail = redact(said or str(exc.reason or ""), self.password)
                     continue
                 except (urllib.error.URLError, OSError) as exc:
                     # Nothing answered at all, so the other two flows would only
@@ -430,10 +593,14 @@ class AirOsRadio:
         with opener.open(
             urllib.request.Request(page_url, data=data, headers=headers), timeout=TIMEOUT
         ) as response:
-            response.read()
+            body = response.read(LOGIN_BODY_LIMIT).decode("utf-8", "replace")
             after = _telling(response.headers)
         attempt.status = 200
         attempt.headers = {**opened, **after}
+        # Only what this POST came back with. The cookie the GET set proves the
+        # login page was served, not that the login was accepted, and merging the
+        # two would make every refusal look like a session.
+        check_login(body, after)
         return _carried(after, token)
 
     def _login_cold(
@@ -447,10 +614,11 @@ class AirOsRadio:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         with opener.open(request, timeout=TIMEOUT) as response:
-            response.read()
+            body = response.read(LOGIN_BODY_LIMIT).decode("utf-8", "replace")
             after = _telling(response.headers)
         attempt.status = 200
         attempt.headers = after
+        check_login(body, after)
         return _carried(after, None)
 
     def _login_api(
@@ -464,10 +632,11 @@ class AirOsRadio:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
         )
         with opener.open(request, timeout=TIMEOUT) as response:
-            response.read()
+            body = response.read(LOGIN_BODY_LIMIT).decode("utf-8", "replace")
             after = _telling(response.headers)
         attempt.status = 200
         attempt.headers = after
+        check_login(body, after)
         return _carried(after, None)
 
     def _refusal(self, attempts: list[LoginAttempt]) -> str:
@@ -481,6 +650,22 @@ class AirOsRadio:
         # when another endpoint answered something else. A radio with no login
         # page at /login.cgi and a refusal at /api/auth must report the refusal.
         answered = [attempt for attempt in answered if attempt.status != 404] or answered
+        # First, because it is the only one of these that is not this end's
+        # reading of a status code: the radio was asked, and it said. Whatever
+        # code it wrapped that in, its own words settle the question, and they
+        # are the words a non-technical operator can act on.
+        named = next(
+            (a for a in attempts if a.refused and a.detail),
+            None,
+        )
+        if named is not None:
+            code = f"HTTP {named.status} " if named.status is not None else ""
+            return redact(
+                f'the radio refused the login and said so: "{named.detail}" '
+                f"({code}from {named.url}). Those are the radio's own words - "
+                "check the username and the password in Settings.",
+                self.password,
+            )
         challenged = next((a for a in answered if a.status == 401), None)
         if challenged is not None:
             # 401 is an authentication challenge and nothing else. Here the old

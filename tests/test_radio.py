@@ -377,6 +377,192 @@ def test_a_radio_that_never_answered_is_not_accused_of_anything(radio: str) -> N
     assert "username or password" not in str(caught.value)
 
 
+# ------------------------------------------- the firmware that was actually met
+#
+# Everything above this line was modelled on general knowledge of airOS. This is
+# not: it is `lighttpd/1.4.54` on the owner's own radio, captured by
+# spike/probe_radio.py on the first run that ever reached one.
+#
+#     [session] GET  /login.cgi   -> 200, Set-Cookie: AIROS_28704EA42F45=c788...
+#     [session] POST /login.cgi   -> 200 (OK), body: Invalid credentials.
+#     [session] GET  /status.cgi  -> 403
+#     [api]     POST /api/auth    -> 403, body: {"error":"Invalid credentials."}
+#
+# The session flow was right - the cookie was set, the POST carried it, and the
+# cold POST without it was refused with "Missing session id". The password was
+# simply wrong, and the radio said so in a body behind an HTTP 200.
+
+
+REAL_COOKIE = "AIROS_28704EA42F45"
+REFUSED_BODY = "Invalid credentials."
+# What airOS sends when the login DOES take: not a page, a redirect written in
+# HTML. The thing that distinguishes it from the refusal above is not the words.
+ACCEPTED_BODY = '<html><head><meta http-equiv="refresh" content="0; url=/"></head></html>'
+
+
+class RealFirmware(BaseHTTPRequestHandler):
+    """The owner's radio, as far as it has been observed.
+
+    Answers a wrong password with **HTTP 200** and says so only in the body,
+    sets no new session cookie when it does, and refuses status.cgi with 403
+    afterwards - which is where the console used to notice, by which point it had
+    already decided the login had succeeded.
+    """
+
+    sessions: set[str] = set()
+
+    def _send(self, code: int, payload: bytes = b"", extra: tuple = ()) -> None:
+        self.send_response(code)
+        for name, value in extra:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def _cookie(self) -> str:
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == REAL_COOKIE:
+                return value
+        return ""
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/login.cgi"):
+            self._send(
+                200,
+                b"<html><body><form action='/login.cgi' method='post'></form></body></html>",
+                (
+                    ("Set-Cookie", f"{REAL_COOKIE}=c788e636; Path=/; HttpOnly"),
+                    ("Content-Type", "text/html"),
+                    ("Server", "lighttpd/1.4.54"),
+                ),
+            )
+            return
+        if self._cookie() not in RealFirmware.sessions:
+            self._send(403, b"", (("Server", "lighttpd/1.4.54"),))
+            return
+        self._send(200, json.dumps(STATUS).encode(), (("Content-Type", "application/json"),))
+
+    def do_POST(self) -> None:  # noqa: N802
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        right = PASSWORD in body
+        if self.path.startswith("/api/"):
+            # Same answer, in JSON, behind a 403.
+            if right:
+                self._send(200, b'{"ok":true}', (("Set-Cookie", f"{REAL_COOKIE}=api1; Path=/"),))
+                RealFirmware.sessions.add("api1")
+            else:
+                self._send(
+                    403,
+                    json.dumps({"error": REFUSED_BODY}).encode(),
+                    (("Content-Type", "application/json"),),
+                )
+            return
+        if not self._cookie():
+            # The cold POST, with no session: refused in words, still HTTP 200.
+            self._send(200, b"Missing session id")
+            return
+        if not right:
+            # The defect, exactly as captured: 200, no new cookie, and the reason
+            # in the body.
+            self._send(200, REFUSED_BODY.encode())
+            return
+        RealFirmware.sessions.add("granted")
+        self._send(
+            200,
+            ACCEPTED_BODY.encode(),
+            (("Set-Cookie", f"{REAL_COOKIE}=granted; Path=/; HttpOnly"),),
+        )
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def real_radio() -> Iterator[str]:
+    RealFirmware.sessions = set()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RealFirmware)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"{server.server_address[0]}:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_login_refused_behind_an_http_200_is_not_a_login(real_radio: str) -> None:
+    """The defect this fixture exists for.
+
+    The radio said `Invalid credentials.` and the console, judging on the status
+    code alone, believed the login had worked - and then reported the 403 that
+    followed as something that "need not mean the password is wrong", when the
+    radio had already said in those words that it was.
+    """
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(real_radio, USER, "wrong").status()
+    said = str(caught.value)
+    assert REFUSED_BODY in said, "the radio's own words have to reach the operator"
+    assert "need not mean the password is wrong" not in said
+
+
+def test_the_right_password_gets_in_on_that_same_firmware(real_radio: str) -> None:
+    """The check may not cost a login that works. This firmware marks a real one
+    with a fresh cookie and a redirect page rather than with words."""
+    device = AirOsRadio(real_radio, USER, PASSWORD)
+    assert device.status().signal_dbm == -63
+    assert device.login_method == "session"
+
+
+def test_a_refusal_in_json_behind_a_403_is_quoted_too(real_radio: str) -> None:
+    """`/api/auth` gives the same answer in JSON. Both paths have to be read: a
+    body that names the failure is the most useful sentence the radio has."""
+    from vmd.radio.airos import refusal_words
+
+    assert refusal_words(json.dumps({"error": REFUSED_BODY})) == REFUSED_BODY
+    assert refusal_words(REFUSED_BODY) == REFUSED_BODY
+    # And a page is not a sentence: a whole login form re-served is not a quote.
+    assert refusal_words(LOGIN_PAGE * 20) == ""
+    assert refusal_words(ACCEPTED_BODY) == ""
+
+
+def test_nothing_is_claimed_about_a_firmware_that_says_nothing() -> None:
+    """One build of many. A radio that answers 200 with an empty body and no
+    cookie is not evidence of a refusal, and status.cgi is still the thing that
+    finds out - the old behaviour, deliberately kept."""
+    from vmd.radio.airos import check_login
+
+    check_login("", {})
+    check_login("ok", {})
+
+
+def test_the_evidence_is_more_than_one_english_string() -> None:
+    """This firmware is one build of many, so the words are not the test. A
+    login that took sets a fresh session cookie, or redirects; one that did not
+    does neither and says why."""
+    from vmd.radio.airos import login_accepted
+
+    assert login_accepted("Invalid credentials.", {"Set-Cookie": "AIROS_x=new"}) is True
+    assert login_accepted(ACCEPTED_BODY, {}) is True
+    assert login_accepted("", {"Location": "/"}) is True
+    assert login_accepted(REFUSED_BODY, {}) is False
+
+
+def test_the_quoted_words_are_bounded_and_redacted(real_radio: str) -> None:
+    """A sentence built out of a device's own text is a device's own text. It is
+    quoted, cut, and passed through the redaction like everything else - a login
+    answer can echo what it was sent."""
+    with pytest.raises(RadioError) as caught:
+        AirOsRadio(real_radio, USER, TRICKY_PASSWORD).status()
+    said = str(caught.value)
+    assert TRICKY_PASSWORD not in said
+    assert "p%40ss+word%2F1" not in said
+    assert len(said) < 400
+
+
 # ------------------------------------------------------- reading the login page
 
 
