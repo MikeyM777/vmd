@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 
 from vmd.ptz.encoder import CameraEncoders, apply_budget
+from vmd.ptz.lenses import Lenses
 from vmd.ptz.onvif import OnvifPtz, PtzError
 from vmd.settings import Settings
 
@@ -43,6 +44,15 @@ class PtzService:
                 OnvifPtz(host, settings.camera.username, settings.camera.password) if host else None
             )
             self._connected = False
+            # Which lens is which picture, remade whenever the camera is. The
+            # mapping is a property of THIS camera at THIS address; carrying an
+            # old one across a settings change would point the thermal zoom at
+            # a profile token from a camera that is no longer there.
+            self.lenses = (
+                Lenses(self.camera, [stream.name for stream in settings.camera.streams])
+                if self.camera is not None
+                else None
+            )
 
     def status(self) -> dict:
         with self._lock:
@@ -191,6 +201,107 @@ class PtzService:
     def home(self) -> dict:
         return self._do("home", lambda: self.camera.home())
 
+    # ------------------------------------------------------------------- zoom
+    #
+    # Separate from `move` because the camera is two lenses on one gimbal.
+    # `move`'s zoom argument goes wherever the head goes, which was fine when
+    # there was one picture; these address a named picture, and the pan and tilt
+    # are deliberately left out of them - see `Lenses`.
+
+    def zoom(self, stream: str, where: float) -> dict:
+        """Send one picture's lens to a zoom, 0.0 wide to 1.0 tele."""
+        with self._lock:
+            if self.lenses is None:
+                return {"ok": False, "error": "no camera address set"}
+            try:
+                answer = self.lenses.go_to(stream, where)
+            except Exception as exc:  # noqa: BLE001 - the console outlives the camera
+                logger.exception("could not zoom %s", stream)
+                return {"ok": False, "error": str(exc)}
+        return {"ok": answer["ok"], "error": answer["reason"]}
+
+    def zoom_hold(self, stream: str, speed: float) -> dict:
+        """Keep one picture's lens zooming, or stop it when the speed is zero."""
+        with self._lock:
+            if self.lenses is None:
+                return {"ok": False, "error": "no camera address set"}
+            try:
+                answer = self.lenses.creep(stream, speed)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("could not zoom %s", stream)
+                return {"ok": False, "error": str(exc)}
+        return {"ok": answer["ok"], "error": answer["reason"]}
+
+    def zoom_poll(self) -> None:
+        """Read back whichever lenses are worth reading right now.
+
+        Slow - it may cross the link - so it belongs on the same worker the
+        other camera calls use, never on the thread that draws the window.
+        `Lenses` decides whether there is anything to do, and on a link nobody
+        is zooming the answer is almost always nothing.
+        """
+        with self._lock:
+            if self.lenses is None:
+                return
+            try:
+                self.lenses.poll()
+            except Exception:  # noqa: BLE001
+                logger.exception("could not read the zoom positions")
+
+    def zoom_position(self, stream: str) -> float | None:
+        """Where a lens was last seen to be. Never talks to the camera.
+
+        This is what the screen calls on every redraw, which is the whole reason
+        it is separate from `zoom_poll`.
+        """
+        lenses = self.lenses
+        return None if lenses is None else lenses.position(stream)
+
+    def zoom_ready(self) -> dict:
+        """What the zoom controls should look like before anybody touches them."""
+        lenses = self.lenses
+        if lenses is None:
+            return {"ok": False, "absolute": False, "shared": False,
+                    "reason": "no camera address set"}
+        return {
+            "ok": lenses.reason == "ready",
+            "absolute": lenses.absolute(),
+            "shared": lenses.shared(),
+            "reason": lenses.reason,
+        }
+
+
+class ZoomHandle:
+    """What a zoom bar on the screen is given, and the whole of what it may do.
+
+    Three methods, all of them returning at once. That is the point of it: the
+    widget is on the thread that draws the window, every one of these can cross
+    a radio link whose last measured round trip was two seconds, and a console
+    that freezes for two seconds is a console that is not showing the perimeter.
+    So asking is a message to the sender, and reading is a cached number that
+    was fetched by somebody else.
+
+    It exists as its own object rather than as three methods on the tab because
+    the tab should not know that a camera has profiles, or that there is a
+    thread, or that the reading and the commanding go different ways.
+    """
+
+    def __init__(self, commands: "PtzCommands") -> None:
+        self._commands = commands
+
+    def go_to(self, stream: str, where: float) -> None:
+        self._commands.zoom(stream, where)
+
+    def creep(self, stream: str, speed: float) -> None:
+        self._commands.zoom_hold(stream, speed)
+
+    def position(self, stream: str) -> float | None:
+        return self._commands.zoom_position(stream)
+
+    def poll(self) -> None:
+        """Refresh the readouts if any are due. For the console's heartbeat."""
+        self._commands.poll_zoom()
+
 
 class _OneAtATime:
     """A `CameraEncoders` whose every call to the camera is taken in turn.
@@ -255,14 +366,38 @@ class PtzCommands:
     that is still owed when the console closes is delivered before the thread is
     let go. The head must never be left slewing with no key held, including when
     the command that started it is still in flight.
+
+    **There is one mailbox per lane, and there are two lanes.** Steering and
+    zoom are separate motors, and since the camera turned out to be two lenses
+    on one gimbal they are also separate intentions: the operator pans with the
+    arrow keys while dragging a zoom slider, and one latest-value slot shared
+    between them would have each throwing the other away. Whichever he touched
+    last would happen and the other would silently not - which looks exactly
+    like a command lost over the radio link, the failure this console has spent
+    the most time chasing.
+
+    Lanes coalesce within themselves and never across. The camera is still
+    spoken to one call at a time, and steering is always drained first, so the
+    stop guarantee above is untouched: a stop can wait behind at most one
+    zoom that is already on the wire, which is the same single call a bitrate
+    write already costs it.
+
+    There is a lane per LENS, not one for zoom altogether. Dragging the thermal
+    slider and then the visible one is two intentions about two pictures, and a
+    single zoom slot would have the second silently discard the first - the same
+    mistake as sharing one slot with steering, one level down. The number of
+    lanes is bounded by the number of pictures, which is two.
     """
+
+    # Steering is drained before anything else, always. See the stop guarantee.
+    STEER_LANE = "steer"
 
     def __init__(self, ptz, name: str = "ptz") -> None:
         self._ptz = ptz
         # Guards the mailbox, the in-flight marker and the last answer alike:
         # they are read together and must not disagree with each other.
         self._lock = threading.Lock()
-        self._wanted: tuple | None = None
+        self._wanted: dict[str, tuple] = {}
         self._sending: tuple | None = None
         self._sending_since: float | None = None
         self._answered: Answered | None = None
@@ -278,13 +413,13 @@ class PtzCommands:
 
     # ------------------------------------------------------------- the mailbox
 
-    def submit(self, command: tuple) -> None:
+    def submit(self, command: tuple, lane: str = "steer") -> None:
         """Ask for a command. Returns at once, whatever the camera is doing."""
         if self._closing.is_set():
             logger.debug("%s: not sending %s; the sender is closing", self._name, command)
             return
         with self._lock:
-            self._wanted = command
+            self._wanted[lane] = command
             self._idle.clear()
         # After the mailbox is filled, so a sender that wakes finds the work.
         self._ensure_thread()
@@ -298,6 +433,28 @@ class PtzCommands:
 
     def home(self) -> None:
         self.submit(("home",))
+
+    def zoom(self, stream: str, where: float) -> None:
+        self.submit(("zoom", stream, where), lane=f"zoom:{stream}")
+
+    def zoom_hold(self, stream: str, speed: float) -> None:
+        self.submit(("zoom_hold", stream, speed), lane=f"zoom:{stream}")
+
+    def poll_zoom(self) -> None:
+        """Ask the sender to refresh the zoom readouts, if any are due.
+
+        Safe to call on every heartbeat: `Lenses` decides whether there is
+        anything to do and on a link nobody is zooming the answer is nothing.
+        It goes through the sender rather than being called directly because
+        when there IS something to do it crosses the radio link, and the thread
+        that draws the window may not wait two seconds for a slider.
+        """
+        self.submit(("zoom_poll",), lane="poll")
+
+    def zoom_position(self, stream: str) -> float | None:
+        """The last zoom position seen, from the cache. Sends nothing."""
+        reader = getattr(self._ptz, "zoom_position", None)
+        return None if reader is None else reader(stream)
 
     # -------------------------------------------------------------- what it is
 
@@ -364,7 +521,17 @@ class PtzCommands:
     def _run(self) -> None:
         while True:
             with self._lock:
-                command, self._wanted = self._wanted, None
+                # Steering first and unconditionally: a stop waiting behind a
+                # zoom slider being dragged is a head still slewing. Everything
+                # else goes in the order it was asked for, which a dict has
+                # preserved since Python 3.7 and which matters here - the
+                # operator's second thought about a lens should not be sent
+                # before his first thought about the other one.
+                command = None
+                if self.STEER_LANE in self._wanted:
+                    command = self._wanted.pop(self.STEER_LANE)
+                elif self._wanted:
+                    command = self._wanted.pop(next(iter(self._wanted)))
                 self._sending = command
                 self._sending_since = time.monotonic() if command is not None else None
                 if command is None:
@@ -377,10 +544,18 @@ class PtzCommands:
             self._wake.wait()
             self._wake.clear()
 
+    # Commands the operator did not ask for, whose answers must not be shown to
+    # him as the state of his steering. The console tells him the camera has
+    # gone quiet by looking at the LAST answer; a background refresh succeeding
+    # in between two failed arrow keys would wipe that out and the camera would
+    # look fine while nothing he pressed was working.
+    QUIET = frozenset({"zoom_poll"})
+
     def _deliver(self, command: tuple) -> None:
         result = self._send(command)
         with self._lock:
-            self._answered = Answered(command=command, result=result)
+            if command[0] not in self.QUIET:
+                self._answered = Answered(command=command, result=result)
             self._sending = None
             self._sending_since = None
 
@@ -393,6 +568,13 @@ class PtzCommands:
                 return self._ptz.stop()
             if kind == "home":
                 return self._ptz.home()
+            if kind == "zoom":
+                return self._ptz.zoom(command[1], command[2])
+            if kind == "zoom_hold":
+                return self._ptz.zoom_hold(command[1], command[2])
+            if kind == "zoom_poll":
+                self._ptz.zoom_poll()
+                return {"ok": True}
         except Exception as exc:  # noqa: BLE001 - the console outlives the camera
             logger.exception("ptz %s failed unexpectedly", kind)
             return {"ok": False, "error": str(exc)}
