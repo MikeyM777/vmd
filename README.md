@@ -71,6 +71,12 @@ console when it finishes:
 | **yolo11n.pt** | the project root | the detector's weights. Not in git, and never downloaded at runtime — this machine has no internet |
 | **VMD.exe** | the project root | built at the end — one file you double-click to start the console |
 
+It ends with three lists rather than one verdict: what is installed and working,
+what is missing but optional (the live picture, most often), and what is broken
+and must be fixed before the system is used. Everything it printed is also
+written to `bin\logs\install.log`, with passwords taken out — that file is what
+to send when something looks wrong, instead of a description of it.
+
 It also creates two scheduled tasks so the recorder and the console come back by
 themselves after a restart — see
 [Starting by itself](#starting-by-itself) below.

@@ -165,31 +165,60 @@ block the file. Close the window and continue.
    |---|---|---|
    | `[1/12]` | Checking that Windows can install software | `winget is available.` |
    | `[2/12]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
-   | `[3/12]` | Installing **VLC** — the thing that draws the live picture in the console | `VLC is already installed.` or `VLC installed.` |
+   | `[3/12]` | Finding or installing **VLC** — the thing that draws the live picture | `VLC is already here:` and a folder, or `VLC is here now:` |
    | `[4/12]` | Downloading **ffmpeg** — the thing that records video — into `bin\` | `ffmpeg installed to bin\ffmpeg.exe` |
    | `[5/12]` | Downloading **go2rtc** — it takes the camera's video once and passes it to the console | `go2rtc installed to bin\go2rtc.exe` |
    | `[6/12]` | Downloading the **detector's weights** — the file that lets it name what moved | `yolo11n.pt downloaded.` |
    | `[7/12]` | Putting a copy of **uv** inside the folder, and the folder's `bin\` on your PATH | `uv copied to bin\uv.exe` |
    | `[8/12]` | Installing **Python itself**, inside the folder | `Python installed into bin\python\` |
-   | `[9/12]` | Downloading every library the program uses | A long list of lines starting with `+`, then `Environment ready.` |
+   | `[9/12]` | Downloading every library the program uses, then asking Python whether it can draw the live picture | A long list of lines starting with `+`, then `Environment ready.` and `Yes - Python loaded libVLC.` |
    | `[10/12]` | Building `VMD.exe`, the file you double-click from now on | `Built VMD.exe (6.7 MB)` |
-   | `[11/12]` | Making the system come back by itself after a restart | `"VMD Recorder" created` and `"VMD Console" created` |
-   | `[12/12]` | Starting the console | `Installed.`, then the console window opens |
+   | `[11/12]` | Making the system come back by itself after a restart | `Both scheduled tasks are registered.` |
+   | `[12/12]` | Adding it all up, then starting the console | The three lists described below, then the console window opens |
 
    **Steps 4 and 9 are the long ones.** Step 4 downloads about 170 MB and step 9
    about 1.5 GB. The screen may look frozen for minutes at a time. It is not
    frozen. Leave it alone.
 
-6. **When it is done** you will see the word **`Installed.`** in green and the
-   console itself opens — its own window, a dark screen with two video panels and
-   a column of readings on the right. There is no web page and no address to
-   type anywhere.
+   > **Step 3 does not decide anything about VLC, and says so.** It can only
+   > look at the disk, and looking at the disk is not the same question as "can
+   > this program use it". Step 9 asks Python directly, once Python exists, and
+   > that answer is the one that counts. If step 3 says something cautious and
+   > step 9 says `Yes`, everything is fine.
+
+6. **When it is done** the installer prints three lists. Read them; they are
+   the whole result, and they are deliberately not the same colour.
+
+   | The list | What it means | What to do |
+   |---|---|---|
+   | **INSTALLED AND WORKING** (green) | Checked, and working | Nothing |
+   | **MISSING, BUT THE SYSTEM STILL DOES ITS JOB WITHOUT IT** (yellow) | The system records, detects and can be used. Something optional is absent — most often the live picture | Read it. Fix it when convenient. It does not stop you using the system today |
+   | **BROKEN — MUST BE FIXED BEFORE THE SYSTEM IS USED** (red) | Do not rely on this system yet | Do exactly what the lines underneath say, then run `install.bat` again |
+
+   When everything went well the third list says **`Nothing. This system can be
+   used.`** in green. That sentence, not the absence of yellow, is the one to
+   look for.
+
+   Then the console itself opens — its own window, a dark screen with two video
+   panels and a column of readings on the right. There is no web page and no
+   address to type anywhere.
 
    **The first time the console opens it can take fifteen seconds**, with
    nothing on the screen while you wait. That is VLC building an index of its
    own parts. The installer tries to do that for you in step 3, so usually you
    will not see it — but if you do, it is not stuck. Every start after the first
    takes about five seconds.
+
+   > **Every line the installer printed is also saved to a file:**
+   >
+   > ```
+   > C:\VMD\bin\logs\install.log
+   > ```
+   >
+   > and, if Windows asked for permission, `install-admin.log` beside it. If
+   > anything looked wrong, send those files — they are the whole story, and the
+   > installer takes any passwords out of them before writing them. You do not
+   > need to describe what you saw; the file already has it.
 
 7. **Leave the black window open while the console is open.** The console runs
    from it; closing the black window closes the console. Closing the console does
@@ -251,11 +280,15 @@ Optional, but it takes thirty seconds and tells you for certain.
    uv run --offline --frozen --no-sync python -c "import vlc; vlc.Instance(); print('vlc ok')"
    ```
 
-   `vlc ok` on the last line means the console will be able to draw the live
-   picture. VLC may print a long list of lines about a `stale plugins cache`
-   first — ignore those, they are harmless, and they are the reason a first
-   start can be slow. No `vlc ok` at all means VLC is missing, or is the 32-bit
-   one — see the table below.
+   `vlc ok` somewhere in the output means the console will be able to draw the
+   live picture. VLC may print a long list of lines about a `stale plugins
+   cache` first — ignore those, they are harmless, and they are the reason a
+   first start can be slow. No `vlc ok` at all means VLC is missing, or is the
+   32-bit one — see the table below.
+
+   > This is the same command the installer runs for you at step 9, on purpose:
+   > if you ever want to check the installer's own answer, this is the check it
+   > used. What it says here and what step 9 said cannot disagree.
 
 ---
 
@@ -373,15 +406,24 @@ prints the current state:
 
 ## If something goes wrong
 
+**Before anything else: there is a file.** Everything the installer printed is
+in `C:\VMD\bin\logs\install.log` (and `install-admin.log` beside it, if Windows
+asked for permission). Passwords are taken out of it before it is written. If
+what you are seeing is not in the table below, send that file rather than trying
+to describe it.
+
 | What you see | What it means | What to do |
 |---|---|---|
 | The black window flashes and vanishes instantly | The file was run in a way that closes on its own | Do not run it from inside the ZIP. Extract it first (Part 1, step 8) and double-click the extracted copy |
-| `winget is not available on this machine.` | Windows is missing its package installer | Open the Microsoft Store, search for **App Installer**, install it, restart the computer, run `install.bat` again |
+| `winget is not available on this account.` | Windows is missing its package installer | Only **uv** and **VLC** need it; everything else still installs. Open the Microsoft Store, search for **App Installer**, install it, then run `install.bat` again |
 | `Could not download go2rtc` | The download was blocked or the connection dropped | Everything else still installed. Download the file yourself from https://github.com/AlexxIT/go2rtc/releases/latest — take `go2rtc_win64.zip`, open it, and drag `go2rtc.exe` into the `bin` folder inside `C:\VMD` |
-| `Could not put ffmpeg in bin\` | The recorder cannot record without it | Download the *release essentials* zip from https://www.gyan.dev/ffmpeg/builds/, open it, and drag `ffmpeg.exe` into `C:\VMD\bin\`. Then run `install.bat` again |
-| `Without this file, movement is still detected but never named` | `yolo11n.pt` did not download | Detection still works; it just cannot say *what* moved. Download it from https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt and save it into `C:\VMD` |
-| `WARNING - VLC is not installed` | The console opens but shows no live picture | Install VLC from https://www.videolan.org/vlc/ — take the **64-bit Windows installer**, click through it, then run `install.bat` again |
-| A video panel says `No video here:` | The console could not find VLC, or found a 32-bit one | Install the **64-bit** VLC from https://www.videolan.org/vlc/ and start the console again. Everything except the picture keeps working meanwhile |
+| `ffmpeg is missing, so nothing can be recorded` (in the red list) | The recorder cannot record without it | Download the *release essentials* zip from https://www.gyan.dev/ffmpeg/builds/, open it, and drag `ffmpeg.exe` into `C:\VMD\bin\`. Then run `install.bat` again |
+| `yolo11n.pt is missing` (in the yellow list) | The detector's weights did not download | Detection still works; it just cannot say *what* moved. Download it from https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt and save it into `C:\VMD` |
+| `VLC is not installed, so the console shows no live picture` (in the yellow list) | Python looked for libVLC and did not find one | Install VLC from https://www.videolan.org/vlc/ — take the **64-bit Windows installer**, click through it, then run `install.bat` again. Recording is unaffected meanwhile |
+| `VLC is installed, but it is the 32-bit build` | The 32-bit VLC cannot be loaded by 64-bit Python, no matter where it is | This is the one that looks like "VLC is missing" while VLC is plainly in your Start menu. Uninstall it from *Add or remove programs*, install the **64-bit** VLC from https://www.videolan.org/vlc/, run `install.bat` again |
+| `VLC is installed in … but Python could not load it` | VLC is there and something else is wrong with it — a half-finished install, a missing plugin folder | The line under it is what Python said. Reinstalling the 64-bit VLC over the top usually fixes it |
+| A video panel says `No video here:` | The console could not find VLC, or found a 32-bit one | Same two fixes as the rows above. Everything except the picture keeps working meanwhile |
+| `Still running from this folder: …` | The recorder or the console was running while the installer wanted to rebuild the environment | Restart the laptop and run `install.bat` again before anything else has started. If you do not, step 9 may stop with `Access is denied` |
 | The console takes fifteen seconds to appear, once | VLC is rebuilding its own index of parts | Nothing to do. Later starts take about five seconds. To fix it for good, run `install.bat` again — step 3 rebuilds that index while it has permission to |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
 | `No Python at '…\python.exe'` | The folder was copied from another machine without being prepared | Do not copy the folder by hand. See [Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet) |
@@ -455,11 +497,41 @@ Open PowerShell in `C:\VMD` (Part 4, steps 1–3), then:
 | Open the console | `.\VMD.exe` — or just double-click it |
 | Start recording | `uv run --offline --frozen --no-sync python -m vmd.record_main` |
 | Run the tests | `uv run --offline --frozen --no-sync pytest` |
-| Find out what camera is on the network | `uv run --offline --frozen --no-sync python spike\probe_camera.py 192.168.1.64 --user admin --password YOURPASSWORD` |
+| Find out what camera is on the network | see below — it needs the camera password, so it is two lines |
 
 > On a machine that has internet you can leave out `--offline --frozen
 > --no-sync`. On the laptop that does not, leaving them out is how you get a
 > command that hangs with no way out.
+
+### Asking the camera what it is
+
+This one needs the camera's password. **Type it in two lines, like this**, and
+not as one:
+
+```powershell
+$pw = Read-Host "Camera password"
+uv run --offline --frozen --no-sync python spike\probe_camera.py 192.168.1.64 --user admin --password $pw
+```
+
+The first line asks for the password and keeps it in `$pw`. The second line
+passes `$pw` along — the four characters `$pw`, not the password itself.
+
+**Why it matters, and it does.** PowerShell writes every command you type into a
+file, so that pressing the up-arrow tomorrow brings back what you typed today.
+The file is
+
+```
+%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
+```
+
+It is plain text, it is never cleared, and `%APPDATA%` is the one folder Windows
+copies between machines when an account is managed by a company or a domain. A
+password typed straight into the command would sit in that file in the clear,
+forever, on a laptop whose entire point is that nothing leaves it. What you type
+at the `Camera password` prompt is *not* written there — only commands are.
+
+Close the window when you are done, or type `Remove-Variable pw`. Either way the
+password is gone from memory; neither of them is the part that matters.
 
 ## Entering the camera details
 
@@ -585,7 +657,14 @@ of that can happen.
    internet connection and this one does not.
 
 5. It prints seven steps. Windows asks for permission once, when it installs
-   VLC; click **Yes**. When it says `Installed.` in green, the console opens.
+   VLC; click **Yes**. It ends with the same three lists `install.bat` prints —
+   green for what works, yellow for what is missing but optional, red for what
+   must be fixed first. When the red list says **`Nothing. This system can be
+   used.`** the console opens.
+
+   Everything it printed is saved to `C:\VMD\bin\logs\offline-install.log`. That
+   is the file to copy onto the USB drive and send if anything looked wrong —
+   this laptop has no other way to tell anyone what it saw.
 
 6. Fill in the camera details in the **Settings** tab and press **Save**, as
    described above. Recording starts as soon as you do.
