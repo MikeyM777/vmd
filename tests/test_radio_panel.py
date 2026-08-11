@@ -488,6 +488,11 @@ def test_no_sentence_is_cut_in_half_by_the_column_it_sits_in(qtbot) -> None:
     column.setFixedWidth(340)
     layout = QVBoxLayout(column)
     panel = LinkPanel(FakeRadioService(busy))
+    # Opened, because shut is the default and a shut pane cannot clip anything.
+    # The guarantee being tested is about the sentences when somebody is reading
+    # them, and a test that passed because they were hidden would be measuring
+    # the wrong panel.
+    panel.show_details(True)
     layout.addWidget(panel)
     # A widget below it that will take every pixel it is allowed to, as the
     # movement list does in the real column: that is what leaves the panel with
@@ -522,6 +527,7 @@ def test_the_longest_the_panel_can_be_still_fits_the_column(qtbot) -> None:
     column.setFixedWidth(340)
     layout = QVBoxLayout(column)
     panel = LinkPanel(FakeRadioService(worst))
+    panel.show_details(True)
     layout.addWidget(panel)
     filler = QWidget()
     layout.addWidget(filler, 1)

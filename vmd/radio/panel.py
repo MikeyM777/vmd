@@ -42,9 +42,30 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtWidgets import QGroupBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from vmd.desktop.style import PALETTE
+from vmd.desktop.style import (
+    PALETTE,
+    SIZE_BAND,
+    SIZE_HEADING,
+    SIZE_SMALL,
+    SPACE_HAIR,
+    SPACE_SNUG,
+    SPACE_TIGHT,
+    WEIGHT_VALUE,
+    state_colour,
+    state_glyph,
+)
+from vmd.radio.meter import Meter
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +239,201 @@ def link_lines(link: dict) -> list[tuple[str, str]]:
             )
         )
     return lines
+
+
+# Where the signal bar's two ends are, and why they are not the two thresholds
+# above. The thresholds say what a reading MEANS; these say what a full bar and
+# an empty one are, and a bar whose ends were the thresholds would be full at
+# -65 dBm and empty at -80, which is a bar that spends its life pinned at one
+# end or the other.
+#
+# -90 dBm is about the noise floor of an airOS radio: at the floor there is
+# nothing left. -50 dBm is a short, well-aimed link in fair weather - better
+# than this 15 km path will ever be, which is the point. A bar that reads 60%
+# on a link that is working is telling the truth about a link that is working
+# at 15 km; a bar that reads 100% would be a bar that cannot get better and
+# therefore cannot get worse either.
+SIGNAL_FLOOR_DBM = -90.0
+SIGNAL_CEILING_DBM = -50.0
+
+# The one word at the top, per state. Chosen for somebody who has never heard of
+# dBm: what he needs from across the room is whether to do anything, and the
+# number that made the decision is still on the bar underneath.
+HEADLINE_CHECKING = "CHECKING"
+HEADLINE_NOT_SET_UP = "NOT SET UP"
+HEADLINE_NO_LINK = "NO LINK"
+HEADLINE_WEAK = "WEAK"
+HEADLINE_FULL = "FULL"
+HEADLINE_BUSY = "BUSY"
+HEADLINE_FAIR = "FAIR"
+HEADLINE_GOOD = "GOOD"
+
+
+def link_summary(link: dict) -> dict:
+    """The whole link as one word, two bars and one short line. Pure, and tested.
+
+    Same reading as `link_lines`, and deliberately the same thresholds - the two
+    views may never disagree about the same radio, which is the rule the status
+    band already follows about the signal. What differs is how much is said:
+    this is what somebody sees without reading, and the sentences are what he
+    gets when he asks for them.
+
+    Returns a dict rather than a dataclass because everything downstream of it
+    is a paint call and a test, and both want it by name.
+    """
+    blank = {
+        "state": "muted",
+        "headline": "",
+        "note": "",
+        "signal": None,
+        "signal_state": "muted",
+        "signal_caption": "",
+        "use": None,
+        "use_state": "muted",
+        "use_caption": "",
+        "use_marks": [],
+        "carrying": "",
+        "stale": False,
+    }
+
+    if link.get("checking"):
+        return {**blank, "headline": HEADLINE_CHECKING, "note": "Reading the radio..."}
+
+    age = link.get("age_seconds")
+    if not isinstance(age, (int, float)):
+        return {
+            **blank,
+            "headline": HEADLINE_NOT_SET_UP,
+            "note": "Enter the radio's address, username and password in Settings.",
+        }
+
+    stale = age >= STALE_AFTER_SECONDS
+    if not link.get("connected"):
+        return {
+            **blank,
+            "state": "alarm",
+            "headline": HEADLINE_NO_LINK,
+            "note": _sentence(link.get("reason")) or "The radio could not be read.",
+            "stale": stale,
+        }
+
+    signal = _number(link.get("signal_dbm"))
+    signal_state = "muted"
+    signal_percent = None
+    signal_caption = ""
+    if signal is not None:
+        signal_percent = _share(signal, SIGNAL_FLOOR_DBM, SIGNAL_CEILING_DBM)
+        signal_caption = f"{signal:.0f} dBm"
+        if signal >= SIGNAL_HEALTHY_DBM:
+            signal_state = "ok"
+        elif signal >= SIGNAL_MARGINAL_DBM:
+            signal_state = "warn"
+        else:
+            signal_state = "alarm"
+
+    use, busy_at, full_at = _link_use(link)
+    use_state = "muted"
+    use_caption = ""
+    if use is not None:
+        use_caption = f"{use:.0f}%"
+        if use >= full_at:
+            use_state = "alarm"
+        elif use >= busy_at:
+            use_state = "warn"
+        else:
+            use_state = "ok"
+
+    # Which of the two writes the headline. A weak signal comes first at the
+    # alarm level and not because it is worse: it is the one with something to
+    # do about it. A dish that has moved is fixed on the roof; a link that is
+    # full because 4K is on it is fixed in Settings, and it is also what a weak
+    # signal eventually causes, so naming the signal names the cause.
+    if signal_state == "alarm":
+        state, headline = "alarm", HEADLINE_WEAK
+        note = "The signal is close to the noise - the picture can break up."
+    elif use_state == "alarm":
+        state, headline = "alarm", HEADLINE_FULL
+        note = "Nothing else fits - the picture can stutter or drop during a pan."
+    elif use_state == "warn":
+        state, headline = "warn", HEADLINE_BUSY
+        note = "Little room left for a burst, and delay builds from here."
+    elif signal_state == "warn":
+        state, headline = "warn", HEADLINE_FAIR
+        note = "Working, with little margin left for rain or a mast that moved."
+    elif signal_state == "muted" and use_state == "muted":
+        state, headline, note = "muted", HEADLINE_CHECKING, "The radio reported no figures."
+    else:
+        state, headline, note = "ok", HEADLINE_GOOD, ""
+
+    if stale:
+        # Grey, and it says why. A coloured word at the top of the panel claims
+        # the link is like that NOW, and a reading from four minutes ago cannot
+        # claim anything about now - the same rule the sentences follow.
+        state = "muted"
+        note = f"Last read {_age(age)} ago, so not necessarily the link now."
+        signal_state = use_state = "muted"
+
+    return {
+        "state": state,
+        "headline": headline,
+        "note": note,
+        "signal": signal_percent,
+        "signal_state": signal_state,
+        "signal_caption": signal_caption,
+        "use": use,
+        "use_state": use_state,
+        "use_caption": use_caption,
+        # The marks travel with the reading because they are not the same two
+        # marks for both readings: airtime turns at 60 and 80, a share of the
+        # capacity at 70 and 90, and a bar carrying the wrong scale under the
+        # right number is a lie drawn very precisely.
+        "use_marks": [] if use is None else [busy_at, full_at],
+        "carrying": _carrying(link),
+        "stale": stale,
+    }
+
+
+def _link_use(link: dict) -> tuple[float | None, float, float]:
+    """How much of the link is spent, and the two marks that reading turns on.
+
+    Airtime when the radio reports it, because airtime is what a wireless link
+    runs out of. The busiest direction's share of its capacity when it does not
+    - a weaker reading with its own, higher marks, which is why they travel with
+    the number instead of being constants at the point of use.
+    """
+    airtime = _number(link.get("airtime_percent"))
+    if airtime is not None:
+        return airtime, AIRTIME_BUSY_PERCENT, AIRTIME_FULL_PERCENT
+
+    busiest = None
+    for key, capacity_key in (("rx_mbps", "rx_capacity_mbps"), ("tx_mbps", "tx_capacity_mbps")):
+        rate = _number(link.get(key))
+        capacity = _number(link.get(capacity_key))
+        if rate is None or not capacity or capacity <= 0:
+            continue
+        share = rate / capacity * 100.0
+        busiest = share if busiest is None else max(busiest, share)
+    return busiest, BUSY_FRACTION * 100.0, FULL_FRACTION * 100.0
+
+
+def _carrying(link: dict) -> str:
+    """The traffic, in as few characters as it can be said in."""
+    parts = [
+        f"{value:.1f} Mb/s {way}"
+        for value, way in (
+            (_number(link.get("rx_mbps")), "in"),
+            (_number(link.get("tx_mbps")), "out"),
+        )
+        if value is not None
+    ]
+    return " · ".join(parts)
+
+
+def _share(value: float, floor: float, ceiling: float) -> float:
+    """Where `value` sits between two ends, as 0-100 and never outside it."""
+    if ceiling <= floor:
+        return 0.0
+    return max(0.0, min(100.0, (value - floor) / (ceiling - floor) * 100.0))
 
 
 def _signal_lines(link: dict) -> list[tuple[str, str]]:
@@ -494,18 +710,38 @@ def _age(seconds: float) -> str:
     return f"{seconds / 86400.0:.0f} days"
 
 
+
+
 class LinkPanel(QGroupBox):
-    """The link lines in the Live tab's side column.
+    """The link, as one word and two bars, with the sentences a click away.
 
     Built around whatever the console's `RadioService` is; it reads the answer
     that service already has and never asks the radio anything itself.
+
+    The panel used to be those sentences and nothing else - fourteen of them at
+    the worst, every one true, and the operator's verdict was that it was too
+    much text to be read by anybody who is not already an engineer. So the
+    reading now arrives in three layers, and which layer somebody is in is his
+    choice rather than this file's:
+
+    * **the word**, which is the whole link in one - GOOD, BUSY, FULL, WEAK -
+      and is meant to be read from across the room without stopping;
+    * **the two bars**, signal and how much of the link is spent, which say how
+      far from trouble each of them is without anybody knowing what a dBm is;
+    * **the sentences**, unchanged, behind Details - because the reasoning that
+      put "FULL" on the screen still has to be reachable by whoever is helping
+      him over the phone.
+
+    Nothing was deleted to make it shorter. `link_lines` still produces every
+    sentence it did, and the same thresholds decide the word above them, so the
+    two can never disagree about the same radio.
     """
 
     def __init__(self, radio, parent: QWidget | None = None) -> None:
         super().__init__("Link", parent)
         self._radio = radio
         self._layout = QVBoxLayout(self)
-        self._layout.setSpacing(2)
+        self._layout.setSpacing(SPACE_HAIR)
         # The panel asks for as much height as its wrapped sentences need at the
         # width the column gives it. Without this the column hands it the height
         # of one line per sentence and the second line of each is drawn over the
@@ -515,19 +751,64 @@ class LinkPanel(QGroupBox):
         policy.setHeightForWidth(True)
         policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
         self.setSizePolicy(policy)
+
+        # ------------------------------------------------------------ the word
+        header = QHBoxLayout()
+        header.setSpacing(SPACE_SNUG)
+        self._glyph = QLabel("")
+        self._headline = QLabel("")
+        header.addWidget(self._glyph)
+        header.addWidget(self._headline)
+        header.addStretch(1)
+        self._layout.addLayout(header)
+
+        self._note = self._sentence_label(SIZE_SMALL)
+        self._layout.addWidget(self._note)
+        self._layout.addSpacing(SPACE_TIGHT)
+
+        # ------------------------------------------------------------ the bars
+        self._signal = Meter("Signal")
+        self._signal.set_marks(
+            [
+                _share(SIGNAL_MARGINAL_DBM, SIGNAL_FLOOR_DBM, SIGNAL_CEILING_DBM),
+                _share(SIGNAL_HEALTHY_DBM, SIGNAL_FLOOR_DBM, SIGNAL_CEILING_DBM),
+            ]
+        )
+        self._use = Meter("Link in use")
+        self._layout.addWidget(self._signal)
+        self._layout.addSpacing(SPACE_TIGHT)
+        self._layout.addWidget(self._use)
+        self._layout.addSpacing(SPACE_TIGHT)
+
+        self._carrying = self._sentence_label(SIZE_SMALL)
+        self._layout.addWidget(self._carrying)
+
+        # ------------------------------------------------------- the sentences
+        #
+        # Shut by default and it stays shut: this is the panel somebody stands
+        # in front of for months, and a detail pane that reopened itself every
+        # time the console restarted would be the paragraph coming back.
+        self._details = QToolButton()
+        self._details.setCheckable(True)
+        self._details.setChecked(False)
+        self._details.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._details.setStyleSheet(
+            "QToolButton { border: 0; background: transparent; padding: 0;"
+            f" color: {PALETTE['muted']}; font-size: {SIZE_HEADING}px; }}"
+            f" QToolButton:hover {{ color: {PALETTE['ink']}; }}"
+        )
+        self._details.toggled.connect(self._show_details)
+        self._layout.addWidget(self._details, 0, Qt.AlignmentFlag.AlignLeft)
+
         self._labels: list[QLabel] = []
         self._shown: list[tuple[str, str]] = []
+        self._summary: dict = {}
         # The mark, and the state behind it. It is a label of its own rather
         # than another entry in `lines`, and that is deliberate twice over: the
         # lines are what the radio said, and this is whether it is still saying
         # anything; and the lines are only redrawn when they change, which is
         # the one thing an indicator of liveness must not wait for.
-        self._pulse = QLabel("")
-        self._pulse.setWordWrap(True)
-        policy = self._pulse.sizePolicy()
-        policy.setHeightForWidth(True)
-        policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
-        self._pulse.setSizePolicy(policy)
+        self._pulse = self._sentence_label(SIZE_HEADING)
         self._layout.addWidget(self._pulse)
         # A sentinel, not None: a service that never reports a count at all must
         # still move the mark once, on its first reading, rather than never.
@@ -538,15 +819,52 @@ class LinkPanel(QGroupBox):
         # two seconds for months; the number says whether it is doing work for
         # nothing.
         self.rebuilds = 0
+        self._show_details(False)
         self.refresh()
 
     # Exposed so the tests name the same two shapes the panel draws, rather
     # than a copy of them that can drift.
     ARRIVING = ARRIVING_GLYPHS
 
+    @staticmethod
+    def _sentence_label(size: int) -> QLabel:
+        label = QLabel("")
+        label.setWordWrap(True)
+        # A word-wrapped QLabel asks for the height of ONE line unless its size
+        # policy says the height depends on the width, and a layout that
+        # believes it draws the second line over the line beneath it. The column
+        # is 340 px wide and several of these sentences do not fit in it, so
+        # without this the operator reads half of them.
+        policy = label.sizePolicy()
+        policy.setHeightForWidth(True)
+        policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+        label.setSizePolicy(policy)
+        label.setStyleSheet(f"font-size: {size}px;")
+        return label
+
     def lines(self) -> list[tuple[str, str]]:
-        """What is on screen, for the window and for the tests."""
+        """What the sentences say, for the window and for the tests.
+
+        Produced whether or not Details is open: the panel decides what to draw,
+        not what is true, and a test that had to click a button to find out what
+        the radio said would be testing the button.
+        """
         return list(self._shown)
+
+    def summary(self) -> dict:
+        """The word, the bars and the short line - what is on screen at a glance."""
+        return dict(self._summary)
+
+    def details_open(self) -> bool:
+        return self._details.isChecked()
+
+    def show_details(self, opened: bool) -> None:
+        """Open or shut the sentences. For the window's shortcuts and the tests."""
+        self._details.setChecked(bool(opened))
+
+    def meters(self) -> tuple[Meter, Meter]:
+        """The signal bar and the in-use bar."""
+        return self._signal, self._use
 
     def pulse(self) -> tuple[str, str, str]:
         """The mark, its words and its colour: glyph, sentence, colour.
@@ -571,7 +889,7 @@ class LinkPanel(QGroupBox):
         """
         cut: list[str] = []
         room = self._layout.contentsRect()
-        everything = [*self._labels, self._pulse]
+        everything = [self._note, self._carrying, *self._labels, self._pulse]
         shown = [label for label in everything if label.isVisibleTo(self) and label.text()]
         for index, label in enumerate(shown):
             # Three ways to lose a line, and the third is the one that actually
@@ -593,6 +911,12 @@ class LinkPanel(QGroupBox):
         super().resizeEvent(event)
         self._fit()
 
+    def _show_details(self, opened: bool) -> None:
+        self._details.setText(("▾ Less" if opened else "▸ Details"))
+        for index, label in enumerate(self._labels):
+            label.setVisible(bool(opened) and index < len(self._shown))
+        self._fit()
+
     def _fit(self) -> None:
         """Give every label the height its wrapped text actually needs.
 
@@ -601,9 +925,11 @@ class LinkPanel(QGroupBox):
         borders stands in until the first resize corrects it.
         """
         width = max(self._layout.contentsRect().width(), self.width() - 24, 1)
-        for label in (*self._labels, self._pulse):
-            if label.text():
+        for label in (self._note, self._carrying, *self._labels, self._pulse):
+            if label.text() and label.isVisibleTo(self):
                 label.setMinimumHeight(label.heightForWidth(width))
+            else:
+                label.setMinimumHeight(0)
 
     def _advance(self, link: dict) -> None:
         """Move the mark on, if a reading has landed since the last redraw.
@@ -642,9 +968,16 @@ class LinkPanel(QGroupBox):
             logger.exception("the radio could not be asked about the link")
             link = {}
             lines = [("The radio could not be asked about the link.", PALETTE["alarm"])]
+            summary = {
+                **link_summary({}),
+                "state": "alarm",
+                "headline": HEADLINE_NO_LINK,
+                "note": "The radio could not be asked about the link.",
+            }
         else:
             link = link if isinstance(link, dict) else {}
             lines = link_lines(link)
+            summary = link_summary(link)
 
         # Before the early return below, and that is the point of it being here:
         # the lines are redrawn only when they change, and a mark that waited
@@ -653,25 +986,47 @@ class LinkPanel(QGroupBox):
         self._advance(link)
         glyph, words, colour = self._pulse_state
         self._pulse.setText(f"{glyph} {words}" if glyph else "")
-        self._pulse.setStyleSheet(f"color: {colour};" if colour else "")
+        self._pulse.setStyleSheet(
+            f"color: {colour}; font-size: {SIZE_HEADING}px;" if colour else ""
+        )
         self._pulse.setVisible(bool(glyph))
 
-        if lines == self._shown:
+        # The bars take every reading, including one identical to the last: the
+        # meter itself decides whether that is a journey or a no-op, and it is
+        # the only thing that knows where its own fill currently is.
+        self._signal.set_reading(
+            summary["signal"], summary["signal_caption"], state_colour(summary["signal_state"])
+        )
+        self._use.set_reading(
+            summary["use"], summary["use_caption"], state_colour(summary["use_state"])
+        )
+        if summary["use_marks"] != self._summary.get("use_marks"):
+            self._use.set_marks(summary["use_marks"])
+
+        if lines == self._shown and summary == self._summary:
             return
+        self._summary = summary
         self._shown = lines
         self.rebuilds += 1
+
+        word_colour = state_colour(summary["state"])
+        self._glyph.setText(state_glyph(summary["state"]))
+        self._glyph.setStyleSheet(f"color: {word_colour}; font-size: {SIZE_BAND}px;")
+        self._headline.setText(summary["headline"])
+        self._headline.setStyleSheet(
+            f"color: {word_colour}; font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
+        )
+        self._note.setText(summary["note"])
+        self._note.setVisible(bool(summary["note"]))
+        self._note.setStyleSheet(f"color: {word_colour}; font-size: {SIZE_SMALL}px;")
+        self._carrying.setText(summary["carrying"])
+        self._carrying.setVisible(bool(summary["carrying"]))
+        self._carrying.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
+        )
+
         while len(self._labels) < len(lines):
-            label = QLabel("")
-            label.setWordWrap(True)
-            # A word-wrapped QLabel asks for the height of ONE line unless its
-            # size policy says the height depends on the width, and a layout
-            # that believes it draws the second line over the line beneath it.
-            # The column is 340 px wide and several of these sentences do not
-            # fit in it, so without this the operator reads half of them.
-            policy = label.sizePolicy()
-            policy.setHeightForWidth(True)
-            policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
-            label.setSizePolicy(policy)
+            label = self._sentence_label(SIZE_SMALL)
             # Before the mark, which stays at the bottom: it is the panel's
             # footer, and a line about the link appearing underneath it would
             # read as something the mark was about.
@@ -681,9 +1036,8 @@ class LinkPanel(QGroupBox):
             if index < len(lines):
                 text, colour = lines[index]
                 label.setText(text)
-                label.setStyleSheet(f"color: {colour};")
-                label.setVisible(True)
+                label.setStyleSheet(f"color: {colour}; font-size: {SIZE_SMALL}px;")
             else:
                 label.setText("")
-                label.setVisible(False)
-        self._fit()
+        self._details.setVisible(bool(lines))
+        self._show_details(self._details.isChecked())
