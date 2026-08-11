@@ -1679,8 +1679,10 @@ def test_status_says_where_each_stream_is_being_read_from(tmp_path, monkeypatch)
     )
     service.run_once(now=1000.0)
     status = service.status(now=1000.0)
-    assert status["streams"][0]["local_source"] is True
+    assert status["streams"][0]["source"] == "local"
+    assert status["streams"][0]["source_url"] == "rtsp://127.0.0.1:8554/thermal"
     assert status["link_doubled"] == []
+    assert status["on_camera"] == 0
     service.stop()
 
 
@@ -1960,4 +1962,182 @@ def test_recording_continues_while_the_index_is_unusable(tmp_path):
         "catalogue must not cut the footage"
     )
     assert service.status(now=3000.0)["stall_restarts"] == 0
+    service.stop()
+
+
+# --------------------------------------------------------------------------
+# What the recorder knows, published where something can read it.
+#
+# `status()` was computed every pass and printed only by --once, which nothing
+# runs. The console derives everything from the folder, which is the right
+# primary signal and cannot say "ffmpeg is being held back on ch2", "this
+# stream is crossing the radio link twice" or "retention refused to run".
+# Worse, a recorder started by the logon task writes its stdout to a file under
+# bin\logs and not to the Logs tab, so on the machine's ordinary boot path a
+# file beside the recordings is the ONLY channel anything it learns has.
+# --------------------------------------------------------------------------
+
+
+def read_report(tmp_path, folder="recordings"):
+    return json.loads(
+        (tmp_path / folder / record_main_module.STATUS_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_the_recorder_publishes_what_it_knows_beside_the_recordings(tmp_path):
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+
+    report = read_report(tmp_path)
+    assert [s["name"] for s in report["streams"]] == ["thermal"]
+    for field in ("held_back", "stalled", "running", "source"):
+        assert field in report["streams"][0], field
+    for field in (
+        "healthy",
+        "link_doubled",
+        "on_camera",
+        "retention_declined",
+        "index_broken",
+        "stuck_deletions",
+        "empty_segments",
+        "written_at",
+        "interval",
+    ):
+        assert field in report, field
+    assert report["interval"] == 5.0
+    service.stop()
+
+
+def test_a_report_from_a_recorder_that_died_an_hour_ago_reads_as_unknown(tmp_path):
+    """Repeating it is worse than saying nothing, because it is the answer the
+    operator would have wanted to hear."""
+    fresh = {"written_at": 1000.0, "interval": 5.0}
+    assert record_main_module.status_fresh(fresh, now=1002.0) is True
+    assert record_main_module.status_fresh(fresh, now=1000.0 + 3600) is False
+    # A laptop whose date was typed in wrong, not a recorder that is well.
+    assert record_main_module.status_fresh(fresh, now=1000.0 - 3600) is False
+    assert record_main_module.status_fresh({}, now=1000.0) is False
+    assert record_main_module.status_fresh({"written_at": "soon"}, now=1000.0) is False
+
+
+def test_how_stale_is_stale_follows_the_interval_it_was_told(tmp_path):
+    """A recorder told to report every two minutes is not a wedged recorder,
+    and a hard-coded window would call it one for ever."""
+    slow = {"written_at": 1000.0, "interval": 120.0}
+    assert record_main_module.status_fresh(slow, now=1000.0 + 200) is True
+    assert record_main_module.status_fresh(slow, now=1000.0 + 2000) is False
+    brisk = {"written_at": 1000.0, "interval": 1.0}
+    assert record_main_module.status_fresh(brisk, now=1000.0 + 200) is False
+
+
+def test_the_report_is_written_whole_or_not_at_all(tmp_path, monkeypatch):
+    """A console reading at the wrong moment must get the whole of the last
+    report, never half of this one - which it would read as a recorder with no
+    streams at all."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+    good = read_report(tmp_path)
+
+    # Something goes wrong after the writing has begun. A plain write has
+    # truncated the destination by this point and leaves nothing behind it.
+    def refuse(*args, **kwargs):
+        raise ValueError("the report could not be turned into JSON")
+
+    monkeypatch.setattr(record_main_module.json, "dumps", refuse)
+    service.write_status(interval=5.0)  # must not raise
+    assert read_report(tmp_path) == good, "a failed write damaged the last report"
+    leftovers = list((tmp_path / "recordings").glob("*.tmp"))
+    assert leftovers == [], f"a half-written report was left behind: {leftovers}"
+    service.stop()
+
+
+def test_the_recorder_takes_its_report_down_when_it_stops(tmp_path):
+    """A recorder that stopped cleanly and left its last report behind would
+    have anything reading it believe a dead process's words until the staleness
+    window ran out."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+    assert (tmp_path / "recordings" / record_main_module.STATUS_FILENAME).exists()
+    service.stop()
+    assert not (tmp_path / "recordings" / record_main_module.STATUS_FILENAME).exists()
+
+
+def test_the_running_loop_publishes_before_it_waits(tmp_path, monkeypatch):
+    """Nothing calls write_status but the loop, so a loop that did not call it
+    would leave every one of these facts inside the process exactly as before."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    seen: list = []
+
+    def stop_the_loop(_seconds):
+        seen.append(read_report(tmp_path))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(record_main_module.time, "sleep", stop_the_loop)
+    service.run_forever(interval=5.0)
+
+    assert seen, "the loop never slept, so this proves nothing"
+    assert seen[0]["interval"] == 5.0
+    assert [s["name"] for s in seen[0]["streams"]] == ["thermal"]
+
+
+def test_the_report_names_the_streams_crossing_the_link_twice(tmp_path, monkeypatch):
+    """The recorder learned this and it died inside the process. It is the very
+    fault the whole architecture exists to prevent, and nothing said it."""
+    endpoint = write_endpoint(tmp_path / "streaming.json", name="somethingelse")
+    alive = answering(monkeypatch)
+    alive["yes"] = True
+    service = RecordingService(
+        build_settings(tmp_path),
+        spawn=spawn_fake,
+        endpoint_path=endpoint,
+        source_check_interval=0.0,
+    )
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+
+    report = read_report(tmp_path)
+    assert report["link_doubled"] == ["thermal"]
+    assert report["on_camera"] == 1
+    assert report["streams"][0]["source"] == "camera"
+    service.stop()
+
+
+def test_no_password_reaches_the_status_file(tmp_path):
+    """The camera's address carries its password, and this file is read by
+    anything on the machine and copied into any report of a fault."""
+    settings = build_settings(tmp_path)
+    settings.camera.streams[0].url = "rtsp://admin:hunter2@192.0.2.10/thermal"
+    service = RecordingService(settings, spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+
+    raw = (tmp_path / "recordings" / record_main_module.STATUS_FILENAME).read_text(
+        encoding="utf-8"
+    )
+    assert "hunter2" not in raw, raw
+    assert "admin" in raw, "which account is half the diagnosis of a 401"
+    service.stop()
+
+
+def test_the_report_does_not_stay_behind_in_a_folder_that_was_left(tmp_path):
+    """A recording.json left in the old archive would go on being read as this
+    recorder's current state by anything pointed at that folder."""
+    service = RecordingService(build_settings(tmp_path), spawn=spawn_fake)
+    service.run_once(now=1000.0)
+    service.write_status(interval=5.0)
+    old = tmp_path / "recordings" / record_main_module.STATUS_FILENAME
+    assert old.exists()
+
+    moved = build_settings(tmp_path)
+    moved.storage.root = tmp_path / "elsewhere"
+    service._apply_settings(moved, now=1100.0)
+    service.write_status(interval=5.0)
+
+    assert not old.exists(), "the report was left behind in the folder that was left"
+    assert (tmp_path / "elsewhere" / record_main_module.STATUS_FILENAME).exists()
     service.stop()

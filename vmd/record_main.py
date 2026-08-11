@@ -1,4 +1,46 @@
-"""The recording service: record every enabled stream, index it, enforce retention."""
+"""The recording service: record every enabled stream, index it, enforce retention.
+
+A separate process from the console on purpose, and one that deliberately
+outlives the window. Two things leave it, and neither of them is a function
+call:
+
+* Logging. When the console spawned this process it pumps stderr into the Logs
+  tab. When the **logon task** spawned it - which is the machine's ordinary boot
+  path, an hour before any human opens the console - stdout goes to
+  `bin\\logs\\recorder.out.log`, which the operator has no way to open. So on the
+  path that matters most, logging reaches nobody.
+* `recording.json`, written beside the recordings every `interval` seconds. That
+  makes it the only channel this process has on that boot path, which is what
+  made it worth doing.
+
+**The shape of `recording.json`, for whoever reads it.** It is `status()` plus
+two fields, written whole or not at all (temporary file in the same directory,
+fsync, rename):
+
+* `written_at`, `interval` - when it was written and how often it is being
+  written. **A reader must treat a file older than `max(STATUS_STALE_SECONDS,
+  STATUS_STALE_INTERVALS * interval)` - or dated in the future, because this
+  laptop's clock is typed in by hand - as *unknown*, never as healthy.** A
+  recorder that wedged an hour ago left a file saying every stream was fine, and
+  repeating that is worse than saying nothing. `status_fresh()` below is that
+  rule; use it rather than a second copy of it. A missing file is also unknown:
+  this process removes its report when it stops.
+* `streams[]` - per stream `name`, `running`, `stalled`, `held_back`,
+  `restarts`, `exit_code`, and `source` / `source_url`. `source` is `"local"` or
+  `"camera"` and `source_url` has the password taken out of it. Those two names
+  are the detector's, out of `detection.json`, deliberately: both processes are
+  answering the same question - am I crossing the radio link a second time - and
+  two vocabularies for one fact is how the sentence on screen ends up wrong.
+* Everything else `status()` computes, of which the ones nothing could see
+  before are `link_doubled`, `on_camera`, `retention_declined`, `index_broken`,
+  `stage_failures`, `held_back`, `stuck_deletions` and `empty_segments`.
+* `pid`, so a reader can tell this report apart from one left by a different
+  recorder against the same folder. It is the same number as `recorder.pid`.
+
+`healthy` is a summary and not a substitute for the fields: it is false for a
+stream that is held back, for footage that cannot be deleted, for empty
+segments, and for a catalogue that has stopped answering.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +48,17 @@ import argparse
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from vmd.detect.events import EventStore
 from vmd.settings import Settings, SettingsError, load_settings
 from vmd.streaming.endpoint import is_live, local_source, read_endpoint
 from vmd.storage.discovery import (
@@ -74,6 +119,26 @@ _NO_PENDING = object()
 # The detector's database, beside this service's own. Opened only if it is
 # already there; see _event_store.
 EVENTS_FILENAME = "events.db"
+
+# Where this process publishes what it knows, beside the recordings and beside
+# the detector's `detection.json`. See the module docstring for the shape, and
+# `vmd\detect_main.py` for the pattern this is a copy of rather than a second
+# design.
+STATUS_FILENAME = "recording.json"
+
+# How old that file may be before a reader stops believing it, and how many of
+# the recorder's own reporting intervals it is allowed to miss.
+#
+# The same two numbers, for the same reasons, as the console already applies to
+# `detection.json` (DETECTION_STATUS_STALE_SECONDS / _INTERVALS in
+# vmd\desktop\services.py). Thirty seconds is six missed writes at the default
+# five-second pass: long enough that a laptop busy encoding two streams does not
+# make a reader cry wolf, short enough that a wedged recorder is noticed within
+# a handful of heartbeats. The interval multiple is what stops a recorder told
+# to report less often from being permanently stale - the window follows what
+# the writer said it was doing, rather than being decided here.
+STATUS_STALE_SECONDS = 30.0
+STATUS_STALE_INTERVALS = 4
 
 # The last time retention believed, beside the catalogue it belongs to. See
 # ClockWatch: this machine is offline, its date is typed in by a person, and
@@ -175,6 +240,80 @@ IDENTITY_SUFFIX = ".json"
 # when the companion file is not there to be more specific. The recorder is
 # always started as `python -m vmd.record_main`.
 RECORDER_IMAGES = ("python.exe", "pythonw.exe", "python3.exe", "python", "python3")
+
+
+def _write_json_atomically(payload: dict, path: Path) -> None:
+    """Write JSON so that the file on disk is never half written.
+
+    The same shape as `save_settings` and as the detector's writer of
+    `detection.json`, and for the same reason: a plain write truncates first, so
+    a reader arriving mid-write finds an empty or spliced file - which, for this
+    file, reads as a recorder with no streams at all. The temporary file is in
+    the destination's own directory because os.replace is only atomic within one
+    filesystem.
+
+    Written out here rather than imported from `vmd\\detect_main.py` for the
+    reason the console repeats `detection.json`'s name rather than importing it:
+    a recording-only laptop must not need the detector's module to record.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(json.dumps(payload, indent=2))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+# Bounded against a pathological address; the same expression the detector and
+# the Logs tab use, for the same reason and with the same limits.
+_CREDENTIALS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^\s/@:]{1,256}):([^\s/@]{0,256})@")
+
+
+def without_credentials(text: str) -> str:
+    """The same address with the password inside it taken out.
+
+    RTSP carries the camera's credentials in the address, and this file is read
+    by anything on the machine and copied into any report of a fault. The
+    username stays: which account was refused is half the diagnosis of a 401,
+    and it is not the secret.
+    """
+    if "://" not in text or "@" not in text:
+        return text
+    return _CREDENTIALS.sub(r"\1:****@", text)
+
+
+def status_fresh(status: dict, now: float) -> bool:
+    """Is a `recording.json` recent enough to believe? Stale means unknown.
+
+    A recorder that wedged an hour ago left a file saying every stream was fine,
+    and repeating that is worse than saying nothing, because it is the answer
+    the operator would have wanted to hear.
+
+    A file dated in the future is treated the same way. This laptop's clock is
+    set by hand and gets set wrong, and a timestamp from next week is a clock
+    that moved rather than a recorder that is well.
+
+    The window follows the `interval` the writer published, so a recorder told to
+    report less often cannot silently become permanently stale.
+    """
+    try:
+        written_at = float(status["written_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    try:
+        interval = float(status.get("interval") or 0.0)
+    except (TypeError, ValueError):
+        interval = 0.0
+    limit = max(STATUS_STALE_SECONDS, STATUS_STALE_INTERVALS * interval)
+    return -limit <= (now - written_at) <= limit
 
 
 @dataclass(frozen=True)
@@ -571,6 +710,8 @@ class RecordingService:
         self._clock_jumps = 0
         # Opened on demand rather than here; see _event_store.
         self.events_path = self.root / EVENTS_FILENAME
+        # Where what this process knows is published; see write_status.
+        self.status_path = self.root / STATUS_FILENAME
         self._events = None
         self._events_failures = 0
         try:
@@ -654,17 +795,19 @@ class RecordingService:
         has already decided there was none, and the events written from then on
         must still be reclaimed with the footage they point at.
 
-        The import is local for the same reason: `vmd.detect` pulls in the
-        detector's whole stack, and a machine that only records must not need
-        it installed to record.
+        `EventStore` itself is imported at the top of this file. It used not to
+        be, on the grounds that `vmd.detect` dragged the detector's whole stack -
+        cv2, numpy, eventually the weights - behind it. That has stopped being
+        true: `vmd/detect/__init__.py` resolves its names on first use, so
+        `from vmd.detect.events import EventStore` costs sqlite3 and a
+        dataclass. Only the import moved. Opening the store on first use, and
+        only when the file is already there, is a separate rule and it stands.
         """
         if self._events is not None:
             return self._events
         if not self.events_path.exists():
             return None
         try:
-            from vmd.detect.events import EventStore
-
             self._events = EventStore(self.events_path)
         except Exception:  # noqa: BLE001 - retention frees the disk with or without this
             self._events_failures += 1
@@ -1076,18 +1219,75 @@ class RecordingService:
         failed pass is logged and the loop continues. The sleep happens on the failure
         path too: without it a persistent fault, such as a full disk, would become a
         tight busy loop.
+
+        The report is published after every pass, including a pass that failed -
+        a pass that keeps failing is exactly the state worth publishing - and
+        once before the first one, so that anything opening beside a recorder
+        that has been running since March does not have to wait out an interval
+        before it can name the streams.
         """
         try:
+            self.write_status(interval)
             while True:
                 try:
                     self.run_once()
                 except Exception:  # noqa: BLE001 - a bad pass must not end the service
                     logger.exception("recording pass failed; continuing")
+                self.write_status(interval)
                 time.sleep(interval)
         except KeyboardInterrupt:
             pass
         finally:
             self.stop()
+
+    # ------------------------------------------------------- saying it out loud
+
+    def write_status(self, interval: float = 5.0) -> None:
+        """Publish `status()` where something else can read it. Never raises.
+
+        This process is separate from the console on purpose and outlives it, so
+        everything it works out about itself - which stream is held back, which
+        one is crossing the radio link twice, why retention refused to run - was
+        state that reached nobody. On the machine's ordinary boot path it is
+        worse than that: the logon task starts this process with its output
+        going to a log file under bin\\, so logging reaches nobody either and
+        this file is the only channel there is.
+
+        `written_at` and `interval` go in because a reader has to be able to tell
+        stale from fresh and cannot know how often this was told to write. See
+        `status_fresh`.
+
+        A failure is logged and swallowed. A full disk should make a reader say
+        "unknown", which is true; it is not a reason to stop recording.
+        """
+        try:
+            payload = dict(self.status())
+        except Exception:  # noqa: BLE001 - the report must not be able to stop the pass
+            logger.exception("what to publish could not be worked out")
+            return
+        payload["written_at"] = time.time()
+        payload["interval"] = float(interval)
+        # Which process this report is from. The claim file holds the same
+        # number, so a reader can tell a report by the recorder it adopted from
+        # one left by a different recorder against the same folder.
+        payload["pid"] = os.getpid()
+        try:
+            _write_json_atomically(payload, self.status_path)
+        except Exception:  # noqa: BLE001 - publishing must never be able to stop recording
+            logger.warning("could not publish %s", self.status_path, exc_info=True)
+
+    def clear_status(self) -> None:
+        """Take the report down on the way out.
+
+        A recorder that stopped cleanly and left its last report behind would
+        have anything reading it believing a dead process's words until the
+        staleness window ran out - and that report says the streams were fine,
+        because they were, right up until it stopped.
+        """
+        try:
+            self.status_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove %s", self.status_path, exc_info=True)
 
     def stop(self) -> None:
         self.supervisor.stop_all()
@@ -1100,6 +1300,7 @@ class RecordingService:
         except Exception:  # noqa: BLE001 - shutdown must always complete
             logger.exception("final indexing pass failed")
         self._close_stores()
+        self.clear_status()
 
     def status(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
@@ -1128,9 +1329,13 @@ class RecordingService:
                 "held_back": r.held_back,
                 "restarts": self.supervisor.restarts.get(r.stream, 0),
                 "exit_code": r.exit_code,
-                # Which side of the radio link this stream is coming from. Not
-                # the URL: the camera's address carries its password.
-                "local_source": bool(local_source(self._endpoint, r.stream)),
+                # Which side of the radio link this stream is coming from.
+                # "local" or "camera", and the address with the password taken
+                # out of it - the detector's two names for the same fact, out of
+                # `detection.json`, because the console reads both files and puts
+                # one sentence on screen.
+                "source": "local" if local_source(self._endpoint, r.stream) else "camera",
+                "source_url": without_credentials(r.source_url),
             }
             for r in self.recorders
         ]
@@ -1164,10 +1369,19 @@ class RecordingService:
             "stall_restarts": self._stall_restarts,
             "empty_segments": self._empty_segments,
             "restarts": dict(self.supervisor.restarts),
-            # Streams crossing the radio link twice: pulled from the camera
-            # while go2rtc is holding it as well. Empty is the healthy answer.
+            # Streams being read straight from the camera rather than through
+            # the local streaming server, counted the way the detector counts
+            # them so that one sentence can be written about both processes.
+            # Not a fault on its own: a stream with no local server is read from
+            # the camera on purpose. It says the link is paying for it.
+            "on_camera": sum(1 for s in streams if s["source"] == "camera"),
+            # The sharper subset, and the one with no counterpart in the
+            # detector: streams pulled from the camera while go2rtc is holding
+            # that same camera as well. Every name here is a full-rate copy
+            # crossing a >15 km, ~5 Mb/s link for no reason at all. Empty is the
+            # healthy answer.
             "link_doubled": self.link_doubled(),
-            "source_switches": self._source_switches,
+            "source_changes": self._source_switches,
             # Why retention did not delete everything it was asked to, if it
             # did not. None is the ordinary answer.
             "retention_declined": self._retention_declined,
@@ -1359,6 +1573,10 @@ class RecordingService:
         except Exception:  # noqa: BLE001 - the move must complete either way
             logger.exception("the last segments in %s could not be indexed", self.root)
         self._close_stores()
+        # Before the root moves. A report left in the folder that was left goes
+        # on being read as this recorder's current state by anything pointed at
+        # it, and it says the streams were fine.
+        self.clear_status()
 
         self.root = Path(new_root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1380,6 +1598,7 @@ class RecordingService:
         self._retention_declined = None
         self._declined_said = 0
         self.events_path = self.root / EVENTS_FILENAME
+        self.status_path = self.root / STATUS_FILENAME
         self._events = None
         self._seen = {s.path for s in self.index.all()}
         # This folder's totals have never been measured, and waiting out the
