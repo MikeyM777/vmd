@@ -58,6 +58,7 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.video import VideoPane
 from vmd.desktop.watch import Watched
+from vmd.desktop.zoombar import ZoomBar
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands
 from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
@@ -203,6 +204,15 @@ UNANSWERED_NOTE = "the camera did not answer the last command yet"
 # "has anything happened?" - the operator cannot tell it apart from a list that
 # failed to load. The words say which of the two it is.
 NOTHING_YET = "Nothing has moved yet."
+
+# What the button into and out of fullscreen says, in each of its two states.
+#
+# The way out names its key as well as itself. The operator is not an engineer,
+# this console is the only thing he looks at, and the moment he needs this
+# sentence is the moment he is looking at a screen with nothing else on it -
+# so the button says both of the ways back rather than assuming he knows either.
+FULLSCREEN_WORDS = "Fullscreen"
+LEAVE_FULLSCREEN_WORDS = "Leave fullscreen  (Esc)"
 
 # How wide the side column is, as a share of the tab and between two stops.
 #
@@ -484,6 +494,12 @@ class LiveTab(QWidget):
     # neither, and an alarm is the moment he has least of both.
     show_footage = Signal(object)
 
+    # The operator asked for the pictures on the whole screen, or asked to come
+    # back out. The window owns the mode - it is the thing that has a status
+    # band and a tab bar to hide - and this tab owns only the button that asks
+    # for it. See `vmd/desktop/fullscreen.py`.
+    fullscreen_asked = Signal(bool)
+
     def __init__(
         self,
         ptz,
@@ -492,6 +508,7 @@ class LiveTab(QWidget):
         events=None,
         storage=None,
         radio=None,
+        zoom=None,
         clock: Callable[[], float] | None = None,
         executor: Callable[[Callable[[], None]], None] | None = None,
         parent: QWidget | None = None,
@@ -536,6 +553,40 @@ class LiveTab(QWidget):
         # on the same heartbeat that draws the window: an unreachable radio
         # costs about 12 s of login timeouts.
         self._radio = radio
+        # ------------------------------------------------------------------
+        # THE ZOOM. Handed in, and None on this console today.
+        #
+        # What goes here is the camera's per-profile zoom, and it is being
+        # written separately in `vmd/ptz/` - this camera is two cameras behind
+        # one gimbal, and telling "the camera" to zoom told whichever profile
+        # the device handed back first. Whatever arrives has to answer three
+        # things: `go_to(name, where)`, `creep(name, speed)` and
+        # `position(name) -> float | None`.
+        #
+        # Two rules it has to keep, both of them already paid for elsewhere in
+        # this console. It must not WAIT on the camera - the round trip over the
+        # radio link was last measured at two seconds, and this is called from a
+        # button press and from the heartbeat that draws the window; that is
+        # what `PtzCommands` exists for on the steering side. And `position`
+        # must answer with what the camera actually reported, or None. Never
+        # what it was told: a zoom readout inferred from a command is right
+        # until the first command that does not arrive, and looks right for ever
+        # afterwards.
+        #
+        # Until it is wired the bars are drawn honestly rather than helpfully:
+        # no position, and the whole control disabled, because a slider sitting
+        # at zero says the lens is fully wide.
+        # ------------------------------------------------------------------
+        self._zoom_source = zoom
+        # One per stream, built with the panes and dropped with them.
+        self._zoom_bars: dict[str, ZoomBar] = {}
+        # Which lenses have already had their refusal to report a zoom written
+        # down. One per stream, because a camera that answers about one profile
+        # and not the other is a real state and the working lens must not keep
+        # clearing the broken one's line. This is asked every two seconds for
+        # months and the Logs tab holds five hundred lines; see `_say_it_failed`
+        # for the same rule one level up.
+        self._zoom_unread: set[str] = set()
         self._panes: dict[str, VideoPane] = {}
         self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
@@ -630,7 +681,29 @@ class LiveTab(QWidget):
         pictures.setSpacing(SPACE_SNUG)
         self.views = ViewChooser()
         self.views.chosen.connect(self._view_chosen)
-        pictures.addWidget(self.views)
+        # The chooser and the way into fullscreen share one row above the
+        # pictures, and that row is the only chrome the fullscreen mode keeps.
+        # Above the pictures rather than over them: nothing at all goes over a
+        # picture on this tab, for the reason written further down this file.
+        self._fullscreen = False
+        self._fullscreen_button = QPushButton(FULLSCREEN_WORDS)
+        # Refuses focus, exactly as the view buttons do and for the same reason:
+        # this tab is what steers the camera, and a button that took the
+        # keyboard would leave the next arrow key going nowhere.
+        self._fullscreen_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._fullscreen_button.setToolTip(
+            "Show only the pictures, on the whole screen. Esc or F11 comes back."
+        )
+        self._fullscreen_button.clicked.connect(
+            lambda: self.fullscreen_asked.emit(not self._fullscreen)
+        )
+        self._draw_fullscreen_button()
+        chooser_row = QHBoxLayout()
+        chooser_row.setContentsMargins(0, 0, 0, 0)
+        chooser_row.setSpacing(SPACE_SNUG)
+        chooser_row.addWidget(self.views, 1)
+        chooser_row.addWidget(self._fullscreen_button)
+        pictures.addLayout(chooser_row)
         # Shown in place of the wall when the camera has no views set up. A
         # black rectangle with nothing in it is the one thing an operator
         # cannot diagnose.
@@ -1144,6 +1217,11 @@ class LiveTab(QWidget):
         # a use-after-free through shiboken, which is a raised RuntimeError in
         # the middle of applying the settings the operator just saved.
         self._labels.clear()
+        # The same for the zoom bars, which are children of the same frames. A
+        # bar kept past the stream it belongs to is a control pointing at a view
+        # the camera no longer has.
+        self._zoom_bars.clear()
+        self._zoom_unread.clear()
 
         for stream in settings.camera.streams:
             if not (stream.enabled and stream.url):
@@ -1185,6 +1263,32 @@ class LiveTab(QWidget):
             frame_layout.addWidget(label)
             if isinstance(pane, QWidget):
                 frame_layout.addWidget(pane, 1)
+            # The zoom, under the picture it moves. Under and not over, for the
+            # same reason the name plate is above rather than on it: libVLC owns
+            # every pixel of the pane's own window, and a control composited
+            # onto the picture would be visible only when there was no picture.
+            #
+            # In the frame rather than in a row of its own beneath the wall, so
+            # that a picture and its zoom move together - when one view fills
+            # the wall, the other view's slider goes with it, and which slider
+            # belongs to which lens is never a question.
+            bar = ZoomBar(stream.name)
+            # Held off the frame's own border on all four sides. The frame has
+            # no margins - the picture is meant to reach its edge - and a slider
+            # laid straight into that has its minus button on the border and its
+            # percentage flush against the far edge, which reads as a number cut
+            # in half. The bar is the one thing in the frame that is chrome
+            # rather than picture, so it is the one thing that gets a margin.
+            bar.setContentsMargins(SPACE_SNUG, SPACE_TIGHT, SPACE_SNUG, SPACE_TIGHT)
+            bar.go_to.connect(self._zoom_to)
+            bar.creep.connect(self._zoom_creep)
+            # A console with nothing wired to the lenses draws a control that
+            # plainly cannot move one. The alternative - a live-looking slider
+            # whose buttons quietly go nowhere - is the shape of failure this
+            # whole readout exists to remove.
+            bar.setEnabled(self._zoom_source is not None)
+            self._zoom_bars[stream.name] = bar
+            frame_layout.addWidget(bar)
             # The drags on this picture steer the camera. Filtered off the pane
             # itself: nothing may be laid over it, for the reason written at the
             # top of this file.
@@ -1209,6 +1313,9 @@ class LiveTab(QWidget):
             self._link_panel.refresh()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
+        # And ask each lens where it is now, rather than leaving the new bars
+        # blank until the next heartbeat.
+        self._refresh_zoom()
 
     # ------------------------------------------------------------- view modes
 
@@ -1223,6 +1330,131 @@ class LiveTab(QWidget):
     def shown_streams(self) -> list[str]:
         """The views actually on the wall right now."""
         return [name for name, frame in self._frames.items() if frame.isVisibleTo(self)]
+
+    # ------------------------------------------------------------- fullscreen
+
+    def is_fullscreen(self) -> bool:
+        return self._fullscreen
+
+    def side_visible(self) -> bool:
+        """Whether the column of numbers is on screen. `isVisibleTo`, so this
+        answers about the column's own state rather than about whether anybody
+        has shown the window it is in."""
+        return self._side.isVisibleTo(self)
+
+    def fullscreen_button(self) -> QPushButton:
+        return self._fullscreen_button
+
+    def set_fullscreen(self, on: bool) -> None:
+        """Pictures only, or pictures and the numbers beside them.
+
+        The side column is HIDDEN and not taken apart: the link panel, the
+        storage panel and the movement list keep reading and keep their state,
+        so coming back out of fullscreen is a redraw rather than a rebuild. That
+        matters for one of them in particular - the movement list is what raises
+        the alarm strip, and a list rebuilt on the way back would treat
+        everything in it as new and blare about a night that had already been
+        acknowledged.
+        """
+        self._fullscreen = bool(on)
+        self._side.setVisible(not self._fullscreen)
+        self._draw_fullscreen_button()
+        # The keyboard belongs on the pictures in both directions. The window
+        # says so too, once the window state has actually changed; this is the
+        # half that is true even when this tab is driven on its own.
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _draw_fullscreen_button(self) -> None:
+        """The button, in the state it is in.
+
+        In fullscreen it carries the accent bar the active view button and the
+        active tab both carry - DESIGN.md's one permitted amber, on the state of
+        an active control - because in that mode it is the only piece of chrome
+        left and it has to read as "this is what you are in, and this is the way
+        out" from two metres back.
+        """
+        leaving = self._fullscreen
+        self._fullscreen_button.setText(
+            LEAVE_FULLSCREEN_WORDS if leaving else FULLSCREEN_WORDS
+        )
+        self._fullscreen_button.setStyleSheet(
+            f"QPushButton {{ background: "
+            f"{PALETTE['raised'] if leaving else PALETTE['surface']}; "
+            f"color: {PALETTE['ink'] if leaving else PALETTE['muted']}; "
+            f"border: 1px solid {PALETTE['line']}; "
+            f"border-bottom: 2px solid "
+            f"{PALETTE['accent'] if leaving else PALETTE['line']}; "
+            f"font-size: {SIZE_BODY}px; "
+            f"font-weight: {WEIGHT_VALUE if leaving else 400}; "
+            f"padding: {SPACE_SNUG}px {SPACE_GROUP}px; }}"
+            f"QPushButton:hover {{ color: {PALETTE['ink']}; }}"
+        )
+
+    # ------------------------------------------------------------------- zoom
+
+    def zoom_bar(self, name: str) -> ZoomBar | None:
+        """The zoom control under one picture, or None if there is no such
+        picture. The tests read it; nothing else does."""
+        return self._zoom_bars.get(name)
+
+    def _zoom_to(self, name: str, where: float) -> None:
+        """The operator asked for a zoom on one lens. Pass it on, or drop it.
+
+        Dropped without a word when there is nothing wired up, because the bar
+        is already drawn disabled in that case and a log line per button press
+        would say nothing the screen does not.
+        """
+        if self._zoom_source is None:
+            return
+        try:
+            self._zoom_source.go_to(name, where)
+        except Exception:  # noqa: BLE001 - a lens must not cost the console
+            logger.exception("the %s lens would not take a zoom", name)
+
+    def _zoom_creep(self, name: str, speed: float) -> None:
+        """The same, for a button being held. Zero means stop, and a stop that
+        is dropped leaves a lens running to its own end stop - so it goes
+        through the same guard rather than a shorter one."""
+        if self._zoom_source is None:
+            return
+        try:
+            self._zoom_source.creep(name, speed)
+        except Exception:  # noqa: BLE001 - a lens must not cost the console
+            logger.exception("the %s lens would not stop zooming", name)
+
+    def _refresh_zoom(self) -> None:
+        """Draw where each lens says it is, on the heartbeat.
+
+        Asked of the camera and never worked out from what was sent. A position
+        inferred from a command is right until the first command that does not
+        arrive and looks right for ever after, which is the exact state this
+        readout exists to make visible: a lens already at its stop and a lens
+        that never got the order are the same unchanging picture otherwise.
+        """
+        if not self._zoom_bars:
+            return
+        for name, bar in self._zoom_bars.items():
+            if self._zoom_source is None:
+                bar.set_position(None)
+                continue
+            try:
+                where = self._zoom_source.position(name)
+            except Exception:  # noqa: BLE001 - the pictures are not downstream
+                # Said once per streak. This runs every two seconds for months,
+                # and a line a beat evicts the 500-line ring the operator reads
+                # inside four minutes - which is how the line that says WHY gets
+                # lost while the fault is being hunted.
+                if name not in self._zoom_unread:
+                    self._zoom_unread.add(name)
+                    logger.warning(
+                        "the camera would not say where the %s zoom is",
+                        name,
+                        exc_info=True,
+                    )
+                bar.set_position(None)
+                continue
+            self._zoom_unread.discard(name)
+            bar.set_position(None if where is None else float(where))
 
     def _view_chosen(self, view: str) -> None:
         self._apply_view()
@@ -1305,6 +1537,9 @@ class LiveTab(QWidget):
                 # a run of good readings broken by one of them starts again.
                 self._playing_for[name] = 0
         self._refresh_events()
+        # Where each lens says it is. On the same beat as everything else, and
+        # read from the camera rather than remembered from a command.
+        self._refresh_zoom()
         # The camera answers on its own thread now, so its answer is picked up
         # here rather than where the key was pressed.
         self._show_camera_note()

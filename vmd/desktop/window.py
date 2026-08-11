@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vmd.desktop.fullscreen import FullscreenLive
 from vmd.desktop.link import link_trouble
 from vmd.desktop.live import LiveTab, WrappedNote
 from vmd.desktop.logs import LogBuffer, LogsTab, attach
@@ -758,6 +759,20 @@ class ConsoleWindow(QMainWindow):
                 # It reads the service's answer and never the radio, because
                 # asking the radio costs about 12 s when it is unreachable.
                 radio=radio,
+                # ----------------------------------------------------------
+                # TO BE WIRED: the camera's zoom, one lens at a time.
+                #
+                # The zoom bars under the pictures are built and drawn; what
+                # they have nothing to talk to yet is the per-profile ONVIF
+                # zoom, which lives in `vmd/ptz/` and is being written
+                # separately. Whatever goes here answers `go_to(name, where)`,
+                # `creep(name, speed)` and `position(name) -> float | None`,
+                # must not wait on the camera, and must report only what the
+                # camera actually said. Until then the bars draw themselves
+                # disabled and say the zoom is not reported, which is the
+                # truth. See the note in `LiveTab.__init__`.
+                # ----------------------------------------------------------
+                zoom=None,
             )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
@@ -809,6 +824,21 @@ class ConsoleWindow(QMainWindow):
         column.addWidget(self.band)
         column.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
+
+        # The pictures on the whole screen, which is how this console is meant
+        # to be watched most of the day. Built here because the mode is the
+        # window's: what it hides is the band above the tabs, the tab bar, and
+        # the Live tab's own side column - and the pictures themselves are not
+        # moved, rebuilt or reparented by any of it. See
+        # `vmd/desktop/fullscreen.py` for why that last part is not optional.
+        self.fullscreen = FullscreenLive(
+            window=self, tabs=self.tabs, band=self.band, live=self.live
+        )
+        # The Live tab carries the button; a tab that could not be built carries
+        # nothing, and then the keys are the whole of it.
+        asked = getattr(self.live, "fullscreen_asked", None)
+        if asked is not None:
+            asked.connect(self.fullscreen.set_active)
 
         # One at a time, and never on this thread: applying a save restarts up
         # to three child processes. See `_SaveJob`.
@@ -1388,6 +1418,27 @@ class ConsoleWindow(QMainWindow):
         if isinstance(age, (int, float)) and age >= LINK_STALE_SECONDS:
             return f"link {signal} dBm ({age:.0f} s ago)"
         return f"link {signal} dBm"
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """The two keys that own the fullscreen mode, wherever the focus is.
+
+        Read here rather than bound as Qt shortcuts, which is the rule the Live
+        tab already states for the number keys: a shortcut is delivered ahead of
+        the ordinary key handling, and this window steers a camera with keys
+        that are HELD. Nothing in this console may ever be in a position to
+        swallow the release of an arrow, because a swallowed release is a head
+        that goes on slewing with nobody watching.
+
+        Key events that nothing handled travel up the parent chain to here, so
+        `Esc` pressed on the picture, in the movement list or in a settings
+        field all arrive the same way.
+        """
+        # A held F11 auto-repeats, and a mode that toggled thirty times a second
+        # is a screen nobody can read.
+        if not event.isAutoRepeat() and self.fullscreen.handle_key(int(event.key())):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Close the window. Deliberately does not stop the children: recording
