@@ -170,3 +170,104 @@ def test_a_child_that_was_never_alive_is_started_not_restarted():
     supervisor, _ = build({"recorder": service})
     supervisor.tick()
     assert supervisor.restarts["recorder"] == 0
+
+
+# --------------------------------------------------------------------------
+# Restarting is not recovering
+# --------------------------------------------------------------------------
+
+
+class DiesImmediately(FakeService):
+    """Starts, and is dead again by the time anything looks.
+
+    What the recorder did for a whole day: ffmpeg refused to write a header for
+    a codec it cannot store, exited in milliseconds, and was started again five
+    seconds later, twenty-four times, leaving twenty-four empty files.
+    """
+
+    def start(self):
+        self.starts += 1
+        self.running = False
+
+
+def test_a_service_that_dies_as_fast_as_it_is_started_is_not_called_running():
+    """`start()` returning is not the child working.
+
+    The supervisor counted twenty-four restarts and concluded nothing from
+    them, because nothing here distinguished a child that came back and worked
+    from one that came back and died again. Both are a name in the list this
+    returns, and the console read that list as "started".
+    """
+    service = DiesImmediately(alive=False)
+    supervisor, clock = build({"recorder": service})
+    for _ in range(24):
+        supervisor.tick()
+        clock.advance(5.0)
+
+    assert service.starts == 24
+    health = supervisor.health()["recorder"]
+    assert health["settled"] is False
+    assert health["short_lived"] >= 20
+    assert health["flapping"] is True
+    assert "never stayed up" in health["reason"], health["reason"]
+
+
+def test_a_service_that_comes_back_and_works_is_reported_as_recovered():
+    """The other half of the same question, or the reading means nothing."""
+    service = FakeService(alive=False)
+    supervisor, clock = build({"recorder": service})
+    supervisor.tick()
+    service.running = False  # one death
+    clock.advance(5.0)
+    supervisor.tick()  # and it comes back
+    clock.advance(600.0)  # and stays up
+    supervisor.tick()
+
+    health = supervisor.health()["recorder"]
+    assert health["settled"] is True
+    assert health["flapping"] is False
+    assert health["restarts"] == 1
+    assert health["reason"] == ""
+
+
+def test_a_service_that_settles_after_flapping_stops_being_called_flapping():
+    """A camera that was off for ten minutes must not be a permanent verdict."""
+    service = DiesImmediately(alive=False)
+    supervisor, clock = build({"recorder": service})
+    for _ in range(5):
+        supervisor.tick()
+        clock.advance(5.0)
+    assert supervisor.health()["recorder"]["flapping"] is True
+
+    service.start = lambda: setattr(service, "running", True)
+    supervisor.tick()
+    clock.advance(600.0)
+    supervisor.tick()
+    health = supervisor.health()["recorder"]
+    assert health["flapping"] is False
+    assert health["settled"] is True
+
+
+def test_the_flapping_is_said_out_loud_and_not_once_a_tick(caplog):
+    """This process runs for months; a warning every two seconds is silence."""
+    service = DiesImmediately(alive=False)
+    supervisor, clock = build({"recorder": service})
+    with caplog.at_level("WARNING", logger="vmd.supervisor"):
+        for _ in range(30):
+            supervisor.tick()
+            clock.advance(5.0)
+    said = [r.getMessage() for r in caplog.records if "never stayed up" in r.getMessage()]
+    assert said, "nothing ever concluded anything from twenty-four restarts"
+    assert len(said) <= 3, said
+
+
+def test_a_service_started_before_the_supervisor_saw_it_can_still_flap():
+    """The console starts these itself and hands them over to be kept alive."""
+    service = DiesImmediately(alive=True)
+    supervisor, clock = build({"recorder": service})
+    supervisor.tick()  # sees it alive, having started it itself
+    for _ in range(6):
+        service.running = False
+        clock.advance(5.0)
+        supervisor.tick()
+    assert supervisor.health()["recorder"]["flapping"] is True
