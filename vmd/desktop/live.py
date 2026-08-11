@@ -77,6 +77,13 @@ ZOOM_OUT_KEYS = {int(Qt.Key.Key_Minus), int(Qt.Key.Key_Underscore)}
 # archive - the archive is Playback, where the same events are marks on the day.
 RECENT_LIMIT = 20
 
+# How many restarts of one stream are reported in full before the console
+# starts saying it once in a while instead. The same shape as the supervisor's
+# rule, and for the same reason: a stream that will never come back is retried
+# for as long as the console is open, and the Logs tab holds five hundred lines.
+FAILURES_SPELLED_OUT = 3
+FAILURES_BETWEEN_REMINDERS = 100
+
 # Why the confidence column is sometimes empty, said where the operator can read
 # it. Without this line a blank cell reads as "the detector was not sure", which
 # is the opposite of the truth: the movement is confirmed, and only its name is
@@ -173,6 +180,9 @@ class LiveTab(QWidget):
         self._frames: dict[str, QFrame] = {}
         self._status: dict[str, str] = {}
         self._labels: dict[str, QLabel] = {}
+        # How many times each stream has been restarted since it last played.
+        # One int per stream, cleared when the streams change.
+        self._restarts: dict[str, int] = {}
         self._alarm_stream: str | None = None
         # Which events have already been accounted for, rather than the highest
         # id among them. None, not an empty set: the first read establishes what
@@ -428,6 +438,7 @@ class LiveTab(QWidget):
                 pane.setParent(None)
         self._panes.clear()
         self._status.clear()
+        self._restarts.clear()
         for frame in self._frames.values():
             frame.setParent(None)
         self._frames.clear()
@@ -475,9 +486,31 @@ class LiveTab(QWidget):
             if state == "failed":
                 url = self._local_url(name)
                 if url:
-                    logger.warning("%s failed; restarting it", name)
+                    self._say_it_failed(name)
                     pane.show(url)
+            elif state == "playing":
+                # Actually recovered, rather than merely on its way somewhere.
+                # A stream that flaps between failed and connecting has not.
+                self._restarts.pop(name, None)
         self._refresh_events()
+
+    def _say_it_failed(self, name: str) -> None:
+        """Report a restart, without reporting the same one every two seconds.
+
+        A camera that is off, or an address that is wrong, fails on every tick
+        for as long as the console is open. Unthrottled that is thirty lines a
+        minute, and the ring the Logs tab reads holds five hundred: within
+        twenty minutes the only thing in it is this line, and go2rtc's "401
+        Unauthorized" - the line that says *why* - has been pushed out of the
+        one place the operator can read it. The supervisor already learned
+        this; the panes had not.
+        """
+        count = self._restarts.get(name, 0) + 1
+        self._restarts[name] = count
+        if count <= FAILURES_SPELLED_OUT:
+            logger.warning("%s failed; restarting it", name)
+        elif count % FAILURES_BETWEEN_REMINDERS == 0:
+            logger.warning("%s has failed and been restarted %d times", name, count)
 
     def stream_names(self) -> list[str]:
         return list(self._panes)

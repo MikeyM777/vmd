@@ -160,6 +160,41 @@ def test_a_failed_stream_is_restarted(qtbot) -> None:
     assert panes["thermal"].restarts == 1
 
 
+def test_a_stream_that_will_never_come_back_does_not_fill_the_log(qtbot, caplog) -> None:
+    """A camera that is off fails on every tick for as long as the console is
+    open - thirty lines a minute into a ring that holds five hundred. Within
+    twenty minutes the Logs tab holds nothing else, and go2rtc's "401
+    Unauthorized", the line that says why, has been pushed out of the only
+    place the operator can read it."""
+    tab, _, panes = build(qtbot, "thermal")
+    panes["thermal"].pretend_failed()
+
+    with caplog.at_level("WARNING", logger="vmd.desktop.live"):
+        for _ in range(200):
+            panes["thermal"].pretend_failed()
+            tab.refresh()
+
+    assert panes["thermal"].restarts == 200, "it must still be restarted every time"
+    assert len(caplog.records) <= 5, "the log was flooded by one dead stream"
+    assert caplog.records, "and it must not go silent about it either"
+    assert any("200" in record.getMessage() for record in caplog.records), (
+        "the reminder has to say how many times, or it reads like the first one"
+    )
+
+
+def test_a_stream_that_comes_back_and_fails_again_is_reported_again(qtbot, caplog) -> None:
+    tab, _, panes = build(qtbot, "thermal")
+    with caplog.at_level("WARNING", logger="vmd.desktop.live"):
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+        panes["thermal"].pretend_playing()
+        tab.refresh()
+        panes["thermal"].pretend_failed()
+        tab.refresh()
+
+    assert len(caplog.records) == 2
+
+
 def test_changing_the_streams_replaces_the_panes(qtbot) -> None:
     tab, _, panes = build(qtbot, "thermal")
     tab.apply(settings_with("thermal", "visible"))
