@@ -153,6 +153,43 @@ FLAP_LIMIT = 3
 # has is destroyed by the fault it is meant to describe.
 SPAWN_LIMIT = FLAP_LIMIT + 2
 
+# ------------------------------------------ two children, one camera connection
+#
+# The deadlock the operator spent two days inside. The logon task starts the
+# recorder before any console exists; it finds no streaming server and reads
+# straight from the camera, which is the fallback it is supposed to have. Many
+# IP cameras hand out only a small number of RTSP sessions at once - the FLIR at
+# the far end of this link appears to be one of them - so the recorder takes the
+# one it will give and holds it for as long as it records. Every go2rtc started
+# after that is refused BY THE CAMERA, and `Failed to setup RTSP session` in the
+# Logs tab looks exactly like a fault on this machine.
+#
+# Nothing on either side can break it alone. The recorder moves to this
+# machine's copy the moment there is one, and there can never be one while it
+# holds the only connection. go2rtc has nowhere else to read from at all. The
+# console is the only thing that can see both halves, so it is the only thing
+# that can say so - and the only thing that can stand one of them down.
+#
+# How long the recorder is stood down for, and how often the handover is looked
+# at while it is. Twelve seconds is two of the recorder's segments at worst and
+# it is paid once, at console start; the alternative on the evidence of this week
+# is a live picture that never comes back at all. Recording is started again at
+# the end of it whatever happened, because footage matters more than the picture.
+HANDOVER_SECONDS = 12.0
+HANDOVER_POLL_SECONDS = 0.5
+
+# How long the console waits for its children's own reports before deciding
+# nobody is on the camera. They are read on a worker - they live in the folder
+# that goes away - and at console start the first reading may not have come back
+# yet. Short, and paid only when the streaming server has already been shown to
+# have no picture in it.
+REPORT_SECONDS = 2.0
+
+# What the operator sees this under in the Logs tab. Not "go2rtc" and not
+# "recorder": what it is about is the camera itself refusing one of them, and
+# saying so under the name of either child reads as that child being at fault.
+camera_logger = logging.getLogger("camera")
+
 # The names detection was written with, kept pointing at the shared rule.
 DETECTION_FLAP_WINDOW = FLAP_WINDOW
 DETECTION_FLAP_LIMIT = FLAP_LIMIT
@@ -1343,6 +1380,11 @@ class ConsoleServices:
         # same reason. Set by whoever runs the apply; a no-op otherwise.
         self.on_progress: Callable[[str], None] = lambda step: None
 
+        # How long the recorder may be stood down for while the streaming server
+        # takes the camera. An attribute rather than a constant read directly, so
+        # that a test can bound it and the console cannot be wedged by it.
+        self.handover_seconds = HANDOVER_SECONDS
+
         # When each child was restarted, not just how often since the console
         # opened. A child that died twice in March and is up now is healthy; one
         # that has died four times in the last two minutes is not running,
@@ -1429,6 +1471,169 @@ class ConsoleServices:
             )
         if self.detecting and self.detector is not None:
             self.detector.start()
+        # Last, because it is about all three of them at once and it can only be
+        # asked when they are up: is anything on this machine holding the camera
+        # against the streaming server?
+        self._settle_the_camera()
+
+    def _settle_the_camera(self) -> None:
+        """Say why there is no picture, and break the deadlock if that is what it is.
+
+        Runs once, at console start, and does nothing at all in the ordinary
+        case: a streaming server with a picture in it is asked one question and
+        the console moves on.
+
+        Everything here is bounded. It runs on the thread that is about to draw
+        the window, in front of a console with no picture in it yet.
+        """
+        streaming = self.streaming
+        if streaming is None:
+            return
+        listening = getattr(streaming, "wait_until_listening", None)
+        if listening is not None:
+            try:
+                if not listening():
+                    # Not up at all. `Go2rtcService.status` is where that is
+                    # reported, and repeating it here would say it twice.
+                    return
+            except Exception:  # noqa: BLE001 - a question that could not be asked
+                logger.exception("could not wait for the streaming server")
+                return
+        blind = self._streams_without_a_picture()
+        if not blind:
+            return
+        for name, why in sorted(blind.items()):
+            camera_logger.error(
+                "go2rtc: the streaming server is running, and it knows about %s, "
+                "but it cannot get that stream from the camera - so there is no "
+                "live picture and no local copy for the recorder to read. It "
+                "said: %s",
+                name,
+                why,
+            )
+        holders = self._holding_the_camera()
+        contended = {name: why for name, why in blind.items() if holders.get(name)}
+        if not contended:
+            return
+        who = sorted({whose for name in contended for whose in holders[name]})
+        camera_logger.error(
+            "go2rtc: and this console's own %s %s reading %s straight from the "
+            "camera at the same time. A camera hands out only a few connections "
+            "at once, and the one that started first has taken it - so the "
+            "streaming server is being refused by the camera, not by anything on "
+            "this machine. Killing the streaming server and starting it again "
+            "cannot fix that, which is why it has not.",
+            " and ".join(who),
+            "are" if len(who) > 1 else "is",
+            ", ".join(sorted(contended)),
+        )
+        self._hand_the_camera_over(contended, holders)
+
+    def _streams_without_a_picture(self) -> dict[str, str]:
+        """Which streams the streaming server cannot hand over, and why.
+
+        Empty whenever it cannot be asked, which includes every streaming
+        service a test hands in: no evidence is not evidence, and a console that
+        stood the recorder down on no evidence would cost footage for nothing.
+        """
+        streaming = self.streaming
+        ask = getattr(streaming, "without_a_picture", None)
+        if ask is None or not getattr(streaming, "running", False):
+            return {}
+        try:
+            answered = ask() or {}
+        except Exception:  # noqa: BLE001 - the console goes on either way
+            logger.exception("could not ask the streaming server for a picture")
+            return {}
+        return {str(name): str(why) for name, why in answered.items()}
+
+    def _holding_the_camera(self) -> dict[str, set[str]]:
+        """Who is reading the camera directly, waiting briefly for the answer.
+
+        `streams_on_camera` reads what the workers left behind, and at console
+        start they may not have left anything behind yet - which would read as
+        "nobody is on the camera" at the one moment this has to be right. So it
+        is asked again for a moment. Bounded, and only ever reached when the
+        streaming server has already been shown to have no picture in it.
+        """
+        deadline = time.monotonic() + REPORT_SECONDS
+        while True:
+            holders = self.streams_on_camera()
+            if holders or self._recording_report.age() is not None:
+                return holders
+            if time.monotonic() >= deadline:
+                return holders
+            time.sleep(0.1)
+
+    def _hand_the_camera_over(
+        self, contended: dict[str, str], holders: dict[str, set[str]]
+    ) -> None:
+        """Stand our own children down for a moment so the camera is free.
+
+        The direction is not a choice. The recorder is the one holding the
+        connection and it is the one that can get the stream back another way -
+        through this machine's copy, which is what it prefers anyway and what
+        this whole arrangement is for. go2rtc has nowhere else to read from: it
+        is the camera or nothing.
+
+        Recording is started again at the end whatever happened, and that is the
+        rule this obeys before any other. The gap is bounded by
+        `handover_seconds`; a live picture that never comes back is not.
+        """
+        children = []
+        if any("recording" in holders.get(name, ()) for name in contended):
+            children.append(("recording", self.recorder))
+        if self.detector is not None and any(
+            "detection" in holders.get(name, ()) for name in contended
+        ):
+            children.append(("detection", self.detector))
+        if not children:
+            return
+        camera_logger.warning(
+            "go2rtc: stopping %s for a moment so the streaming server can take "
+            "the camera. There is a gap of a few seconds in the footage and it "
+            "starts again either way - and if this works, it comes back reading "
+            "this machine's copy of the camera instead of the camera itself, "
+            "which is one crossing of the radio link rather than two.",
+            " and ".join(label for label, _child in children),
+        )
+        for label, child in children:
+            try:
+                child.stop(force=True)
+            except Exception:  # noqa: BLE001 - the rest of the handover still runs
+                logger.exception("the %s would not stand down", label)
+        got_it = self._wait_for_the_picture(contended)
+        for label, child in children:
+            try:
+                child.start()
+            except Exception:  # noqa: BLE001 - reported below, not raised at the window
+                logger.exception("the %s would not start again", label)
+        if got_it:
+            camera_logger.warning(
+                "go2rtc: the streaming server has the camera now, and recording "
+                "has been started again on this machine's copy of it. The live "
+                "picture should appear within a few seconds."
+            )
+            return
+        camera_logger.error(
+            "go2rtc: the streaming server still cannot get %s with everything "
+            "else on this machine stood down, so the camera was not being held "
+            "by them and something else is wrong - the line above is what the "
+            "streaming server itself says about it. Recording has been started "
+            "again.",
+            ", ".join(sorted(contended)),
+        )
+
+    def _wait_for_the_picture(self, names: dict[str, str]) -> bool:
+        """Whether the streaming server got the camera, within the gap allowed."""
+        deadline = time.monotonic() + max(self.handover_seconds, 0.0)
+        while True:
+            blind = self._streams_without_a_picture()
+            if not any(name in blind for name in names):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(HANDOVER_POLL_SECONDS)
 
     def _unadoptable(self, endpoint: dict | None) -> str:
         """Why the streaming server that file names cannot be taken on.

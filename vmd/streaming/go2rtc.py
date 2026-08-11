@@ -176,6 +176,11 @@ GO2RTC_IMAGES = ("go2rtc.exe", "go2rtc")
 PROBE_TIMEOUT = 3.0
 PROBE_AGENT = "vmd-console"
 
+# How long a server that has just been spawned is given to bind its ports before
+# the console stops waiting for it. Everything asked of it before that answers
+# "the connection failed", which is a true sentence about the wrong thing.
+LISTENING_SECONDS = 2.0
+
 # How long anything is given to answer the API on the loopback. Two seconds is
 # a long time for a local socket and is paid twice at most: once while the
 # console decides whether the server from the last run can be adopted, and
@@ -1181,6 +1186,24 @@ class Go2rtcService:
         except (OSError, ValueError, TypeError):
             return None
         return raw if isinstance(raw, dict) else None
+
+    def wait_until_listening(self, seconds: float = LISTENING_SECONDS) -> bool:
+        """Wait, briefly, for the RTSP port to start accepting connections.
+
+        A go2rtc that was spawned a moment ago has not bound its ports yet, and
+        asking it for a picture in that moment answers "the connection failed"
+        for every stream - which reads as a camera that will not answer and is
+        nothing of the kind. Short, because a refused connection on the loopback
+        comes back instantly and this is only covering the gap between spawning
+        a process and that process listening.
+        """
+        deadline = time.monotonic() + max(seconds, 0.0)
+        while True:
+            if is_live({"rtsp_port": self.rtsp_port}, timeout=0.5):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
 
     def api_log(self, api_port: int | None = None, timeout: float = API_TIMEOUT) -> list[dict]:
         """What the server has lately said about itself, in its own words.

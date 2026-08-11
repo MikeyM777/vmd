@@ -3093,3 +3093,166 @@ def test_a_moved_recordings_folder_moves_the_recorders_report_with_it(
     assert (
         services.recording_status_path == tmp_path / "elsewhere" / RECORDING_STATUS_FILENAME
     )
+
+
+# ----------------------------------------- two children, one camera connection
+#
+# The operator killed go2rtc.exe, opened the console again, and got exactly the
+# same failure from a server that had never seen the mistyped password. That
+# rules out the config: a FRESH go2rtc, built from the settings on disk, also
+# could not serve either stream.
+#
+# What was in the log all along is the line above it - `a recorder is already
+# running (pid 11152); adopting it`. The logon task starts the recorder first,
+# it finds no streaming server, and it reads STRAIGHT FROM THE CAMERA. Many IP
+# cameras hand out only a small number of RTSP sessions at once; the recorder
+# takes one and holds it for as long as it records, and every go2rtc after it is
+# refused BY THE CAMERA. Killing go2rtc cannot fix that, and neither can
+# correcting the password, which is why every round of this failed the same way.
+#
+# It is a deadlock, and the resource is the camera. The recorder moves to this
+# machine's copy as soon as there is one - that part is already built - but
+# there can never be one while the recorder holds the only connection the camera
+# will give. Something has to let go, and only the console can see both sides.
+
+
+class Blind(Pulling):
+    """A streaming server that is up and has no picture in it.
+
+    `held_by` is the thing that is holding the camera, if anything: while it
+    answers true this server can get nothing, and the moment it lets go the
+    pictures arrive. That is the camera's session limit, modelled at the only
+    point where its effect is visible to this console.
+    """
+
+    def __init__(self, why: str = "streams: wrong user/pass", held_by=None) -> None:
+        super().__init__(True)
+        self.why = why
+        self.held_by = held_by
+        self.asked = 0
+
+    def without_a_picture(self, names=None, rtsp_port=None, api_port=None, timeout=None):
+        self.asked += 1
+        if self.held_by is not None and not self.held_by():
+            return {}
+        return {"thermal": self.why}
+
+
+def recording_from_the_camera(tmp_path: Path) -> None:
+    write_recording_status(
+        tmp_path, [{"name": "thermal", "running": True, "source": "camera"}]
+    )
+
+
+def said_in(caplog) -> str:
+    return " ".join(record.getMessage() for record in caplog.records)
+
+
+def test_the_console_says_which_of_its_children_is_holding_the_camera(
+    tmp_path: Path, caplog
+) -> None:
+    """`Failed to setup RTSP session` is what the operator was left with, for
+    two days. The console knows both halves of this - that go2rtc cannot pull,
+    and that the recorder it adopted is on the camera - and there is exactly one
+    plain-language explanation of that pair."""
+    recording_from_the_camera(tmp_path)
+    services = console_with_streaming(tmp_path, Blind())
+    services.handover_seconds = 0.5
+
+    with caplog.at_level(logging.WARNING):
+        services.start()
+
+    said = said_in(caplog).lower()
+    assert "recorder" in said, said
+    assert "camera" in said, said
+    assert "wrong user/pass" in said, "go2rtc's own words are the useful part"
+
+
+def test_the_recorder_stands_down_so_the_streaming_server_can_take_the_camera(
+    tmp_path: Path, caplog
+) -> None:
+    """Breaking the deadlock, and the direction it must be broken in: the
+    recorder is the one holding the resource, and it is the one that can get it
+    back through the local server afterwards. go2rtc cannot - it has nowhere
+    else to read from."""
+    recording_from_the_camera(tmp_path)
+    streaming = Blind()
+    services = console_with_streaming(tmp_path, streaming)
+    # The camera gives one session: while the recorder holds it, nothing else
+    # can have it.
+    streaming.held_by = lambda: services.recorder.running
+    services.handover_seconds = 3.0
+
+    with caplog.at_level(logging.WARNING):
+        services.start()
+
+    assert services.recorder.running, "footage must never be what this costs"
+    assert streaming.asked >= 2, "it has to look again after the recorder let go"
+    said = said_in(caplog).lower()
+    assert "recording" in said, said
+
+
+def test_recording_comes_back_even_when_the_camera_was_not_the_problem(
+    tmp_path: Path, caplog
+) -> None:
+    """A streaming server that still cannot pull with the recorder stood down
+    has some other fault, and the console has just stopped recording for it.
+    Footage matters more than the live picture: it comes back either way, and
+    the console says which of the two it turned out to be."""
+    recording_from_the_camera(tmp_path)
+    services = console_with_streaming(tmp_path, Blind())
+    services.handover_seconds = 0.5
+
+    with caplog.at_level(logging.WARNING):
+        services.start()
+
+    assert services.recorder.running
+    said = said_in(caplog).lower()
+    assert "recorder" in said and "not" in said
+
+
+def test_a_recorder_on_the_local_server_is_not_stood_down(tmp_path: Path, caplog) -> None:
+    """No contention: the recorder is reading this machine's copy, so whatever
+    is wrong with the streaming server, stopping the recorder cannot fix it -
+    and a recording gap that fixes nothing is footage thrown away."""
+    write_recording_status(
+        tmp_path, [{"name": "thermal", "running": True, "source": "local"}]
+    )
+    streaming = Blind(why="streams: 401 Unauthorized")
+    services = console_with_streaming(tmp_path, streaming)
+    services.handover_seconds = 0.5
+    with caplog.at_level(logging.WARNING):
+        services.start()
+
+    assert services.recorder.running
+    assert streaming.asked == 1, (
+        "the recorder was stood down for something it was not part of: a second "
+        "look means the console waited for a handover it had no reason to make"
+    )
+    assert "401 Unauthorized" in said_in(caplog), (
+        "the reason must still reach the Logs tab even when nobody is to blame"
+    )
+
+
+def test_a_streaming_server_with_a_picture_in_it_costs_nothing(
+    tmp_path: Path, caplog
+) -> None:
+    """The ordinary case, which runs at every console start in front of a blank
+    window: nothing is stopped, nothing is waited for, and nothing is said."""
+    recording_from_the_camera(tmp_path)
+
+    class Serving(Blind):
+        def without_a_picture(self, names=None, rtsp_port=None, api_port=None, timeout=None):
+            self.asked += 1
+            return {}
+
+    streaming = Serving()
+    services = console_with_streaming(tmp_path, streaming)
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        services.start()
+    took = time.monotonic() - started
+
+    assert streaming.asked == 1
+    assert took < 2.0, f"a healthy start waited {took:.1f}s"
+    assert "holding the camera" not in said_in(caplog)
