@@ -749,6 +749,30 @@ def test_a_camera_with_no_encoder_settings_is_reported_not_guessed_at() -> None:
     assert "encoder" in result["error"]
 
 
+class CountingLock:
+    """A lock that remembers how many turns it has handed out."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.taken = 0
+
+    def acquire(self, *args, **kwargs) -> bool:
+        got = self._lock.acquire(*args, **kwargs)
+        if got:
+            self.taken += 1
+        return got
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self) -> "CountingLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *unused: object) -> None:
+        self.release()
+
+
 def served_by(stub: StubCamera) -> PtzService:
     """A PtzService whose camera is the stub, without a socket in sight."""
     service = PtzService(Settings(camera=CameraSettings(host="192.0.2.9")))
@@ -765,6 +789,44 @@ def test_the_button_and_the_loop_fit_the_camera_the_same_way() -> None:
     assert result["ok"] is True
     assert result["applied"] == dict(stub.written)
     assert result["changed"], result
+
+
+def test_a_stop_never_has_to_wait_out_a_whole_bitrate_write() -> None:
+    """The one safety property this service has is that a stop gets through.
+
+    Fitting the camera to the link is half a dozen ONVIF calls across a radio
+    link, and it used to hold this service's lock for all of them - so a stop
+    arriving in the middle waited for the lot. That was survivable while the
+    only thing that fitted the camera was a button somebody pressed. It is not
+    survivable now that a loop does it by itself every few minutes: the head
+    keeps slewing for as long as the write takes, with no key held.
+
+    Counted rather than raced, deliberately. A stop really sent from inside the
+    fit would DEADLOCK if this regressed, and a stop sent from another thread
+    would be let through by a stub camera that answers instantly whichever way
+    the lock is taken - so what is measured is the thing that differs: how many
+    turns the operation takes. One turn holding six calls is the old behaviour;
+    a turn per call is this one.
+    """
+    stub = StubCamera()
+    service = served_by(stub)
+    service._lock = turns = CountingLock()
+    calls: list[str] = []
+
+    original = stub._post
+
+    def counted(path: str, body: str) -> str:
+        calls.append(path)
+        return original(path, body)
+
+    stub._post = counted
+    service.fit_encoders_to_link(8000)
+
+    assert len(calls) > 1, "the camera should have been spoken to several times"
+    assert turns.taken >= len(calls), (
+        f"{len(calls)} calls to the camera inside {turns.taken} turns of the lock: "
+        "a stop arriving part way through waits for all of them"
+    )
 
 
 def test_the_button_says_when_the_camera_did_not_keep_what_it_was_given() -> None:

@@ -141,32 +141,41 @@ class PtzService:
         two implementations of it would be two answers to the same question
         within a month - one of them checked and one of them not.
 
-        Slow, and it holds this service's lock while it runs: several ONVIF
-        calls across a radio link. It must never be called on the thread that
-        draws the window. `BitrateLoop` hands it to an executor and the Settings
-        tab runs it in a `_ToolJob`.
+        Slow: half a dozen ONVIF calls across a radio link. It must never be
+        called on the thread that draws the window - `BitrateLoop` hands it to
+        an executor and the Settings tab runs it in a `_ToolJob`.
+
+        The lock is taken per call to the camera rather than across the whole
+        operation, and that is a safety property rather than a nicety. Held for
+        the lot, a stop arriving in the middle of a fit waits for the entire
+        exchange - and the head goes on slewing with no key held for as long as
+        that takes. Survivable while the only thing that fitted the camera was
+        a button somebody pressed; not survivable now that a loop does it by
+        itself. See `_OneAtATime`, and `PtzCommands`, whose whole safety
+        property is that a stop gets through.
         """
         with self._lock:
-            if self.camera is None:
-                return {"ok": False, "error": "no camera address set"}
-            try:
-                result = apply_budget(CameraEncoders(self.camera), ceiling_kbps)
-            except PtzError as exc:
-                return {"ok": False, "error": str(exc)}
-            except Exception as exc:  # noqa: BLE001 - the console outlives the camera
-                logger.exception("could not set encoder settings")
-                return {"ok": False, "error": str(exc)}
-            if not result.get("ok"):
-                return result
-            said = list(result.get("changed") or [])
-            for token in result.get("refused") or []:
-                # Said in the answer and not only in the log, because this is
-                # what the operator pressed the button to find out. A camera
-                # that answers 200 and keeps its old setting is indistinguishable
-                # from a camera that obeyed unless somebody says.
-                said.append(f"{token}: the camera did not keep this - it is unchanged")
-            result["changed"] = said or ["nothing needed changing"]
+            camera = self.camera
+        if camera is None:
+            return {"ok": False, "error": "no camera address set"}
+        try:
+            result = apply_budget(_OneAtATime(CameraEncoders(camera), self._lock), ceiling_kbps)
+        except PtzError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - the console outlives the camera
+            logger.exception("could not set encoder settings")
+            return {"ok": False, "error": str(exc)}
+        if not result.get("ok"):
             return result
+        said = list(result.get("changed") or [])
+        for token in result.get("refused") or []:
+            # Said in the answer and not only in the log, because this is what
+            # the operator pressed the button to find out. A camera that answers
+            # 200 and keeps its old setting is indistinguishable from a camera
+            # that obeyed unless somebody says.
+            said.append(f"{token}: the camera did not keep this - it is unchanged")
+        result["changed"] = said or ["nothing needed changing"]
+        return result
 
     def move(self, pan: float, tilt: float, zoom: float) -> dict:
         return self._do("move", lambda: self.camera.move(pan, tilt, zoom))
@@ -181,6 +190,36 @@ class PtzService:
 
     def home(self) -> dict:
         return self._do("home", lambda: self.camera.home())
+
+
+class _OneAtATime:
+    """A `CameraEncoders` whose every call to the camera is taken in turn.
+
+    One connection to the camera at a time, exactly as before - but the turn is
+    ONE call rather than the whole operation, so anything else waiting for the
+    camera gets in between them. What is waiting is a stop, and a stop that
+    waits is a head still moving with no key held.
+
+    Not thread-safety for its own sake: `OnvifPtz` is not written to be spoken
+    to by two threads at once and this does not make it so. It only makes the
+    queue in front of it a short one.
+    """
+
+    def __init__(self, encoders: CameraEncoders, lock: threading.Lock) -> None:
+        self._encoders = encoders
+        self._lock = lock
+
+    def read(self):
+        with self._lock:
+            return self._encoders.read()
+
+    def limits(self, token: str):
+        with self._lock:
+            return self._encoders.limits(token)
+
+    def cap_bitrate(self, config, kbps: int):
+        with self._lock:
+            return self._encoders.cap_bitrate(config, kbps)
 
 
 @dataclass(frozen=True)
