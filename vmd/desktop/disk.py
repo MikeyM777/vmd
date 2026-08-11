@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGroupBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from vmd.desktop.style import PALETTE
 from vmd.settings import Settings, StorageSettings, detect_free_bytes
@@ -451,6 +451,18 @@ class StoragePanel(QGroupBox):
         self._watcher = watcher
         self._layout = QVBoxLayout(self)
         self._layout.setSpacing(2)
+        # The panel asks for as much height as its wrapped sentences need at the
+        # width the column gives it. Without this the least it says it can live
+        # with is one line per sentence, and a column short of room takes it at
+        # its word: the second line of each sentence is drawn over the line
+        # beneath it. Here that cuts the sentence saying the drive will run out
+        # before the budget is reached - the case where recording stops while
+        # every retention rule reports itself content. The link panel beside this
+        # one is built the same way, for the same reason.
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(True)
+        policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+        self.setSizePolicy(policy)
         self._labels: list[QLabel] = []
         self._shown: list[tuple[str, str]] = []
         self.refresh()
@@ -458,6 +470,50 @@ class StoragePanel(QGroupBox):
     def lines(self) -> list[tuple[str, str]]:
         """What is on screen, for the window and for the tests."""
         return list(self._shown)
+
+    def clipped(self) -> list[str]:
+        """Any sentence the panel is not tall enough to show in full.
+
+        Word wrapping is the one way this panel can lose half a sentence without
+        anything going wrong: a QLabel's own idea of how tall it should be is a
+        guess, and where the guess is short the layout draws the rest of the
+        sentence over the line beneath it. The sentence that would be cut is the
+        longest one, and the longest one is the warning that the drive will run
+        out before the budget is reached.
+        """
+        cut: list[str] = []
+        room = self._layout.contentsRect()
+        shown = [label for label in self._labels if label.isVisibleTo(self) and label.text()]
+        for index, label in enumerate(shown):
+            # Three ways to lose a line: the label is too short for its own
+            # wrapped text; it runs off the bottom of the panel; or the panel was
+            # given less height than it asked for and the layout has laid the
+            # next sentence over the tail of this one.
+            box = label.geometry()
+            after = shown[index + 1].geometry() if index + 1 < len(shown) else None
+            if (
+                label.height() < label.heightForWidth(max(label.width(), 1))
+                or box.bottom() > room.bottom() + 1
+                or (after is not None and box.bottom() >= after.top())
+            ):
+                cut.append(label.text())
+        return cut
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        """Give every label the height its wrapped text actually needs.
+
+        The width is the layout's, once there is one. Before the panel has ever
+        been laid out that is nothing useful, so the panel's own width less its
+        borders stands in until the first resize corrects it.
+        """
+        width = max(self._layout.contentsRect().width(), self.width() - 24, 1)
+        for label in self._labels:
+            if label.text():
+                label.setMinimumHeight(label.heightForWidth(width))
 
     def refresh(self) -> None:
         lines = storage_lines(self._watcher.reading, self._watcher.settings.storage)
@@ -467,6 +523,15 @@ class StoragePanel(QGroupBox):
         while len(self._labels) < len(lines):
             label = QLabel("")
             label.setWordWrap(True)
+            # A word-wrapped QLabel asks for the height of ONE line unless its
+            # size policy says the height depends on the width, and a layout that
+            # believes it draws the second line over the line beneath it. The
+            # column is 340 px wide and the longest of these sentences takes four
+            # lines of it.
+            policy = label.sizePolicy()
+            policy.setHeightForWidth(True)
+            policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+            label.setSizePolicy(policy)
             self._layout.addWidget(label)
             self._labels.append(label)
         for index, label in enumerate(self._labels):
@@ -476,4 +541,6 @@ class StoragePanel(QGroupBox):
                 label.setStyleSheet(f"color: {colour};")
                 label.setVisible(True)
             else:
+                label.setText("")
                 label.setVisible(False)
+        self._fit()

@@ -12,6 +12,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from vmd.desktop.disk import (
     POLL_SECONDS,
     DiskReading,
@@ -399,3 +401,70 @@ def test_the_panel_says_something_before_the_first_reading(qtbot, tmp_path: Path
     qtbot.addWidget(panel)
     panel.refresh()
     assert panel.lines(), "a blank panel is the failure this exists to remove"
+
+
+def watcher_showing(reading: DiskReading, tmp_path: Path, **settings) -> DiskWatcher:
+    """A watcher whose answer is already this reading, with no thread involved."""
+    executor = Executor()
+    watcher = DiskWatcher(
+        settings_for(tmp_path, **settings),
+        executor=executor,
+        clock=lambda: 1000.0,
+        read=lambda _settings, _now: reading,
+    )
+    watcher.poll()
+    executor.drain()
+    return watcher
+
+
+# The longest sentence this panel can produce, and the reading that produces it:
+# the budget still wants 80 GB, the drive has 5 GB, so retention will never fire.
+# 159 characters, which is four wrapped lines in the 340 px column, and the panel
+# needs 174 px to draw all five of its sentences. The other two are the states
+# whose sentences also run past one line.
+SQUEEZED = {
+    "the drive will run out before the budget": dict(used_bytes=20 * GB, free_bytes=5 * GB),
+    "the budget is full": dict(used_bytes=101 * GB, free_bytes=400 * GB),
+    "the folder cannot be read": dict(
+        problem="The recordings folder D:\\vmd\\recordings cannot be reached: "
+        "[WinError 21] The device is not ready."
+    ),
+}
+
+
+@pytest.mark.parametrize("state", sorted(SQUEEZED))
+def test_no_sentence_is_cut_in_half_when_the_column_is_short_of_room(
+    qtbot, tmp_path: Path, state: str
+) -> None:
+    """The side column carries five boxes and on a laptop screen that is more
+    than fits. A Qt layout short of room does not shrink a word-wrapped sentence
+    to make it fit: it hands each box the least height that box says it can live
+    with, and draws the next line over the tail of the last one. So the least
+    this panel says it can live with has to be the height its sentences actually
+    need - otherwise the sentence that gets cut in half is the longest one, and
+    the longest one is the warning that the drive will run out before the budget
+    is reached, which is the case where recording stops while every retention
+    rule reports itself content.
+    """
+    from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+    watcher = watcher_showing(reading_with(**SQUEEZED[state]), tmp_path)
+    column = QWidget()
+    qtbot.addWidget(column)
+    column.setFixedWidth(340)  # the width the Live tab gives its side column
+    layout = QVBoxLayout(column)
+    panel = StoragePanel(watcher)
+    layout.addWidget(panel)
+    # The movement list below it, which takes every pixel it is allowed to: that
+    # is what leaves the panel with no more than the height it asked for.
+    layout.addWidget(QWidget(), 1)
+    column.resize(340, 860)
+    column.show()
+    QApplication.processEvents()
+    assert panel.lines(), "the panel must be saying something to be cut in half"
+
+    # Now the squeeze: the column is short of room, so the panel gets the least
+    # height it said it could live with. Nothing about that may cost a sentence.
+    panel.setFixedHeight(panel.minimumSizeHint().height())
+    QApplication.processEvents()
+    assert panel.clipped() == [], "half a sentence is worse than none"
