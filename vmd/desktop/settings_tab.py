@@ -252,6 +252,24 @@ class StreamRowWidget(QWidget):
         details_layout.setContentsMargins(8, 6, 8, 6)
         details_layout.setSpacing(4)
 
+        # The picture. Every number under it is a dot of the camera's frame, and
+        # a dot of a frame is not a thing anybody can estimate by eye - so this
+        # button, which fetches one frame and lets the line and the patches be
+        # drawn on it, sits above them rather than beside them.
+        self.pick_button = QPushButton("Show me the picture and let me draw on it")
+        self.pick_button.setToolTip(
+            "Fetches one still picture from this view. Click it to put the sky "
+            "line, drag a box over anything to ignore.\n\n"
+            "If the camera cannot be reached the boxes below still work; they "
+            "are the same settings, typed instead of drawn."
+        )
+        # Set by SettingsTab, which is the only thing that knows how to reach a
+        # camera. A row on its own can still be built and tested with nothing
+        # installed.
+        self.on_pick = lambda row: None
+        self.pick_button.clicked.connect(lambda: self.on_pick(self))
+        details_layout.addWidget(self.pick_button)
+
         horizon_line = QHBoxLayout()
         horizon_line.setSpacing(6)
         self.horizon_enabled_field = QCheckBox("Ignore everything above a sky line")
@@ -269,10 +287,11 @@ class StreamRowWidget(QWidget):
         details_layout.addLayout(horizon_line)
 
         horizon_help = QLabel(
-            "There is no picture on this screen to measure against, so leave "
-            "the sky line off unless someone has read the number off a frame "
-            "for you. Off is the safe setting: a wrong line deletes real "
-            "movement without saying so."
+            "Draw the line on the picture above rather than guessing the "
+            "number: a line set too low throws away real movement below it and "
+            "never tells you it did. If the camera cannot be reached, leave the "
+            "sky line off unless someone has read the number off a picture for "
+            "you. Off is a perfectly safe setting."
         )
         horizon_help.setWordWrap(True)
         horizon_help.setStyleSheet(f"color: {PALETTE['muted']};")
@@ -763,6 +782,7 @@ class SettingsTab(QWidget):
         row = StreamRowWidget(name, url, enabled, reader, stream=stream)
         row.remove_button.clicked.connect(lambda: self.remove_stream_row(row))
         row.on_problem = self._set_message
+        row.on_pick = self.open_picker
         self._rows.append(row)
         self._streams_layout.addWidget(row)
         return row
@@ -980,6 +1000,60 @@ class SettingsTab(QWidget):
 
         self._start(self.report_button, "Writing the report", work)
 
+    def open_picker(self, row: StreamRowWidget):
+        """Show one frame from this view, to draw the sky line and patches on.
+
+        The two settings under this button are native-frame pixel coordinates.
+        Typed blind they are guesses, and a wrong sky line deletes real movement
+        without saying so - so the picture is the control and the boxes are what
+        is left when there is no picture to be had.
+
+        Nothing is applied unless the operator presses the dialog's own button,
+        and nothing here can leave the form worse than it found it: a camera
+        that cannot be reached ends in a sentence in the dialog, with every box
+        in this form exactly as it was.
+        """
+        # Imported here for the same reason the camera tools are: opening the
+        # console must not pay for the camera stack, and this module has to stay
+        # importable on a machine with nothing installed.
+        from vmd.desktop.picker import PickerDialog
+
+        name = row.values()[0]
+        if not name:
+            self._set_message(
+                "Give this stream a name before asking it for a picture."
+            )
+            return None
+        settings = self.settings_from_form()
+        if settings is None:
+            return None
+
+        tools = self._camera_tools(settings)
+        dialog = PickerDialog(
+            stream=name,
+            horizon=row.horizon(),
+            regions=row.regions(),
+            grab=lambda: tools.grab_frame(settings, name),
+            parent=self,
+        )
+        dialog.accepted.connect(lambda: self._apply_picked(row, dialog))
+        # open(), never exec(): exec() runs its own event loop on the window
+        # thread, and everything this console has learned about freezing says
+        # not to.
+        dialog.open()
+        return dialog
+
+    @staticmethod
+    def _apply_picked(row: StreamRowWidget, dialog) -> None:
+        """Put what was drawn into the boxes, which stay the settings.
+
+        The sky line is switched on by drawing one: an operator who has just put
+        a line on a picture has said what they want, and leaving the tick box
+        off would file it away as "typed but not meant".
+        """
+        row.set_horizon(dialog.horizon())
+        row.set_regions(dialog.regions())
+
     def _start(self, button: QPushButton, heading: str, work) -> None:
         """Run one camera tool off the UI thread and print what it says.
 
@@ -1050,11 +1124,23 @@ class CameraTools:
     them be tested without a camera.
     """
 
-    def __init__(self, ptz, find_paths, diagnose) -> None:
+    def __init__(self, ptz, find_paths, diagnose, grab_frame=None) -> None:
         self._ptz = ptz
         self._find_paths = find_paths
         self._diagnose = diagnose
+        # Optional, and resolved on first use rather than here, so that building
+        # these tools never imports the picture stack and every caller written
+        # before there was a picture keeps working.
+        self._grab_frame = grab_frame
         self.on_progress = lambda step: None
+
+    def grab_frame(self, settings: Settings, stream: str) -> bytes:
+        """One still picture from a stream, as the bytes of a picture."""
+        if self._grab_frame is not None:
+            return self._grab_frame(settings, stream)
+        from vmd.desktop.picker import grab_frame
+
+        return grab_frame(settings, stream)
 
     def find_paths(self, settings: Settings) -> list[str]:
         return self._find_paths(settings, on_progress=self.on_progress)
