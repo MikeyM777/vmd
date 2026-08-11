@@ -109,6 +109,57 @@ def parse_options(xml: str) -> list[tuple[int, int]]:
     return sorted(sizes, key=lambda size: size[0] * size[1], reverse=True)
 
 
+def parse_bitrate_range(xml: str) -> tuple[int | None, int | None]:
+    """The lowest and highest bitrate this camera says it will accept.
+
+    It arrives in the same answer the resolutions do and was being thrown away,
+    which left this console with no way to know that a target was outside what
+    the camera would take. A value outside the range is refused - and this
+    camera refuses with an HTTP 200 carrying a SOAP fault, so the refusal does
+    not look like one until somebody reads the body.
+
+    Unknown is a state and is reported as one. A camera that names no range is
+    a camera with no known minimum, not a camera with an invented one: clamping
+    to a number nobody supplied would silently overrule the operator's floor.
+    """
+    block = _first(r"<[^>]*BitrateRange[^>]*>(.*?)</[^>]*BitrateRange>", xml)
+    if block is None:
+        return None, None
+    return (
+        _int(_first(r"<[^>]*Min>(.*?)</[^>]*Min>", block)),
+        _int(_first(r"<[^>]*Max>(.*?)</[^>]*Max>", block)),
+    )
+
+
+@dataclass(frozen=True)
+class EncoderLimits:
+    """What one encoder configuration on this camera will accept.
+
+    `None` for either bound means the camera did not say, which is different
+    from there being no bound - see `clamp_bitrate`.
+    """
+
+    sizes: list[tuple[int, int]]
+    bitrate_min: int | None
+    bitrate_max: int | None
+
+
+def clamp_bitrate(kbps: int, limits: EncoderLimits) -> int:
+    """A target the camera will actually take, given what it said it allows.
+
+    A bound the camera did not name is not applied. Being slightly over budget
+    on a stream whose camera will not go lower is a worse picture; being outside
+    the range is a write that is refused, after which this console would be
+    reasoning about a bitrate the camera never had.
+    """
+    wanted = int(kbps)
+    if limits.bitrate_min is not None:
+        wanted = max(wanted, limits.bitrate_min)
+    if limits.bitrate_max is not None:
+        wanted = min(wanted, limits.bitrate_max)
+    return wanted
+
+
 class CameraEncoders:
     """The camera's encoder settings, read and capped."""
 
@@ -121,14 +172,24 @@ class CameraEncoders:
         )
         return parse_configurations(xml)
 
-    def options(self, token: str) -> list[tuple[int, int]]:
+    def limits(self, token: str) -> EncoderLimits:
+        """Everything one call to the camera says about what it will accept.
+
+        One call rather than two, because it is one answer: the resolutions and
+        the bitrate range arrive in the same document, and asking twice over
+        this link costs seconds for a second copy of what was already said.
+        """
         xml = self.camera._post(
             "/onvif/media_service",
             f'<GetVideoEncoderConfigurationOptions xmlns="{MEDIA}">'
             f"<ConfigurationToken>{_xml(token)}</ConfigurationToken>"
             "</GetVideoEncoderConfigurationOptions>",
         )
-        return parse_options(xml)
+        low, high = parse_bitrate_range(xml)
+        return EncoderLimits(sizes=parse_options(xml), bitrate_min=low, bitrate_max=high)
+
+    def options(self, token: str) -> list[tuple[int, int]]:
+        return self.limits(token).sizes
 
     def apply(
         self,
@@ -214,3 +275,75 @@ def fit_to_link(configs: list[EncoderConfig], ceiling_kbps: int) -> dict[str, in
     return {
         token: max(256, int(usable * weight / total)) for token, weight in weights.items()
     }
+
+
+def apply_budget(encoders: CameraEncoders, budget_kbps: int) -> dict:
+    """Share a link budget between the streams, write it, and check it landed.
+
+    Four steps, and the last two are the ones this project has got wrong before:
+
+    * **share it.** `fit_to_link` weights by pixel count, because a 4K stream
+      genuinely needs more than a thermal one to look like anything.
+    * **clamp it to what the camera says it will take.** The permitted range is
+      in `GetVideoEncoderConfigurationOptions` and was being discarded. A value
+      outside it is refused.
+    * **write only what has changed.** Each write interrupts the stream -
+      go2rtc reconnects and the operator sees the picture blip - so a write of
+      the value that is already there is a blip bought for nothing.
+    * **read it back.** An HTTP 200 is not evidence: this camera answers 200
+      with a SOAP fault, and twice in this project a 200 has been taken as proof
+      that a setting landed. What the camera reports AFTERWARDS is the answer,
+      and anything else is reported as refused rather than counted as applied.
+
+    Never changes a resolution or a frame rate. ONVIF's Set is a whole-object
+    write, so both are sent back - exactly as the camera reported them.
+    """
+    configs = encoders.read()
+    if not configs:
+        return {"ok": False, "error": "the camera reported no encoder settings"}
+
+    targets = fit_to_link(configs, budget_kbps)
+    wanted: dict[str, int] = {}
+    for config in configs:
+        target = targets.get(config.token)
+        if target is None:
+            continue
+        try:
+            limits = encoders.limits(config.token)
+        except Exception:  # noqa: BLE001 - a camera that will not say its range
+            logger.warning(
+                "the camera would not say what bitrates %s accepts; using the "
+                "target as it stands",
+                config.token,
+                exc_info=True,
+            )
+            limits = EncoderLimits(sizes=[], bitrate_min=None, bitrate_max=None)
+        wanted[config.token] = clamp_bitrate(target, limits)
+
+    changed: list[str] = []
+    written: dict[str, int] = {}
+    for config in configs:
+        target = wanted.get(config.token)
+        if target is None or config.bitrate_kbps == target:
+            continue
+        encoders.cap_bitrate(config, target)
+        written[config.token] = target
+        changed.append(
+            f"{config.name or config.token}: "
+            f"{config.bitrate_kbps or 'uncapped'} -> {target} kb/s"
+        )
+
+    if not written:
+        return {"ok": True, "changed": [], "applied": {}, "refused": []}
+
+    # One read for all of them, not one per stream: this crosses the radio link.
+    after = {config.token: config for config in encoders.read()}
+    applied: dict[str, int] = {}
+    refused: list[str] = []
+    for token, target in written.items():
+        landed = after.get(token)
+        if landed is None or landed.bitrate_kbps != target:
+            refused.append(token)
+            continue
+        applied[token] = target
+    return {"ok": True, "changed": changed, "applied": applied, "refused": refused}

@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from vmd.ptz.encoder import CameraEncoders, fit_to_link
+from vmd.ptz.encoder import CameraEncoders, apply_budget
 from vmd.ptz.onvif import OnvifPtz, PtzError
 from vmd.settings import Settings
 
@@ -134,30 +134,39 @@ class PtzService:
                 return {"ok": False, "error": str(exc)}
 
     def fit_encoders_to_link(self, ceiling_kbps: int) -> dict:
-        """Cap every stream so their total fits the link, and report what changed."""
+        """Cap every stream so their total fits the link, and report what landed.
+
+        Both the button on the Settings tab and the automatic loop come through
+        here, deliberately: "fit the camera to the link" is one operation, and
+        two implementations of it would be two answers to the same question
+        within a month - one of them checked and one of them not.
+
+        Slow, and it holds this service's lock while it runs: several ONVIF
+        calls across a radio link. It must never be called on the thread that
+        draws the window. `BitrateLoop` hands it to an executor and the Settings
+        tab runs it in a `_ToolJob`.
+        """
         with self._lock:
             if self.camera is None:
                 return {"ok": False, "error": "no camera address set"}
             try:
-                encoders = CameraEncoders(self.camera)
-                configs = encoders.read()
-                if not configs:
-                    return {"ok": False, "error": "the camera reported no encoder settings"}
-                targets = fit_to_link(configs, ceiling_kbps)
-                changed = []
-                for config in configs:
-                    target = targets.get(config.token)
-                    if target is None or config.bitrate_kbps == target:
-                        continue
-                    encoders.cap_bitrate(config, target)
-                    changed.append(f"{config.name or config.token}: "
-                                   f"{config.bitrate_kbps or 'uncapped'} -> {target} kb/s")
-                return {"ok": True, "changed": changed or ["nothing needed changing"]}
+                result = apply_budget(CameraEncoders(self.camera), ceiling_kbps)
             except PtzError as exc:
                 return {"ok": False, "error": str(exc)}
             except Exception as exc:  # noqa: BLE001 - the console outlives the camera
                 logger.exception("could not set encoder settings")
                 return {"ok": False, "error": str(exc)}
+            if not result.get("ok"):
+                return result
+            said = list(result.get("changed") or [])
+            for token in result.get("refused") or []:
+                # Said in the answer and not only in the log, because this is
+                # what the operator pressed the button to find out. A camera
+                # that answers 200 and keeps its old setting is indistinguishable
+                # from a camera that obeyed unless somebody says.
+                said.append(f"{token}: the camera did not keep this - it is unchanged")
+            result["changed"] = said or ["nothing needed changing"]
+            return result
 
     def move(self, pan: float, tilt: float, zoom: float) -> dict:
         return self._do("move", lambda: self.camera.move(pan, tilt, zoom))

@@ -557,3 +557,221 @@ def test_a_camera_that_will_not_answer_getnodes_is_left_unknown_not_refused(
     capability = connected(camera).capability
     assert capability.available is True
     assert capability.supports_home is False
+
+
+# --------------------------------------------------------------------------
+# What the camera will accept, and what it actually kept.
+#
+# Against a stub rather than the HTTP fake above, for one reason: this is about
+# a camera that answers and then does something OTHER than what it was asked,
+# and the fake above serves a fixed document, so it cannot have an opinion about
+# a write. Only `_post` is used by `CameraEncoders`, which is the whole surface
+# this has to stand in for.
+# --------------------------------------------------------------------------
+
+OPTIONS_WITH_A_RANGE = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>
+<GetVideoEncoderConfigurationOptionsResponse xmlns="http://www.onvif.org/ver10/media/wsdl"
+ xmlns:tt="http://www.onvif.org/ver10/schema">
+<Options><tt:H264>
+<tt:ResolutionsAvailable><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:ResolutionsAvailable>
+<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>250</tt:Max></tt:GovLengthRange>
+<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>30</tt:Max></tt:FrameRateRange>
+<tt:BitrateRange><tt:Min>1024</tt:Min><tt:Max>16384</tt:Max></tt:BitrateRange>
+</tt:H264></Options>
+</GetVideoEncoderConfigurationOptionsResponse></s:Body></s:Envelope>"""
+
+SET_ACCEPTED = (
+    '<?xml version="1.0"?><s:Envelope '
+    'xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>'
+    '<SetVideoEncoderConfigurationResponse '
+    'xmlns="http://www.onvif.org/ver10/media/wsdl"/></s:Body></s:Envelope>'
+)
+
+
+class StubCamera:
+    """A camera whose encoder settings are a dict, and which may ignore a write."""
+
+    def __init__(self, keeps: bool = True, options: str = OPTIONS_WITH_A_RANGE) -> None:
+        self.rates = {"enc0": 16000, "enc2": 2000}
+        self.keeps = keeps
+        self.options = options
+        self.written: list[tuple[str, int]] = []
+        self.bodies: list[str] = []
+
+    def _post(self, path: str, body: str) -> str:
+        if "GetVideoEncoderConfigurationOptions" in body:
+            return self.options
+        if "GetVideoEncoderConfigurations" in body:
+            return self.configurations()
+        if "SetVideoEncoderConfiguration" in body:
+            self.bodies.append(body)
+            token = re.search(r'token="([^"]+)"', body).group(1)
+            rate = int(re.search(r'BitrateLimit="(\d+)"', body).group(1))
+            self.written.append((token, rate))
+            if self.keeps:
+                self.rates[token] = rate
+            # A 200 and a response element, exactly like a camera that took it.
+            return SET_ACCEPTED
+        raise AssertionError(f"nothing here answers {body[:60]}")
+
+    def configurations(self) -> str:
+        blocks = "".join(
+            f'<Configurations token="{token}"><tt:Name>{token}</tt:Name>'
+            "<tt:Encoding>H264</tt:Encoding>"
+            "<tt:Resolution><tt:Width>1920</tt:Width>"
+            "<tt:Height>1080</tt:Height></tt:Resolution>"
+            "<tt:Quality>4</tt:Quality>"
+            "<tt:H264><tt:GovLength>30</tt:GovLength></tt:H264>"
+            "<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit>"
+            f"<tt:BitrateLimit>{rate}</tt:BitrateLimit></tt:RateControl>"
+            "</Configurations>"
+            for token, rate in self.rates.items()
+        )
+        return (
+            '<?xml version="1.0"?><s:Envelope '
+            'xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>'
+            '<GetVideoEncoderConfigurationsResponse '
+            'xmlns="http://www.onvif.org/ver10/media/wsdl" '
+            'xmlns:tt="http://www.onvif.org/ver10/schema">'
+            f"{blocks}</GetVideoEncoderConfigurationsResponse></s:Body></s:Envelope>"
+        )
+
+
+def test_the_camera_is_asked_how_low_and_how_high_the_bitrate_may_go() -> None:
+    """The permitted range comes in the same answer the resolutions do, and it
+    was being thrown away. A value outside it is refused, and this camera has
+    already shown that it refuses with a 200 and a SOAP fault."""
+    from vmd.ptz.encoder import CameraEncoders
+
+    limits = CameraEncoders(StubCamera()).limits("enc0")
+    assert (limits.bitrate_min, limits.bitrate_max) == (1024, 16384)
+    assert (1920, 1080) in limits.sizes
+
+
+def test_a_camera_that_names_no_range_is_not_given_an_invented_one() -> None:
+    """Unknown is a state. A made-up minimum would clamp a camera that had no
+    minimum, and the operator would never find out where the number came from."""
+    from vmd.ptz.encoder import CameraEncoders
+
+    limits = CameraEncoders(StubCamera(options=ENCODER_OPTIONS)).limits("enc0")
+    assert limits.bitrate_min is None and limits.bitrate_max is None
+    assert limits.sizes, "the resolutions are still read"
+
+
+def test_a_target_below_what_the_camera_allows_is_raised_to_it() -> None:
+    """Better a stream slightly over budget than a write the camera refuses and
+    a console that goes on believing it worked."""
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    # A 1200 kb/s budget shared between two streams puts both of them under the
+    # camera's own 1024 kb/s minimum.
+    apply_budget(CameraEncoders(stub), 1200)
+
+    assert stub.written, "something should have been written"
+    assert all(rate >= 1024 for _, rate in stub.written), stub.written
+
+
+def test_a_target_above_what_the_camera_allows_is_brought_down_to_it() -> None:
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    apply_budget(CameraEncoders(stub), 400000)
+
+    assert stub.written
+    assert all(rate <= 16384 for _, rate in stub.written), stub.written
+
+
+def test_what_landed_is_read_back_rather_than_assumed() -> None:
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    result = apply_budget(CameraEncoders(stub), 8000)
+
+    assert result["ok"] is True
+    assert result["refused"] == []
+    assert result["applied"] == dict(stub.written)
+
+
+def test_a_camera_that_answers_yes_and_changes_nothing_is_caught() -> None:
+    """This mistake has been made twice in this project: a 200 taken as proof.
+    The camera is asked again afterwards, and what it says then is the answer."""
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera(keeps=False)
+    result = apply_budget(CameraEncoders(stub), 8000)
+
+    assert result["refused"], result
+    assert set(result["refused"]) <= set(stub.rates)
+    assert result["applied"] == {}, "nothing landed, so nothing may be called applied"
+
+
+def test_nothing_is_written_when_the_camera_is_already_where_it_should_be() -> None:
+    """Every write blips the picture. Writing a value that is already there is a
+    blip bought for nothing."""
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    apply_budget(CameraEncoders(stub), 8000)
+    first = list(stub.written)
+    stub.written.clear()
+
+    apply_budget(CameraEncoders(stub), 8000)
+
+    assert first and stub.written == []
+
+
+def test_fitting_to_the_link_never_asks_for_another_resolution() -> None:
+    """4K at 4 Mb/s is still 4K, and a resolution change is far more disruptive
+    for less benefit - it alters what go2rtc, the recorder and the detector's
+    masks and horizon are all working in. ONVIF's Set is a whole-object write,
+    so the size goes back; it goes back exactly as the camera reported it."""
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    apply_budget(CameraEncoders(stub), 4000)
+
+    assert stub.bodies
+    for body in stub.bodies:
+        assert "<tt:Width>1920</tt:Width>" in body
+        assert "<tt:Height>1080</tt:Height>" in body
+
+
+def test_a_camera_with_no_encoder_settings_is_reported_not_guessed_at() -> None:
+    from vmd.ptz.encoder import CameraEncoders, apply_budget
+
+    stub = StubCamera()
+    stub.rates = {}
+    result = apply_budget(CameraEncoders(stub), 4000)
+
+    assert result["ok"] is False
+    assert "encoder" in result["error"]
+
+
+def served_by(stub: StubCamera) -> PtzService:
+    """A PtzService whose camera is the stub, without a socket in sight."""
+    service = PtzService(Settings(camera=CameraSettings(host="192.0.2.9")))
+    service.camera = stub
+    return service
+
+
+def test_the_button_and_the_loop_fit_the_camera_the_same_way() -> None:
+    """One operation, one implementation. Two would be two answers to the same
+    question inside a month, and only one of them would be checked."""
+    stub = StubCamera()
+    result = served_by(stub).fit_encoders_to_link(8000)
+
+    assert result["ok"] is True
+    assert result["applied"] == dict(stub.written)
+    assert result["changed"], result
+
+
+def test_the_button_says_when_the_camera_did_not_keep_what_it_was_given() -> None:
+    """He presses it and reads the box. A camera that answers 200 and keeps its
+    old setting looks exactly like one that obeyed, unless something says."""
+    stub = StubCamera(keeps=False)
+    result = served_by(stub).fit_encoders_to_link(8000)
+
+    said = " ".join(result["changed"])
+    assert "did not keep" in said, result
