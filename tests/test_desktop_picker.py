@@ -666,3 +666,249 @@ def test_what_ffmpeg_said_is_written_down_even_when_it_worked(
         picker_module.grab_frame(settings, "thermal")
 
     assert any("max delay reached" in record.message for record in caplog.records)
+
+
+# ------------------------------------------------- which way round it asks
+#
+# The picker fetched its frame from the CAMERA - across the >15 km, ~5 Mb/s
+# point-to-point link that go2rtc is already pulling that same stream over. A
+# second full-rate connection across that link is the contention this entire
+# architecture exists to avoid, and it is the difference between a still that
+# arrives and a live picture that stutters. The recorder and the detector both
+# read from the local server and fall back to the camera; the picker was the odd
+# one out, so it follows them rather than inventing a third way.
+
+
+def _loaded(data: bytes) -> QImage:
+    image = QImage()
+    image.loadFromData(data)
+    return image
+
+
+def _listening():
+    """A real socket on a real port, so `is_live` is answered honestly."""
+    import socket
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    return server, server.getsockname()[1]
+
+
+def _endpoint_file(tmp_path: Path, port: int, name: str = "thermal") -> Path:
+    import json
+
+    path = tmp_path / "streaming.json"
+    path.write_text(
+        json.dumps(
+            {
+                "api_port": 1984,
+                "rtsp_port": port,
+                "streams": {name: f"rtsp://127.0.0.1:{port}/{name}"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _asked_addresses(monkeypatch, works: bool = True) -> list[str]:
+    """Every address ffmpeg was pointed at, in the order it was pointed there."""
+    from vmd.desktop import picker as picker_module
+
+    asked: list[str] = []
+
+    class Ran:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        asked.append(command[command.index("-i") + 1])
+        if works:
+            Path(command[command.index("-y") + 1]).write_bytes(b"not empty")
+        return Ran()
+
+    monkeypatch.setattr(picker_module, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(picker_module.subprocess, "run", fake_run)
+    return asked
+
+
+def test_the_picture_comes_off_the_local_server_not_across_the_link(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """One trip across the radio link, which is what go2rtc is for."""
+    from vmd.desktop import picker as picker_module
+
+    server, port = _listening()
+    try:
+        asked = _asked_addresses(monkeypatch)
+        picker_module.grab_frame(
+            _settings(), "thermal", endpoint_path=_endpoint_file(tmp_path, port)
+        )
+        assert asked == [f"rtsp://127.0.0.1:{port}/thermal"]
+    finally:
+        server.close()
+
+
+def test_a_stale_streaming_file_does_not_send_it_at_a_dead_port(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The confusion that cost the owner most of a morning: a claim in a file is
+    not a server. A port nobody is listening on must fall through to the camera,
+    not become "the camera did not send a picture"."""
+    from vmd.desktop import picker as picker_module
+
+    server, port = _listening()
+    server.close()  # the port in the file is now dead, and the file remains
+    asked = _asked_addresses(monkeypatch)
+    picker_module.grab_frame(
+        _settings(), "thermal", endpoint_path=_endpoint_file(tmp_path, port)
+    )
+    assert asked == ["rtsp://10.0.0.2/ch2"], "it went to the camera and only there"
+
+
+def test_a_local_server_with_no_picture_still_asks_the_camera(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Preferring the local server may not mean depending on it: go2rtc may be
+    up and not yet connected to the camera, and the camera is still there."""
+    from vmd.desktop import picker as picker_module
+
+    server, port = _listening()
+    try:
+        asked: list[str] = []
+
+        def fake_run(command, **kwargs):
+            address = command[command.index("-i") + 1]
+            asked.append(address)
+            if "127.0.0.1" not in address:
+                Path(command[command.index("-y") + 1]).write_bytes(b"not empty")
+                return type("Ok", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            return type("Bad", (), {"returncode": 1, "stdout": "", "stderr": "refused"})()
+
+        monkeypatch.setattr(picker_module, "_ffmpeg", lambda: "ffmpeg")
+        monkeypatch.setattr(picker_module.subprocess, "run", fake_run)
+        data = picker_module.grab_frame(
+            _settings(), "thermal", endpoint_path=_endpoint_file(tmp_path, port)
+        )
+        assert data == b"not empty"
+        assert len(asked) == 2 and "127.0.0.1" in asked[0]
+    finally:
+        server.close()
+
+
+def test_both_of_them_being_quiet_is_not_the_same_sentence_as_one(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An operator can act differently on the two. "The camera did not answer"
+    sends them to the camera; "neither did" says the machine in front of them is
+    part of it."""
+    from vmd.desktop import picker as picker_module
+
+    server, port = _listening()
+    try:
+        _asked_addresses(monkeypatch, works=False)
+        with pytest.raises(FrameUnavailable) as caught:
+            picker_module.grab_frame(
+                _settings(), "thermal", endpoint_path=_endpoint_file(tmp_path, port)
+            )
+        both = str(caught.value)
+        assert "camera" in both.lower()
+        assert "this machine" in both.lower()
+    finally:
+        server.close()
+
+    _asked_addresses(monkeypatch, works=False)
+    with pytest.raises(FrameUnavailable) as caught:
+        picker_module.grab_frame(_settings(), "thermal", endpoint_path=tmp_path / "none.json")
+    alone = str(caught.value)
+    assert "did not send a picture" in alone
+    assert "Test the camera" in alone
+    assert alone != both
+
+
+def test_a_grab_gets_longer_than_a_loopback_would_need() -> None:
+    """It crosses a saturated 5 Mb/s link when it crosses one at all, and a
+    timeout that fires early produces exactly the complaint this came from: a
+    black rectangle and no reason."""
+    from vmd.desktop.picker import GRAB_SECONDS
+
+    assert GRAB_SECONDS >= 30
+
+
+# ------------------------------------------- saying it where the eye already is
+#
+# The waiting sentence lived in a 12 px muted label in the right-hand column and
+# the failure at the bottom of the dialog, while the thing the operator looks at
+# - the picture area - was filled with #050607 and said nothing. He reported
+# "black, no text", which is a fair description of what that dialog showed.
+
+
+def test_the_picture_area_says_it_is_waiting(qtbot) -> None:
+    picker = FramePicker()
+    qtbot.addWidget(picker)
+    picker.wait_for_picture()
+    assert picker.state() == "waiting"
+    assert picker.state_words().strip(), "the area the operator looks at may not be blank"
+
+
+def test_waiting_reads_as_still_trying_rather_than_as_finished(qtbot) -> None:
+    """A static line could equally mean "done, and there was nothing". A fetch
+    across this link takes seconds, so it says how long it has been trying."""
+    picker = FramePicker()
+    qtbot.addWidget(picker)
+    picker.wait_for_picture()
+    first = picker.state_words()
+    picker._tick()
+    picker._tick()
+    assert picker.state_words() != first
+
+
+def test_a_failure_is_drawn_in_the_picture_area_too(qtbot) -> None:
+    picker = FramePicker()
+    qtbot.addWidget(picker)
+    picker.wait_for_picture()
+    picker.show_problem("The camera did not send a picture.")
+    assert picker.state() == "failed"
+    assert "did not send a picture" in picker.state_words()
+
+
+def test_the_three_states_of_having_no_frame_are_told_apart(qtbot) -> None:
+    """Not started, in flight, and failed were one thing: has_frame() is False.
+    They are three different things to an operator."""
+    picker = FramePicker()
+    qtbot.addWidget(picker)
+    assert picker.state() == "empty"
+    picker.wait_for_picture()
+    assert picker.state() == "waiting"
+    picker.set_frame(_loaded(a_frame(320, 240)))
+    assert picker.state() == "shown"
+
+
+def test_nothing_ticks_once_the_picture_has_arrived(qtbot) -> None:
+    """This runs for months. A timer left running behind a closed dialog is the
+    kind of cost that turns into a laptop fan nobody can explain."""
+    picker = FramePicker()
+    qtbot.addWidget(picker)
+    picker.wait_for_picture()
+    assert picker._waiting.isActive() is True
+    picker.set_frame(_loaded(a_frame(320, 240)))
+    assert picker._waiting.isActive() is False
+
+
+def test_the_dialog_puts_its_failure_on_the_picture(qtbot, tmp_path: Path) -> None:
+    """The whole point: it is on screen where the operator is already looking,
+    and not only in the column beside it."""
+
+    def refuse():
+        raise FrameUnavailable("The camera did not send a picture.")
+
+    tab = a_tab(qtbot, tmp_path, grab=refuse)
+    row = tab.stream_rows()[0]
+    dialog = tab.open_picker(row)
+    assert dialog is not None
+    qtbot.waitUntil(lambda: dialog.picker.state() == "failed", timeout=5000)
+    assert "did not send a picture" in dialog.picker.state_words()
+    # And the labels that were there before have not been taken away.
+    assert dialog.problem_text()

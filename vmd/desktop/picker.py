@@ -11,7 +11,15 @@ Three things carry the weight here.
 
 * The picture is fetched off the window thread, through the same QRunnable and
   QThreadPool seam the camera tools already use. It crosses a radio link and
-  takes seconds; on the window thread that is a console that looks dead.
+  takes seconds; on the window thread that is a console that looks dead. While
+  it is in flight, and if it fails, the picture area itself says so - that is
+  the large space the operator is looking at, and it used to be #050607 and
+  silent while the explanation sat in a 12 px label off to one side.
+* It is asked of the local streaming server first and of the camera second. The
+  camera is already being pulled across a >15 km, ~5 Mb/s link and re-served on
+  this machine; a second full-rate connection to it is the contention this whole
+  architecture exists to avoid. The recorder and the detector do it this way and
+  this now does too.
 * What is drawn is converted to the frame's own dots, never the preview's. The
   preview is scaled to fit whatever the dialog is, the setting is absolute, and
   confusing the two misplaces every patch without a word of complaint. That
@@ -44,6 +52,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QThreadPool,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
@@ -58,14 +67,40 @@ from PySide6.QtWidgets import (
 )
 
 from vmd.desktop.live import WrappedNote
-from vmd.desktop.style import PALETTE, SIZE_SMALL, SPACE_SNUG, SPACE_STEP
+from vmd.desktop.style import PALETTE, SIZE_BAND, SIZE_SMALL, SPACE_SNUG, SPACE_STEP
+from vmd.streaming.endpoint import is_live, local_source, read_endpoint
 
 logger = logging.getLogger(__name__)
 
-# How long the camera gets to produce one frame. Bounded on its own, because it
-# is the only wait here that talks to the far end of a radio link, and every
-# other wait in this file is bounded independently of it.
-GRAB_SECONDS = 20
+# Where the console records the streaming server it is running. The same
+# constant and the same name as `vmd/detect_main.py` and `vmd/record_main.py`,
+# and read the same way: relative to the working folder, which the launchers set
+# to the folder the settings live in.
+DEFAULT_ENDPOINT_PATH = Path("streaming.json")
+
+# What the two places a picture can come from are called, on screen. Named
+# rather than spelled out at each use: the operator reads these words, and "the
+# streaming server on this machine" and "the camera" are different situations
+# they can act differently on.
+LOCAL = "the streaming server on this machine"
+CAMERA = "the camera"
+
+# How long a grab gets to produce one frame, in total.
+#
+# It was 20 s, chosen against a loopback grab. This one may cross a >15 km,
+# ~5 Mb/s point-to-point link that go2rtc is already saturating with the live
+# picture, and a still that needed 25 s came back as "the camera did not send a
+# picture" - which is the exact complaint this whole file came from, with the
+# operator left looking at a black rectangle. The wait is long because the link
+# is slow; it is bounded because the console must never sit on a thread forever,
+# and it happens off the window thread so nothing freezes while it runs.
+GRAB_SECONDS = 45
+
+# How long ffmpeg waits for the stream itself to say anything, in microseconds.
+# Inside GRAB_SECONDS on purpose: this is the "nothing is arriving" limit and
+# the one above is the "this has gone on long enough" limit. A contended link
+# can genuinely go several seconds without delivering a packet.
+STREAM_TIMEOUT_US = 10_000_000
 
 # How long the dialog waits, at most, for a fetch to finish once it has been
 # closed. Bounded separately from the grab above: this one is on the window
@@ -122,6 +157,16 @@ class FrameUnavailable(RuntimeError):
 
     Never carries the address it tried: that address has the password
     percent-encoded into it, and this text goes on screen.
+    """
+
+
+class ToolMissing(FrameUnavailable):
+    """ffmpeg is not on this machine, so no address is worth trying.
+
+    Its own kind because it is the one failure that cannot come out differently
+    at the second place asked: asking the camera after the local server, with
+    nothing to ask it with, would only replace a sentence naming the real
+    problem with one about two quiet cameras.
     """
 
 
@@ -221,10 +266,23 @@ class FramePicker(QWidget):
 
     Click puts the line; drag draws a patch. Both are reported in the frame's
     own dots, so what leaves this widget is what goes in the settings file.
+
+    When there is no frame it says why, here, in the middle of itself. That is
+    not decoration: the waiting sentence used to live in a 12 px muted label in
+    the column beside this widget and the failure at the bottom of the dialog,
+    while this - the large area the operator is actually looking at - was filled
+    with `--well`, which is #050607. The report that came back was "black, no
+    text", and that was a fair description of what this dialog showed.
     """
 
     horizon_picked = Signal(int)
     region_drawn = Signal(object)
+
+    # How often the waiting line is redrawn while a fetch is in flight. It says
+    # how long it has been trying, because a static sentence could equally mean
+    # "finished, and there was nothing" - and this fetch legitimately takes
+    # seconds over the radio link.
+    TICK_MS = 1000
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -234,6 +292,15 @@ class FramePicker(QWidget):
         self._selected = -1
         self._press: QPointF | None = None
         self._drag: QPointF | None = None
+        # Not started, in flight, failed, shown. These were one thing -
+        # `has_frame()` is False - and they are four different things to an
+        # operator standing in front of them.
+        self._state = "empty"
+        self._words = ""
+        self._seconds = 0
+        self._waiting = QTimer(self)
+        self._waiting.setInterval(self.TICK_MS)
+        self._waiting.timeout.connect(self._tick)
         self.setMinimumSize(360, 240)
         self.setMouseTracking(False)
 
@@ -242,11 +309,54 @@ class FramePicker(QWidget):
     def has_frame(self) -> bool:
         return self._image is not None and not self._image.isNull()
 
+    def state(self) -> str:
+        """`empty`, `waiting`, `failed` or `shown`."""
+        return self._state
+
+    def state_words(self) -> str:
+        """What is written across the picture area right now."""
+        return self._words
+
+    def wait_for_picture(self) -> None:
+        """A fetch has started. Say so, where the picture will be."""
+        self._state = "waiting"
+        self._seconds = 0
+        self._say_waiting()
+        self._waiting.start()
+
+    def show_problem(self, words: str) -> None:
+        """No picture, and the reason - in the middle of the empty area."""
+        self._waiting.stop()
+        self._state = "failed"
+        self._words = words
+        self.update()
+
+    def _tick(self) -> None:
+        self._seconds += self.TICK_MS // 1000
+        self._say_waiting()
+
+    def _say_waiting(self) -> None:
+        counted = f" ({self._seconds} s so far)" if self._seconds else ""
+        self._words = (
+            f"Getting a picture from the camera...{counted}\n"
+            f"It comes over the radio link, so it can take up to "
+            f"{GRAB_SECONDS} seconds."
+        )
+        self.update()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Nothing counts up behind a dialog nobody is looking at."""
+        self._waiting.stop()
+        super().hideEvent(event)
+
     def frame_size(self) -> QSize:
         return self._image.size() if self.has_frame() else QSize(0, 0)
 
     def set_frame(self, image: QImage) -> None:
         self._image = image
+        self._waiting.stop()
+        self._state = "shown"
+        self._words = ""
         self.update()
 
     def horizon(self) -> int | None:
@@ -305,6 +415,7 @@ class FramePicker(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(PALETTE["well"]))
         if not self.has_frame():
+            self._paint_state(painter)
             painter.end()
             return
         frame = self.frame_size()
@@ -339,6 +450,30 @@ class FramePicker(QWidget):
             painter.setPen(QPen(QColor(PALETTE["ink"]), 1, Qt.PenStyle.DashLine))
             painter.drawRect(QRect(self._press.toPoint(), self._drag.toPoint()))
         painter.end()
+
+    def _paint_state(self, painter: QPainter) -> None:
+        """Whatever there is to say, in the middle of the empty area.
+
+        At the band size rather than the caption size: this is the only thing on
+        screen at the moment it is drawn, and the operator reading it is the one
+        who reported that this dialog was black and said nothing.
+        """
+        if not self._words:
+            return
+        painter.setPen(
+            QColor(PALETTE["warn"] if self._state == "failed" else PALETTE["muted"])
+        )
+        font = painter.font()
+        font.setPixelSize(SIZE_BAND)
+        painter.setFont(font)
+        # Inset, so a long sentence wraps inside the area rather than being cut
+        # off at its edges.
+        room = self.rect().adjusted(SPACE_STEP * 2, SPACE_STEP, -SPACE_STEP * 2, -SPACE_STEP)
+        painter.drawText(
+            room,
+            int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap),
+            self._words,
+        )
 
 
 # ------------------------------------------------------------- fetching a frame
@@ -380,13 +515,12 @@ def _ffmpeg() -> str:
     return find_tool("ffmpeg")
 
 
-def _address_of(settings, stream: str) -> str:
-    """The address one frame can be pulled from, with the login already in it.
+def _camera_address(settings, stream: str) -> str:
+    """The camera's own address for this view, with the login already in it.
 
-    Built the same way the streaming server's is, so that what is drawn on is
-    the picture the detector will actually be given - including a stream set to
-    the ffmpeg reader, which is stored wrapped and has no host of its own until
-    it is unwrapped.
+    Built the same way the streaming server's is, so that a stream set to the
+    ffmpeg reader - stored wrapped, with no host of its own until it is
+    unwrapped - resolves to the same place go2rtc would send it.
     """
     from vmd.streaming.go2rtc import build_config, probe_target
 
@@ -398,6 +532,35 @@ def _address_of(settings, stream: str) -> str:
         )
     config = build_config(settings, 1984, 8554)
     return probe_target(config["streams"].get(stream, chosen.url))
+
+
+def _sources_for(settings, stream: str, endpoint_path=None) -> list[tuple[str, str]]:
+    """Where to ask for a frame, in the order to ask: local first, camera last.
+
+    The link is a >15 km point-to-point at about 5 Mb/s and go2rtc is already
+    pulling this exact stream across it. A second full-rate connection to the
+    camera is the contention this whole architecture exists to avoid - it is
+    what produced the original 20-40 second latency and the dropouts - and it is
+    a slower way to get the same picture. The recorder and the detector both
+    read from the local server and fall back to the camera; this used to be the
+    odd one out, so it now does what they do, in `vmd/streaming/endpoint.py`'s
+    own words rather than in a second arrangement of its own.
+
+    The fallback is not decorative. go2rtc may be down, may be up and not yet
+    connected to the camera, or may be a claim in a file left behind by a
+    process that has gone - and a stale `streaming.json` pointing this at a dead
+    port, reported as "the camera did not send a picture", is the confusion that
+    cost the owner most of a morning. So the port is checked before it is
+    trusted, and anything short of a picture falls through to the camera.
+    """
+    camera = _camera_address(settings, stream)
+    sources: list[tuple[str, str]] = []
+    endpoint = read_endpoint(endpoint_path or DEFAULT_ENDPOINT_PATH)
+    if endpoint and is_live(endpoint):
+        local = local_source(endpoint, stream)
+        if local:
+            sources.append((LOCAL, local))
+    return sources + [(CAMERA, camera)]
 
 
 def _without_secrets(text: str, settings) -> str:
@@ -444,13 +607,61 @@ def is_blank(image: QImage) -> bool:
     return blankness(image) < BLANK_STANDARD_DEVIATION
 
 
-def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
+def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS, endpoint_path=None) -> bytes:
     """One frame from the named view, as the bytes of a picture.
+
+    Asked of the local streaming server first and of the camera only if that
+    has nothing - see `_sources_for` for why that way round, and why the
+    fallback has to be real.
 
     ffmpeg rather than anything richer, because it is already on this machine -
     the offline install puts it beside go2rtc - and it is what everything else
-    here reads a stream with. A second of stream and out: this crosses the radio
-    link the live picture is also using, and the operator is looking at a still.
+    here reads a stream with.
+    """
+    sources = _sources_for(settings, stream, endpoint_path)
+    failures: list[tuple[str, str]] = []
+    for where, address in sources:
+        try:
+            return _grab_from(where, address, settings, stream, seconds)
+        except ToolMissing:
+            # Nothing to fetch a picture WITH. The next address would fail in
+            # the same words and bury the ones that matter.
+            raise
+        except FrameUnavailable as exc:
+            # Whichever way it failed, the next place is still worth asking:
+            # go2rtc being up and not yet connected to the camera looks exactly
+            # like the camera being off, from here.
+            logger.info("no frame from %s for %s: %s", where, stream, exc)
+            failures.append((where, str(exc)))
+    raise FrameUnavailable(_no_picture(failures, seconds))
+
+
+def _no_picture(failures: list[tuple[str, str]], seconds: int) -> str:
+    """One sentence for a picture that did not arrive, naming what was asked.
+
+    "The camera did not answer" and "nothing on this machine answered either"
+    are different situations and an operator can act differently on them: the
+    first sends them to the camera and the link, the second says the machine in
+    front of them is part of it.
+    """
+    if len(failures) == 1:
+        # One place asked - which, since the camera is always last, means the
+        # camera alone - and its own sentence is the whole truth.
+        return failures[0][1]
+    asked = " or ".join(where for where, _said in failures)
+    return (
+        f"No picture came from {asked}, so there is nothing to draw on. Type "
+        f"the numbers in instead, or press \"Test the camera\" to find out why "
+        f"it is quiet."
+    )
+
+
+def _grab_from(where: str, address: str, settings, stream: str, seconds: int) -> bytes:
+    """One frame from one address, or a sentence saying why not.
+
+    `where` is what that address is called on screen. It is carried this far
+    down because the sentences are the operator's, and "the camera sent no
+    picture" is the wrong sentence about a streaming server on this laptop.
 
     Twenty frames, and the twentieth is the one kept. Taking the first decoded
     frame off a live stream is what produced the black rectangle the operator
@@ -459,14 +670,13 @@ def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
     guard below. `-update 1` writes each frame over the same file, so the cost
     of the nineteen that are thrown away is the second of stream, not disk.
     """
-    address = _address_of(settings, stream)
     with tempfile.TemporaryDirectory(prefix="vmd-frame-") as folder:
         target = Path(folder) / "frame.jpg"
         try:
             run = subprocess.run(
                 [
                     _ffmpeg(), "-hide_banner", "-loglevel", "error",
-                    "-rtsp_transport", "tcp", "-timeout", "5000000",
+                    "-rtsp_transport", "tcp", "-timeout", str(STREAM_TIMEOUT_US),
                     "-i", address,
                     "-frames:v", str(FRAMES_TO_DECODE), "-update", "1",
                     "-f", "image2", "-y", str(target),
@@ -474,16 +684,16 @@ def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
                 capture_output=True, text=True, timeout=seconds, check=False,
             )
         except FileNotFoundError:
-            raise FrameUnavailable(
+            raise ToolMissing(
                 "The part of VMD that fetches pictures is not installed on this "
                 "machine, so there is no picture to draw on. Type the numbers in "
                 "instead."
             ) from None
         except subprocess.TimeoutExpired:
             raise FrameUnavailable(
-                f"The camera sent no picture within {seconds} seconds. It may be "
-                f"switched off, or the radio link may be down. Type the numbers "
-                f"in instead."
+                f"{where[0].upper()}{where[1:]} sent no picture within {seconds} "
+                f"seconds. It may be switched off, or the radio link may be "
+                f"down. Type the numbers in instead."
             ) from None
         except OSError as exc:
             raise FrameUnavailable(
@@ -501,9 +711,9 @@ def grab_frame(settings, stream: str, seconds: int = GRAB_SECONDS) -> bytes:
                     "no frame from %s: %s", stream, _without_secrets(complaint[0], settings)
                 )
             raise FrameUnavailable(
-                "The camera did not send a picture, so there is nothing to draw "
-                "on. Type the numbers in instead, or press \"Test the camera\" "
-                "to find out why it is quiet."
+                f"{where[0].upper()}{where[1:]} did not send a picture, so there "
+                f"is nothing to draw on. Type the numbers in instead, or press "
+                f"\"Test the camera\" to find out why it is quiet."
             )
         # What it said even when it worked. A grab that "succeeded" into a black
         # frame used to leave no trace anywhere at all, which is why that fault
@@ -597,11 +807,17 @@ class PickerDialog(QDialog):
             side.addWidget(widget)
         side.addStretch(1)
         middle.addLayout(side)
-        outer.addLayout(middle)
+        # The slack goes to the picture, and to nothing else. Without this the
+        # instructions above it - a note that asks for the height its text needs
+        # - take the room the dialog grew by and float in the middle of it.
+        outer.addLayout(middle, 1)
 
-        self.problem_label = WrappedNote("")
-        self.problem_label.setStyleSheet(f"color: {PALETTE['warn']};")
-        outer.addWidget(self.problem_label)
+        # The failure is drawn in the picture area, in the middle of the space
+        # the operator is already looking at. There used to be a second copy of
+        # it in a label along the bottom of the dialog, and this console has a
+        # rule about that which it learned from the status bar: two places
+        # saying the same thing is one place too many, and the one that was
+        # there was the one nobody read.
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -633,7 +849,11 @@ class PickerDialog(QDialog):
         return self.size_label.text()
 
     def problem_text(self) -> str:
-        return self.problem_label.text()
+        """The sentence saying why there is no picture, or nothing.
+
+        Read off the picture area, because that is where it is written now.
+        """
+        return self.picker.state_words() if self.picker.state() == "failed" else ""
 
     def busy(self) -> bool:
         """Whether a fetch is still running. False once this dialog is closed."""
@@ -656,8 +876,12 @@ class PickerDialog(QDialog):
     # -- fetching -----------------------------------------------------------
 
     def _start(self) -> None:
-        self.problem_label.setText("")
         self.size_label.setText("Getting a picture from the camera...")
+        # And in the middle of the picture area, which is where the operator is
+        # looking. The label above is 12 px of muted text in the column beside
+        # it; on its own it was invisible, and the dialog read as black and
+        # silent for as long as the fetch took.
+        self.picker.wait_for_picture()
         self._pool.start(_FrameJob(self._grab, self._signals))
 
     def _fetched(self, result) -> None:
@@ -702,7 +926,10 @@ class PickerDialog(QDialog):
         self._show_horizon()
 
     def _failed(self, text: str) -> None:
-        self.problem_label.setText(text)
+        # In the middle of the empty area, which is where the operator is
+        # looking. The line beside it says something different and is kept: that
+        # the numbers they already had are untouched.
+        self.picker.show_problem(text)
         self.size_label.setText(
             "There is no picture, so the boxes in the settings are the way to "
             "set these. Nothing you had is changed."
