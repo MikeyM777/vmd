@@ -1024,6 +1024,111 @@ def test_no_chip_ever_shows_a_healthy_word_inside_a_faulted_box(
             assert chip not in healthy, chip
 
 
+def test_an_empty_movement_list_does_not_claim_nothing_has_moved(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Nothing has moved yet." is the reassuring one of the things an empty
+    list can mean, and it is a lie the moment nothing is watching - which is
+    exactly when somebody most needs to know. `DESIGN.md` requires an empty
+    state to say why it is empty, and every other panel in this console does.
+    The one panel that reports intruders was the one that did not.
+    """
+    from vmd.desktop.live import NOTHING_YET
+
+    window, _ = build(qtbot, tmp_path, services=SickServices())
+    window.heartbeat()
+    said = window.live.movement_empty_words()
+    assert said != NOTHING_YET, said
+    assert "watching" in said.lower(), said
+
+
+def test_an_empty_movement_list_says_so_plainly_when_it_really_is_empty(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other half. A console that shouted about the detector while the
+    detector was running would be the boy who cried wolf on the one panel that
+    must never be ignored."""
+    from vmd.desktop.live import NOTHING_YET
+
+    window, _ = build(qtbot, tmp_path, services=FakeServices())
+    window.heartbeat()
+    assert window.live.movement_empty_words() == NOTHING_YET
+
+
+def test_a_detector_nobody_switched_on_says_where_to_switch_it_on(
+    qtbot, tmp_path: Path
+) -> None:
+    """Off is not broken, and it must not read as broken - but it must not read
+    as "nothing has moved" either. It is the first-run state, and the operator
+    is one setting away from the thing he installed this for."""
+
+    class Unwatched(FakeServices):
+        def state(self) -> dict:
+            state = super().state()
+            state["detection"] = {"running": False, "enabled": False, "reason": "not switched on"}
+            return state
+
+    window, _ = build(qtbot, tmp_path, services=Unwatched())
+    window.heartbeat()
+    said = window.live.movement_empty_words()
+    assert "settings" in said.lower(), said
+
+
+def test_a_camera_view_that_has_stopped_arriving_is_on_the_band(
+    qtbot, tmp_path: Path
+) -> None:
+    """The band reports services - recording, streaming, detection, the link -
+    and a camera view is not a service. So with one picture dead and the other
+    playing, every chip across the top of the window was green, and the only
+    thing on the screen saying otherwise was `thermal - failed` at eleven
+    pixels, on the picture that was not there.
+
+    What he is paid to know is whether he can see the fence.
+    """
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    # Set after the heartbeat, because the heartbeat is what takes the state off
+    # the pane. Reached into directly because there is no way to make a fake
+    # pane fail on demand, and what is being tested is what the BAND does with
+    # the state rather than how the state is arrived at.
+    window.live._set_status("thermal", "failed")
+
+    parts = window.status_parts()
+    assert any("thermal" in glance for glance, _words, _state in parts), parts
+    assert any(state == "alarm" for _glance, _words, state in parts)
+
+    window.band.show_parts(parts)
+    assert any("thermal" in chip for chip in window.band.chips()), window.band.chips()
+
+
+def test_a_picture_that_has_frozen_is_named_before_one_that_has_gone_black(
+    qtbot, tmp_path: Path
+) -> None:
+    """A stream that stopped sending while still connected leaves its last frame
+    on the screen, and a still picture of a fence looks exactly like a fence
+    that nothing is happening at. A black pane at least announces itself."""
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    window.live._set_status("thermal", "late")
+
+    parts = window.status_parts()
+    words = " ".join(part[1] for part in parts)
+    assert "last one that arrived" in words, words
+    assert "frozen" in parts[0][0], parts[0]
+
+
+def test_pictures_that_are_all_arriving_put_nothing_on_the_band(
+    qtbot, tmp_path: Path
+) -> None:
+    """A chip that is present and quiet on a healthy console is furniture, and
+    this one has to be noticed on the day it appears."""
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    window.live._set_status("thermal", "playing")
+    parts = window.status_parts()
+    assert not any("thermal" in glance for glance, _words, _state in parts), parts
+
+
 def test_the_band_and_the_link_panel_never_disagree_about_the_same_radio(
     qtbot, tmp_path: Path
 ) -> None:

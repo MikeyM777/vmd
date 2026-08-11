@@ -327,6 +327,33 @@ def _glance_word(name: str, state: str) -> str:
     return TROUBLE_WORDS.get(name, name)
 
 
+def _views_glance(trouble: list[tuple[str, str]]) -> str:
+    """The short word for pictures that are not arriving.
+
+    Names the view when there is one, because which camera has gone is the
+    first thing he needs and the band has room for a word. Two or more and it
+    becomes a count: `no pictures (2)` fits, `thermal, visible and gate` does
+    not, and the sentence beside it names them all.
+    """
+    if len(trouble) == 1:
+        name, state = trouble[0]
+        return f"{name} frozen" if state == "late" else f"no {name}"
+    return f"no pictures ({len(trouble)})"
+
+
+def _views_words(trouble: list[tuple[str, str]]) -> str:
+    """The sentence, in his terms. Never the word "stream": he has cameras."""
+    said = []
+    for name, state in trouble:
+        said.append(
+            f"{name} has stopped sending new pictures - what you can see is the "
+            "last one that arrived"
+            if state == "late"
+            else f"{name} is not arriving"
+        )
+    return "; ".join(said)
+
+
 # What `ConsoleServices.on_progress` is set back to once a save is done. A
 # function and not None, so that a stray late call from a worker cannot raise.
 def _SILENT(step: str) -> None:  # noqa: N802 - it is a constant, spelled as one
@@ -1055,8 +1082,30 @@ class ConsoleWindow(QMainWindow):
             self._refresh(self.logs)
         # Asked once and handed to both. See `_UNASKED`.
         state = self._ask_state()
+        self._tell_live_about_detection(state)
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
+
+    def _tell_live_about_detection(self, state) -> None:
+        """Let the movement list know whether anything is watching.
+
+        It said "Nothing has moved yet." whatever was happening, which is the
+        reassuring one of the two things an empty list can mean - and the wrong
+        one whenever the detector is off or dead. Every other empty state in
+        this console distinguishes "nothing to report" from "nobody is
+        reporting"; the panel that reports intruders was the one that did not.
+
+        The window knows and the tab does not, so the window tells it. Guarded
+        like everything else on the heartbeat.
+        """
+        tell = getattr(getattr(self, "live", None), "set_watching", None)
+        if tell is None:
+            return
+        try:
+            detection = (state or {}).get("detection") or {}
+            tell(_detection_state(detection) if state is not None else "alarm")
+        except Exception:  # noqa: BLE001 - the heartbeat goes on
+            logger.exception("the movement list could not be told about detection")
 
     def _show_recording(self, state=_UNASKED) -> None:
         """Point the dot at the truth, and run the timer only while it moves."""
@@ -1391,7 +1440,30 @@ class ConsoleWindow(QMainWindow):
         if doubled:
             parts.append((_glance_word("camera", "warn"), _doubled_words(doubled), "warn"))
 
+        # And whether he can actually see the fence, which is the thing this
+        # band was not reporting at all. See `LiveTab.views_in_trouble`: the
+        # chips are about services, and a camera view is not a service, so one
+        # dead picture and one playing drew four green chips.
+        #
+        # First in the list rather than last, because it outranks every other
+        # part of it: a recorder that is running is recording nothing worth
+        # having if no picture is arriving to record.
+        trouble = self._views_in_trouble()
+        if trouble:
+            parts.insert(0, (_views_glance(trouble), _views_words(trouble), "alarm"))
+
         return parts
+
+    def _views_in_trouble(self) -> list[tuple[str, str]]:
+        """Which pictures are not arriving. Never raises: this is the band."""
+        ask = getattr(getattr(self, "live", None), "views_in_trouble", None)
+        if ask is None:
+            return []
+        try:
+            return list(ask())
+        except Exception:  # noqa: BLE001 - the band must go on being drawn
+            logger.exception("the pictures could not be asked how they are")
+            return []
 
     def recording_now(self, state=_UNASKED) -> bool:
         """Whether footage is reaching the disk, for the dot that says so.

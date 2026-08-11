@@ -199,11 +199,30 @@ UNIDENTIFIED_NOTE = (
 # operator believing the head moved when it did not.
 UNANSWERED_NOTE = "the camera did not answer the last command yet"
 
-# What the movement list says before anything has moved. An empty table is a
-# black rectangle with a header on it, and a black rectangle is not an answer to
-# "has anything happened?" - the operator cannot tell it apart from a list that
-# failed to load. The words say which of the two it is.
+# What the movement list says while it is empty, and there are three of these
+# because an empty list means three different things.
+#
+# It used to say only the first one, whatever was happening. That is the
+# reassuring one - and it is a lie the moment nothing is watching, which is
+# exactly when somebody most needs to know. `DESIGN.md` has a rule that an empty
+# state must say WHY it is empty, and every other panel in this console follows
+# it: the movement list, the one panel that reports intruders, was the only one
+# that did not.
+#
+# An empty table is a black rectangle with a header on it, and a black rectangle
+# is not an answer to "has anything happened?" - the operator cannot tell it
+# apart from a list that failed to load, or from a detector that was never
+# switched on. The words say which of the three it is.
 NOTHING_YET = "Nothing has moved yet."
+NOT_WATCHING_OFF = (
+    "Nothing is being watched for movement. Switch on \"Watch for movement\" in "
+    "Settings and anything that moves will be listed here."
+)
+NOT_WATCHING_BROKEN = (
+    "Nothing is watching for movement right now, so this list is empty because "
+    "nobody is looking - not because nothing has moved. The band across the top "
+    "of the window says why."
+)
 
 # What the button into and out of fullscreen says, in each of its two states.
 #
@@ -1037,11 +1056,38 @@ class LiveTab(QWidget):
         layout.addWidget(self._movement_note)
         return box
 
+    def set_watching(self, state: str) -> None:
+        """Whether anything is watching for movement: ok, muted or a fault.
+
+        Handed in by the window, which is the only thing that knows. The tab has
+        no services object and should not grow one for a sentence.
+        """
+        if state == getattr(self, "_watching", None):
+            return
+        self._watching = state
+        self._show_movement_or_not()
+
+    def movement_empty_words(self) -> str:
+        """What the empty movement list is saying, for the window and the tests."""
+        return self._movement_empty.text()
+
     def _show_movement_or_not(self) -> None:
         """Whichever of the list and the empty state has something to say."""
         empty = self._movement.rowCount() == 0
         self._movement.setVisible(not empty)
         self._movement_empty.setVisible(empty)
+        if not empty:
+            return
+        # Which of the three empty states this is. `ok` is the only one where
+        # "nothing has moved" is a fact rather than an assumption; the other two
+        # are the console saying so about a detector that is not looking.
+        watching = getattr(self, "_watching", "ok")
+        if watching == "ok":
+            self._movement_empty.setText(NOTHING_YET)
+        elif watching == "muted":
+            self._movement_empty.setText(NOT_WATCHING_OFF)
+        else:
+            self._movement_empty.setText(NOT_WATCHING_BROKEN)
 
     def _refresh_events(self) -> None:
         """Read the movement list, raise the alarm on anything new.
@@ -1686,6 +1732,32 @@ class LiveTab(QWidget):
 
     def stream_status_text(self, name: str) -> str:
         return self._status.get(name, "stopped")
+
+    def views_in_trouble(self) -> list[tuple[str, str]]:
+        """Which pictures are not arriving, worst first, for the status band.
+
+        The band reports SERVICES - recording, streaming, detection, the link -
+        and a view is none of those. So with the thermal camera dead and the
+        visible one playing, every chip across the top of the window was green,
+        and the only thing on the screen saying otherwise was `thermal - failed`
+        at eleven pixels, on the picture that was not there.
+
+        What he is paid to know is whether he can see the fence. A picture that
+        has stopped arriving is the single most important thing this console can
+        tell him, and it was the smallest text on it.
+
+        Late before failed: a stream that has stopped sending new pictures while
+        still connected is the one that gets missed, because the last frame sits
+        there looking like a picture. Failed at least draws a black pane.
+        """
+        trouble = [
+            (name, state)
+            for name, state in self._status.items()
+            if state in ("failed", "late")
+        ]
+        # `late` first: a frozen picture lies, a black one does not.
+        trouble.sort(key=lambda pair: (pair[1] != "late", pair[0]))
+        return trouble
 
     def stream_label_text(self, name: str) -> str:
         label = self._labels.get(name)
