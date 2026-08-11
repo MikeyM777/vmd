@@ -9,7 +9,7 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
-from vmd.desktop.logs import LogBuffer, LogsTab
+from vmd.desktop.logs import LogBuffer, LogsTab, without_passwords
 from vmd.desktop.style import PALETTE
 
 # --------------------------------------------------------------- the plan's own tests
@@ -310,3 +310,72 @@ def test_the_buffer_survives_concurrent_writers_and_a_reading_ui_thread() -> Non
     assert errors == []
     final = buffer.snapshot()
     assert len(final) == 50
+
+
+# ------------------------------------------------------------ what must not show
+#
+# The Logs tab is the one place every process on this machine is heard, and it
+# is on screen. go2rtc carries a `[streams] retry=%d to url=%s` line, and the
+# URL it retries is the one the console built for it - credentials and all.
+
+
+def test_a_password_in_a_url_never_reaches_the_log() -> None:
+    buffer = LogBuffer(capacity=5)
+    logger = logging.getLogger("vmd.test.credentials")
+    logger.addHandler(buffer)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.warning(
+            "go2rtc: [streams] retry=3 to url=%s",
+            "rtsp://admin:p%40ss%3Aw%2Frd@10.0.0.2:554/ch2",
+        )
+        logger.info("ffmpeg reading rtsp://viewer:hunter2@10.0.0.2/ch1")
+    finally:
+        logger.removeHandler(buffer)
+
+    retried, reading = (line["text"] for line in buffer.snapshot())
+    assert "p%40ss%3Aw%2Frd" not in retried
+    assert "hunter2" not in reading
+    # And it still says what an operator has to know: which account was refused,
+    # and which camera refused it.
+    assert "admin" in retried and "10.0.0.2:554/ch2" in retried
+    assert "viewer" in reading and "10.0.0.2/ch1" in reading
+
+
+def test_an_ordinary_line_is_left_exactly_as_it_was() -> None:
+    """Local URLs carry no credentials, and most lines are not URLs at all."""
+    buffer = LogBuffer(capacity=5)
+    logger = logging.getLogger("vmd.test.ordinary")
+    logger.addHandler(buffer)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("showing rtsp://127.0.0.1:8554/thermal")
+        logger.info("recorder: segment closed at 12:04:07 - user@host wrote it")
+    finally:
+        logger.removeHandler(buffer)
+
+    assert [line["text"] for line in buffer.snapshot()] == [
+        "showing rtsp://127.0.0.1:8554/thermal",
+        "recorder: segment closed at 12:04:07 - user@host wrote it",
+    ]
+
+
+def test_a_flood_of_a_line_is_not_searched_for_a_url_it_cannot_contain() -> None:
+    """A child can write half a megabyte without a newline - the reason the
+    line limit exists - and every one of those bytes passes through here. The
+    line is returned untouched, not merely unchanged."""
+    flood = "x" * 60_000
+    started = time.monotonic()
+    assert without_passwords(flood) is flood
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_long_line_that_could_hold_a_url_is_still_searched_quickly() -> None:
+    """Bounded, so that a line which happens to contain both `://` and `@` is
+    scanned once rather than backtracked across at every position in it."""
+    noisy = "x" * 30_000 + " rtsp://admin:hunter2@10.0.0.2/ch1 " + "y" * 30_000
+    started = time.monotonic()
+    scrubbed = without_passwords(noisy)
+    assert time.monotonic() - started < 1.0
+    assert "hunter2" not in scrubbed
+    assert "rtsp://admin:****@10.0.0.2/ch1" in scrubbed

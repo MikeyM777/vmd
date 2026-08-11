@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import threading
 from collections import deque
 
@@ -34,6 +35,31 @@ SEVERE = {"WARNING", "ERROR", "CRITICAL"}
 # lands one pixel short of the old maximum must still count as following.
 FOLLOW_SLACK_PX = 4
 
+# A password inside a URL, as every process on this machine writes one. RTSP
+# carries credentials in the address, so the URL the console hands go2rtc, and
+# the one go2rtc names in `[streams] retry=N to url=...`, both carry the
+# camera's password - and that line would land on the screen the operator is
+# watching, and in any photograph of it.
+#
+# The username is kept. Which account was refused is half the diagnosis of a
+# "401 Unauthorized", and it is not the secret. The `@` must be the one that
+# ends the userinfo, so neither part may contain a slash or another `@`, which
+# is also what stops an ordinary "user@host" in a sentence from matching.
+#
+# Every part is length-bounded, and the whole thing is skipped unless the line
+# could possibly contain a URL. This runs on every record from every process,
+# and one of those is a child writing half a megabyte without a newline: an
+# unbounded `[a-z0-9+.-]*` before the `://` backtracks across the whole line at
+# every position in it, which turned that flood into minutes of regex.
+_CREDENTIALS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^\s/@:]{1,256}):([^\s/@]{0,256})@")
+
+
+def without_passwords(text: str) -> str:
+    """The same line, with any password inside a URL taken out of it."""
+    if "://" not in text or "@" not in text:
+        return text
+    return _CREDENTIALS.sub(r"\1:****@", text)
+
 
 class LogBuffer(logging.Handler):
     """A ring of recent log records, safe to read from the UI thread.
@@ -57,6 +83,10 @@ class LogBuffer(logging.Handler):
                 text += "\n" + logging.Formatter().formatException(record.exc_info)
         except Exception:  # noqa: BLE001 - logging must never raise into the caller
             text = "<unformattable log record>"
+        # Here rather than at each source, because this is where every process
+        # on the machine converges - the console, go2rtc, the recorder and the
+        # detector - and the tab that shows it is on screen all day.
+        text = without_passwords(text)
         with self._lock:
             self._next_seq += 1
             self.records.append(
