@@ -45,6 +45,12 @@ BINARY_NAMES = ("go2rtc.exe", "go2rtc")
 # on the recorder and the detector, for the same reason.
 MAX_LINE_CHARS = 2000
 
+# How soon after being spawned a death counts as "it never started" rather than
+# "it ran for a while and stopped". The console used to find this out by
+# sleeping for it, on the thread that draws the window; now it is only the line
+# it writes when the next tick finds the process gone.
+SETTLE_SECONDS = 0.8
+
 
 def find_binary(project_root: Path | None = None) -> Path | None:
     """The go2rtc binary: beside the program first, then anywhere on PATH.
@@ -245,6 +251,9 @@ class Go2rtcService:
         # tells the operator nothing they can act on.
         self._recent: deque[str] = deque(maxlen=8)
         self._exit_code: int | None = None
+        # When the process now held was spawned, so that a death found on a
+        # later tick can still be told apart from one that never started.
+        self._launched_at = 0.0
 
     # ------------------------------------------------------------------ state
 
@@ -262,6 +271,7 @@ class Go2rtcService:
 
     def status(self) -> StreamingStatus:
         """Why there is no picture, in words, rather than a blank panel."""
+        self._reap()
         if self.running:
             reason = "streaming"
         elif self.binary is None:
@@ -286,14 +296,45 @@ class Go2rtcService:
         was restarting it, so one exit meant no video until someone restarted
         the whole console.
         """
+        self._reap()
         if self.running or self.binary is None or not self.stream_names:
             return
-        process = self._process
-        if process is not None:
-            self._exit_code = process.poll()
-            self._process = None
-            logger.warning("go2rtc exited with %s; restarting", self._exit_code)
         self.start()
+
+    def _reap(self) -> None:
+        """Notice, and say, that the process we launched has gone.
+
+        This is what used to be a `time.sleep(0.8)` inside the launch itself.
+        The launch is called by the supervisor's tick, and the supervisor ticks
+        on the thread that draws the window, so a go2rtc that exits immediately
+        - a corrupt binary, a config it will not parse - held that thread for
+        0.8 s out of every 2 s for as long as the console stayed open. Nothing
+        repainted for two fifths of the operator's day, and while nothing
+        repaints the alarm strip cannot appear.
+
+        Asking afterwards costs nothing and answers the same question, one tick
+        later. The endpoint file goes with it: a streaming.json naming a port
+        that nothing is listening on would have the recorder believe there is a
+        local copy of the stream to read, and open its own connection to the
+        camera when it found otherwise.
+        """
+        process = self._process
+        if process is None:
+            return
+        code = process.poll()
+        if code is None:
+            return
+        self._exit_code = code
+        self._process = None
+        self._clear_endpoint()
+        if time.monotonic() - self._launched_at < SETTLE_SECONDS:
+            logger.error(
+                "go2rtc exited immediately (%s): %s",
+                code,
+                " | ".join(self._recent) or "no output",
+            )
+        else:
+            logger.warning("go2rtc exited with %s; restarting", code)
 
     # --------------------------------------------------------------- lifecycle
 
@@ -301,6 +342,7 @@ class Go2rtcService:
         """Start go2rtc. Doing nothing is the right answer when there is nothing
         to stream: an operator who has not entered a camera yet should see the
         console, not an error."""
+        self._reap()
         if self.running:
             return
         if self.binary is None:
@@ -346,11 +388,18 @@ class Go2rtcService:
         self._process = None
 
     def _launch(self) -> bool:
-        """Spawn go2rtc and confirm it is still alive a moment later.
+        """Spawn go2rtc and write down where it will be listening.
 
-        A process that exits immediately is the failure that matters here, and
-        Popen reports that as success. Waiting briefly turns "started" into
-        "running", which is what the console actually claims on screen.
+        Whether it stayed up is asked on the next tick, by `_reap`, and never
+        waited for here - see that method for what waiting cost.
+
+        The endpoint is written now rather than after any confirmation because
+        the recorder is started moments later in the same breath and reads this
+        file once. A file written a tick later is a recorder that opened its own
+        connection to the camera, which doubles what crosses the radio link and
+        is the one cost this whole arrangement exists to avoid. A file left
+        behind by a go2rtc that did not stay up is cleared by `_reap`, and the
+        recorder probes the port before believing it either way.
         """
         write_config(
             build_config(self.settings, self.api_port, self.rtsp_port),
@@ -364,17 +413,8 @@ class Go2rtcService:
             return False
 
         self._process = process
+        self._launched_at = time.monotonic()
         self._pump_output(process)
-        time.sleep(0.8)
-        code = process.poll()
-        if code is not None:
-            self._exit_code = code
-            self._process = None
-            logger.error(
-                "go2rtc exited immediately (%s): %s", code, " | ".join(self._recent) or "no output"
-            )
-            return False
-
         self._write_endpoint()
         logger.info(
             "go2rtc started on %s for %s", self.api_base, ", ".join(self.stream_names)

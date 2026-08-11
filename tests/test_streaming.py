@@ -400,6 +400,89 @@ def test_a_dead_server_is_restarted(tmp_path: Path) -> None:
     assert len(spawned) == 2
 
 
+class DeadOnArrival(FakeProcess):
+    """go2rtc as a corrupt binary or an unparseable config leaves it: spawned,
+    and gone before anyone looks."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.alive = False
+
+
+def test_a_go2rtc_that_will_not_stay_up_does_not_cost_the_heartbeat(
+    tmp_path: Path,
+) -> None:
+    """Confirming a launch used to mean sleeping 0.8 s inside start().
+
+    start() is what the supervisor calls on every tick, and the supervisor ticks
+    on the thread that draws the window. A go2rtc that exits immediately - a
+    corrupt binary, a config it will not parse - therefore held the window for
+    0.8 s out of every 2 s, for as long as the console was open. Nothing
+    repainted for 40% of the operator's day, and the alarm strip could not
+    appear during any of it.
+    """
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        spawn=lambda command: DeadOnArrival(),
+    )
+    started = time.monotonic()
+    for _ in range(5):  # five heartbeats' worth
+        svc.start()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"five ticks against a dead go2rtc cost {elapsed:.2f} s"
+
+
+def test_a_go2rtc_that_will_not_stay_up_still_says_so(tmp_path: Path, caplog) -> None:
+    """Not waiting for the bad news must not mean never hearing it."""
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        spawn=lambda command: DeadOnArrival(),
+    )
+    with caplog.at_level(logging.WARNING, logger="vmd.streaming.go2rtc"):
+        svc.start()
+        svc.start()  # the next tick is where it is noticed
+    assert not svc.running
+    assert any("exited" in record.getMessage() for record in caplog.records)
+    assert "stopped" in svc.status().reason
+
+
+def test_a_go2rtc_that_did_not_stay_up_leaves_no_address_behind(tmp_path: Path) -> None:
+    """A streaming.json naming a port nothing listens on would have the recorder
+    believe there is a local copy of the stream to read."""
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=lambda command: DeadOnArrival(),
+    )
+    svc.start()
+    assert svc.status().running is False, "a process that is gone is not streaming"
+    assert not (tmp_path / "streaming.json").exists()
+
+
+def test_a_live_go2rtc_publishes_where_it_is_listening(tmp_path: Path) -> None:
+    """The recorder reads this instead of opening its own connection to the
+    camera, so it has to be there before the recorder starts - not one
+    heartbeat later."""
+    spawned: list = []
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=tmp_path / "go2rtc.exe",
+        endpoint_path=tmp_path / "streaming.json",
+        spawn=lambda command: (spawned.append(command), FakeProcess())[1],
+    )
+    svc.start()
+    written = json.loads((tmp_path / "streaming.json").read_text(encoding="utf-8"))
+    assert written["rtsp_port"] == svc.rtsp_port
+    assert written["streams"]["thermal"] == svc.local_rtsp_url("thermal")
+
+
 def test_ensure_running_does_nothing_when_it_is_running(tmp_path: Path) -> None:
     spawned: list = []
     svc = service(settings_with(("thermal", "rtsp://cam/t", True)), tmp_path, spawned)
