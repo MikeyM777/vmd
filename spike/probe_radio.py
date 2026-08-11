@@ -456,13 +456,20 @@ def login_lines(exchange: list[Exchange], password: str, flow: str = "") -> list
             lines.append(f"      | {line}")
     lines.append("")
     if flow:
+        # What got in, and nothing about what would not have. The flows are
+        # tried in order and the first one that works stops the rest, so a
+        # session login says the session login works - not that the cold POST
+        # would have failed. Which of those is true is above, in the statuses.
         lines.append(f"  The {flow} login is the one this radio accepted.")
         if flow == "session":
-            lines.append("  It wanted the cookie from its own login page, which is why 403.")
+            lines.append("  It opened a session on its own login page and posted from there.")
+            lines.append("  The cold POST was not reached, because this got in first.")
         elif flow == "cold":
-            lines.append("  It accepted a plain POST with no session opened first.")
+            lines.append("  A plain POST, with no session opened first. Whatever the")
+            lines.append("  session flow above ran into, it was not this radio's password.")
         else:
-            lines.append("  It logged in through the airOS 8 API rather than the form.")
+            lines.append("  Through the airOS 8 API rather than the login form. The console")
+            lines.append("  will need the X-CSRF-ID it hands back on every later request.")
     else:
         lines.append("  No flow logged in. Whichever status is above is the whole answer:")
         lines.append("  401 is a rejected password; 403 is the radio refusing the request,")
