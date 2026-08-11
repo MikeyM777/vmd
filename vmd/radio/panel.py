@@ -357,7 +357,12 @@ class LinkPanel(QGroupBox):
         self._fit()
 
     def _fit(self) -> None:
-        """Give every label the height its wrapped text actually needs."""
+        """Give every label the height its wrapped text actually needs.
+
+        The width is the layout's, once there is one. Before the panel has ever
+        been laid out that is nothing useful, so the panel's own width less its
+        borders stands in until the first resize corrects it.
+        """
         width = max(self._layout.contentsRect().width(), self.width() - 24, 1)
         for label in self._labels:
             if label.text():
@@ -368,7 +373,6 @@ class LinkPanel(QGroupBox):
             link = self._radio.status()
         except Exception:  # noqa: BLE001 - the pictures are not downstream of this
             logger.exception("the radio could not be asked about the link")
-            link = {}
             lines = [("The radio could not be asked about the link.", PALETTE["alarm"])]
         else:
             lines = link_lines(link if isinstance(link, dict) else {})
