@@ -31,8 +31,8 @@ if errorlevel 1 (
   echo   uv is not installed, so nothing can run yet.
   echo   Double-click install.bat first. It sets everything up.
   echo.
-  echo   If this folder was copied from another machine, open the folder
-  echo   called scripts and double-click offline-install.bat instead.
+  echo   If this folder was copied from another machine, double-click
+  echo   offline-install.bat instead. It needs no internet connection.
   echo.
   pause
   exit /b 1

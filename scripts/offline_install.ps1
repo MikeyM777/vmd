@@ -1,7 +1,7 @@
 # =============================================================================
 #  Installs VMD on the laptop that has no internet.
 #
-#  Double-click scripts\offline-install.bat. Nothing here touches the network,
+#  Double-click offline-install.bat. Nothing here touches the network,
 #  and nothing here needs to: everything except VLC arrived inside this folder,
 #  put there by scripts\offline_kit.ps1 on the machine that had a connection.
 #
@@ -58,7 +58,7 @@ if ($fatal.Count -gt 0) {
     Write-Bad "This is not a prepared copy - it is the plain project files."
     Write-Info "There is no way to finish the install on a machine with no internet."
     Write-Info "On a machine that has one: run install.bat, then"
-    Write-Info "scripts\offline-kit.bat, and bring the folder that produces."
+    Write-Info "offline-kit.bat, and bring the folder that produces."
     exit 1
 }
 
@@ -155,7 +155,7 @@ try {
         Write-Bad "The environment does not run on this machine."
         Write-Info "The message above is the whole diagnosis. 'No Python at ...' means"
         Write-Info "the copy is missing bin\python\ - go back to the connected machine"
-        Write-Info "and run scripts\offline-kit.bat, which checks for exactly that."
+        Write-Info "and run offline-kit.bat, which checks for exactly that."
         exit 1
     }
     Write-Ok "The libraries import."
@@ -191,7 +191,7 @@ if ($NoAutostart) {
         & (Join-Path $PSScriptRoot 'autostart.ps1') -Install | Out-Host
     } catch {
         Write-Warn "Could not set up automatic starting: $($_.Exception.Message)"
-        Write-Info "Everything else works. Run scripts\autostart-on.bat to try again."
+        Write-Info "Everything else works. Run autostart-on.bat to try again."
     }
 }
 

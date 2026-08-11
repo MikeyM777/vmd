@@ -60,7 +60,7 @@ if ((Test-Path (Join-Path $binDir 'vendor\vlc-win64.exe')) -and
     Write-Host ""
     Write-Warn "This folder looks like a copy prepared for a machine with no internet."
     Write-Warn "If this machine has no internet, close this window and double-click"
-    Write-Warn "scripts\offline-install.bat instead - it needs no connection."
+    Write-Warn "offline-install.bat instead - it needs no connection."
     Write-Warn "If this machine does have internet, carry on; nothing is wrong."
     Write-Host ""
 }
@@ -480,7 +480,7 @@ if ($NoAutostart) {
         & (Join-Path $PSScriptRoot 'autostart.ps1') -Install -Quiet | Out-Host
     } catch {
         Write-Warn "Could not set up automatic starting: $($_.Exception.Message)"
-        Write-Info "Everything else works. Run scripts\autostart-on.bat to try again."
+        Write-Info "Everything else works. Run autostart-on.bat to try again."
     }
 }
 
@@ -513,10 +513,14 @@ Write-Host ""
 Write-Host "  The console starts the streaming server and the recorder itself." -ForegroundColor Gray
 Write-Host "  Closing its window does not stop the recording." -ForegroundColor Gray
 Write-Host ""
+Write-Host "  After a restart, recording begins as soon as you sign in and the" -ForegroundColor Gray
+Write-Host "  console window opens by itself about 45 seconds later. Do not" -ForegroundColor Gray
+Write-Host "  double-click VMD.exe while waiting - you would get two consoles." -ForegroundColor Gray
+Write-Host ""
 Write-Host "  Recording service:  uv run python -m vmd.record_main" -ForegroundColor Gray
 Write-Host "  Tests:              uv run pytest" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  For a laptop with no internet, run scripts\offline-kit.bat next." -ForegroundColor Gray
+Write-Host "  For a laptop with no internet, run offline-kit.bat next." -ForegroundColor Gray
 
 if ($NoLaunch) { exit 0 }
 

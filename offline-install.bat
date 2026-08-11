@@ -5,9 +5,13 @@ REM
 REM  Run this on the OFFLINE laptop, after copying the VMD folder from
 REM  the USB drive to C:\VMD. Do not run install.bat on that machine -
 REM  it needs a connection and this one does not.
+REM
+REM  This file is only the door. The work is in scripts\offline_install.ps1.
 REM ============================================================
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0offline_install.ps1" %*
+cd /d "%~dp0"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\offline_install.ps1" %*
 set RESULT=%ERRORLEVEL%
 
 echo.

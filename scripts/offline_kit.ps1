@@ -2,7 +2,7 @@
 #  Prepares the folder that goes to the laptop with no internet.
 #
 #  Run it on the connected machine, after install.bat has finished. Double-click
-#  scripts\offline-kit.bat.
+#  offline-kit.bat.
 #
 #  The previous instruction was "copy C:\VMD, .venv included, to the other
 #  machine". That could not work, and the reason is worth writing down so it is
@@ -184,7 +184,7 @@ Write-Ok "Copied to $To"
 Write-Host ""
 Write-Host "  On the laptop with no internet:" -ForegroundColor White
 Write-Host "    1. Copy the VMD folder from the USB drive to C:\VMD" -ForegroundColor Gray
-Write-Host "    2. Open the folder called scripts inside it" -ForegroundColor Gray
-Write-Host "    3. Double-click offline-install.bat" -ForegroundColor Gray
+Write-Host "    2. Open it and double-click offline-install.bat" -ForegroundColor Gray
+Write-Host "       (not install.bat - that one needs an internet connection)" -ForegroundColor Gray
 Write-Host ""
 exit 0

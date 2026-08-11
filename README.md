@@ -159,9 +159,15 @@ adopt it rather than start a second one.
 
 It also stops the laptop sleeping, hibernating, or suspending on lid close.
 
-A logon task still waits for somebody to sign in. `scripts\autostart-on.bat`,
+After a restart that means recording resumes within a second or two of the
+sign-in and the window appears 45 seconds later. That gap is worth telling an
+operator about: a blank screen reads as a failed boot, and the natural response —
+double-clicking `VMD.exe` — is exactly how you end up with two consoles on one
+directory.
+
+A logon task still waits for somebody to sign in. `autostart-on.bat`,
 run as administrator, offers automatic Windows sign-in as an explicit opt-in and
-says what it costs first. `scripts\autostart-off.bat` removes all of it.
+says what it costs first. `autostart-off.bat` removes all of it.
 
 ### Offline machines
 
@@ -171,8 +177,8 @@ for it, not by copying the folder in Explorer:
 
 ```
 install.bat                    on the connected machine
-scripts\offline-kit.bat        on the connected machine - checks and copies to USB
-scripts\offline-install.bat    on the offline machine
+offline-kit.bat        on the connected machine - checks and copies to USB
+offline-install.bat    on the offline machine
 ```
 
 Copying by hand does not work. `.venv` records the absolute path of the

@@ -112,8 +112,8 @@ refuse to run it properly until you say otherwise. This takes ten seconds.
 > **Quicker, if you have not extracted the ZIP yet:** right-click the
 > `vmd-…zip` file itself, choose **Properties**, tick **Unblock** at the bottom,
 > click **OK**, and *then* extract it. Doing it on the ZIP unblocks every file
-> inside it at once, including the ones in the `scripts` folder you will need
-> later. If you have already extracted, do the steps below instead.
+> inside it at once, including the other `.bat` files in the folder that you
+> will need later. If you have already extracted, do the steps below instead.
 
 1. In the folder, **right-click** on **`install.bat`**.
 
@@ -283,13 +283,63 @@ Also set, because a laptop that goes to sleep records nothing:
 - it never sleeps, never hibernates, and never spins its disks down
 - **closing the lid does nothing**
 
+### What a restart actually looks like
+
+Read this before the first one, because the middle of it looks like a failure
+and is not:
+
+1. You sign in to Windows. The desktop appears. **There is no console window,
+   and there will not be one for about a minute.**
+2. Recording has already started, invisibly, a second or two after you signed
+   in. Nothing on screen says so.
+3. **About 45 seconds later the console window opens by itself.**
+
+**Do not double-click `VMD.exe` while you are waiting.** That is the one thing
+that turns a working restart into a problem: you would get a second console, and
+two consoles share one settings file and one recording index. If you have already
+done it, close both windows and wait — the scheduled task opens a clean one, or
+double-click `VMD.exe` once after the minute has passed.
+
+If nothing has appeared after two minutes, see
+[If something goes wrong](#if-something-goes-wrong).
+
+### Checking it without a terminal
+
+Any time you suspect it is not working:
+
+1. Press the **Windows key**, type `Task Scheduler`, press **Enter**.
+2. In the left-hand column click **Task Scheduler Library** — the top item, not
+   any of the folders under it.
+3. The middle of the window lists every task on this machine, sorted by name.
+   Scroll to the **V**s. You are looking for exactly two rows:
+
+   | Name | What the **Status** column should say |
+   |---|---|
+   | `VMD Recorder` | **Running** — for as long as recording is happening |
+   | `VMD Console` | **Running** while the console window is open; `Ready` after you close it |
+
+   **`VMD Recorder` saying `Running` is the answer to "is it recording?"** That
+   task stays alive for exactly as long as the recording does. If it says
+   `Ready`, recording has stopped, and the reason is in
+   `C:\VMD\bin\logs\autostart.log`.
+
+   > If the Status column is not shown, click **View** at the top, then
+   > **Refresh**. Task Scheduler does not update by itself.
+
+4. If the two rows are not there at all, autostart was never set up or was
+   removed. Double-click `autostart-on.bat` in `C:\VMD`.
+
+There is also a plain-text record of every start: open `C:\VMD\bin\logs` and
+double-click **`autostart.log`**. One line per event, most recent at the bottom.
+`no settings.json yet` there means the camera details have not been entered.
+
 **What is still missing, and it matters.** All of that happens when somebody
 *signs in* to Windows. After a power cut the laptop comes back on and stops at
 the sign-in screen, recording nothing, until a person types the password.
 
 To close that gap, Windows can sign itself in:
 
-1. Open the `C:\VMD\scripts` folder.
+1. Open the `C:\VMD` folder.
 2. **Right-click** `autostart-on.bat` and choose **Run as administrator**.
 3. It explains what it costs, then asks you to type `YES` in capitals, then asks
    for the Windows password of this account.
@@ -303,7 +353,7 @@ For this deployment — one laptop, no network of any kind, physically inside th
 perimeter it is watching, doing nothing but recording — that is usually the
 right trade. It is still your decision, so nothing switches it on for you.
 
-**To turn all of this off:** open `C:\VMD\scripts` and double-click
+**To turn all of this off:** open `C:\VMD` and double-click
 **`autostart-off.bat`**. If you switched the automatic sign-in on, right-click it
 and choose **Run as administrator** instead, so it can switch that off too and
 delete the stored password. Nothing that is currently running stops, and no
@@ -341,7 +391,9 @@ prints the current state:
 | The console window does not open at the end | Only the last step failed; everything else is installed | Double-click `VMD.exe` in `C:\VMD` yourself |
 | You cannot see the console after starting it | Its window opened behind the others | Click its icon in the taskbar, or hold `Alt` and press `Tab` |
 | `Could not build VMD.exe` | Only the convenience launcher failed | Everything works — double-click `VMD.bat` instead |
-| Two console windows are open at once | One was left over from before | Close both, then double-click `VMD.exe` once. They share one settings file and one recording folder, and two of them fighting over it is worth avoiding |
+| Two console windows are open at once | One was left over from before, or `VMD.exe` was double-clicked during the 45 seconds after a restart | Close both, then double-click `VMD.exe` once. They share one settings file and one recording folder, and two of them fighting over it is worth avoiding |
+| Nothing happens for a minute after a restart | Normal. The recorder starts at once and the console follows 45 seconds later | Wait. Do not double-click `VMD.exe` meanwhile — see [What a restart actually looks like](#what-a-restart-actually-looks-like) |
+| No console two minutes after a restart | The task did not run, or the console failed to open | Open Task Scheduler and look at the two `VMD` rows ([Checking it without a terminal](#checking-it-without-a-terminal)). If `VMD Recorder` says `Running`, recording is fine and only the window is missing — double-click `VMD.exe` |
 | It asks about Python or opens the Microsoft Store | Windows is offering its own Python | Close that window. You do not need it. `uv` installs the Python this project uses |
 
 **Running `install.bat` again is always safe.** It skips whatever is already
@@ -368,8 +420,8 @@ any of them:
 | Thing | Where | How to remove it |
 |---|---|---|
 | **uv's download cache** | `%LOCALAPPDATA%\uv\cache` — on the machine this was written on it had grown to **21.7 GB** (it is shared with any other project that uses uv) | `uv cache clean` |
-| **The PATH entry** | `C:\VMD\bin` added to your account's PATH | `scripts\autostart-off.bat` does not do this. Remove it in Windows Settings → *Edit environment variables for your account* |
-| **The two scheduled tasks** | Windows Task Scheduler | Double-click `scripts\autostart-off.bat` |
+| **The PATH entry** | `C:\VMD\bin` added to your account's PATH | `autostart-off.bat` does not do this. Remove it in Windows Settings → *Edit environment variables for your account* |
+| **The two scheduled tasks** | Windows Task Scheduler | Double-click `autostart-off.bat` |
 | **uv and VLC themselves** | Installed system-wide | See below |
 
 ### Removing it completely
@@ -379,7 +431,7 @@ Do these in order:
 ```powershell
 # 1. stop things starting by themselves (run as administrator if you switched
 #    the automatic Windows sign-in on)
-C:\VMD\scripts\autostart-off.bat
+C:\VMD\autostart-off.bat
 
 # 2. empty the download cache - this is the big one
 uv cache clean
@@ -474,7 +526,7 @@ of that can happen.
 
 2. Plug in a USB drive with **at least 8 GB** free.
 
-3. Open the folder `C:\VMD\scripts`.
+3. Open the `C:\VMD` folder — the same folder `install.bat` is in.
 
 4. **Double-click `offline-kit.bat`.**
 
@@ -515,7 +567,7 @@ of that can happen.
    the C: drive in File Explorer. Any folder works — the installer corrects
    itself — but `C:\VMD` is what the rest of this document assumes.)
 
-3. Open the folder `C:\VMD\scripts`.
+3. Open the `C:\VMD` folder.
 
 4. **Double-click `offline-install.bat`.** Not `install.bat` — that one needs an
    internet connection and this one does not.

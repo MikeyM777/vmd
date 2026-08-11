@@ -2,7 +2,7 @@
 #  Makes the system come back by itself after a restart, and takes it away
 #  again.
 #
-#  Double-click scripts\autostart-on.bat to switch it on, scripts\autostart-off.bat
+#  Double-click autostart-on.bat to switch it on, autostart-off.bat
 #  to switch it off. Everything below is what those two files do.
 #
 #  ---------------------------------------------------------------------------
@@ -113,8 +113,8 @@ function Show-Status {
         Write-Host ("    {0,-18} off  (somebody must sign in after a restart)" -f 'Automatic sign-in') -ForegroundColor Yellow
     }
     Write-Host ""
-    Write-Host "    Switch on:   scripts\autostart-on.bat" -ForegroundColor Gray
-    Write-Host "    Switch off:  scripts\autostart-off.bat" -ForegroundColor Gray
+    Write-Host "    Switch on:   autostart-on.bat" -ForegroundColor Gray
+    Write-Host "    Switch off:  autostart-off.bat" -ForegroundColor Gray
     Write-Host ""
 }
 
@@ -221,7 +221,7 @@ function Install-Tasks {
         Write-Host ""
         Write-Info "After a restart, somebody still has to sign in to Windows before any"
         Write-Info "of this happens. To have Windows sign in by itself as well, run:"
-        Write-Info "  scripts\autostart-on.bat -EnableAutoLogon"
+        Write-Info "  autostart-on.bat -EnableAutoLogon"
         Write-Info "Read the top of scripts\autostart.ps1 first - it costs something."
     }
 }
@@ -248,7 +248,7 @@ function Remove-Tasks {
 function Enable-AutoLogon {
     if (-not (Test-Admin)) {
         Write-Bad "Automatic sign-in changes a machine-wide setting, so this needs"
-        Write-Bad "administrator permission. Right-click scripts\autostart-on.bat and"
+        Write-Bad "administrator permission. Right-click autostart-on.bat and"
         Write-Bad "choose 'Run as administrator'."
         return
     }
@@ -280,13 +280,13 @@ function Enable-AutoLogon {
     Set-ItemProperty -Path $WINLOGON -Name 'DefaultDomainName' -Value $env:USERDOMAIN -Type String
     Set-ItemProperty -Path $WINLOGON -Name 'DefaultPassword'  -Value $plain         -Type String
     Write-Ok "Automatic sign-in is on. Restart to check it, before you rely on it."
-    Write-Info "To undo it: scripts\autostart-off.bat, as administrator."
+    Write-Info "To undo it: autostart-off.bat, as administrator."
 }
 
 function Disable-AutoLogon {
     if (-not (Test-Admin)) {
         Write-Warn "Automatic sign-in was left alone: turning it off needs administrator"
-        Write-Warn "permission. Right-click scripts\autostart-off.bat, 'Run as administrator'."
+        Write-Warn "permission. Right-click autostart-off.bat, 'Run as administrator'."
         return
     }
     Set-ItemProperty -Path $WINLOGON -Name 'AutoAdminLogon' -Value '0' -Type String
