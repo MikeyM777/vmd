@@ -252,9 +252,12 @@ def _write_json_atomically(payload: dict, path: Path) -> None:
     the destination's own directory because os.replace is only atomic within one
     filesystem.
 
-    Written out here rather than imported from `vmd\\detect_main.py` for the
-    reason the console repeats `detection.json`'s name rather than importing it:
-    a recording-only laptop must not need the detector's module to record.
+    This is the third copy of the same nine lines - `save_settings` has one and
+    the detector has one - and it is a copy because there is nowhere shared to
+    put it that these three modules all already depend on. The alternative is
+    the recorder importing the detector's *entry point* to write a file, which
+    is a heavier dependency than the duplication. Worth collapsing into one home
+    the day something owns all three.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(
@@ -284,6 +287,11 @@ def without_credentials(text: str) -> str:
     by anything on the machine and copied into any report of a fault. The
     username stays: which account was refused is half the diagnosis of a 401,
     and it is not the secret.
+
+    The detector's copy of this lives in `vmd\\detect\\runner.py`, which imports
+    numpy at module level - so importing it here would put the vision stack into
+    a process that only records. That is the whole reason this is written out
+    again rather than imported.
     """
     if "://" not in text or "@" not in text:
         return text
