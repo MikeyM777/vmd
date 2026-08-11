@@ -190,6 +190,34 @@ LISTENING_SECONDS = 2.0
 API_TIMEOUT = 2.0
 
 
+def _ask_the_server(url: str, timeout: float) -> bytes:
+    """One GET at the streaming server on this machine, through no proxy ever.
+
+    `urllib.request.urlopen` builds the DEFAULT opener, which reads `http_proxy`
+    and - on Windows, which is the machine this ships to - whatever proxy is
+    configured in the registry. Being a loopback address does not save it:
+    `proxy_bypass("127.0.0.1:1984")` is False, because CPython's `<local>` rule
+    only covers hostnames with no dot in them. So `GET
+    http://127.0.0.1:1984/api/streams` was dispatched to whatever the
+    environment named, from a machine that is meant to be air-gapped.
+
+    What that carried is not nothing: `/api/streams` answers with each stream's
+    source URL, and `source_for` puts the camera's username and password in it;
+    `/api/log` carries the camera's address and go2rtc's own words about it.
+    `vmd/radio/airos.py` and `vmd/ptz/onvif.py` both close this deliberately and
+    say so in as many words - this was the third client of urllib in the console
+    and the one nobody had looked at.
+
+    The opener is built per call rather than once at import. It costs
+    microseconds, and an opener built at import would fix the answer to
+    "what did the environment say when this module was first loaded", which is
+    the one question nobody is asking.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(url, timeout=timeout) as response:
+        return response.read()
+
+
 def find_binary(project_root: Path | None = None) -> Path | None:
     """The go2rtc binary: beside the program first, then anywhere on PATH.
 
@@ -1179,10 +1207,11 @@ class Go2rtcService:
         """
         port = self.api_port if api_port is None else api_port
         try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{int(port)}/api/streams", timeout=timeout
-            ) as response:
-                raw = json.loads(response.read().decode("utf-8", "replace"))
+            raw = json.loads(
+                _ask_the_server(
+                    f"http://127.0.0.1:{int(port)}/api/streams", timeout
+                ).decode("utf-8", "replace")
+            )
         except (OSError, ValueError, TypeError):
             return None
         return raw if isinstance(raw, dict) else None
@@ -1221,10 +1250,9 @@ class Go2rtcService:
         """
         port = self.api_port if api_port is None else api_port
         try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{int(port)}/api/log", timeout=timeout
-            ) as response:
-                body = response.read().decode("utf-8", "replace")
+            body = _ask_the_server(
+                f"http://127.0.0.1:{int(port)}/api/log", timeout
+            ).decode("utf-8", "replace")
         except (OSError, ValueError, TypeError):
             return []
         entries: list[dict] = []

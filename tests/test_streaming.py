@@ -124,6 +124,89 @@ def test_the_config_names_no_host_outside_this_machine() -> None:
         assert outside not in text.lower(), f"{outside} appears in the go2rtc config"
 
 
+class _RecordingProxy:
+    """An HTTP proxy that answers everything and writes down who asked.
+
+    It exists to catch a request that was aimed at the loopback and went
+    somewhere else instead. Answering rather than refusing is deliberate: a
+    refused connection would look like the proxy not being used, and the failure
+    being hunted here is one that succeeds quietly.
+    """
+
+    def __init__(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.asked: list[str] = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - http.server's name
+                outer.asked.append(self.path)
+                body = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    @property
+    def port(self) -> int:
+        return self._server.server_address[1]
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_the_streaming_server_is_never_asked_through_a_proxy(monkeypatch, tmp_path: Path) -> None:
+    """The same rule the radio and the camera already follow, for the third client.
+
+    `urllib.request.urlopen` builds the DEFAULT opener, which reads `http_proxy`
+    and - on Windows, which is the machine this ships to - whatever proxy is
+    configured in the registry. A loopback address does not save it:
+    `proxy_bypass("127.0.0.1:1984")` is False, because CPython only auto-bypasses
+    hostnames with no dot in them. So `GET http://127.0.0.1:1984/api/streams` is
+    dispatched to whatever the environment names.
+
+    What that carries is not nothing. `/api/streams` answers with the source URL
+    of every stream, and `source_for` puts the camera's username and password in
+    it; `/api/log` carries the camera's address and go2rtc's own words about it.
+    On a machine that is meant to be air-gapped this is traffic that should not
+    exist at all, and it is credentials in it.
+    """
+    proxy = _RecordingProxy()
+    server = FakeGo2rtc({"thermal": "rtsp://admin:secret@10.0.0.5/ch1"})
+    try:
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.port}")
+        monkeypatch.setenv("https_proxy", f"http://127.0.0.1:{proxy.port}")
+        # `urlopen` caches the opener it builds on first use, so an earlier test
+        # in the same process would otherwise decide the answer here. This is the
+        # console starting on a machine that has a proxy set, which is the case.
+        monkeypatch.setattr(urllib.request, "_opener", None)
+
+        streaming = service(
+            settings_with(("thermal", "rtsp://10.0.0.5/ch1", True)), tmp_path, []
+        )
+        port = server.endpoint["api_port"]
+        streams = streaming.api_streams(api_port=port)
+        streaming.api_log(api_port=port)
+
+        assert proxy.asked == [], f"the streaming server was asked through a proxy: {proxy.asked}"
+        # And the answer really came from the server rather than from the thing
+        # that intercepted it: the proxy above answers `{}`, which is a valid
+        # go2rtc answer meaning "serving nothing" and would otherwise pass.
+        assert streams is not None and "thermal" in streams
+    finally:
+        server.close()
+        proxy.close()
+
+
 def test_config_is_written_as_valid_json(tmp_path: Path) -> None:
     """RTSP URLs carry colons, slashes and punctuation-heavy passwords; JSON
     quoting removes a class of bugs that YAML quoting invites."""
