@@ -149,12 +149,111 @@ that class of bug is the reason this list exists.
 
 ---
 
-## 9. The radio
+## 9. The radio — the most valuable half hour of the morning
 
-Enter the Ubiquiti address, username and password. The status line at the bottom
-should show a signal strength instead of `link -`.
+The link is the bottleneck of this whole system. Every bandwidth problem we have
+had — the 20–40 second latency, the streams dropping during pans, the stuttering
+— was a link problem. Until this morning nothing has ever read the radio, so
+everything the console says about it was written from general knowledge of airOS
+and not from your device.
 
-This has never been exercised against a real airOS device.
+Do this part before you spend a long time on anything else.
+
+### First, ask the radio directly
+
+Open PowerShell in the VMD folder and run:
+
+```powershell
+uv run --offline --frozen --no-sync python spike\probe_radio.py 10.0.0.9 --user ubnt
+```
+
+Use your radio's address and its username. **It will ask for the password —
+type it at the prompt.** There is deliberately no way to put the password on the
+command line: PowerShell keeps every command you type, in plain text, for ever.
+
+It prints three blocks:
+
+1. **What the radio sent** — the raw answer from `status.cgi`, formatted so you
+   can read it. Your password is blanked out of it.
+2. **What the console makes of it** — every figure the console wants, either
+   with its value or the word `UNKNOWN` and the exact field names it looked for.
+3. **The names your radio actually uses** — its own field names, next to ours.
+
+A good result ends with a line like:
+
+```
+The console's link panel will show -63 dBm as its headline.
+```
+
+and every figure in block 2 has a value. That means the console will read your
+radio properly and there is nothing to do.
+
+A bad result ends with:
+
+```
+The console's link panel will show dashes for the signal, because the
+signal is not where vmd/radio/airos.py looks for it.
+```
+
+**If that happens, copy the whole output of the command and send it to me.** It
+contains everything needed — your radio's own field names beside the ones we
+guessed — and the fix is a one-line change, not an investigation. There are no
+passwords in it.
+
+If it will not connect at all it says so in one sentence: the wrong password,
+nothing answering at that address, or a login page coming back instead of an
+answer. Send that sentence.
+
+### Then, look at the console
+
+Enter the same address, username and password in **Settings** and press Save.
+
+The status line at the bottom shows the signal at a glance. The **Link** panel
+in the Live tab's right-hand column shows the rest: signal, how far above the
+noise it is, what is going through the link against what the link will carry,
+link quality, distance, and which radio it is.
+
+The panel should go from `Checking the radio...` to real figures within a few
+seconds. If it stays on dashes or says the radio reported no signal strength,
+that is the probe's job — go back and run it.
+
+### What the numbers mean here
+
+**Signal.** This is the one to watch.
+
+| Reading | What it means for us |
+|---|---|
+| −65 dBm or stronger | Healthy. The link has room for the video and room to spare. |
+| −65 to −80 dBm | Works, but there is no margin left. Rain, or a mast that has moved a little, will take it below. Worth getting someone onto the alignment before winter. |
+| Weaker than −80 dBm | Marginal. This is where the picture starts breaking up. |
+
+These come from what airOS radios generally do — a noise floor around −90 to
+−96 dBm — and not from measurements of your link, because nobody has measured
+your link yet. They are set one step pessimistic on purpose: being told a
+working link is marginal costs a phone call, being told a marginal link is fine
+costs the picture on the day it matters.
+
+**Coming in / going out.** This is the line that explains the video. Your link
+carries about 5 Mb/s. If "coming in" is close to the number beside it, the link
+is full, and a picture that stutters, falls behind, or drops during a pan is the
+link and not the camera or the console. The fix for that is the camera's
+bitrate — **Fit the camera to the link** in Settings, or the second stream
+turned off — not anything in this program.
+
+Note both figures the first time you look, next to what the radio's own web
+interface says. The console reads the capacity in kb/s and the older rate fields
+in Mb/s; that is what airOS is understood to do and it has not been confirmed on
+a real radio. If the console's numbers and the radio's own page disagree, tell
+me — that is a five-minute fix too.
+
+**Link quality.** Shown as a percentage. Below about 80% the link is spending
+its time retrying rather than carrying data.
+
+### What is still unproven
+
+The parser has now been written twice against documentation and never once
+against a device. The probe is the thing that settles it, and running it once is
+what turns everything on this page from "should" into "does".
 
 ---
 
@@ -163,7 +262,8 @@ This has never been exercised against a real airOS device.
 - **The real camera** — no thermal head, no visible head, no real ONVIF, no 4K.
 - **The radio link failure the rewrite exists to fix.** The clean ten-minute run
   here was over loopback.
-- **The airOS radio**, at all.
+- **The airOS radio**, at all. Section 9 is how that stops being true: run
+  `spike/probe_radio.py` once and send me what it prints.
 - **The two-machine offline install.** The mechanism is proved on one machine;
   the USB handoff to a second is not. Do it with someone who can read a screen,
   not on the day the camera goes up.
