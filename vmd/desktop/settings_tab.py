@@ -325,8 +325,15 @@ class StreamRowWidget(QFrame):
         )
         outer.addWidget(self.detect_field)
 
-        self.detect_help = _note(DETECT_HELP)
-        outer.addWidget(self.detect_help)
+        # The sentence explaining what that tick does is NOT here. It used to
+        # be, and putting it here was the right instinct applied one level too
+        # low: the views are side by side now, so the same three lines were
+        # printed twice, next to each other, in a tab whose whole complaint was
+        # "too much going on". Two copies of a paragraph do not explain a thing
+        # twice as well; they make the reader check whether they differ.
+        #
+        # It is said once, above both cards, in `_build_streams_box`. The
+        # tooltip on the tick stays for whoever hovers.
 
         # Everything below the switch, in one widget so that one line of code
         # shows or hides all of it.
@@ -993,6 +1000,12 @@ class SettingsTab(QWidget):
             "watched if you ask for that below. To stop using one, remove it."
         )
         streams_outer.addWidget(self.streams_help)
+        # What "Watch for movement" means, said once for both cards rather than
+        # printed on each of them. See the note where it used to live: with the
+        # views side by side, per-card help is the same paragraph twice, six
+        # inches apart, on the tab he called too busy.
+        self.detect_help = _note(DETECT_HELP)
+        streams_outer.addWidget(self.detect_help)
         # Side by side, two across. "Make the vis and thermal in the settings
         # side by side instead of one under the other, so it's easier" - and he
         # is right about why: it is one camera with two heads, he sets them up

@@ -1175,18 +1175,45 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     qtbot, tmp_path: Path
 ) -> None:
     """"'Watch for movement' - what is that?" - asked by the person the label was
-    written for. The name survives; what was missing is the sentence under it
-    saying what actually happens when it is on."""
-    tab, _ = build(qtbot, tmp_path, _watched())
+    written for. The name survives; what was missing is the sentence saying what
+    actually happens when it is on, on the form rather than on hover.
+
+    Said ONCE, and that is half of what is being tested. The views sit side by
+    side now, so a sentence printed under each tick is the same paragraph twice,
+    six inches apart, on the tab whose whole complaint was "too much going on" -
+    and two copies of a paragraph do not explain a thing twice as well, they
+    make the reader stop and check whether they differ.
+    """
+    two_views = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2"),
+                StreamSettings(name="visible", url="rtsp://10.0.0.2/ch0"),
+            ],
+        )
+    )
+    tab, _ = build(qtbot, tmp_path, two_views)
     row = tab.stream_rows()[0]
     assert row.detect_field.text() == "Watch for movement"
-    said = row.detect_help.text().lower()
+
+    said = tab.detect_help.text().lower()
     assert said.strip(), "the switch still explains itself only on hover"
     assert "move" in said, said
     # The two things he would actually notice: a line in the movement list, and
     # the red strip across the pictures.
     assert "strip" in said or "red" in said, said
     assert not any(word in said for word in JARGON), said
+
+    # And nowhere else. Any label repeating it is the duplication coming back.
+    from PySide6.QtWidgets import QLabel
+
+    copies = [
+        label
+        for label in tab.findChildren(QLabel)
+        if label.text().strip().lower() == said.strip()
+    ]
+    assert len(copies) == 1, f"the same paragraph is on the form {len(copies)} times"
 
 
 def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path) -> None:
