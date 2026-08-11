@@ -122,6 +122,17 @@ def _level_colour(level: str) -> str:
     return PALETTE["muted"]
 
 
+def _short_source(name: str) -> str:
+    """The last part of a logger's name, which is the part that identifies it.
+
+    "vmd.desktop.services" in a narrow column pushes the message off the screen,
+    and every line on this machine starts with "vmd.". The children log under
+    bare names of their own - "go2rtc", "recorder", "detector" - which come
+    through untouched, and those are the ones that matter most.
+    """
+    return (name or "").rsplit(".", 1)[-1]
+
+
 class LogsTab(QWidget):
     """A table of the buffer, newest last.
 
@@ -152,9 +163,15 @@ class LogsTab(QWidget):
         controls.addWidget(self.follow_checkbox)
         layout.addLayout(controls)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["time", "level", "message"])
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        # "from" as well as the message. The buffer has recorded which logger
+        # each line came from since it was written and the table never showed
+        # it: the children were only distinguishable because they happen to
+        # prefix their own messages, and the console's own modules were not
+        # distinguishable at all. On a machine where this tab is the only thing
+        # the operator can read, "who said this" is half the diagnosis.
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["time", "level", "from", "message"])
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
@@ -175,6 +192,10 @@ class LogsTab(QWidget):
         return self.table.rowCount()
 
     def text_at(self, row: int) -> str:
+        item = self.table.item(row, 3)
+        return item.text() if item else ""
+
+    def source_at(self, row: int) -> str:
         item = self.table.item(row, 2)
         return item.text() if item else ""
 
@@ -225,7 +246,11 @@ class LogsTab(QWidget):
             level_item.setForeground(QBrush(QColor(_level_colour(line["level"]))))
             self.table.setItem(row, 1, level_item)
 
-            self.table.setItem(row, 2, QTableWidgetItem(line["text"]))
+            source = QTableWidgetItem(_short_source(line["source"]))
+            source.setForeground(QBrush(QColor(PALETTE["muted"])))
+            self.table.setItem(row, 2, source)
+
+            self.table.setItem(row, 3, QTableWidgetItem(line["text"]))
 
         if should_follow:
             self.table.scrollToBottom()

@@ -379,3 +379,51 @@ def test_a_long_line_that_could_hold_a_url_is_still_searched_quickly() -> None:
     assert time.monotonic() - started < 1.0
     assert "hunter2" not in scrubbed
     assert "rtsp://admin:****@10.0.0.2/ch1" in scrubbed
+
+
+# ------------------------------------------------- who said it, and when it was said
+#
+# Two things the Logs tab was missing, both of which cost the operator the
+# messages the tab exists for.
+
+
+def test_the_table_says_which_process_a_line_came_from(qtbot) -> None:
+    """LogBuffer has recorded a `source` since it was written and the table
+    never showed it. The children were only distinguishable because they happen
+    to prefix their own messages; the console's own modules were not
+    distinguishable at all."""
+    buffer = LogBuffer()
+    buffer.emit(_record("go2rtc", "401 Unauthorized"))
+    tab = LogsTab(buffer)
+    qtbot.addWidget(tab)
+    tab.refresh()
+    assert tab.source_at(0) == "go2rtc"
+    assert "401 Unauthorized" in tab.text_at(0)
+
+
+def test_everything_logged_before_the_window_existed_still_reaches_the_tab(
+    qtbot, tmp_path
+) -> None:
+    """The buffer used to be attached inside ConsoleWindow.__init__, which runs
+    after the services have been started. Everything they say while starting -
+    "adopted from an earlier run", "go2rtc is not installed - run install.bat",
+    "could not start the recorder" - went nowhere at all, and those are exactly
+    the messages this tab exists for on a machine with no terminal."""
+    from vmd.desktop.app import start_logging
+
+    buffer = start_logging()
+    logging.getLogger("vmd.desktop.services").warning(
+        "recorder: adopted from an earlier run (pid 36668)"
+    )
+    tab = LogsTab(buffer)
+    qtbot.addWidget(tab)
+    tab.refresh()
+    said = [tab.text_at(row) for row in range(tab.row_count)]
+    assert any("adopted from an earlier run" in line for line in said)
+
+
+def _record(name: str, message: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name=name, level=logging.WARNING, pathname=__file__, lineno=1,
+        msg=message, args=(), exc_info=None,
+    )

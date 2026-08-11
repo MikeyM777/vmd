@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QLabel
 
 from vmd.desktop.app import build_wiring, default_settings_path, pane_factory, parse_args
 from vmd.desktop.video import FakeVideoPane
+from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.window import ConsoleWindow
 from vmd.settings import Settings, StreamSettings, load_settings, save_settings
 
@@ -263,11 +264,13 @@ def test_one_part_refusing_the_save_does_not_cost_the_others(qtbot, tmp_path: Pa
     assert len(radio.applied) == 1
 
 
-def test_a_settings_tab_that_would_not_build_leaves_the_window_working(
+def test_a_settings_file_that_will_not_load_leaves_every_tab_working(
     qtbot, tmp_path: Path
 ) -> None:
-    """There is nothing to connect to, and nothing that could have been saved.
-    The other three tabs are how the file gets fixed."""
+    """This used to leave the Settings tab as an apology label, on the reasoning
+    that the other three tabs are how the file gets fixed. They are not: the
+    Settings tab is the only thing on this machine that can rewrite that file,
+    and an operator with no terminal who loses it has no way back at all."""
     path = tmp_path / "settings.json"
     path.write_text("{ this is not settings", encoding="utf-8")
     window = ConsoleWindow(
@@ -280,7 +283,7 @@ def test_a_settings_tab_that_would_not_build_leaves_the_window_working(
     )
     qtbot.addWidget(window)
 
-    assert isinstance(window.settings_tab, QLabel)
+    assert not isinstance(window.settings_tab, QLabel)
     assert not isinstance(window.logs, QLabel)
     window.heartbeat()
 
@@ -530,3 +533,64 @@ def test_a_save_that_worked_still_reads_as_saved(qtbot, tmp_path: Path) -> None:
     window.settings_tab._set_message("Saved.")
     window.settings_saved(load_settings(window._settings_path))
     assert window.settings_tab.message == "Saved."
+
+
+# ------------------------------------------- a settings file that cannot be read
+#
+# The only tool for fixing settings.json is the Settings tab, which is inside
+# the console. A console that refuses to open because settings.json is broken is
+# an unrecoverable state for an operator with no terminal and no second machine.
+
+
+def test_a_settings_file_that_cannot_be_read_does_not_stop_the_console_opening(
+    qtbot, tmp_path: Path
+) -> None:
+    from vmd.desktop.app import load_or_default
+
+    path = tmp_path / "settings.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+
+    settings = load_or_default(path)
+    assert isinstance(settings, Settings), "the console must still be able to open"
+
+
+def test_the_settings_tab_shows_a_broken_file_rather_than_becoming_one(
+    qtbot, tmp_path: Path
+) -> None:
+    """It is the one tool that can fix the file, so it must not be the tab that
+    is lost to it."""
+    path = tmp_path / "settings.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+
+    assert not isinstance(window.settings_tab, QLabel), (
+        "the tab that fixes the file must not be the casualty of it"
+    )
+    message = window.settings_tab.message
+    assert "could not be read" in message.lower()
+    assert "save" in message.lower(), "say what to do about it"
+
+
+def test_a_broken_settings_file_can_be_replaced_from_the_tab(
+    qtbot, tmp_path: Path
+) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+
+    tab = SettingsTab(settings_path=path)
+    qtbot.addWidget(tab)
+    tab.load()
+    tab.camera_host = "10.0.0.2"
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+
+    assert tab.save() is True
+    assert load_settings(path).camera.host == "10.0.0.2"

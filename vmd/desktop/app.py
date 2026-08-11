@@ -18,6 +18,7 @@ from typing import Callable
 
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from vmd.desktop.logs import LogBuffer, attach
 from vmd.desktop.services import ConsoleServices, DetectorProcess, RecorderProcess
 from vmd.desktop.style import stylesheet
 from vmd.desktop.video import PaneState, VideoPane, VlcVideoPane
@@ -135,16 +136,52 @@ def build_wiring(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def start_logging() -> LogBuffer:
+    """Put the Logs tab's buffer on the root logger before anything can log.
+
+    First, and before the services are started, because the buffer used to be
+    attached inside `ConsoleWindow.__init__` - which runs after `services.start()`
+    - and everything said in between went nowhere at all. That is not a quiet
+    stretch: it is where "a streaming server is already running; adopting it",
+    "recorder: adopted from an earlier run", "go2rtc is not installed - run
+    install.bat", "go2rtc exited immediately" and "could not start the recorder"
+    are said. Every one of them is a message the Logs tab exists for, on a
+    machine whose operator has no terminal and no second screen.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    return attach(LogBuffer())
+
+
+def load_or_default(settings_path: Path) -> Settings:
+    """The settings, or the defaults and a line in the log saying why not.
+
+    Refusing to open was the old answer, and it is unrecoverable for the person
+    this is built for: the only tool that can fix settings.json is the Settings
+    tab, which is inside the console that just refused to open, and the operator
+    has no terminal and no second machine. It became more likely the day
+    `StreamSettings.url` started validating its scheme, when one bad saved
+    address could stop the console starting at all.
+
+    The defaults have no streams, so nothing is started against them: the window
+    opens on a console that is doing nothing, with the reason in the Logs tab
+    and the Settings tab ready to be corrected and saved.
+    """
+    try:
+        return load_settings(settings_path)
+    except SettingsError:
+        logger.exception(
+            "the settings file %s could not be read; opening with the defaults so "
+            "that it can be corrected in the Settings tab and saved",
+            settings_path,
+        )
+        return Settings()
+
+
+def main(argv: list[str] | None = None) -> int:
+    log_buffer = start_logging()
     args = parse_args(argv)
     settings_path = Path(args.settings)
-
-    try:
-        settings = load_settings(settings_path)
-    except SettingsError as exc:
-        print(f"\n  The settings file cannot be read: {exc}\n")
-        return 1
+    settings = load_or_default(settings_path)
 
     wiring = build_wiring(settings, settings_path, with_services=not args.no_services)
     if not args.no_services:
@@ -163,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         index_path=wiring.index_path,
         make_pane=pane_factory(),
         events_path=wiring.events_path,
+        log_buffer=log_buffer,
     )
     window.show()
     return app.exec()

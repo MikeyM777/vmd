@@ -44,6 +44,7 @@ class ConsoleWindow(QMainWindow):
         index_path: str | Path,
         make_pane: Callable[[str], VideoPane],
         events_path: str | Path | None = None,
+        log_buffer: LogBuffer | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -55,7 +56,11 @@ class ConsoleWindow(QMainWindow):
         self._ptz = ptz
         self._radio = radio
         self._index: SegmentIndex | None = None
-        self._buffer = attach(LogBuffer())
+        # Handed in by `main`, which attaches it before the services are
+        # started so that what they say while starting is not lost. One is made
+        # here only for a window built without one - a test, or anything that
+        # constructs the console directly.
+        self._buffer = attach(log_buffer if log_buffer is not None else LogBuffer())
         # One store, read by Live and by Playback: two connections to one file
         # would be two answers to the same question. Opened before the tabs and
         # outside their factories, so that a database which will not open costs

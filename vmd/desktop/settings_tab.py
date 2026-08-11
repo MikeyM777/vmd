@@ -42,7 +42,13 @@ from PySide6.QtWidgets import (
 )
 
 from vmd.desktop.style import PALETTE
-from vmd.settings import Settings, StreamSettings, load_settings, save_settings
+from vmd.settings import (
+    Settings,
+    SettingsError,
+    StreamSettings,
+    load_settings,
+    save_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -741,7 +747,25 @@ class SettingsTab(QWidget):
     # ------------------------------------------------------------------ load
 
     def load(self) -> None:
-        settings = load_settings(self.settings_path)
+        """Fill the form from the file, or from the defaults and say why.
+
+        A file that cannot be read must not cost this tab. It is the only tool
+        on the machine that can fix that file, and an operator with no terminal
+        who loses it has no way back at all - so a broken file fills the boxes
+        with the defaults and puts the reason under them, where "Save" replaces
+        the file with something that loads.
+        """
+        problem = ""
+        try:
+            settings = load_settings(self.settings_path)
+        except SettingsError as exc:
+            logger.exception("the settings file could not be read")
+            settings = Settings()
+            problem = (
+                f"The settings file could not be read, so the boxes below show "
+                f"the standard settings rather than yours. Correct them and "
+                f"press Save to replace the file. ({exc})"
+            )
         self._loaded = settings
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
@@ -763,7 +787,7 @@ class SettingsTab(QWidget):
         # to the row that shows them, and a row that was handed only a name and
         # an address would write the defaults back over them at the next save.
         self.set_streams(list(settings.camera.streams))
-        self._set_message("")
+        self._set_message(problem)
 
     # ------------------------------------------------------------------ save
 
