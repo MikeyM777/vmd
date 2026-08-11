@@ -31,14 +31,19 @@ from vmd.desktop.style import PALETTE, SIZE_HEADING, SPACE_SNUG, SPACE_STEP
 
 LOG_LINES = 500
 
-# How wide the three narrow columns are. Sized to their contents once rather
-# than shared out evenly: the time is eight characters, the level is at most
-# eight, the source rarely more than ten, and the message - the part anybody
-# reads - takes everything that is left. Evenly shared, a quarter of the window
-# went to a column holding "INFO".
-TIME_WIDTH = 78
-LEVEL_WIDTH = 78
-SOURCE_WIDTH = 110
+# How wide the three narrow columns are. Sized once rather than shared out
+# evenly: the time is eight characters, the level is at most eight ("CRITICAL"),
+# the source rarely more than ten, and the message - the part anybody reads -
+# takes everything that is left. Evenly shared, a quarter of the window went to
+# a column holding "INFO".
+#
+# The numbers include the cell padding and the monospace face these columns are
+# drawn in. They are wide enough that no value in them is ever cut: a clock
+# reading "12:27:..." is worse than useless, because the line it belongs to
+# cannot be placed against any other line in the file.
+TIME_WIDTH = 96
+LEVEL_WIDTH = 88
+SOURCE_WIDTH = 124
 
 # What the table says before anything has been logged. Never blank: a black
 # rectangle is indistinguishable from a tab that failed to load, and this one is
@@ -202,6 +207,11 @@ class LogsTab(QWidget):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             self.table.setColumnWidth(column, width)
         header.setHighlightSections(False)
+        # Left-aligned, over left-aligned cells: a centred heading over a column
+        # of monospace values does not read as belonging to them.
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
