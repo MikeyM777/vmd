@@ -382,25 +382,62 @@ if ($doPackages) {
             Write-Info "The VLC on this machine is the 32-bit build, in $($vlc.Dir32)."
             Write-Info "64-bit Python cannot load a 32-bit libVLC, so the 64-bit build is"
             Write-Info "needed as well. Installing it with winget."
+        } elseif ($vlc.NoPlugins) {
+            Write-Info "The VLC in $($vlc.DirNoPlugins) has no plugins folder beside it,"
+            Write-Info "which would give a black picture and never say why. Installing it again."
         } else {
-            Write-Info "No VLC found yet. Installing it with winget."
+            Write-Info "No VLC found yet. Looked in $($vlc.Searched.Count) places, including the"
+            Write-Info "registry in both hives and both views. Installing it with winget."
         }
-        $vlcWinget = Invoke-Winget @('install', '--id', 'VideoLAN.VLC', '--exact', '--silent',
-                                     '--accept-source-agreements', '--accept-package-agreements')
+        # --architecture x64 is the whole point of this call.
+        #
+        # winget's VideoLAN.VLC resolves to the x86 package on some machines,
+        # and that is the most likely explanation for the deployment laptop:
+        # the installer ran, winget reported success, VLC really is installed -
+        # and it is 32-bit, which 64-bit Python physically cannot load. The
+        # operator then reinstalls the same VLC and nothing changes, for ever.
+        # Unpinned, this installer is what puts them in that loop.
+        $vlcArgs = @('install', '--id', 'VideoLAN.VLC', '--exact', '--silent',
+                     '--accept-source-agreements', '--accept-package-agreements')
+        $vlcWinget = Invoke-Winget ($vlcArgs + @('--architecture', 'x64'))
         Update-PathFromRegistry
         $vlc = Get-VlcInstall
+        if ((-not $vlc.Found) -and (-not $vlcWinget.Ok)) {
+            # An older winget does not know --architecture, and some machines
+            # genuinely have no x64 package for it to pick. Falling back is
+            # better than refusing, because what landed is checked afterwards
+            # either way - which is the part that actually protects anyone.
+            Write-Info "Asking for the 64-bit build did not work ($($vlcWinget.Reason))."
+            Write-Info "Trying without pinning the architecture, and checking what lands."
+            $vlcWinget = Invoke-Winget $vlcArgs
+            Update-PathFromRegistry
+            $vlc = Get-VlcInstall
+        }
         if ($vlc.Found) {
             Write-Ok "VLC is here now: $($vlc.Dir)"
+            Write-Info "Checked: 64-bit libvlc.dll, with its plugins folder beside it."
+        } elseif ($vlc.Only32) {
+            # winget said yes and what arrived is unusable. This is the sentence
+            # the whole exercise is for.
+            Write-Bad "winget installed the 32-BIT VLC, in $($vlc.Dir32)."
+            Write-Info "64-bit Python cannot load it, and running this installer again"
+            Write-Info "will not change that. Uninstall it from Add or remove programs,"
+            Write-Info "then install the 64-bit Windows build by hand from"
+            Write-Info "  https://www.videolan.org/vlc/"
+        } elseif ($vlc.NoPlugins) {
+            Write-Bad "The VLC in $($vlc.DirNoPlugins) has no plugins folder beside it."
+            Write-Info "It would load and then show a black picture without ever saying why."
+            Write-Info "Install VLC again from https://www.videolan.org/vlc/"
         } elseif ($vlcWinget.Ok) {
             # winget is content and the file is not there. Say both halves.
-            Write-Info "winget reported: $($vlcWinget.Reason) - but no 64-bit libvlc.dll was found yet."
-            Write-Info "Step 9 asks Python directly, which is the answer that counts."
+            Write-Info "winget reported: $($vlcWinget.Reason) - but no usable libvlc.dll was found yet."
+            Write-Info "Step 9 asks the console's own loader, which is the answer that counts."
         } elseif (-not $vlcWinget.Ran) {
             Write-Info "VLC could not be installed, because $($vlcWinget.Reason)."
             Write-Info "It can be installed by hand later from https://www.videolan.org/vlc/"
         } else {
             Write-Info "winget did not install VLC: $($vlcWinget.Reason)"
-            Write-Info "Step 9 asks Python directly, which is the answer that counts."
+            Write-Info "Step 9 asks the console's own loader, which is the answer that counts."
         }
     }
 
@@ -442,13 +479,16 @@ if ($doPackages) {
         Write-Ok "VLC is installed: $($vlc.Dir)"
     } elseif ($vlc.Only32) {
         Write-Info "The only VLC found is the 32-bit build, in $($vlc.Dir32)."
-        Write-Info "Step 9 asks Python whether it can use it, which is the answer that counts."
+        Write-Info "Step 9 asks the console's loader about it, which is the answer that counts."
+    } elseif ($vlc.NoPlugins) {
+        Write-Info "The VLC in $($vlc.DirNoPlugins) has no plugins folder beside it."
+        Write-Info "Step 9 asks the console's loader about it, which is the answer that counts."
     } else {
-        Write-Info "No VLC found on disk from this account."
+        Write-Info "No VLC found on disk from this account, in $($vlc.Searched.Count) places looked at."
         if ($packages -and $packages.VlcFound) {
             Write-Info "The window that asked for permission did find one, in $($packages.VlcDir)."
         }
-        Write-Info "Step 9 asks Python directly, which is the answer that counts."
+        Write-Info "Step 9 asks the console's own loader, which is the answer that counts."
     }
 }
 
@@ -796,30 +836,73 @@ try {
     #  The verdict on VLC
     # ------------------------------------------------------------------
     # This is the only test that settles it, which is why nothing before this
-    # point was allowed to conclude anything. A registry key with no working
-    # DLL is a false pass; a VLC in an unexpected place that Python loads
-    # perfectly well is a false failure. Both were being printed.
+    # point was allowed to conclude anything.
     #
-    # It is the same line INSTALL.md tells the operator to type, on purpose, so
-    # that what they see by hand and what the installer says cannot disagree.
+    # The question is not "can python-vlc find a VLC" - the console stopped
+    # asking python-vlc that. vmd\desktop\libvlc.py searches for itself, checks
+    # the architecture and the plugins folder, and hands python-vlc the answer
+    # through os.add_dll_directory, because since Python 3.8 ctypes no longer
+    # looks along PATH for a dependent DLL. So the question the installer must
+    # ask is the console's own: run the console's loader.
     #
+    # It also means its refusals are reused rather than reinvented. Those
+    # sentences are already written for whoever is standing at the laptop - the
+    # video pane shows them verbatim - and an installer that said something
+    # different about the same machine would be one more thing to reconcile.
+    #
+    # Written to a file rather than passed with -c: it is several lines, and
+    # quoting several lines of Python through PowerShell, cmd and uv is a way
+    # to be wrong that is very hard to see.
+    Write-Info "Asking the console's own loader whether it can draw the live picture."
+    $probeFile = Join-Path $env:TEMP 'vmd-vlc-probe.py'
+    Set-Content -Path $probeFile -Encoding UTF8 -Value @'
+# Written by scripts\install.ps1. Prints one line, and always exits 0 so that
+# the installer classifies on the line rather than on an exit code that
+# python-vlc sometimes sets by calling sys.exit() from inside an import.
+import sys
+
+where = ""
+try:
+    from vmd.desktop.libvlc import prepare
+except Exception:
+    prepare = None
+
+try:
+    if prepare is not None:
+        where = str(prepare().folder)
+    import vlc
+
+    vlc.Instance()
+except SystemExit as stop:
+    print("VLCNO python-vlc stopped the process (exit %s) instead of raising." % stop.code)
+    sys.exit(0)
+except BaseException as failure:
+    print("VLCNO " + " ".join(str(failure).split()))
+    sys.exit(0)
+
+print("VLCOK " + where)
+'@
     # Its stderr is captured rather than shown. libVLC prints one line per
     # plugin - about fifty kilobytes of "stale plugins cache" - whenever its
     # index is older than the plugins, and none of it means anything is wrong.
-    Write-Info "Asking Python whether it can draw the live picture."
-    $probe = Invoke-Captured $uvExe @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                      "import vlc; vlc.Instance(); print('vlc ok')")
-    if (($probe.Code -eq 0) -and ($probe.Out -contains 'vlc ok')) {
+    $probe = Invoke-Captured $uvExe @('run', '--offline', '--frozen', '--no-sync', 'python', $probeFile)
+    Remove-Item $probeFile -Force -ErrorAction SilentlyContinue
+    $answer = @($probe.Out | Where-Object { $_ -match '^VLC(OK|NO)' } | Select-Object -Last 1)
+    if ($answer.Count -eq 1 -and $answer[0].StartsWith('VLCOK')) {
         $vlcVerdict = 'ok'
-        Write-Ok "Yes - Python loaded libVLC. The console will show the live picture."
+        $vlcDetail = $answer[0].Substring(5).Trim()
+        Write-Ok "Yes - the console can draw the live picture."
+        if ($vlcDetail) { Write-Info "  Using the VLC in $vlcDetail" }
+    } elseif ($answer.Count -eq 1) {
+        $vlcVerdict = 'no'
+        $vlcDetail = $answer[0].Substring(5).Trim()
+        Write-Info "No - the console will show no live picture. Nothing else is affected."
+        Write-Info "  $vlcDetail"
     } else {
+        $vlcVerdict = 'unknown'
         $vlcDetail = ($probe.Err | Where-Object { $_ -and ($_ -notmatch 'stale plugins cache') } |
                       Select-Object -Last 1)
-        $vlc = Get-VlcInstall
-        if ($vlc.Only32) { $vlcVerdict = '32bit' }
-        elseif ($vlc.Found) { $vlcVerdict = 'present-but-unusable' }
-        else { $vlcVerdict = 'missing' }
-        Write-Info "No - Python could not load libVLC. The rest of the system is unaffected."
+        Write-Info "The live-picture check gave no answer."
         if ($vlcDetail) { Write-Info "  $vlcDetail" }
     }
 }
@@ -827,35 +910,25 @@ finally { Pop-Location }
 
 switch ($vlcVerdict) {
     'ok' {
-        Add-Good "VLC - Python loaded libVLC, so the console shows the live picture"
+        Add-Good "VLC - the console loaded libVLC, so it shows the live picture"
     }
-    '32bit' {
-        # The failure that looks most like "VLC is missing" to somebody who can
-        # see VLC in their own Start menu. It gets its own sentence.
-        Add-Optional "VLC is installed, but it is the 32-bit build, which 64-bit Python cannot load" @(
-            "It is in $($vlc.Dir32). Everything except the live picture works.",
-            "Uninstall it from Add or remove programs, then install the 64-bit",
-            "Windows installer from https://www.videolan.org/vlc/ and run install.bat again."
-        )
-    }
-    'present-but-unusable' {
-        Add-Optional "VLC is installed in $($vlc.Dir), but Python could not load it" @(
-            $(if ($vlcDetail) { "Python said: $vlcDetail" } else { "Python gave no reason." }),
-            "Everything except the live picture works.",
-            "Reinstalling the 64-bit VLC from https://www.videolan.org/vlc/ usually fixes it."
-        )
-    }
-    'missing' {
-        Add-Optional "VLC is not installed, so the console shows no live picture" @(
+    'no' {
+        # One entry, carrying the console's own sentence. It already names which
+        # of the failures this is - not installed, the 32-bit one, or one with
+        # no plugins folder - and where it looked, which is the part that turns
+        # "VLC is missing" on a machine with VLC installed into something the
+        # operator can act on.
+        Add-Optional "the console will show no live picture" @(
+            $vlcDetail,
             "Everything else, recording included, works without it.",
-            "Install the 64-bit Windows installer from https://www.videolan.org/vlc/",
-            "and run install.bat again."
+            "The 64-bit Windows installer is at https://www.videolan.org/vlc/",
+            "Adding VLC to PATH does not help and is not what the console reads."
         )
     }
     default {
         Add-Optional "whether the live picture will work was not established" @(
             "Type this in the VMD folder to find out:",
-            "  uv run --offline --frozen --no-sync python -c ""import vlc; vlc.Instance(); print('vlc ok')"""
+            "  uv run --offline --frozen --no-sync python -c ""from vmd.desktop.libvlc import prepare; print(prepare().dll)"""
         )
     }
 }

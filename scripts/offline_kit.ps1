@@ -22,9 +22,51 @@
 #  result somewhere.
 #
 #  VLC is the exception because libVLC is a real installation: a registry entry,
-#  a plugin tree, and a DLL that python-vlc finds through the registry. It has
-#  to be installed on the target, so its installer travels beside the project
-#  and scripts\offline_install.ps1 runs it there.
+#  a plugin tree, and a DLL the console has to be able to find. It has to be
+#  installed on the target, so its installer travels beside the project and
+#  scripts\offline_install.ps1 runs it there.
+#
+#  ---------------------------------------------------------------------------
+#  Planned, not built: carrying VLC's folder instead of its installer
+#  ---------------------------------------------------------------------------
+#
+#  The installer is the weakest step in the whole offline story. It asks the
+#  person standing at an air-gapped laptop to run a machine-wide install, as
+#  Administrator, correctly, on the day the camera goes up - and if winget or
+#  the MSI picks the 32-bit build, everything looks fine and the console is
+#  blind for ever.
+#
+#  vmd\desktop\libvlc.py is being given "<the project folder>\VLC" as a search
+#  candidate, ahead of the registry and the standard folders, so a VLC placed
+#  beside the application wins over whatever happens to be installed on the
+#  machine, and falls through to today's behaviour when it is absent or wrong.
+#  It checks the architecture and the plugins tree there like anywhere else.
+#
+#  When that lands, this script should copy VLC's installed folder into the kit.
+#  Two decisions, made now so they are not made twice:
+#
+#    Where.     <project>\VLC\, beside VMD.exe - not bin\vendor\, which is for
+#               things that are run once and thrown away. This one is read at
+#               every start, has to travel with the folder, and has to be at the
+#               path the loader looks at. bin\vendor\vlc-win64.exe stays where it
+#               is: it remains the fallback for a machine that wants VLC
+#               installed properly, and the online path is unchanged.
+#
+#    Licence.   VLC is GPL-2.0 (which is what its winget manifest declares) with
+#               libVLC under LGPL-2.1+. Shipping a copy of the binaries is
+#               conveying them, so the copy has to carry its licence: VLC's own
+#               COPYING.txt and AUTHORS.txt live inside the installed folder, so
+#               copying the folder whole carries them, and copying only a subset
+#               must copy them explicitly. Beside them the kit should carry a
+#               short note naming the exact VLC version and the URL its source
+#               can be obtained from, because a binary-only distribution needs
+#               to say where the source is. Neither of these is optional and
+#               neither is expensive.
+#
+#  Not built here yet, deliberately: whether the whole VideoLAN\VLC folder is
+#  needed or only libvlc.dll, libvlccore.dll and plugins\ is a question for the
+#  code that loads it, and guessing it would produce a kit that works on the
+#  machine it was built on and fails on the laptop.
 # =============================================================================
 param(
     [string]$To,

@@ -268,41 +268,71 @@ try {
     Write-Ok "The libraries import."
     Add-Good "the Python environment - the console and the recorder run"
 
-    # The only question about VLC that decides anything, asked the same way
-    # INSTALL.md tells the operator to ask it by hand so that the two cannot
-    # disagree. Its stderr is captured rather than shown: libVLC prints a line
-    # per plugin - about fifty kilobytes of "stale plugins cache" - whenever its
-    # index is older than the plugins, and none of it means anything is wrong.
-    Write-Info "Asking Python whether it can draw the live picture."
-    $probe = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                   "import vlc; vlc.Instance(); print('vlc ok')")
-    if (($probe.Code -eq 0) -and ($probe.Out -contains 'vlc ok')) {
-        Write-Ok "Yes - Python loaded libVLC. The console will show the live picture."
-        Add-Good "VLC - Python loaded libVLC, so the console shows the live picture"
+    # The only question about VLC that decides anything, and it is the console's
+    # own question. The console no longer lets python-vlc do the searching:
+    # vmd\desktop\libvlc.py finds VLC itself, checks the architecture and the
+    # plugins folder, and hands the answer over with os.add_dll_directory,
+    # because since Python 3.8 ctypes does not look along PATH for a dependent
+    # DLL. So this runs that loader, and reuses its refusals verbatim - they are
+    # already written for whoever is standing at this laptop, and the video pane
+    # shows the same words.
+    #
+    # Its stderr is captured rather than shown: libVLC prints a line per plugin
+    # - about fifty kilobytes of "stale plugins cache" - whenever its index is
+    # older than the plugins, and none of it means anything is wrong.
+    Write-Info "Asking the console's own loader whether it can draw the live picture."
+    $probeFile = Join-Path $env:TEMP 'vmd-vlc-probe.py'
+    Set-Content -Path $probeFile -Encoding UTF8 -Value @'
+# Written by scripts\offline_install.ps1. Prints one line, and always exits 0 so
+# that the installer classifies on the line rather than on an exit code that
+# python-vlc sometimes sets by calling sys.exit() from inside an import.
+import sys
+
+where = ""
+try:
+    from vmd.desktop.libvlc import prepare
+except Exception:
+    prepare = None
+
+try:
+    if prepare is not None:
+        where = str(prepare().folder)
+    import vlc
+
+    vlc.Instance()
+except SystemExit as stop:
+    print("VLCNO python-vlc stopped the process (exit %s) instead of raising." % stop.code)
+    sys.exit(0)
+except BaseException as failure:
+    print("VLCNO " + " ".join(str(failure).split()))
+    sys.exit(0)
+
+print("VLCOK " + where)
+'@
+    $probe = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', $probeFile)
+    Remove-Item $probeFile -Force -ErrorAction SilentlyContinue
+    $answer = @($probe.Out | Where-Object { $_ -match '^VLC(OK|NO)' } | Select-Object -Last 1)
+    if ($answer.Count -eq 1 -and $answer[0].StartsWith('VLCOK')) {
+        $where = $answer[0].Substring(5).Trim()
+        Write-Ok "Yes - the console can draw the live picture."
+        if ($where) { Write-Info "  Using the VLC in $where" }
+        Add-Good "VLC - the console loaded libVLC, so it shows the live picture"
     } else {
-        $detail = ($probe.Err | Where-Object { $_ -and ($_ -notmatch 'stale plugins cache') } |
-                   Select-Object -Last 1)
-        Write-Info "No - Python could not load libVLC. The rest of the system is unaffected."
+        $detail = if ($answer.Count -eq 1) { $answer[0].Substring(5).Trim() }
+                  else { ($probe.Err | Where-Object { $_ -and ($_ -notmatch 'stale plugins cache') } |
+                          Select-Object -Last 1) }
+        Write-Info "No - the console will show no live picture. Nothing else is affected."
         if ($detail) { Write-Info "  $detail" }
-        $vlc = Get-VlcInstall
-        if ($vlc.Only32) {
-            Add-Optional "VLC is installed, but it is the 32-bit build, which 64-bit Python cannot load" @(
-                "It is in $($vlc.Dir32). Everything except the live picture works.",
-                "Uninstall it from Add or remove programs, then run the 64-bit installer:",
-                "  $(Join-Path $binDir 'vendor\vlc-win64.exe')"
-            )
-        } elseif ($vlc.Found) {
-            Add-Optional "VLC is installed in $($vlc.Dir), but Python could not load it" @(
-                $(if ($detail) { "Python said: $detail" } else { "Python gave no reason." }),
-                "Everything except the live picture works.",
-                "Running the installer in bin\vendor\ again usually fixes it."
-            )
-        } else {
-            Add-Optional "VLC is not installed, so the console shows no live picture" @(
-                "Everything else, recording included, works without it.",
-                "Double-click $(Join-Path $binDir 'vendor\vlc-win64.exe') and click through it."
-            )
-        }
+        # One entry, carrying the loader's own sentence: it already names which
+        # failure this is - not installed, the 32-bit one, or one with no
+        # plugins folder - and where it looked.
+        Add-Optional "the console will show no live picture" @(
+            $(if ($detail) { $detail } else { "The check gave no reason." }),
+            "Everything else, recording included, works without it.",
+            "The 64-bit installer that travelled with this copy is at:",
+            "  $(Join-Path $binDir 'vendor\vlc-win64.exe')",
+            "Adding VLC to PATH does not help and is not what the console reads."
+        )
     }
 }
 finally { Pop-Location }

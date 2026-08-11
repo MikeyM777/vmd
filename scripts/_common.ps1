@@ -534,35 +534,55 @@ function Get-DllBits($file) {
     }
 }
 
-function Get-RegistryString($key, $name) {
-    try {
-        $item = Get-ItemProperty -Path $key -Name $name -ErrorAction Stop
-        $value = $item.$name
-        if (($value -is [string]) -and $value.Trim()) { return $value.Trim() }
-    } catch { }
-    return $null
+# Both hives, both views, and the VALUE rather than the key.
+#
+# The value, because on the machine this was written on
+# HKCU\Software\VideoLAN\VLC exists and holds only Lang=en - no InstallDir at
+# all. Code that asks whether the key is there gets a confident yes and a folder
+# of empty string.
+#
+# Both views, because HKLM\Software is redirected: a 64-bit process cannot see a
+# 32-bit installer's key and a 32-bit process cannot see a 64-bit one's. The
+# HKLM:\SOFTWARE\WOW6432Node\... path works from a 64-bit process and is wrong
+# from a 32-bit one, where it would mean WOW6432Node\WOW6432Node. OpenBaseKey
+# with an explicit view is right from either, which matters because nothing
+# stops somebody starting this from a 32-bit PowerShell.
+function Get-RegistryString($hive, $subkey, $name) {
+    $found = @()
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,
+                        [Microsoft.Win32.RegistryView]::Registry32)) {
+        $base = $null
+        $key = $null
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, $view)
+            $key = $base.OpenSubKey($subkey)
+            if ($key) {
+                $value = $key.GetValue($name)
+                if (($value -is [string]) -and $value.Trim()) { $found += $value.Trim() }
+            }
+        } catch {
+        } finally {
+            if ($key) { $key.Dispose() }
+            if ($base) { $base.Dispose() }
+        }
+    }
+    return $found
 }
 
 function Get-VlcInstall {
     $places = New-Object System.Collections.ArrayList
 
-    # The two keys python-vlc reads, in the order it reads them.
-    foreach ($key in @('HKLM:\SOFTWARE\VideoLAN\VLC', 'HKCU:\SOFTWARE\VideoLAN\VLC')) {
-        $dir = Get-RegistryString $key 'InstallDir'
-        if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the VideoLAN key in the registry' }) }
-    }
-    # The 32-bit view of the same key. A 64-bit process cannot see it through
-    # the name above, which is precisely how a 32-bit VLC becomes invisible.
-    $dir = Get-RegistryString 'HKLM:\SOFTWARE\WOW6432Node\VideoLAN\VLC' 'InstallDir'
-    if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the 32-bit VideoLAN key in the registry' }) }
-    # What Add or remove programs knows, which is where a custom install
-    # directory is recorded.
-    foreach ($key in @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player',
-        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player')) {
-        $dir = Get-RegistryString $key 'InstallLocation'
-        if ($dir) { [void]$places.Add(@{ Dir = $dir; Source = 'the uninstall entry in the registry' }) }
+    # The key python-vlc reads, in both hives and both registry views.
+    foreach ($hive in @([Microsoft.Win32.RegistryHive]::LocalMachine,
+                        [Microsoft.Win32.RegistryHive]::CurrentUser)) {
+        foreach ($dir in (Get-RegistryString $hive 'SOFTWARE\VideoLAN\VLC' 'InstallDir')) {
+            [void]$places.Add(@{ Dir = $dir; Source = 'the VideoLAN key in the registry' })
+        }
+        # What Add or remove programs knows, which is where a custom install
+        # directory is recorded.
+        foreach ($dir in (Get-RegistryString $hive 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VLC media player' 'InstallLocation')) {
+            [void]$places.Add(@{ Dir = $dir; Source = 'the uninstall entry in the registry' })
+        }
     }
     # The ordinary places, including the per-user install winget will choose on
     # a machine where it cannot write to Program Files.
@@ -570,19 +590,26 @@ function Get-VlcInstall {
                         (Join-Path $env:LOCALAPPDATA 'Programs'), $env:LOCALAPPDATA)) {
         if ($base) { [void]$places.Add(@{ Dir = (Join-Path $base 'VideoLAN\VLC'); Source = 'the usual folder' }) }
     }
-    # And anywhere on PATH, which is what a portable copy looks like.
+    # And anywhere on PATH, which is what a portable copy looks like. Reading
+    # PATH is not the same as writing it: nothing in this project ever puts VLC
+    # on PATH, because since Python 3.8 ctypes does not search PATH for a
+    # dependent DLL - vmd\desktop\libvlc.py uses os.add_dll_directory instead,
+    # and PATH is no substitute for it.
     foreach ($part in ($env:Path -split ';')) {
         if ($part.Trim()) { [void]$places.Add(@{ Dir = $part.Trim(); Source = 'a folder on PATH' }) }
     }
 
     $found = $null
     $only32 = $null
+    $noPlugins = $null
+    $searched = @()
     $seen = @{}
     foreach ($place in $places) {
         $dir = $place.Dir
         $key = $dir.TrimEnd('\').ToLowerInvariant()
         if ($seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
+        $searched += $dir
         $dll = Join-Path $dir 'libvlc.dll'
         # Whatever the registry says, the file has to actually be there. A key
         # left behind by an uninstall is a false pass, and a false pass is worse
@@ -590,13 +617,25 @@ function Get-VlcInstall {
         # somewhere else entirely.
         if (-not (Test-Path $dll)) { continue }
         $bits = Get-DllBits $dll
-        if ($bits -eq 64) {
-            $found = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 64; Source = $place.Source }
-            break
+        if ($bits -ne 64) {
+            if (($bits -eq 32) -and (-not $only32)) {
+                $only32 = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 32; Source = $place.Source }
+            }
+            continue
         }
-        if (($bits -eq 32) -and (-not $only32)) {
-            $only32 = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 32; Source = $place.Source }
+        # A libvlc.dll with no plugins tree beside it loads, reports itself
+        # healthy and then shows a black rectangle for ever, with nothing on
+        # screen saying why. Counting that as "VLC is installed" would have the
+        # installer say everything is fine about the one failure that never
+        # explains itself.
+        if (-not (Test-Path (Join-Path $dir 'plugins'))) {
+            if (-not $noPlugins) {
+                $noPlugins = [pscustomobject]@{ Dir = $dir; Dll = $dll; Source = $place.Source }
+            }
+            continue
         }
+        $found = [pscustomobject]@{ Dir = $dir; Dll = $dll; Bits = 64; Source = $place.Source }
+        break
     }
 
     $result = [pscustomobject]@{
@@ -609,6 +648,13 @@ function Get-VlcInstall {
         # somebody who can see VLC on their own screen.
         Only32 = ((-not $found) -and [bool]$only32)
         Dir32  = $null
+        # A VLC with no plugins folder is a third thing again, with a different
+        # two-minute fix.
+        NoPlugins = ((-not $found) -and (-not $only32) -and [bool]$noPlugins)
+        DirNoPlugins = $null
+        # Every folder actually looked at, so that a refusal can name where it
+        # looked rather than assert an absence.
+        Searched = $searched
     }
     if ($found) {
         $result.Dir = $found.Dir
@@ -616,6 +662,7 @@ function Get-VlcInstall {
         $result.Source = $found.Source
     }
     if ($only32) { $result.Dir32 = $only32.Dir }
+    if ($noPlugins) { $result.DirNoPlugins = $noPlugins.Dir }
     return $result
 }
 
@@ -628,11 +675,17 @@ function Get-VlcInstall {
 # newer version - a success being reported as a failure, on the machine where
 # everything is already fine.
 #
-# 0x8A15002B and 0x8A150014 were confirmed by running winget on the development
-# machine. The rest are from winget's published return codes and are here to
-# turn a bare hexadecimal number into a sentence, not to be relied on: anything
-# not in the table falls through to "winget said no", and the real verdict comes
-# from looking for the thing afterwards.
+# 0x8A15002B, 0x8A150014 and 0x8A150017 were confirmed by running winget on the
+# development machine. The rest are from winget's published return codes and are
+# here to turn a bare hexadecimal number into a sentence, not to be relied on:
+# anything not in the table falls through to "winget said no", and the real
+# verdict comes from looking for the thing afterwards.
+#
+# That last part is not a formality. `winget show --id VideoLAN.VLC
+# --architecture x86` and `--architecture x64` both return an installer - a
+# win32 MSI and a win64 MSI - so which one an unpinned `winget install` picks is
+# a property of the machine, and a completely successful exit code can leave
+# behind a VLC that 64-bit Python cannot load. Checked on this machine.
 #
 # Keyed by the hexadecimal form, which is the form winget's own documentation
 # uses and therefore the form worth having in a log somebody will search.
@@ -644,6 +697,7 @@ $script:WINGET_MEANING = @{
     '0x8A150010' = 'winget has no installer for this machine'
     '0x8A150011' = 'the download did not match its checksum'
     '0x8A150014' = 'winget does not know that package'
+    '0x8A150017' = 'winget has no such version of that package'
     '0x8A150019' = 'winget needs administrator rights for this'
 }
 # The two codes that mean the machine is already in the state we wanted.

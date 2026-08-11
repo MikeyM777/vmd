@@ -165,7 +165,7 @@ block the file. Close the window and continue.
    |---|---|---|
    | `[1/12]` | Checking that Windows can install software | `winget is available.` |
    | `[2/12]` | Installing **uv** — the thing that brings Python | `uv is already installed.` or `uv installed.` |
-   | `[3/12]` | Finding or installing **VLC** — the thing that draws the live picture | `VLC is already here:` and a folder, or `VLC is here now:` |
+   | `[3/12]` | Finding or installing the **64-bit VLC** — the thing that draws the live picture | `VLC is already here:` and a folder, or `VLC is here now:` followed by `Checked: 64-bit libvlc.dll, with its plugins folder beside it.` |
    | `[4/12]` | Downloading **ffmpeg** — the thing that records video — into `bin\` | `ffmpeg installed to bin\ffmpeg.exe` |
    | `[5/12]` | Downloading **go2rtc** — it takes the camera's video once and passes it to the console | `go2rtc installed to bin\go2rtc.exe` |
    | `[6/12]` | Downloading the **detector's weights** — the file that lets it name what moved | `yolo11n.pt downloaded.` |
@@ -212,13 +212,17 @@ block the file. Close the window and continue.
    > **Every line the installer printed is also saved to a file:**
    >
    > ```
-   > C:\VMD\bin\logs\install.log
+   > bin\logs\install.log        (inside the VMD folder, wherever you put it)
    > ```
    >
-   > and, if Windows asked for permission, `install-admin.log` beside it. If
-   > anything looked wrong, send those files — they are the whole story, and the
-   > installer takes any passwords out of them before writing them. You do not
-   > need to describe what you saw; the file already has it.
+   > and, if Windows asked for permission, `install-admin.log` beside it. The
+   > installer prints the full path at the end, so you never have to work it
+   > out — this document says `C:\VMD` throughout, but the folder works
+   > anywhere and the path it prints is the real one.
+   >
+   > If anything looked wrong, send those files — they are the whole story, and
+   > the installer takes any passwords out of them before writing them. You do
+   > not need to describe what you saw; the file already has it.
 
 7. **Leave the black window open while the console is open.** The console runs
    from it; closing the black window closes the console. Closing the console does
@@ -277,18 +281,26 @@ Optional, but it takes thirty seconds and tells you for certain.
 6. Type this and press **Enter**, all on one line:
 
    ```powershell
-   uv run --offline --frozen --no-sync python -c "import vlc; vlc.Instance(); print('vlc ok')"
+   uv run --offline --frozen --no-sync python -c "from vmd.desktop.libvlc import prepare; print(prepare().dll)"
    ```
 
-   `vlc ok` somewhere in the output means the console will be able to draw the
-   live picture. VLC may print a long list of lines about a `stale plugins
-   cache` first — ignore those, they are harmless, and they are the reason a
-   first start can be slow. No `vlc ok` at all means VLC is missing, or is the
-   32-bit one — see the table below.
+   A path ending in `libvlc.dll` means the console will be able to draw the live
+   picture. Anything else is one sentence saying what is wrong and what to do
+   about it — the same sentence the console's video pane shows.
 
-   > This is the same command the installer runs for you at step 9, on purpose:
-   > if you ever want to check the installer's own answer, this is the check it
-   > used. What it says here and what step 9 said cannot disagree.
+   > **This asks the console's own loader**, which is the only thing whose
+   > answer matters. The console does not let `import vlc` go looking for VLC
+   > any more: it searches itself, checks that the copy it found is 64-bit and
+   > has its `plugins` folder, and hands the answer over. So this command and
+   > the installer's step 9 and the video pane cannot disagree with each other.
+   >
+   > VLC may print a long list of lines about a `stale plugins cache` first —
+   > ignore those, they are harmless, and they are the reason a first start can
+   > be slow.
+   >
+   > **Putting VLC on `PATH` does not fix anything here**, and is worth not
+   > trying: since Python 3.8, Windows no longer searches `PATH` for a library's
+   > own dependencies, so a VLC that is only on `PATH` still fails.
 
 ---
 
@@ -407,10 +419,12 @@ prints the current state:
 ## If something goes wrong
 
 **Before anything else: there is a file.** Everything the installer printed is
-in `C:\VMD\bin\logs\install.log` (and `install-admin.log` beside it, if Windows
-asked for permission). Passwords are taken out of it before it is written. If
-what you are seeing is not in the table below, send that file rather than trying
-to describe it.
+in `bin\logs\install.log` inside the VMD folder — `C:\VMD\bin\logs\install.log`
+if you put the folder where this document says, and the installer prints the
+real path at the end either way. `install-admin.log` sits beside it if Windows
+asked for permission. Passwords are taken out of both before they are written.
+If what you are seeing is not in the table below, send those files rather than
+trying to describe what you saw.
 
 | What you see | What it means | What to do |
 |---|---|---|
@@ -420,9 +434,10 @@ to describe it.
 | `ffmpeg is missing, so nothing can be recorded` (in the red list) | The recorder cannot record without it | Download the *release essentials* zip from https://www.gyan.dev/ffmpeg/builds/, open it, and drag `ffmpeg.exe` into `C:\VMD\bin\`. Then run `install.bat` again |
 | `yolo11n.pt is missing` (in the yellow list) | The detector's weights did not download | Detection still works; it just cannot say *what* moved. Download it from https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt and save it into `C:\VMD` |
 | `VLC is not installed, so the console shows no live picture` (in the yellow list) | Python looked for libVLC and did not find one | Install VLC from https://www.videolan.org/vlc/ — take the **64-bit Windows installer**, click through it, then run `install.bat` again. Recording is unaffected meanwhile |
-| `VLC is installed, but it is the 32-bit build` | The 32-bit VLC cannot be loaded by 64-bit Python, no matter where it is | This is the one that looks like "VLC is missing" while VLC is plainly in your Start menu. Uninstall it from *Add or remove programs*, install the **64-bit** VLC from https://www.videolan.org/vlc/, run `install.bat` again |
-| `VLC is installed in … but Python could not load it` | VLC is there and something else is wrong with it — a half-finished install, a missing plugin folder | The line under it is what Python said. Reinstalling the 64-bit VLC over the top usually fixes it |
-| A video panel says `No video here:` | The console could not find VLC, or found a 32-bit one | Same two fixes as the rows above. Everything except the picture keeps working meanwhile |
+| `winget installed the 32-BIT VLC` or `it is the 32-bit version` | The 32-bit VLC cannot be loaded by 64-bit Python, no matter where it is or how many times it is reinstalled | **This is the one that looks like "VLC is missing" while VLC is plainly in your Start menu, and re-running the installer will never fix it.** Uninstall VLC from *Add or remove programs*, download the **64-bit** Windows installer from https://www.videolan.org/vlc/ by hand, install that, run `install.bat` again |
+| `is missing its plugins folder` | libVLC is there but the parts it plays video with are not. It would open a black picture and never say why | Install VLC again from https://www.videolan.org/vlc/, taking the **64-bit** Windows installer |
+| A video panel says `No video here:` | The console could not find a VLC it can use | The rest of that sentence says which of the three it is and where it looked. Same fixes as the rows above; everything except the picture keeps working meanwhile |
+| You are tempted to add VLC to `PATH` | It will not help | Since Python 3.8, Windows does not search `PATH` for a library's own dependencies, and VLC's installer does not put itself there either. The console finds VLC through the registry and the ordinary folders, and adds the folder it chose to the search path itself |
 | `Still running from this folder: …` | The recorder or the console was running while the installer wanted to rebuild the environment | Restart the laptop and run `install.bat` again before anything else has started. If you do not, step 9 may stop with `Access is denied` |
 | The console takes fifteen seconds to appear, once | VLC is rebuilding its own index of parts | Nothing to do. Later starts take about five seconds. To fix it for good, run `install.bat` again — step 3 rebuilds that index while it has permission to |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
