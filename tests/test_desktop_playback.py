@@ -427,8 +427,8 @@ def test_clicking_a_mark_seeks_five_seconds_before_the_movement(
 
 
 def test_a_click_within_the_tolerance_prefers_the_mark(qtbot, tmp_path: Path) -> None:
-    """Half a minute either side. A whole day is drawn in a few hundred pixels,
-    so the pixel under the pointer is never the second the movement began."""
+    """Twenty seconds, on a bar 200 px wide where one pixel is seven minutes.
+    The pixel under the pointer is never the second the movement began."""
     start, end = day_bounds(2026, 8, 11)
     span = end - start
     at = start + span / 2
@@ -454,8 +454,9 @@ def test_a_click_outside_the_tolerance_is_an_ordinary_seek(qtbot, tmp_path: Path
         index.add("thermal", str(tmp_path / "a.mp4"), start, end, 1000)
         tab.show_day(2026, 8, 11, stream="thermal")
 
-        tab.click_at((at + 45.0 - start) / span, width=200)  # forty-five seconds away
-        assert abs(tab.playhead_time - (at + 45.0)) < 1.0
+        # Five minutes away on a 1200 px bar: four pixels clear of the red.
+        tab.click_at((at + 300.0 - start) / span, width=1200)
+        assert abs(tab.playhead_time - (at + 300.0)) < 1.0
     finally:
         index.close()
 
@@ -501,16 +502,22 @@ def test_an_event_store_that_cannot_be_read_still_draws_the_day(
 
 # ------------------------------------------------- how close a click has to be
 #
-# The tolerance was six PIXELS on a bar spanning a whole day. At 1000 px wide
-# one pixel is 86.4 s, so a click was silently redirected to an event up to
-# 518 s - eight and a half minutes - away. On a day with 113 marks there was no
-# clickable moment more than 2.8 s from a mark, and plain time-seeking became
-# impossible. It is a duration now, and it means the same thing at every width.
+# Wrong in both directions before now. Six PIXELS on a bar spanning a whole day
+# redirected a click to an event up to eight and a half minutes away, and made
+# plain time-seeking impossible on a day with 113 marks. Thirty SECONDS on a
+# 1200 px bar is 0.42 of a pixel, so a mark drawn three pixels wide had 0.83 px
+# of it that could be hit: the operator aimed at the red line, missed, and was
+# given footage from a minute away with nothing saying he had missed.
+#
+# The rule now is the one that is true at every width: the target is at least as
+# big as the thing drawn. Four pixels of target for three pixels of mark,
+# whatever the window is dragged to.
 
 
-def test_a_click_a_minute_from_a_mark_means_the_time_not_the_mark(
+def test_a_click_clear_of_a_mark_means_the_time_not_the_mark(
     qtbot, tmp_path: Path
 ) -> None:
+    """Five minutes away on a 1000 px bar is three pixels clear of the red."""
     start, _end = day_bounds(2026, 8, 11)
     at = start + 12 * 3600
     tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
@@ -518,11 +525,11 @@ def test_a_click_a_minute_from_a_mark_means_the_time_not_the_mark(
               end=start + 86400, size_bytes=1)
     tab.show_day(2026, 8, 11, stream="thermal")
 
-    a_minute_later = at + 60.0
-    tab.click_at((a_minute_later - start) / day_span(), width=1000)
+    later = at + 300.0
+    tab.click_at((later - start) / day_span(), width=1000)
 
-    assert abs(tab.playhead_time - a_minute_later) < 1.0, (
-        "a click a minute away was redirected to a mark"
+    assert abs(tab.playhead_time - later) < 1.0, (
+        "a click five minutes away was redirected to a mark"
     )
 
 
@@ -541,9 +548,17 @@ def test_a_click_a_few_seconds_from_a_mark_still_means_the_mark(
     assert abs(tab.playhead_time - (at - EVENT_LEAD_SECONDS)) < 1.0
 
 
-def test_the_tolerance_is_the_same_duration_at_every_width(qtbot, tmp_path: Path) -> None:
-    """A window the operator dragged narrower must not change which moments of
-    the day can be reached."""
+def test_the_mark_is_at_least_as_big_to_click_as_it_is_to_look_at(
+    qtbot, tmp_path: Path
+) -> None:
+    """The whole rule, at a narrow window and a wide one.
+
+    Pixels per second change with the width, so the tolerance has to as well:
+    a fixed duration is 0.83 px of target at 1200 and 1.76 px at 2540, and the
+    mark is drawn three pixels wide at both.
+    """
+    from vmd.desktop.playback import MARK_WIDTH
+
     start, _end = day_bounds(2026, 8, 11)
     at = start + 12 * 3600
     tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
@@ -551,15 +566,60 @@ def test_the_tolerance_is_the_same_duration_at_every_width(qtbot, tmp_path: Path
               end=start + 86400, size_bytes=1)
     tab.show_day(2026, 8, 11, stream="thermal")
 
-    a_minute_later = (at + 60.0 - start) / day_span()
-    for width in (200, 1000, 4000):
-        tab.click_at(a_minute_later, width=width)
-        assert abs(tab.playhead_time - (at + 60.0)) < 1.0, f"at {width} px wide"
+    for width in (1200, 1900, 2540, 3840):
+        seconds_per_pixel = day_span() / width
+        target_pixels = 2.0 * tab.mark_tolerance_seconds(width) / seconds_per_pixel
+        assert target_pixels >= MARK_WIDTH, (
+            f"at {width} px the mark is {MARK_WIDTH} px to look at and "
+            f"{target_pixels:.2f} px to click"
+        )
+        # And not so much bigger that it eats the bar around it.
+        assert target_pixels <= 2 * MARK_WIDTH, f"at {width} px: {target_pixels:.2f} px"
 
-    ten_seconds_later = (at + 10.0 - start) / day_span()
-    for width in (200, 1000, 4000):
-        tab.click_at(ten_seconds_later, width=width)
-        assert abs(tab.playhead_time - (at - EVENT_LEAD_SECONDS)) < 1.0, f"at {width} px wide"
+
+def test_a_click_on_the_red_the_operator_can_see_means_the_mark(
+    qtbot, tmp_path: Path
+) -> None:
+    """The pixel he aimed at is drawn red, so it means the mark - at a narrow
+    window and at a wide one, where a pixel is worth very different amounts of
+    the day."""
+    start, _end = day_bounds(2026, 8, 11)
+    at = start + 12 * 3600
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    for width in (1200, 3840):
+        seconds_per_pixel = day_span() / width
+        for edge in (-1.5, -0.5, 0.0, 0.5, 1.5):
+            when = at + edge * seconds_per_pixel
+            tab.click_at((when - start) / day_span(), width=width)
+            assert abs(tab.playhead_time - (at - EVENT_LEAD_SECONDS)) < 1.0, (
+                f"a click {edge} px from the middle of a 3 px mark missed it "
+                f"at {width} px wide"
+            )
+
+
+def test_a_deliberate_seek_is_not_swallowed_at_any_width(
+    qtbot, tmp_path: Path
+) -> None:
+    """Four pixels clear of the mark is plain time, whatever the width. This is
+    the half the six-pixel tolerance got wrong."""
+    start, _end = day_bounds(2026, 8, 11)
+    at = start + 12 * 3600
+    tab, _pane, index = build_with_events(qtbot, tmp_path, FakeEvents([movement(1, at)]))
+    index.add(stream="thermal", path=str(tmp_path / "a.mp4"), start=start,
+              end=start + 86400, size_bytes=1)
+    tab.show_day(2026, 8, 11, stream="thermal")
+
+    for width in (1200, 1900, 2540, 3840):
+        seconds_per_pixel = day_span() / width
+        when = at + 4.0 * seconds_per_pixel
+        tab.click_at((when - start) / day_span(), width=width)
+        assert abs(tab.playhead_time - when) < 1.0, (
+            f"a seek four pixels clear of a mark was swallowed at {width} px wide"
+        )
 
 
 def test_a_day_full_of_marks_still_has_moments_that_can_be_clicked(
