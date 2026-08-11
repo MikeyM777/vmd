@@ -385,7 +385,7 @@ prints the current state:
 | The console takes fifteen seconds to appear, once | VLC is rebuilding its own index of parts | Nothing to do. Later starts take about five seconds. To fix it for good, run `install.bat` again — step 3 rebuilds that index while it has permission to |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
 | `No Python at '…\python.exe'` | The folder was copied from another machine without being prepared | Do not copy the folder by hand. See [Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet) |
-| `uv is not installed, so nothing can run yet` on a machine where it is | `bin\` is not on this account's PATH yet | Sign out of Windows and back in. If it persists, run `install.bat` again |
+| `uv is not installed, so nothing can run yet` | There is no `uv.exe` in `C:\VMD\bin\` and none on this account's PATH | Sign out of Windows and back in, which is when Windows picks up a new PATH. If it persists, run `install.bat` again — on the offline laptop, `offline-install.bat` |
 | Antivirus blocks or deletes something | Some antivirus tools dislike newly downloaded `.exe` files | Allow the `C:\VMD` folder in your antivirus, then run `install.bat` again |
 | `Access is denied` | The folder is protected | Move the whole `VMD` folder to `C:\VMD` and try again. Avoid `C:\Program Files` |
 | The console window does not open at the end | Only the last step failed; everything else is installed | Double-click `VMD.exe` in `C:\VMD` yourself |
