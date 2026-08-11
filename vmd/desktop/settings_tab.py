@@ -20,24 +20,28 @@ import logging
 from pathlib import Path
 
 from pydantic import ValidationError
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from vmd.desktop.style import PALETTE
-from vmd.settings import Settings, load_settings, save_settings
+from vmd.settings import Settings, StreamSettings, load_settings, save_settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +50,80 @@ StreamRow = tuple[str, str, bool, str]
 
 READERS = ["auto", "ffmpeg"]
 
+# The rectangle itself, kept on the list item rather than parsed back out of the
+# words shown to the operator. The words are for reading; the numbers are the
+# setting, and re-deriving one from the other is how a patch quietly moves.
+_REGION_ROLE = int(Qt.ItemDataRole.UserRole)
+
+# The three positions of `classify`, in the order they are offered, with the
+# value each one saves. None is first because it is the default and the right
+# answer for almost everyone: "follow the sensor" in the model's words, which is
+# not a sentence to put in front of the operator.
+CLASSIFY_CHOICES: list[tuple[str, bool | None]] = [
+    ("Work it out for me", None),
+    ("Always try to name it", True),
+    ("Never try to name it", False),
+]
+
+# Why the thermal head is different, in the only place the operator will ever
+# read it. The numbers are from the design: at 700 m a person is about 13 dots
+# across on the thermal sensor, which is not a photograph of anything.
+WHY_THERMAL = (
+    "This view comes from the heat camera.\n\n"
+    "It matters for one reason. At about 700 m away, a person is only around "
+    "13 dots across on the heat picture - far too small to tell a person from a "
+    "dog from a post. So naming what moved is left switched off for the heat "
+    "camera, and left on for the ordinary one.\n\n"
+    "Movement is still reported either way. Naming it is a bonus, never a "
+    "condition."
+)
+
+WHY_CLASSIFY = (
+    "After something has moved, VMD can try to say what it was - a person, a "
+    "dog, a car.\n\n"
+    "\"Work it out for me\" is the safe answer: it tries on the ordinary camera "
+    "and does not bother on the heat camera, where a person 700 m away is only "
+    "about 13 dots across and nothing can be told apart at that size.\n\n"
+    "Whatever this is set to, movement is still reported. Naming it never "
+    "decides whether you are told."
+)
+
+SENSITIVITY_CHOICES: list[tuple[str, str]] = [
+    ("Low - only big, obvious movement", "low"),
+    ("Normal", "normal"),
+    ("High - notices small or distant movement", "high"),
+]
+
+WHY_HORIZON = (
+    "Everything above this line is treated as sky, so birds are not reported.\n\n"
+    "The number is counted in dots (pixels) down from the TOP edge of the "
+    "picture - not metres, not degrees. So 0 is the very top and a bigger "
+    "number is further down.\n\n"
+    "Leave this switched off unless you know the number. A line set too low "
+    "throws away real movement below it and never tells you it did. Off is a "
+    "perfectly good setting."
+)
+
+WHY_REGIONS = (
+    "A patch listed here is never reported. It is the only reliable answer to "
+    "one particular tree that sways, a flag, or a busy road you do not care "
+    "about. Everything outside these patches is still watched.\n\n"
+    "The four numbers are dots (pixels) in the picture: how far across from the "
+    "left edge, how far down from the top edge, then how wide and how tall."
+)
+
 
 class StreamRowWidget(QWidget):
     """One stream, as the operator sees it: a name, an address, whether it is
-    recorded, and which client reads it. Nothing about it is fixed - a camera
-    calls its streams whatever it likes and the form has to keep up."""
+    recorded, which client reads it, and - since detection exists - whether it is
+    watched and how. Nothing about it is fixed: a camera calls its streams
+    whatever it likes and the form has to keep up.
+
+    Every one of those choices lives on this widget rather than in a list held
+    beside it, because that is what makes removing, adding and reordering rows
+    safe. A detection setting matched to a stream by position is a thermal flag
+    waiting to land on the wrong head.
+    """
 
     def __init__(
         self,
@@ -58,34 +131,180 @@ class StreamRowWidget(QWidget):
         url: str = "",
         enabled: bool = True,
         reader: str = "auto",
+        stream: StreamSettings | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        if stream is None:
+            stream = StreamSettings(name=name, url=url, enabled=enabled, reader=reader)
+        # Everything this stream arrived with. A save is this with the widgets
+        # written over it, so a field added to StreamSettings later is carried
+        # across rather than reset the first time anyone presses Save.
+        self._base = stream.model_dump(mode="json")
 
-        self.name_field = QLineEdit(name)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        # --- what it is ------------------------------------------------------
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(6)
+
+        self.name_field = QLineEdit(stream.name)
         self.name_field.setPlaceholderText("name")
         self.name_field.setFixedWidth(140)
 
-        self.url_field = QLineEdit(url)
+        self.url_field = QLineEdit(stream.url)
         self.url_field.setPlaceholderText("rtsp://address/path")
 
         self.record_field = QCheckBox("record")
-        self.record_field.setChecked(enabled)
+        self.record_field.setChecked(stream.enabled)
 
         self.reader_field = QComboBox()
         self.reader_field.addItems(READERS)
-        self.reader_field.setCurrentText(reader if reader in READERS else "auto")
+        self.reader_field.setCurrentText(stream.reader if stream.reader in READERS else "auto")
 
         self.remove_button = QPushButton("Remove")
 
-        layout.addWidget(self.name_field)
-        layout.addWidget(self.url_field, 1)
-        layout.addWidget(self.record_field)
-        layout.addWidget(self.reader_field)
-        layout.addWidget(self.remove_button)
+        top.addWidget(self.name_field)
+        top.addWidget(self.url_field, 1)
+        top.addWidget(self.record_field)
+        top.addWidget(self.reader_field)
+        top.addWidget(self.remove_button)
+        outer.addLayout(top)
+
+        # --- whether it is watched, and how ----------------------------------
+        #
+        # A second line under the stream rather than a separate panel: these
+        # belong to this stream and nothing else, and a panel somewhere else on
+        # the tab is how the wrong stream gets marked thermal.
+        watch = QHBoxLayout()
+        watch.setContentsMargins(146, 0, 0, 0)  # under the address, not the name
+        watch.setSpacing(6)
+
+        self.detect_field = QCheckBox("Watch for movement")
+        self.detect_field.setChecked(stream.detect)
+        self.detect_field.setToolTip(
+            "Watch this view and raise an alert when something moves in it.\n\n"
+            "Off until you turn it on. A detector pointed at a treeline before "
+            "anyone has told it about the trees alarms all day, and an alarm "
+            "nobody believes is worse than none."
+        )
+
+        self.thermal_field = QCheckBox("Heat camera")
+        self.thermal_field.setChecked(stream.thermal)
+        self.thermal_field.setToolTip(WHY_THERMAL)
+
+        self.classify_field = QComboBox()
+        for label, value in CLASSIFY_CHOICES:
+            self.classify_field.addItem(label, value)
+        self.classify_field.setToolTip(WHY_CLASSIFY)
+        self.set_classify(stream.classify)
+        classify_label = QLabel("Name what moved:")
+        classify_label.setToolTip(WHY_CLASSIFY)
+
+        self.sensitivity_field = QComboBox()
+        for label, value in SENSITIVITY_CHOICES:
+            self.sensitivity_field.addItem(label, value)
+        self.sensitivity_field.setToolTip(
+            "How much movement it takes before you are told.\n\n"
+            "High notices more, including more wind, rain and shadows. Low "
+            "notices only large, clear movement. Start at Normal."
+        )
+        self.set_sensitivity(stream.sensitivity)
+        sensitivity_label = QLabel("How touchy:")
+        sensitivity_label.setToolTip(self.sensitivity_field.toolTip())
+
+        self.details_button = QPushButton("Sky line and ignored patches")
+        self.details_button.setCheckable(True)
+        self.details_button.setToolTip(
+            "The two settings for a view that keeps alarming on something you "
+            "do not care about."
+        )
+
+        watch.addWidget(self.detect_field)
+        watch.addWidget(self.thermal_field)
+        watch.addWidget(classify_label)
+        watch.addWidget(self.classify_field)
+        watch.addWidget(sensitivity_label)
+        watch.addWidget(self.sensitivity_field)
+        watch.addWidget(self.details_button)
+        watch.addStretch(1)
+        outer.addLayout(watch)
+
+        # --- the two that need explaining ------------------------------------
+        self.details = QFrame()
+        self.details.setFrameShape(QFrame.Shape.StyledPanel)
+        details_layout = QVBoxLayout(self.details)
+        details_layout.setContentsMargins(8, 6, 8, 6)
+        details_layout.setSpacing(4)
+
+        horizon_line = QHBoxLayout()
+        horizon_line.setSpacing(6)
+        self.horizon_enabled_field = QCheckBox("Ignore everything above a sky line")
+        self.horizon_enabled_field.setToolTip(WHY_HORIZON)
+        self.horizon_field = QSpinBox()
+        self.horizon_field.setRange(0, 100000)
+        self.horizon_field.setSuffix(" dots from the top")
+        self.horizon_field.setToolTip(WHY_HORIZON)
+        self.set_horizon(stream.horizon_y)
+        self.horizon_enabled_field.toggled.connect(self.horizon_field.setEnabled)
+        self.horizon_field.setEnabled(self.horizon_enabled_field.isChecked())
+        horizon_line.addWidget(self.horizon_enabled_field)
+        horizon_line.addWidget(self.horizon_field)
+        horizon_line.addStretch(1)
+        details_layout.addLayout(horizon_line)
+
+        horizon_help = QLabel(
+            "There is no picture on this screen to measure against, so leave "
+            "the sky line off unless someone has read the number off a frame "
+            "for you. Off is the safe setting: a wrong line deletes real "
+            "movement without saying so."
+        )
+        horizon_help.setWordWrap(True)
+        horizon_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        details_layout.addWidget(horizon_help)
+        self.horizon_help = horizon_help
+
+        self.regions_help = QLabel(WHY_REGIONS)
+        self.regions_help.setWordWrap(True)
+        self.regions_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        details_layout.addWidget(self.regions_help)
+
+        self.regions_list = QListWidget()
+        self.regions_list.setToolTip(WHY_REGIONS)
+        self.regions_list.setMaximumHeight(90)
+        details_layout.addWidget(self.regions_list)
+
+        region_line = QHBoxLayout()
+        region_line.setSpacing(6)
+        self.region_x = _region_box("across")
+        self.region_y = _region_box("down")
+        self.region_w = _region_box("wide")
+        self.region_h = _region_box("tall")
+        self.add_region_button = QPushButton("Add this patch")
+        self.remove_region_button = QPushButton("Delete the selected patch")
+        for box in (self.region_x, self.region_y, self.region_w, self.region_h):
+            region_line.addWidget(box)
+        region_line.addWidget(self.add_region_button)
+        region_line.addWidget(self.remove_region_button)
+        region_line.addStretch(1)
+        details_layout.addLayout(region_line)
+
+        self.add_region_button.clicked.connect(self.add_region)
+        self.remove_region_button.clicked.connect(self.remove_selected_region)
+        self.set_regions([r.as_tuple() for r in stream.ignore_regions])
+
+        self.details.setVisible(False)
+        self.details_button.toggled.connect(self.details.setVisible)
+        outer.addWidget(self.details)
+
+        # What to say when a patch cannot be added. Set by SettingsTab so the
+        # row does not need to know where the message line lives.
+        self.on_problem = lambda text: None
+
+    # ------------------------------------------------------------- the values
 
     def values(self) -> StreamRow:
         return (
@@ -94,6 +313,107 @@ class StreamRowWidget(QWidget):
             self.record_field.isChecked(),
             self.reader_field.currentText(),
         )
+
+    def classify(self) -> bool | None:
+        return self.classify_field.currentData()
+
+    def set_classify(self, value: bool | None) -> None:
+        # `is`, not findData: findData compares with ==, and False == 0 == None
+        # in enough of Qt's variant handling to land "never name it" on "work it
+        # out for me" without a word of complaint.
+        for index in range(self.classify_field.count()):
+            if self.classify_field.itemData(index) is value:
+                self.classify_field.setCurrentIndex(index)
+                return
+        self.classify_field.setCurrentIndex(0)
+
+    def sensitivity(self) -> str:
+        return self.sensitivity_field.currentData()
+
+    def set_sensitivity(self, value: str) -> None:
+        for index in range(self.sensitivity_field.count()):
+            if self.sensitivity_field.itemData(index) == value:
+                self.sensitivity_field.setCurrentIndex(index)
+                return
+        self.sensitivity_field.setCurrentIndex(1)  # normal
+
+    def horizon(self) -> int | None:
+        """The sky line, or None when the rule is off - which is not the same as
+        zero. Zero would mean the whole picture is sky."""
+        if not self.horizon_enabled_field.isChecked():
+            return None
+        return int(self.horizon_field.value())
+
+    def set_horizon(self, value: int | None) -> None:
+        self.horizon_enabled_field.setChecked(value is not None)
+        self.horizon_field.setValue(int(value) if value is not None else 0)
+
+    def regions(self) -> list[tuple[int, int, int, int]]:
+        return [
+            self.regions_list.item(i).data(_REGION_ROLE) for i in range(self.regions_list.count())
+        ]
+
+    def set_regions(self, regions) -> None:
+        self.regions_list.clear()
+        for region in regions:
+            self._append_region(tuple(int(n) for n in region))
+
+    def add_region(self) -> bool:
+        """Add the patch in the four boxes, or say why it is not a patch."""
+        x, y = self.region_x.value(), self.region_y.value()
+        w, h = self.region_w.value(), self.region_h.value()
+        if w <= 0 or h <= 0:
+            self.on_problem(
+                "A patch to ignore needs a width and a height greater than zero."
+            )
+            return False
+        self._append_region((x, y, w, h))
+        return True
+
+    def remove_selected_region(self) -> None:
+        row = self.regions_list.currentRow()
+        if row < 0:
+            self.on_problem("Select the patch to delete first.")
+            return
+        self.regions_list.takeItem(row)
+
+    def _append_region(self, region: tuple[int, int, int, int]) -> None:
+        x, y, w, h = region
+        item = QListWidgetItem(f"{w} x {h} dots, at {x} across and {y} down")
+        item.setData(_REGION_ROLE, region)
+        self.regions_list.addItem(item)
+
+    def stream_values(self) -> dict:
+        """Everything this row knows, as StreamSettings would take it.
+
+        Built on top of what the stream arrived with, so a field this form has
+        never heard of survives a save rather than being reset to its default.
+        """
+        name, url, enabled, reader = self.values()
+        payload = dict(self._base)
+        payload.update(
+            name=name,
+            url=url,
+            enabled=enabled,
+            reader=reader,
+            detect=self.detect_field.isChecked(),
+            thermal=self.thermal_field.isChecked(),
+            classify=self.classify(),
+            sensitivity=self.sensitivity(),
+            horizon_y=self.horizon(),
+            ignore_regions=[
+                {"x": x, "y": y, "w": w, "h": h} for x, y, w, h in self.regions()
+            ],
+        )
+        return payload
+
+
+def _region_box(what: str) -> QSpinBox:
+    box = QSpinBox()
+    box.setRange(0, 100000)
+    box.setPrefix(f"{what} ")
+    box.setToolTip(WHY_REGIONS)
+    return box
 
 
 class _ToolSignals(QObject):
@@ -165,6 +485,49 @@ class SettingsTab(QWidget):
         self.add_stream_button.clicked.connect(lambda: self.add_stream_row())
         streams_outer.addWidget(self.add_stream_button)
         layout.addWidget(streams_box)
+
+        detection_box = QGroupBox("Movement detection")
+        detection_outer = QVBoxLayout(detection_box)
+        detection_help = QLabel(
+            "These apply to every view at once. Which views are watched, and "
+            "how, is set on each stream above."
+        )
+        detection_help.setWordWrap(True)
+        detection_help.setStyleSheet(f"color: {PALETTE['muted']};")
+        detection_outer.addWidget(detection_help)
+
+        self._detection_enabled = QCheckBox("Watch for movement at all")
+        self._detection_enabled.setToolTip(
+            "The master switch. Turning it off stops movement detection and "
+            "nothing else - recording keeps running, because it is a separate "
+            "program that shares nothing with this one."
+        )
+        detection_outer.addWidget(self._detection_enabled)
+
+        self._detection_classify = QCheckBox("Allow VMD to try to name what moved")
+        self._detection_classify.setToolTip(
+            "The master switch for naming things. With this off, nothing is "
+            "ever named, whatever the individual views are set to. With it on, "
+            "each view decides for itself.\n\n"
+            "It needs an extra download to work, and at 700 m a person is only "
+            "about 13 dots across, so it is off to begin with. You are told "
+            "about the movement either way."
+        )
+        detection_outer.addWidget(self._detection_classify)
+
+        travel_line = QFormLayout()
+        self._min_travel = QLineEdit()
+        self._min_travel.setPlaceholderText("empty means use the touchiness setting")
+        self._min_travel.setToolTip(
+            "How far a thing must travel across the picture, in dots, before "
+            "you are told about it. This is what separates a person walking "
+            "from a branch waving in one place.\n\n"
+            "Leave it empty. The touchiness setting already carries a measured "
+            "number for each view, and typing one here overrules a measurement."
+        )
+        travel_line.addRow("Must travel at least (dots)", self._min_travel)
+        detection_outer.addLayout(travel_line)
+        layout.addWidget(detection_box)
 
         storage_box = QGroupBox("Storage")
         storage_form = QFormLayout(storage_box)
@@ -292,6 +655,30 @@ class SettingsTab(QWidget):
     def radio_password(self, value: str) -> None:
         self._radio_password.setText(str(value))
 
+    @property
+    def detection_enabled(self) -> bool:
+        return self._detection_enabled.isChecked()
+
+    @detection_enabled.setter
+    def detection_enabled(self, value: bool) -> None:
+        self._detection_enabled.setChecked(bool(value))
+
+    @property
+    def detection_classify(self) -> bool:
+        return self._detection_classify.isChecked()
+
+    @detection_classify.setter
+    def detection_classify(self, value: bool) -> None:
+        self._detection_classify.setChecked(bool(value))
+
+    @property
+    def min_travel_px(self) -> str:
+        return self._min_travel.text()
+
+    @min_travel_px.setter
+    def min_travel_px(self, value: str) -> None:
+        self._min_travel.setText(str(value))
+
     def credential_fields(self) -> list[QLineEdit]:
         """Every field holding a password. They are all plain text on purpose."""
         return [self._password, self._radio_password]
@@ -299,10 +686,16 @@ class SettingsTab(QWidget):
     # ---------------------------------------------------------------- streams
 
     def add_stream_row(
-        self, name: str = "", url: str = "", enabled: bool = True, reader: str = "auto"
+        self,
+        name: str = "",
+        url: str = "",
+        enabled: bool = True,
+        reader: str = "auto",
+        stream: StreamSettings | None = None,
     ) -> StreamRowWidget:
-        row = StreamRowWidget(name, url, enabled, reader)
+        row = StreamRowWidget(name, url, enabled, reader, stream=stream)
         row.remove_button.clicked.connect(lambda: self.remove_stream_row(row))
+        row.on_problem = self._set_message
         self._rows.append(row)
         self._streams_layout.addWidget(row)
         return row
@@ -318,11 +711,18 @@ class SettingsTab(QWidget):
     def stream_rows(self) -> list[StreamRowWidget]:
         return list(self._rows)
 
-    def set_streams(self, rows: list[StreamRow]) -> None:
+    def set_streams(self, rows: list[StreamRow] | list[StreamSettings]) -> None:
+        """Replace every row. A `StreamSettings` brings its detection choices
+        with it; the four-part tuple is the older shorthand and means a stream
+        with detection left at its defaults."""
         for row in list(self._rows):
             self.remove_stream_row(row)
-        for name, url, enabled, reader in rows:
-            self.add_stream_row(name, url, enabled, reader)
+        for item in rows:
+            if isinstance(item, StreamSettings):
+                self.add_stream_row(stream=item)
+            else:
+                name, url, enabled, reader = item
+                self.add_stream_row(name, url, enabled, reader)
 
     def streams(self) -> list[StreamRow]:
         """What is on screen. Never a remembered list: the widgets are the truth."""
@@ -344,9 +744,15 @@ class SettingsTab(QWidget):
         self.radio_host = settings.radio.host
         self.radio_username = settings.radio.username
         self.radio_password = settings.radio.password
-        self.set_streams(
-            [(s.name, s.url, s.enabled, s.reader) for s in settings.camera.streams]
+        self.detection_enabled = settings.detection.enabled
+        self.detection_classify = settings.detection.classify
+        self.min_travel_px = (
+            "" if settings.detection.min_travel_px is None else str(settings.detection.min_travel_px)
         )
+        # The whole stream, not four of its fields: the detection choices belong
+        # to the row that shows them, and a row that was handed only a name and
+        # an address would write the defaults back over them at the next save.
+        self.set_streams(list(settings.camera.streams))
         self._set_message("")
 
     # ------------------------------------------------------------------ save
@@ -379,10 +785,13 @@ class SettingsTab(QWidget):
             host=self.camera_host.strip(),
             username=self.camera_username.strip(),
             password=self.camera_password,
-            streams=[
-                {"name": name, "url": url, "enabled": enabled, "reader": reader}
-                for name, url, enabled, reader in self.streams()
-            ],
+            streams=[row.stream_values() for row in self._rows],
+        )
+        payload["detection"] = dict(payload.get("detection", {}))
+        payload["detection"].update(
+            enabled=self.detection_enabled,
+            classify=self.detection_classify,
+            min_travel_px=self.min_travel_px.strip() or None,
         )
         radio_host = self.radio_host.strip()
         payload["radio"] = dict(payload.get("radio", {}))
