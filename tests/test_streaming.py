@@ -1425,3 +1425,240 @@ def test_repeated_identical_output_is_counted_rather_than_repeated(
     ), "two hundred copies of one line, or nothing said about the repeats"
     written = [r for r in caplog.records if "401" in r.getMessage()]
     assert len(written) < 30, f"{len(written)} copies of one line reached the log"
+
+
+# ------------------------------------------- a camera that gives one session
+#
+# The deadlock, with the real binary at both ends of it.
+#
+# The recorder starts first - the logon task guarantees that - finds no
+# streaming server and reads straight from the camera. If that camera hands out
+# one RTSP session at a time, every go2rtc started afterwards is refused BY THE
+# CAMERA, and no amount of killing go2rtc, correcting the password or restarting
+# the console can change it. That was the operator's second day.
+#
+# What is proved here and what is not. The camera in this test is a real go2rtc
+# serving a generated pattern behind a proxy that gives out one session at a
+# time, so what is proved is the mechanism: a camera with a session limit, a
+# real go2rtc refused by it, the console noticing, and the picture arriving the
+# moment the holder lets go. Whether the FLIR at the far end of that radio link
+# behaves this way is not proved by anything that can run here - nothing in this
+# repository can reach it. It remains the hypothesis that fits every round of
+# this fault, and the console now reports the state rather than asserting the
+# cause.
+
+
+class OneSessionAtATime:
+    """A camera that will give out exactly one RTSP session at a time.
+
+    A byte proxy in front of a real RTSP server: the first connection is passed
+    through, and anything arriving while that one is open is answered `453 Not
+    Enough Bandwidth`, which is what RTSP has for a server with no session left
+    to give. Loopback at both ends, and every thread here is a daemon.
+    """
+
+    def __init__(self, upstream_port: int) -> None:
+        import threading
+
+        self.upstream_port = upstream_port
+        self.refused = 0
+        self.sessions = 0
+        self._closed = False
+        self._busy = threading.Lock()
+        self._listener = socket.socket()
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self.port = self._listener.getsockname()[1]
+        threading.Thread(target=self._accept, name="one-session-camera", daemon=True).start()
+
+    def _accept(self) -> None:
+        import threading
+
+        while not self._closed:
+            try:
+                conn, _ = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        import threading
+
+        if not self._busy.acquire(blocking=False):
+            self.refused += 1
+            with conn:
+                try:
+                    conn.settimeout(2.0)
+                    conn.recv(4096)
+                    conn.sendall(b"RTSP/1.0 453 Not Enough Bandwidth\r\nCSeq: 1\r\n\r\n")
+                except OSError:
+                    pass
+            return
+        self.sessions += 1
+        try:
+            with conn, socket.create_connection(
+                ("127.0.0.1", self.upstream_port), timeout=5
+            ) as upstream:
+                done = threading.Event()
+
+                def pump(source: socket.socket, sink: socket.socket) -> None:
+                    try:
+                        while not done.is_set():
+                            block = source.recv(65536)
+                            if not block:
+                                break
+                            sink.sendall(block)
+                    except OSError:
+                        pass
+                    finally:
+                        done.set()
+
+                threads = [
+                    threading.Thread(target=pump, args=pair, daemon=True)
+                    for pair in ((conn, upstream), (upstream, conn))
+                ]
+                for thread in threads:
+                    thread.start()
+                done.wait(120)
+        except OSError:
+            pass
+        finally:
+            self._busy.release()
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._listener.close()
+        except OSError:
+            pass
+
+
+def _bundled_ffmpeg() -> str | None:
+    for name in ("ffmpeg.exe", "ffmpeg"):
+        candidate = Path(__file__).resolve().parents[1] / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("ffmpeg")
+
+
+def _wait_for(predicate, seconds: float, step: float = 0.25) -> bool:
+    """Bounded polling: a regression fails this test rather than hanging it."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(step)
+    return bool(predicate())
+
+
+@pytest.mark.integration
+def test_a_camera_already_held_leaves_go2rtc_with_no_picture(tmp_path: Path) -> None:
+    """The whole fault, end to end, with the real binary at both ends."""
+    import subprocess
+
+    from vmd.streaming.endpoint import is_live
+
+    binary = find_binary()
+    ffmpeg = _bundled_ffmpeg()
+    if binary is None or ffmpeg is None:
+        pytest.skip("needs the go2rtc binary and ffmpeg")
+
+    camera_api, camera_rtsp = _free_port(), _free_port()
+    camera_config = tmp_path / "camera.json"
+    camera_config.write_text(
+        json.dumps(
+            {
+                "api": {"listen": f"127.0.0.1:{camera_api}"},
+                "rtsp": {"listen": f"127.0.0.1:{camera_rtsp}"},
+                "webrtc": {"listen": "", "ice_servers": []},
+                "log": {"level": "warn"},
+                "streams": {
+                    "cam": (
+                        f"exec:{ffmpeg} -hide_banner -re -f lavfi "
+                        "-i testsrc=size=320x180:rate=15 -c:v libx264 -preset ultrafast "
+                        "-tune zerolatency -g 15 -f rtsp {output}"
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    camera = subprocess.Popen(
+        [str(binary), "-c", str(camera_config)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    limiter = OneSessionAtATime(camera_rtsp)
+    holder = None
+    svc = None
+    try:
+        assert _wait_for(
+            lambda: is_live({"rtsp_port": camera_rtsp}, timeout=0.5), 20
+        ), "the stand-in camera never came up"
+
+        # The recorder, as the logon task leaves it: already reading the camera
+        # itself, because when it started there was no streaming server.
+        holder = subprocess.Popen(
+            [
+                ffmpeg, "-hide_banner", "-rtsp_transport", "tcp",
+                "-i", f"rtsp://127.0.0.1:{limiter.port}/cam",
+                "-t", "60", "-f", "null", "-",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        assert _wait_for(lambda: limiter.sessions >= 1, 20), "nothing took the session"
+
+        # And now the console starts its streaming server on the same camera.
+        settings = Settings(
+            camera=CameraSettings(
+                streams=[
+                    StreamSettings(
+                        name="thermal",
+                        url=f"rtsp://127.0.0.1:{limiter.port}/cam",
+                        enabled=True,
+                    )
+                ]
+            )
+        )
+        svc = Go2rtcService(
+            settings,
+            config_path=tmp_path / "go2rtc.json",
+            binary=binary,
+            endpoint_path=tmp_path / "streaming.json",
+            pid_path=tmp_path / "go2rtc.pid",
+            api_port=_free_port(),
+            rtsp_port=_free_port(),
+        )
+        svc.start()
+        assert svc.wait_until_listening(10.0), "the streaming server never listened"
+        endpoint = {"api_port": svc.api_port, "rtsp_port": svc.rtsp_port, "streams": {}}
+
+        why = svc.unadoptable(endpoint)
+        assert why, (
+            "a streaming server the camera will not talk to was adopted, and "
+            "every pane pointed at it"
+        )
+        assert "thermal" in why, why
+        assert limiter.refused >= 1, "the camera never actually refused it"
+
+        # The holder lets go - which is what standing the recorder down does -
+        # and the same server can suddenly serve the same stream.
+        holder.terminate()
+        holder.wait(timeout=15)
+        assert _wait_for(lambda: not svc.without_a_picture(), 30, step=1.0), (
+            "the streaming server never got the camera even after it was free: "
+            f"{svc.without_a_picture()}"
+        )
+        assert svc.unadoptable(endpoint) == ""
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.kill()
+        if svc is not None:
+            svc.stop()
+        limiter.close()
+        camera.terminate()
+        try:
+            camera.wait(timeout=10)
+        except subprocess.TimeoutExpired:  # pragma: no cover - a stubborn child
+            camera.kill()
