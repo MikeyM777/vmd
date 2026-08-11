@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -546,7 +547,27 @@ class SettingsTab(QWidget):
         self._pool.setMaxThreadCount(1)
         self._running: list[_ToolSignals] = []
 
-        layout = QVBoxLayout(self)
+        # Everything on this tab is inside a scroll area, and it is not a
+        # preference: this form is six boxes, a stream row per camera view, and
+        # a report box, and it asks for about 1300 px of height. No laptop panel
+        # has that. Fullscreen - which is how a dedicated console is run - hands
+        # the window the screen's geometry whatever the layout asked for, and a
+        # Qt layout given less height than its minimum does not scroll, wrap or
+        # elide: it shares out what there is. Measured at 1366x768 that was an
+        # address field five pixels tall, and the "Not saved..." line drawn
+        # straight through the report box above the Save button - the one
+        # sentence that says why the settings did not take. The Live tab's side
+        # column is built the same way, for the same reason.
+        self._page = QWidget()
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidget(self._page)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._scroll)
+
+        layout = QVBoxLayout(self._page)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
