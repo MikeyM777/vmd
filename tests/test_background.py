@@ -135,6 +135,52 @@ def test_a_read_that_raises_is_not_an_answer_and_does_not_end_the_reader() -> No
         value.close()
 
 
+def test_a_read_that_fails_keeps_the_last_answer_and_lets_it_go_on_ageing() -> None:
+    """What the class docstring promises, and what it did not do.
+
+    "The previous value is kept and goes on ageing, so a caller can tell a
+    reading that is old from one that is missing." It did the opposite: a read
+    that raised overwrote the last good value with None AND stamped it as taken
+    now. Both halves are wrong and the second is the dangerous one, because
+    every age downstream is measured from that stamp.
+
+    What it costs is `ChildProcess.liveness_age`, which is the check that stops
+    the console inventing health about a recorder it adopted from an earlier
+    run. A `tasklist` that ERRORS rather than hangs reset the age to zero on
+    every attempt, so the age never grew, so the check could never fire - and
+    the console went on saying the adopted recorder was fine on the strength of
+    a question nobody had managed to ask for an hour.
+    """
+    answers = ["still here"]
+
+    def once_then_broken():
+        if answers:
+            return answers.pop()
+        raise OSError("the process list could not be read")
+
+    value = BackgroundValue(once_then_broken, stale_after=0.0, name="a failing reading")
+    try:
+        value.get()
+        assert until(lambda: value.get().value == "still here")
+        settled = value.get().age
+        assert settled is not None
+
+        # Every read from here on raises. Nothing else has answered, so the
+        # answer on the screen must still be the last one that did.
+        time.sleep(0.1)
+        for _ in range(4):
+            value.get()
+            time.sleep(0.02)
+
+        reading = value.get()
+        assert reading.value == "still here", "the last good answer was thrown away"
+        assert reading.age is not None and reading.age >= 0.1, (
+            "a failed read stamped the old answer as though it had just arrived"
+        )
+    finally:
+        value.close()
+
+
 def test_closing_does_not_wait_for_a_read_that_never_returns() -> None:
     wedge = Wedge()
     value = BackgroundValue(wedge, stale_after=0.0, name="a wedged reading")

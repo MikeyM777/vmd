@@ -161,12 +161,30 @@ class BackgroundValue(Generic[T]):
             self._wake.clear()
 
     def _refresh(self) -> None:
-        value: T | None
         try:
             value = self._read()
         except Exception:  # noqa: BLE001 - an unanswerable question, not a failure
             logger.exception("%s could not be read", self._name)
-            value = None
+            # Nothing is written, and that is the whole of the class docstring's
+            # promise: "the previous value is kept and goes on ageing, so a
+            # caller can tell a reading that is old from one that is missing".
+            #
+            # It used to store None and stamp it as taken now. Both halves are
+            # wrong and the second is the dangerous one, because every age
+            # downstream is measured from that stamp. What it cost is
+            # `ChildProcess.liveness_age` - the check that stops the console
+            # inventing health about a recorder adopted from an earlier run. A
+            # `tasklist` that ERRORS rather than hangs reset the age to zero on
+            # every attempt, so the age never grew and the check could never
+            # fire, and the console went on reporting an adopted recorder as
+            # healthy on the strength of a question nobody had answered for an
+            # hour.
+            #
+            # This does not turn into a retry loop: `_pending` is only ever set
+            # by `get`, so the rate is the caller's heartbeat either way.
+            with self._lock:
+                self._pending = False
+            return
         with self._lock:
             self._value = value
             # Stamped when the read finished, not when it started. A read that
