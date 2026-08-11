@@ -754,3 +754,46 @@ def test_a_healthy_stream_is_neither_blind_nor_frozen(tmp_path):
         assert status["detecting"] == 1
     finally:
         service.stop()
+
+
+def test_the_camera_is_kept_as_a_second_address_behind_the_local_server(tmp_path):
+    """Adopting the local streaming server must not be a one-way door.
+
+    The choice is made once, from a port answering, which proves something is
+    listening on 127.0.0.1 and nothing about whether it serves this stream. A
+    go2rtc that restarted on another port would otherwise take detection off
+    this stream for the life of the process, with the status file reporting a
+    camera that was reachable throughout.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    endpoint = tmp_path / "streaming.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "rtsp_port": port,
+                "streams": {"thermal": f"rtsp://127.0.0.1:{port}/thermal"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        service = service_for(tmp_path, endpoint_path=endpoint)
+        try:
+            detector = service.detectors[0]
+            assert detector.url == f"rtsp://127.0.0.1:{port}/thermal"
+            assert detector.sources[1:] == ["rtsp://10.0.0.2/thermal"], detector.sources
+        finally:
+            service.stop()
+    finally:
+        listener.close()
+
+
+def test_a_stream_read_straight_from_the_camera_has_no_second_address(tmp_path):
+    service = service_for(tmp_path)
+    try:
+        assert service.detectors[0].sources == ["rtsp://10.0.0.2/thermal"]
+    finally:
+        service.stop()

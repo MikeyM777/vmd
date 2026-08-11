@@ -154,8 +154,9 @@ class DetectionService:
         answer to a specific swaying tree silently did nothing at all.
         """
         config = config_from_settings(stream, self.settings.detection)
+        source = self._source_for(stream)
         return StreamDetector(
-            self._source_for(stream),
+            source,
             stream.name,
             config,
             None,  # each thread opens its own store; see _work
@@ -166,6 +167,15 @@ class DetectionService:
             # worth naming, so this process starts on a machine with no torch
             # and no weights. Off for the thermal by default.
             classifier=classifier_for(stream, self.settings.detection),
+            # The camera itself, when the local streaming server is what we
+            # chose. Whether that server is the right one to read from was
+            # decided once, from a port answering - which proves something is
+            # listening on 127.0.0.1 and nothing about whether it serves this
+            # stream. Without a second address, a go2rtc that had restarted
+            # elsewhere or belonged to an older settings file took detection
+            # off this stream permanently, and the status file blamed the
+            # camera.
+            fallback_url=stream.url if source != stream.url else "",
         )
 
     # -- where the frames come from ---------------------------------------

@@ -75,6 +75,13 @@ BLANK_SPREAD = 2
 # up for an instant; ten in a row is a stream with nothing in it.
 BLANK_FRAMES_BEFORE_BLIND = 10
 
+# How many opens of one address must fail in a row before the other address is
+# tried. Three, because one failure is a streaming server that has not finished
+# coming up and is not a wrong address - and going to the camera directly costs
+# the radio link a second copy of the stream, which is the whole thing the local
+# server exists to avoid.
+OPEN_FAILURES_BEFORE_FALLBACK = 3
+
 
 # A password inside a URL. The same expression as `vmd.desktop.logs`, copied
 # rather than imported because importing that module would pull Qt into the
@@ -146,8 +153,22 @@ class StreamDetector:
         reopen_delay: float = DEFAULT_REOPEN_DELAY,
         max_reopen_delay: float = DEFAULT_MAX_REOPEN_DELAY,
         idle_sleep: float = DEFAULT_IDLE_SLEEP,
+        # The other way to the same picture, usually the camera itself when
+        # `url` is the local streaming server. Whether to read through that
+        # server is decided once, from a port answering, and the answer was
+        # then kept for the life of the process: a server that had restarted
+        # elsewhere, or one belonging to an older settings file, meant every
+        # open failed for ever while the camera was reachable throughout and
+        # was never tried again. Detection off, permanently, with a reason in
+        # the status file that names the wrong thing.
+        fallback_url: str = "",
     ) -> None:
         self.url = url
+        # In order, best first. Rotated through only after an address has
+        # really failed, because pulling the camera directly puts a second copy
+        # of the stream on the radio link.
+        self.sources = [url] + ([fallback_url] if fallback_url and fallback_url != url else [])
+        self._failed_opens = 0
         self.stream = stream_name
         self.config = config or DetectionConfig()
         self.store = store
@@ -389,12 +410,15 @@ class StreamDetector:
             capture = None
         if capture is None:
             self._schedule_retry(now)
+            self._failed_opens += 1
             self.reason = (
                 f"the stream could not be opened; trying again in "
                 f"{self.reopen_delay:.0f} seconds"
             )
+            self._try_the_other_address()
             return False
         self._capture = capture
+        self._failed_opens = 0
         self._read_failures = 0
         # The silence is timed from here, not from the first frame. A capture
         # can wedge on its first read as easily as on its thousandth, and "no
@@ -404,6 +428,33 @@ class StreamDetector:
         self.reason = ""
         logger.info("%s: reading %s", self.stream, without_credentials(self.url))
         return True
+
+    def _try_the_other_address(self) -> None:
+        """After enough failures on one address, try the other one.
+
+        There are usually two ways to the same picture: the local streaming
+        server, which is what everything should use because the camera is
+        already being pulled once, and the camera itself. Which one is used was
+        decided once at start-up from a port answering, and never revisited -
+        so a streaming server that restarted on another port, or one left over
+        from an older settings file, took detection off this stream for the
+        life of the process while the camera was reachable throughout.
+
+        Rotated rather than switched, so a camera that is genuinely down does
+        not leave the detector stuck on whichever address it happened to be
+        trying when the camera came back.
+        """
+        if len(self.sources) < 2 or self._failed_opens < OPEN_FAILURES_BEFORE_FALLBACK:
+            return
+        self._failed_opens = 0
+        self.sources.append(self.sources.pop(0))
+        self.url = self.sources[0]
+        logger.warning(
+            "%s: that address has not opened %d times running; trying %s instead",
+            self.stream,
+            OPEN_FAILURES_BEFORE_FALLBACK,
+            without_credentials(self.url),
+        )
 
     def _schedule_retry(self, now: float) -> None:
         self._retry_at = now + self.reopen_delay

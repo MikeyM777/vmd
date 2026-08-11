@@ -110,7 +110,7 @@ def build(tmp_path, pipeline=None, captures=None, **kwargs):
         return capture
 
     detector = StreamDetector(
-        "rtsp://127.0.0.1:8554/thermal",
+        kwargs.pop("url", "rtsp://127.0.0.1:8554/thermal"),
         "thermal",
         None,
         store,
@@ -984,6 +984,103 @@ def test_a_clock_set_backwards_does_not_hide_a_stream_that_went_quiet(tmp_path):
         steady.now += 300.0  # five minutes of a read that never returned
         wall.now -= 3600.0  # and the operator corrects the clock by an hour
         assert detector.state()["seconds_since_frame"] == 300.0
+    finally:
+        detector.close()
+        store.close()
+
+
+# --------------------------------------------------------------------------
+# The local streaming server is not the only way to the camera
+# --------------------------------------------------------------------------
+
+
+def test_a_local_source_that_never_opens_falls_back_to_the_camera(tmp_path):
+    """Adopting the local server is a decision made once, at start-up.
+
+    Whether to read through go2rtc is decided from a port answering, and then
+    the address is kept for the life of the process. If the thing on that port
+    is a go2rtc from an older settings file, or one that restarted somewhere
+    else, every open fails and the detector reports "the stream could not be
+    opened" for ever - while the camera itself is reachable the whole time and
+    is never tried again. Detection is then off, permanently, on a system whose
+    entire purpose is detection.
+    """
+    local = "rtsp://127.0.0.1:8554/thermal"
+    camera = "rtsp://10.0.0.2/thermal"
+    opened = []
+
+    def open_capture(url):
+        opened.append(url)
+        return FakeCapture(frames=50) if url == camera else None
+
+    clock = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=open_capture,
+        url=local,
+        fallback_url=camera,
+    )
+    try:
+        for _ in range(10):
+            detector.step()
+            clock.now += 60.0  # past whatever the backoff has climbed to
+        assert camera in opened, opened
+        assert detector.opened is True
+        assert detector.url == camera
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_camera_is_only_tried_after_the_local_server_has_really_failed(tmp_path):
+    """One failed open is a stream that has not come up yet, not a wrong address.
+
+    Pulling the camera directly costs the radio link a second copy of the
+    stream, which is what the local server exists to avoid.
+    """
+    local = "rtsp://127.0.0.1:8554/thermal"
+    camera = "rtsp://10.0.0.2/thermal"
+    opened = []
+
+    def open_capture(url):
+        opened.append(url)
+        return None
+
+    clock = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=open_capture,
+        url=local,
+        fallback_url=camera,
+    )
+    try:
+        detector.step()
+        clock.now += 60.0
+        detector.step()
+        assert opened == [local, local], opened
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_stream_with_no_fallback_keeps_trying_the_one_address_it_has(tmp_path):
+    local = "rtsp://127.0.0.1:8554/thermal"
+    opened = []
+
+    clock = Clock(start=0.0, step=0.0)
+    detector, store = build(
+        tmp_path,
+        clock=clock,
+        open_capture=lambda url: opened.append(url) or None,
+        url=local,
+    )
+    try:
+        for _ in range(6):
+            detector.step()
+            clock.now += 60.0
+        assert set(opened) == {local}
     finally:
         detector.close()
         store.close()
