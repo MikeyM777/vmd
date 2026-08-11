@@ -436,8 +436,40 @@ class PlaybackTab(QWidget):
             return
         self._play_at(time_at(fraction, self._day_start, self._day_end))
 
-    def _play_at(self, when: float, event=None) -> None:
+    def show_event(self, event) -> bool:
+        """Show me that movement: its day, its stream, and the moment itself.
+
+        The one call behind both `Show me` on the alarm strip and a double click
+        in the movement list. It is deliberately the same path the timeline's own
+        marks already take - `_play_at` with the event - so that being taken to a
+        movement and clicking its mark cannot ever mean two different things,
+        including the five-second lead and the answer when there is no footage.
+
+        Returns whether there was anything to play. False is not a failure: an
+        event can predate recording, can be on a stream nothing was recording,
+        and can have had its footage reclaimed by retention months ago. Every one
+        of those is answered in the line under the bar, because the operator who
+        pressed that button is owed a sentence, not an empty day.
+
+        Never raises. It is called from a button press during an alarm, and a
+        traceback at that moment costs him the console as well as the footage.
+        """
+        try:
+            moment = datetime.datetime.fromtimestamp(event.started)
+            self.show_day(moment.year, moment.month, moment.day, event.stream)
+            return self._play_at(event.started, event=event)
+        except Exception as error:  # noqa: BLE001 - a button press may not throw
+            logger.exception("that movement could not be opened")
+            self._set_status(f"that movement could not be opened: {error}")
+            return False
+
+    def _play_at(self, when: float, event=None) -> bool:
         """Open the file covering this moment, at this moment inside it.
+
+        Answers whether anything is playing, for the caller that has just taken
+        the operator to another tab to see it. `click_at` ignores it: he is
+        already looking at the bar he clicked, and the line under it has the
+        answer either way.
 
         For a movement mark the lead is taken off HERE rather than off the time
         that was asked for, and that is the difference between a mark that
@@ -472,7 +504,7 @@ class PlaybackTab(QWidget):
             if event is not None:
                 note += f" - the movement on {event.stream} there is no longer on disk"
             self._set_status(note)
-            return
+            return False
 
         self.bar.set_playhead(fraction)
         self.seek_offset = target.offset_seconds
@@ -496,6 +528,7 @@ class PlaybackTab(QWidget):
                 f"{event.stream}, {path.name}"
             )
         self._set_status(note)
+        return True
 
     # --------------------------------------------------------------- the words
 

@@ -1568,3 +1568,147 @@ print("opened")
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert "opened" in done.stdout
+
+
+# ------------------------------------------------------ take him to the footage
+#
+# The finding this answers: there was not one `setCurrentIndex` on the tab bar
+# anywhere in the console. An alarm fired and the operator - one person, no
+# terminal, no second machine - had to change tab, pick the day, pick the
+# stream and hit a three-pixel mark on a timeline, all under the pressure the
+# alarm had just created. The Live tab says what was asked for; the window is
+# the only thing that owns both tabs, so the going is done here.
+
+
+class SteeringPtz(FakePtz):
+    """A camera that remembers what it was told, for the stop that is owed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.commands: list[tuple] = []
+
+    def move(self, pan, tilt, zoom) -> dict:
+        self.commands.append(("move", pan, tilt, zoom))
+        return {"ok": True}
+
+    def stop(self) -> dict:
+        self.commands.append(("stop",))
+        return {"ok": True}
+
+
+def a_day_with(tmp_path: Path, *, recorded: bool):
+    """A segment index and an empty events database, for 2026-08-11."""
+    from vmd.desktop.timeline import day_bounds
+    from vmd.detect.events import EventStore
+    from vmd.storage.index import SegmentIndex
+
+    start, _end = day_bounds(2026, 8, 11)
+    index = SegmentIndex(tmp_path / "segments.db")
+    if recorded:
+        index.add("thermal", str(tmp_path / "a.mp4"), start + 3600, start + 5400, 1000)
+    index.close()
+
+    events_path = tmp_path / "recordings" / "events.db"
+    EventStore(events_path).close()
+    return start, events_path
+
+
+def something_moves(events_path: Path, when: float) -> None:
+    from vmd.detect.events import EventStore
+
+    store = EventStore(events_path)
+    store.add("thermal", when, when + 3.0, (1, 2, 3, 4), 40.0)
+    store.close()
+
+
+def alarmed(window, events_path: Path, when: float) -> None:
+    """Let the console learn what was already there, then move in front of it."""
+    assert beating(window, lambda: window.live._seen_ids is not None), (
+        "the movement list was never read at all"
+    )
+    something_moves(events_path, when)
+    assert beating(window, window.live.alarm_visible), "the movement raised no alarm"
+
+
+def test_show_me_takes_him_to_the_footage(qtbot, tmp_path: Path) -> None:
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+
+    window.live._show_me.click()
+
+    assert window.tabs.currentWidget() is window.playback, "he is still on the Live tab"
+    assert window.playback.stream_selector.currentText() == "thermal"
+    assert "a.mp4" in window.playback.status_text, window.playback.status_text
+    window.close()
+
+
+def test_show_me_says_it_when_the_footage_is_gone(qtbot, tmp_path: Path) -> None:
+    """Nothing was recorded on that day. He is taken to Playback anyway - the
+    tab is where he can go looking - and told plainly that there is nothing
+    there, rather than left in front of an empty bar."""
+    start, events_path = a_day_with(tmp_path, recorded=False)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+
+    window.live._show_me.click()
+
+    assert window.tabs.currentWidget() is window.playback
+    said = window.playback.status_text.lower()
+    assert "no recording" in said, window.playback.status_text
+    assert "thermal" in said, window.playback.status_text
+    window.close()
+
+
+def test_double_clicking_a_movement_takes_him_to_it_too(qtbot, tmp_path: Path) -> None:
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+
+    window.live._show_row(0)
+
+    assert window.tabs.currentWidget() is window.playback
+    assert "a.mp4" in window.playback.status_text, window.playback.status_text
+    window.close()
+
+
+def test_show_me_does_not_leave_the_head_slewing(qtbot, tmp_path: Path) -> None:
+    """The hazard this console has already paid for once.
+
+    An arrow key is held; the focus is on a child of the Live tab, so no
+    focusOut will arrive, and changing tab means the key release never reaches
+    the tab either. Taking him to Playback must therefore deliver the stop the
+    camera is owed, or the head slews to its own end stop while he watches
+    footage on another tab.
+    """
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    ptz = SteeringPtz()
+    window, _ = build(qtbot, tmp_path, events_path=events_path, ptz=ptz)
+    alarmed(window, events_path, start + 3660)
+
+    window.live.key_down("right", fine=False)
+    assert window.live.wait_for_camera(10.0)
+    assert ptz.commands[-1] == ("move", 0.5, 0.0, 0.0)
+
+    window.live._show_me.click()
+
+    assert window.live.wait_for_camera(10.0), "a PTZ command never left the console"
+    assert ptz.commands[-1] == ("stop",), "the head was left slewing on the Playback tab"
+    window.close()
+
+
+def test_show_me_costs_nothing_when_the_playback_tab_could_not_be_built(
+    qtbot, tmp_path: Path, caplog
+) -> None:
+    """Three tabs beat no window, and that rule does not stop applying because
+    the operator pressed a button."""
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+    window.playback = QLabel("The Playback tab could not be opened")
+
+    with caplog.at_level("WARNING", logger="vmd.desktop.window"):
+        window.live._show_me.click()
+
+    assert caplog.records, "nothing was said about a console that could not go"
+    window.close()

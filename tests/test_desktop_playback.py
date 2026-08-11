@@ -747,3 +747,83 @@ def test_the_position_never_goes_backwards_past_the_start_of_a_file(
         assert pane.at_seconds >= 0.0
     finally:
         index.close()
+
+
+# --------------------------------------------------- being taken to a movement
+#
+# The alarm strip and the movement list both end here: "show me that" is one
+# call, and it is the same call the timeline's own marks already make.
+
+
+def moved_at(when: float, stream: str = "thermal", event_id: int = 1) -> Event:
+    return Event(
+        id=event_id,
+        stream=stream,
+        started=when,
+        ended=when + 3.0,
+        box=(10, 20, 13, 30),
+        travelled_px=44.0,
+        label="",
+        confidence=0.0,
+    )
+
+
+def test_showing_a_movement_opens_its_day_and_plays_from_before_it(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        path = tmp_path / "a.mp4"
+        index.add("thermal", str(path), start + 3600, start + 5400, 1000)
+
+        assert tab.show_event(moved_at(start + 3660)) is True
+
+        assert tab.date_selector.date().toString("yyyy-MM-dd") == "2026-08-11"
+        assert tab.stream_selector.currentText() == "thermal"
+        assert path.name in (pane.url or "")
+        # 60 s into the file, less the five-second lead.
+        assert tab.seek_offset == pytest.approx(60.0 - EVENT_LEAD_SECONDS)
+    finally:
+        index.close()
+
+
+def test_showing_a_movement_whose_footage_is_gone_says_so_and_plays_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """Retention reclaimed it, or it happened before recording started, or it
+    is on a stream nothing was ever recording. He must not be left on an empty
+    day working out which."""
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "a.mp4"), start + 3600, start + 5400, 1000)
+
+        assert tab.show_event(moved_at(start + 7200, stream="visible")) is False
+
+        assert pane.url is None
+        assert "no recording" in tab.status_text.lower(), tab.status_text
+        assert "visible" in tab.status_text, tab.status_text
+    finally:
+        index.close()
+
+
+def test_showing_a_movement_the_index_cannot_answer_about_says_so(
+    qtbot, tmp_path: Path
+) -> None:
+    """A catalogue that will not open is a sentence, not a traceback in front of
+    an operator who has just been told something moved."""
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+
+        class Unreadable:
+            def all(self, stream=None):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        tab._index = Unreadable()
+        assert tab.show_event(moved_at(start + 3660)) is False
+        assert pane.url is None
+        assert tab.status_text, "nothing was said at all"
+    finally:
+        index.close()

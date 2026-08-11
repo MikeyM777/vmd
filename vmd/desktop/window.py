@@ -519,6 +519,7 @@ class ConsoleWindow(QMainWindow):
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
             tab.view_changed.connect(self.view_changed)
+            tab.show_footage.connect(self.show_footage)
             return tab
 
         def build_playback() -> QWidget:
@@ -721,6 +722,42 @@ class ConsoleWindow(QMainWindow):
         """Nothing pulses behind a window nobody is looking at."""
         self._blink.stop()
         super().hideEvent(event)
+
+    def show_footage(self, event) -> None:
+        """Take him to the movement he asked about, on the tab that shows it.
+
+        The only thing in this console that owns both tabs, which is why the
+        going happens here and not in either of them. Five steps become one: the
+        tab, the day, the stream, the mark and the click were all his to find,
+        under the pressure the alarm had just created, on a machine where he has
+        no second screen to look anything up on.
+
+        The tab is changed first and the seek follows, for a reason that has
+        already cost this console a commit: an arrow key held while the focus is
+        on a child of the Live tab is a key whose release will never arrive once
+        the tab is gone, and the Live tab's `hideEvent` is what stops the head.
+        Changing tab before the seek means that stop is delivered before
+        anything slower can go wrong, rather than after.
+
+        Nothing here may raise. It runs from a button press during an alarm, and
+        a Playback tab that could not be built - the case every tab in this
+        window is written to survive - must cost the operator the footage and
+        not the console.
+        """
+        show = getattr(self.playback, "show_event", None)
+        if show is None:
+            logger.warning(
+                "there is nowhere to show that movement: the Playback tab could not "
+                "be opened"
+            )
+            return
+        index = self.tabs.indexOf(self.playback)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
+        try:
+            show(event)
+        except Exception:  # noqa: BLE001 - the console must survive a button
+            logger.exception("that movement could not be shown")
 
     def view_changed(self, view: str) -> None:
         """Remember which view the operator is looking at, for tomorrow.

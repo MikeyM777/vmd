@@ -8,8 +8,8 @@ import threading
 import time
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
 from vmd.desktop.live import PLAYING_BEFORE_FORGIVEN, LiveTab
@@ -1405,3 +1405,108 @@ def test_the_detail_goes_to_the_logs_once_and_not_every_heartbeat(qtbot, caplog)
 def test_a_healthy_radio_is_not_rewritten(qtbot) -> None:
     tab = link_tab(qtbot, CachedRadio())
     assert any("-63 dBm" in text for text, _ in tab.link_lines()), tab.link_lines()
+
+
+# ------------------------------------------------------- take him to the footage
+#
+# The console never navigated the operator anywhere: an alarm fired and he had
+# to change tab, pick the day, pick the stream and hit a three-pixel mark on a
+# timeline, all under the pressure the alarm just created. The tab does not own
+# the Playback tab and never will, so it says what was asked for and the window
+# does the rest.
+
+
+def moved(tab, event) -> None:
+    """Put one movement in front of the tab, as the heartbeat would."""
+    tab.refresh()  # the first read only learns what was already there
+    tab._events.events.append(event)
+    tab.refresh()
+
+
+def test_the_alarm_strip_offers_to_show_the_footage(qtbot) -> None:
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+    moved(tab, movement(2, started=1_770_000_100.0))
+    assert tab.alarm_visible()
+
+    asked: list = []
+    tab.show_footage.connect(asked.append)
+    tab._show_me.click()
+
+    assert [event.id for event in asked] == [2], "Show me asked for nothing"
+
+
+def test_show_me_does_not_take_the_alarm_down(qtbot) -> None:
+    """Acknowledge is the only thing that clears the strip, and it still is.
+
+    Going to look at the footage is not the same as having dealt with it - and
+    a movement whose footage is gone would otherwise take its own notice down
+    on the way to showing him nothing.
+    """
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+    moved(tab, movement(2, started=1_770_000_100.0))
+
+    tab._show_me.click()
+
+    assert tab.alarm_visible(), "Show me acknowledged the alarm"
+    assert tab.outlined_stream() == "thermal"
+    tab.acknowledge()
+    assert not tab.alarm_visible()
+    assert tab.outlined_stream() is None
+
+
+def test_show_me_asks_for_nothing_when_there_is_no_alarm(qtbot) -> None:
+    """The strip is hidden, so the button is not reachable - but a stray click
+    from a test, a shortcut or a future keyboard path must not send the window
+    off to a movement that does not exist."""
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([]))
+    asked: list = []
+    tab.show_footage.connect(asked.append)
+    tab.show_the_footage()
+    assert asked == []
+
+
+def test_double_clicking_a_movement_asks_for_its_footage(qtbot) -> None:
+    """The same call from the list, which is where he looks for the one that
+    happened four minutes ago rather than the one happening now."""
+    tab, _ptz, _panes = build(
+        qtbot,
+        "thermal",
+        events=FakeEvents([movement(1), movement(2, started=1_770_000_100.0)]),
+    )
+    tab.refresh()
+    assert len(tab.recent_rows()) == 2
+
+    asked: list = []
+    tab.show_footage.connect(asked.append)
+    table = tab._movement
+    table.resize(320, 120)
+    # The press and then the double click, which is the pair a real double
+    # click delivers: the view only calls a second click a double one when the
+    # press before it landed on the same row.
+    where = QPointF(table.visualItemRect(table.item(0, 0)).center())
+    for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+        QApplication.instance().sendEvent(
+            table.viewport(),
+            QMouseEvent(
+                kind,
+                where,
+                QPointF(table.viewport().mapToGlobal(where.toPoint())),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    # Newest first, so the top row is the later movement.
+    assert [event.id for event in asked] == [2], tab.recent_rows()
+
+
+def test_a_double_click_below_the_last_row_asks_for_nothing(qtbot) -> None:
+    """An empty table is a real state - nothing has moved yet - and a click in
+    the space under the rows must not be answered with somebody else's event."""
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+    tab.refresh()
+    asked: list = []
+    tab.show_footage.connect(asked.append)
+    tab._show_row(7)
+    assert asked == []

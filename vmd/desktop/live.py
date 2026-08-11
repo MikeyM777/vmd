@@ -489,6 +489,17 @@ class LiveTab(QWidget):
     # choice that does not survive the night is not a choice, it is a chore.
     view_changed = Signal(str)
 
+    # The operator asked to be shown the footage of one movement - from the
+    # alarm strip, or by double-clicking a row in the list. The window turns it
+    # into a tab change and a seek, because this tab does not own the Playback
+    # tab and must not: what it knows is which movement was asked about.
+    #
+    # This is the console's first act of taking the operator anywhere. Every
+    # sentence in it named a destination and left him to find it, which is a
+    # sentence written for somebody with a second machine and an hour; he has
+    # neither, and an alarm is the moment he has least of both.
+    show_footage = Signal(object)
+
     def __init__(
         self,
         ptz,
@@ -560,6 +571,13 @@ class LiveTab(QWidget):
         self._urls: dict[str, str] = {}
         self._clock = clock or time.monotonic
         self._alarm_stream: str | None = None
+        # The movement the strip is announcing, kept so that `Show me` has
+        # something to ask about. Cleared by `acknowledge`, with the strip.
+        self._alarm_event = None
+        # The events behind the rows of the movement list, in the order they are
+        # drawn, so a double-clicked row can be turned back into the movement it
+        # is showing. The table holds strings; this holds what they were made of.
+        self._shown: list = []
         # Which events have already been accounted for, rather than the highest
         # id among them. None, not an empty set: the first read establishes what
         # was already there rather than alarming about it. The detector outlives
@@ -802,6 +820,17 @@ class LiveTab(QWidget):
             f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
         )
         row.addWidget(self._alarm_label, 1)
+        # Before Acknowledge, not after it: the button that was already there
+        # keeps the position the operator's hand has learnt, and the new one
+        # sits between the sentence and it, which is the order he reads in.
+        #
+        # It does not acknowledge. Going to look at footage is not the same as
+        # having dealt with what moved, and a movement whose footage retention
+        # has already reclaimed would otherwise take its own notice down on the
+        # way to showing him nothing.
+        self._show_me = QPushButton("Show me")
+        self._show_me.clicked.connect(self.show_the_footage)
+        row.addWidget(self._show_me)
         acknowledge = QPushButton("Acknowledge")
         acknowledge.clicked.connect(self.acknowledge)
         row.addWidget(acknowledge)
@@ -845,6 +874,11 @@ class LiveTab(QWidget):
         # a readable percentage need about 290 px of list, and the column's
         # borders, padding and scrollbar take the rest.
         self._movement.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A double click, not a single one. A single click is how a row gets
+        # selected and how the list gets read, and turning that into a tab
+        # change would make the list unreadable - he could not look at what
+        # moved at 14:02 without being taken away from the pictures.
+        self._movement.cellDoubleClicked.connect(self._show_row)
         layout.addWidget(self._movement, 1)
         # Shown in the table's place while there is nothing in it. An empty
         # table is a black rectangle, and a black rectangle is indistinguishable
@@ -913,6 +947,11 @@ class LiveTab(QWidget):
 
     def _fill_movement(self, events) -> None:
         self.rebuilds += 1
+        # Kept beside the rows they became, so a double click can be answered
+        # with the movement itself rather than by parsing "14:02:31" back out of
+        # a cell - which is the same arithmetic done a second time, badly, and
+        # would lose the day the moment the list crossed midnight.
+        self._shown = list(events)
         self._movement.setRowCount(len(events))
         for row, event in enumerate(events):
             named = bool(event.label)
@@ -933,13 +972,32 @@ class LiveTab(QWidget):
     def _raise_alarm(self, event) -> None:
         clock = datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S")
         self._alarm_label.setText(f"Movement on {event.stream} at {clock}")
+        self._alarm_event = event
         self._alarm.setVisible(True)
         self._outline(event.stream)
+
+    def show_the_footage(self) -> None:
+        """Ask to be shown the movement the strip is announcing.
+
+        Nothing at all when there is no alarm up. The button is inside the strip
+        and goes away with it, so this is the case that cannot happen through
+        the pointer - and it is exactly the case that has to be harmless,
+        because it is the one a shortcut or a stray call would reach.
+        """
+        if self._alarm_event is None:
+            return
+        self.show_footage.emit(self._alarm_event)
+
+    def _show_row(self, row: int, _column: int = 0) -> None:
+        """The same request, from a double-clicked row in the list."""
+        if 0 <= row < len(self._shown):
+            self.show_footage.emit(self._shown[row])
 
     def acknowledge(self) -> None:
         """The operator has seen it. Clear the strip and the outline."""
         self._alarm.setVisible(False)
         self._alarm_label.setText("")
+        self._alarm_event = None
         self._outline(None)
 
     def _outline(self, stream: str | None) -> None:
