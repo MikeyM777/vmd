@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import subprocess
+import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +35,301 @@ DEFAULT_ENDPOINT_PATH = Path("streaming.json")
 # The detector's database, beside this service's own. Opened only if it is
 # already there; see _event_store.
 EVENTS_FILENAME = "events.db"
+
+# ---------------------------------------------------------------- the claim
+#
+# Which process is recording, written by the process that is recording.
+#
+# Three things have wanted to know that: the console, which adopts a live
+# recorder rather than starting a second one; the scheduled task that starts
+# recording at logon; and now this. Until now none of them owned the file -
+# the console wrote it on the recorder's behalf and the logon task wrote its
+# own copy - and two writers of one file, neither of whom owns it, is how a
+# stale or simply wrong PID gets adopted. Adopting a wrong PID means the
+# console says "recording" while nothing is written to disk, which is the worst
+# shape a failure can take here.
+#
+# With the recorder writing and removing its own claim, every supervisor
+# becomes safe by construction: whatever starts a second recorder, the second
+# recorder itself refuses.
+
+PID_FILENAME = "recorder.pid"
+
+# The claim file holds a bare integer and nothing else, because two other
+# programs already parse it that way - vmd\desktop\services.py does
+# int(text.strip()) and scripts\recorder_service.ps1 does [int]::TryParse over
+# the whole file. Anything richer would make both of them read "no recorder is
+# running" and start a second one, which is the exact accident this file exists
+# to prevent. Everything that will not fit in an integer goes in a companion
+# file beside it, and any reader that does not know about the companion is left
+# exactly as well off as it was.
+IDENTITY_SUFFIX = ".json"
+
+# What a live process must be running for the PID in the claim to be believed,
+# when the companion file is not there to be more specific. The recorder is
+# always started as `python -m vmd.record_main`.
+RECORDER_IMAGES = ("python.exe", "pythonw.exe", "python3.exe", "python", "python3")
+
+
+@dataclass(frozen=True)
+class RecorderIdentity:
+    """Enough about the claiming process to tell it from a recycled PID."""
+
+    pid: int
+    executable: str = ""
+    settings: str = ""
+    written_at: float = 0.0
+
+    def as_dict(self) -> dict:
+        return {
+            "pid": self.pid,
+            "executable": self.executable,
+            "settings": self.settings,
+            "written_at": self.written_at,
+        }
+
+    @classmethod
+    def for_this_process(cls, settings_path: str | Path | None = None) -> "RecorderIdentity":
+        return cls(
+            pid=os.getpid(),
+            # The interpreter, which is what the logon wrapper already compares
+            # against the venv's python.exe. A PID that has been handed out
+            # again is almost never running the same image.
+            executable=sys.executable or "",
+            settings=str(settings_path or ""),
+            written_at=time.time(),
+        )
+
+
+def identity_path(pid_path: str | Path) -> Path:
+    return Path(str(pid_path) + IDENTITY_SUFFIX)
+
+
+def read_pid(pid_path: str | Path) -> int | None:
+    """The number in the claim file, or None if there is not one."""
+    try:
+        return int(Path(pid_path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_identity(pid_path: str | Path) -> RecorderIdentity | None:
+    """What the claiming process said about itself, if it said anything.
+
+    None whenever the companion is missing or unusable, which includes every
+    claim written by an older console or by the logon wrapper. Callers treat
+    that as "less is known", never as "the claim is bad".
+    """
+    try:
+        payload = json.loads(identity_path(pid_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return RecorderIdentity(
+            pid=int(payload["pid"]),
+            executable=str(payload.get("executable") or ""),
+            settings=str(payload.get("settings") or ""),
+            written_at=float(payload.get("written_at") or 0.0),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def boot_time() -> float | None:
+    """When this machine last started, in epoch seconds, or None if unknown.
+
+    The sharpest answer available to the question the coordinator of any of
+    these supervisors actually has: a claim written before the last boot names a
+    PID that cannot possibly still be its process, whatever is holding that
+    number now. GetTickCount64 is in the kernel this already depends on and
+    needs nothing installed.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        return time.time() - ctypes.windll.kernel32.GetTickCount64() / 1000.0
+    except Exception:  # noqa: BLE001 - an unknown boot time is not a failure
+        return None
+
+
+def process_image(pid: int) -> str | None:
+    """The executable name of a live process, or None if there is no such process.
+
+    `tasklist` rather than anything richer because this has to work on a machine
+    where only the standard library is installed - psutil arrives with the
+    detector's extras and a recording-only laptop does not have it.
+    """
+    if os.name != "nt":  # pragma: no cover - not the deployment platform
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return None
+        return "python"
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Cannot tell. Not the same as "nothing is there", and the caller must
+        # not read it as such.
+        return ""
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('"'):
+            return line.split('","')[0].strip('"')
+    return None  # "INFO: No tasks are running which match the specified criteria."
+
+
+def running_recorder(
+    pid_path: str | Path,
+    our_pid: int | None = None,
+    image_of: Callable[[int], str | None] | None = None,
+    booted: Callable[[], float | None] | None = None,
+) -> int | None:
+    """The pid of a recorder that really is running, or None if the claim is free.
+
+    "A process with that number exists" is a different claim from "the recorder
+    is running", and the difference is where this has gone wrong. A claim file
+    survives `taskkill /F`, and it survives a reboot, and Windows hands the same
+    numbers out again - so a stale file plus an unrelated process wearing the
+    recycled number reads as a healthy recorder to anything that only asks
+    whether the PID is alive.
+    """
+    # Resolved here rather than as default arguments, so that these two - the
+    # only things in this file that ask the operating system anything - can be
+    # replaced by a caller or a test without the module having to be reloaded.
+    image_of = process_image if image_of is None else image_of
+    booted = boot_time if booted is None else booted
+
+    pid = read_pid(pid_path)
+    if pid is None or pid <= 0:
+        return None
+    our_pid = os.getpid() if our_pid is None else our_pid
+    if pid == our_pid:
+        return None  # our own claim, written a moment ago by whoever started us
+
+    identity = read_identity(pid_path)
+    machine_started = booted()
+    if identity and identity.written_at and machine_started:
+        if identity.written_at < machine_started:
+            logger.info(
+                "%s names pid %s but was written before this machine last "
+                "started, so it is left over from an earlier boot",
+                pid_path,
+                pid,
+            )
+            return None
+
+    image = image_of(pid)
+    if image is None:
+        logger.info("%s names pid %s, which is not running", pid_path, pid)
+        return None
+    if image == "":
+        # The process list could not be read. Nothing is proven either way, and
+        # the safe reading is that the recorder is up: refusing to start costs
+        # this one process, starting a second one costs the archive.
+        return pid
+    expected = Path(identity.executable).name if identity and identity.executable else ""
+    if expected:
+        if image.lower() != expected.lower():
+            logger.info(
+                "%s names pid %s, but that is %s and the recorder was %s - "
+                "the number has been given to something else",
+                pid_path,
+                pid,
+                image,
+                expected,
+            )
+            return None
+    elif image.lower() not in RECORDER_IMAGES:
+        logger.info(
+            "%s names pid %s, which is %s and cannot be a recorder", pid_path, pid, image
+        )
+        return None
+    return pid
+
+
+def claim_recorder(
+    pid_path: str | Path,
+    identity: RecorderIdentity | None = None,
+    image_of: Callable[[int], str | None] | None = None,
+    booted: Callable[[], float | None] | None = None,
+) -> int | None:
+    """Take the claim, or say which recorder already has it.
+
+    Returns None once the claim is ours, or the pid of the recorder that holds
+    it. Created exclusively, so two recorders starting at the same instant
+    cannot both believe they won: the loser finds the winner's number in the
+    file, sees a live process behind it, and defers.
+
+    A claim that cannot be written at all - a read-only folder, a full disk - is
+    a warning and nothing more. Recording without a claim is worse than
+    recording with one and far better than not recording.
+    """
+    pid_path = Path(pid_path)
+    identity = identity or RecorderIdentity.for_this_process()
+    for _ in range(3):
+        try:
+            pid_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = os.open(str(pid_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            holder = running_recorder(
+                pid_path, our_pid=identity.pid, image_of=image_of, booted=booted
+            )
+            if holder is not None:
+                return holder
+            # Nobody is behind it. Clear it and go round again rather than
+            # overwriting in place, so that a recorder which starts in the gap
+            # is found alive on the next turn instead of being trampled.
+            try:
+                identity_path(pid_path).unlink(missing_ok=True)
+                pid_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("the stale claim in %s could not be cleared", pid_path)
+                return None
+            continue
+        except OSError:
+            logger.warning("could not write %s; recording anyway", pid_path, exc_info=True)
+            return None
+
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(str(identity.pid))
+        try:
+            identity_path(pid_path).write_text(
+                json.dumps(identity.as_dict(), indent=2), encoding="utf-8"
+            )
+        except OSError:
+            # The bare number is what every existing reader needs; the companion
+            # only makes the check sharper.
+            logger.warning("could not write %s", identity_path(pid_path), exc_info=True)
+        return None
+    return running_recorder(pid_path, our_pid=identity.pid, image_of=image_of, booted=booted)
+
+
+def release_recorder(pid_path: str | Path, pid: int | None = None) -> None:
+    """Drop the claim, but only while it still names us.
+
+    Something else may have taken it over in the meantime - the console starting
+    its own recorder, the logon task starting one after this exited - and
+    deleting that claim would let the next supervisor start a second recorder
+    beside a live one.
+    """
+    pid = os.getpid() if pid is None else pid
+    if read_pid(pid_path) != pid:
+        return
+    for path in (identity_path(pid_path), Path(pid_path)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:  # noqa: PERF203 - shutdown must always complete
+            logger.warning("could not remove %s", path, exc_info=True)
 
 
 class RecordingService:
@@ -747,6 +1047,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--once", action="store_true", help="run a single pass and exit")
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between passes")
+    parser.add_argument(
+        "--pid-file",
+        default=None,
+        help="where to record which process is recording "
+        "(default: recorder.pid beside the settings)",
+    )
     return parser.parse_args(argv)
 
 
@@ -773,21 +1079,52 @@ def main(argv: list[str] | None = None) -> int:
     if not [s for s in settings.camera.streams if s.enabled]:
         print(f"no enabled streams in {args.settings}; nothing to record")
         return 1
+    # Claimed before anything is opened, and by the process doing the recording
+    # rather than by whoever started it. Two recorders on one folder is the
+    # accident this prevents: they would fight over the same segment files and
+    # write the same SQLite index from two processes, and the console would
+    # report both of them as healthy.
+    pid_path = (
+        Path(args.pid_file) if args.pid_file else Path(args.settings).parent / PID_FILENAME
+    )
+    holder = claim_recorder(pid_path, RecorderIdentity.for_this_process(args.settings))
+    if holder is not None:
+        # Not an error. Something started a second recorder - the console, the
+        # logon task, an operator - and the right answer is to leave the one
+        # that is already recording alone and say which one it is.
+        message = (
+            f"a recorder is already running (pid {holder}); "
+            f"leaving it alone rather than recording the same folder twice"
+        )
+        logger.info("%s", message)
+        print(message)
+        return 0
+
     # The path, not only the loaded settings: this process outlives the console
     # window, so re-reading this file is the only way the Settings tab can ever
     # reach it.
-    service = RecordingService(
-        settings, endpoint_path=endpoint_path, settings_path=args.settings
-    )
-    if args.once:
-        try:
-            service.run_once()
-            print(service.status())
-        finally:
-            service.stop()
+    try:
+        service = RecordingService(
+            settings, endpoint_path=endpoint_path, settings_path=args.settings
+        )
+    except Exception:
+        release_recorder(pid_path)
+        raise
+
+    try:
+        if args.once:
+            try:
+                service.run_once()
+                print(service.status())
+            finally:
+                service.stop()
+            return 0
+        service.run_forever(interval=args.interval)
         return 0
-    service.run_forever(interval=args.interval)
-    return 0
+    finally:
+        # A recorder killed with taskkill /F never reaches this, which is why
+        # the claim also has to be recognisable as stale from the outside.
+        release_recorder(pid_path)
 
 
 if __name__ == "__main__":

@@ -952,3 +952,277 @@ def test_a_segment_with_no_successor_keeps_its_measured_end(tmp_path):
         assert segment.end == pytest.approx(start + 12.75, abs=0.01)
     finally:
         reopened.close()
+
+
+# ---------------------------------------------------------------------------
+# Which process is recording. Written by the process that is recording, so that
+# every supervisor above it - the console, the logon task, an operator - is safe
+# by construction: whatever starts a second recorder, the second one refuses.
+#
+# Nothing here starts a process or looks at a real one. `image_of` and `booted`
+# are the two things that ask the operating system, and both are handed in.
+# ---------------------------------------------------------------------------
+
+
+def claim_of(tmp_path):
+    return tmp_path / "recorder.pid"
+
+
+def gone(_pid):
+    """Nothing is running with that number."""
+    return None
+
+
+def a_recorder(_pid):
+    return "python.exe"
+
+
+def somebody_else(_pid):
+    return "svchost.exe"
+
+
+def never_booted():
+    return None
+
+
+def write_claim(pid_path, pid, identity=None):
+    pid_path.write_text(str(pid), encoding="utf-8")
+    if identity is not None:
+        record_main_module.identity_path(pid_path).write_text(
+            json.dumps(identity.as_dict(), indent=2), encoding="utf-8"
+        )
+
+
+def test_the_claim_is_a_bare_integer_and_nothing_else(tmp_path):
+    """Two other programs already parse this file as one number.
+
+    vmd\\desktop\\services.py does int(text.strip()) and
+    scripts\\recorder_service.ps1 does [int]::TryParse over the whole file.
+    Either of them failing to parse reads as "no recorder is running", and the
+    answer to that is to start a second one - the exact accident this file
+    exists to prevent. Anything richer lives in the companion beside it.
+    """
+    pid_path = claim_of(tmp_path)
+    identity = record_main_module.RecorderIdentity(pid=4242, executable="py.exe")
+    assert record_main_module.claim_recorder(pid_path, identity, image_of=gone) is None
+
+    text = pid_path.read_text(encoding="utf-8")
+    assert int(text.strip()) == 4242
+    assert text.strip() == text.strip().strip("{}\"")  # no JSON, no decoration
+    assert record_main_module.read_identity(pid_path).executable == "py.exe"
+
+
+def test_a_claim_left_behind_by_a_forced_kill_is_taken(tmp_path):
+    """taskkill /F gives a process no chance to tidy up after itself."""
+    pid_path = claim_of(tmp_path)
+    write_claim(pid_path, 4242)
+
+    identity = record_main_module.RecorderIdentity(pid=99, executable="python.exe")
+    holder = record_main_module.claim_recorder(pid_path, identity, image_of=gone)
+
+    assert holder is None
+    assert record_main_module.read_pid(pid_path) == 99
+
+
+def test_a_claim_from_a_previous_boot_is_taken_even_though_the_pid_is_alive(tmp_path):
+    """Windows hands the same numbers out again after a restart.
+
+    A claim written before the machine last started cannot possibly still be
+    its process, whoever is holding that number now - and believing it would
+    mean the console reporting "recording" while nothing reaches the disk.
+    """
+    pid_path = claim_of(tmp_path)
+    stale = record_main_module.RecorderIdentity(
+        pid=4242, executable="python.exe", written_at=1000.0
+    )
+    write_claim(pid_path, 4242, stale)
+
+    identity = record_main_module.RecorderIdentity(pid=99, executable="python.exe")
+    holder = record_main_module.claim_recorder(
+        pid_path,
+        identity,
+        image_of=a_recorder,  # something is alive with that number
+        booted=lambda: 5000.0,  # but the machine started after the claim was written
+    )
+
+    assert holder is None
+    assert record_main_module.read_pid(pid_path) == 99
+
+
+def test_a_recycled_pid_running_something_else_is_not_a_recorder(tmp_path):
+    """The check the logon wrapper already makes: is it our image, or just our number?"""
+    pid_path = claim_of(tmp_path)
+    write_claim(
+        pid_path,
+        4242,
+        record_main_module.RecorderIdentity(pid=4242, executable=r"C:\VMD\.venv\Scripts\python.exe"),
+    )
+
+    identity = record_main_module.RecorderIdentity(pid=99, executable="python.exe")
+    holder = record_main_module.claim_recorder(
+        pid_path, identity, image_of=somebody_else, booted=never_booted
+    )
+
+    assert holder is None
+    assert record_main_module.read_pid(pid_path) == 99
+
+
+def test_a_claim_with_no_companion_still_rejects_an_obvious_impostor(tmp_path):
+    """Claims written by the older console and by the logon task carry no companion."""
+    pid_path = claim_of(tmp_path)
+    write_claim(pid_path, 4242)
+
+    identity = record_main_module.RecorderIdentity(pid=99)
+    holder = record_main_module.claim_recorder(
+        pid_path, identity, image_of=somebody_else, booted=never_booted
+    )
+
+    assert holder is None
+    assert record_main_module.read_pid(pid_path) == 99
+
+
+def test_a_recorder_that_really_is_running_keeps_the_claim(tmp_path):
+    """The whole point. Two recorders on one folder fight over the segment files
+    and write one SQLite index from two processes."""
+    pid_path = claim_of(tmp_path)
+    live = record_main_module.RecorderIdentity(
+        pid=4242, executable="python.exe", written_at=9000.0
+    )
+    write_claim(pid_path, 4242, live)
+
+    identity = record_main_module.RecorderIdentity(pid=99, executable="python.exe")
+    holder = record_main_module.claim_recorder(
+        pid_path, identity, image_of=a_recorder, booted=lambda: 1000.0
+    )
+
+    assert holder == 4242
+    assert record_main_module.read_pid(pid_path) == 4242, "the live claim was trampled"
+
+
+def test_two_recorders_starting_together_do_not_both_win(tmp_path):
+    """The loser finds the winner's number, sees a live process, and defers."""
+    pid_path = claim_of(tmp_path)
+    first = record_main_module.RecorderIdentity(
+        pid=101, executable="python.exe", written_at=9000.0
+    )
+    second = record_main_module.RecorderIdentity(
+        pid=202, executable="python.exe", written_at=9000.0
+    )
+
+    assert record_main_module.claim_recorder(
+        pid_path, first, image_of=gone, booted=lambda: 1000.0
+    ) is None
+    assert record_main_module.claim_recorder(
+        pid_path, second, image_of=a_recorder, booted=lambda: 1000.0
+    ) == 101
+    assert record_main_module.read_pid(pid_path) == 101
+
+
+def test_a_claim_that_cannot_be_written_does_not_stop_recording(tmp_path, monkeypatch):
+    """Recording without a claim is worse than recording with one, and far
+    better than not recording."""
+    pid_path = claim_of(tmp_path)
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("the folder is read-only")
+
+    monkeypatch.setattr(record_main_module.os, "open", refuse)
+    assert record_main_module.claim_recorder(pid_path, image_of=gone) is None
+
+
+def test_releasing_removes_both_files(tmp_path):
+    pid_path = claim_of(tmp_path)
+    identity = record_main_module.RecorderIdentity(pid=99, executable="python.exe")
+    record_main_module.claim_recorder(pid_path, identity, image_of=gone)
+
+    record_main_module.release_recorder(pid_path, pid=99)
+    assert not pid_path.exists()
+    assert not record_main_module.identity_path(pid_path).exists()
+
+
+def test_releasing_leaves_a_claim_that_somebody_else_has_taken(tmp_path):
+    """The console may have started its own recorder after this one exited, and
+    deleting that claim would let the next supervisor start a second one."""
+    pid_path = claim_of(tmp_path)
+    write_claim(pid_path, 4242)
+
+    record_main_module.release_recorder(pid_path, pid=99)
+    assert record_main_module.read_pid(pid_path) == 4242
+
+
+def test_a_missing_claim_is_free(tmp_path):
+    assert record_main_module.running_recorder(claim_of(tmp_path), image_of=gone) is None
+
+
+def test_an_unreadable_process_list_is_not_read_as_nothing_running(tmp_path):
+    """"The process list could not be read" is not "there is no such process".
+
+    Refusing to start costs this one process; starting a second recorder costs
+    the archive, so the unknown is resolved the safe way.
+    """
+    pid_path = claim_of(tmp_path)
+    write_claim(pid_path, 4242)
+    holder = record_main_module.running_recorder(
+        pid_path, our_pid=99, image_of=lambda _pid: "", booted=never_booted
+    )
+    assert holder == 4242
+
+
+def test_our_own_number_in_the_claim_is_not_somebody_else(tmp_path):
+    """The logon wrapper writes the recorder's pid into this file itself, and
+    may get there first."""
+    pid_path = claim_of(tmp_path)
+    write_claim(pid_path, 99)
+    assert (
+        record_main_module.running_recorder(
+            pid_path, our_pid=99, image_of=a_recorder, booted=never_booted
+        )
+        is None
+    )
+
+
+def test_main_claims_the_recorder_and_gives_it_back(tmp_path):
+    from vmd.settings import Settings, StreamSettings, save_settings
+
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"not really a video")
+    settings = Settings()
+    settings.camera.streams = [StreamSettings(name="thermal", url=str(source))]
+    settings.storage.root = tmp_path / "recordings"
+    path = tmp_path / "settings.json"
+    save_settings(settings, path)
+
+    assert main(["--settings", str(path), "--once"]) == 0
+    assert not (tmp_path / "recorder.pid").exists(), "the claim outlived the recorder"
+
+
+def test_main_leaves_a_running_recorder_alone(tmp_path, monkeypatch):
+    """Started twice - by the console and by the logon task - is a normal
+    Tuesday, and the second one must not touch the folder at all."""
+    from vmd.settings import Settings, StreamSettings, save_settings
+
+    settings = Settings()
+    settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://example/thermal")]
+    settings.storage.root = tmp_path / "recordings"
+    path = tmp_path / "settings.json"
+    save_settings(settings, path)
+
+    pid_path = tmp_path / "recorder.pid"
+    write_claim(
+        pid_path,
+        4242,
+        record_main_module.RecorderIdentity(
+            pid=4242, executable="python.exe", written_at=9000.0
+        ),
+    )
+    monkeypatch.setattr(record_main_module, "process_image", a_recorder)
+    monkeypatch.setattr(record_main_module, "boot_time", lambda: 1000.0)
+
+    def refuse(*args, **kwargs):  # pragma: no cover - reaching this is the failure
+        raise AssertionError("a second recorder opened the archive")
+
+    monkeypatch.setattr(record_main_module, "RecordingService", refuse)
+
+    assert main(["--settings", str(path), "--once"]) == 0
+    assert record_main_module.read_pid(pid_path) == 4242
+    assert not (tmp_path / "recordings" / "segments.db").exists()

@@ -25,6 +25,43 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def find_uv(root: Path) -> str | None:
+    """uv: the copy installed beside the app first, then whatever is on PATH.
+
+    The installer puts uv.exe in bin\\ and adds bin\\ to the user PATH, but the
+    environment-change broadcast does not always reach Explorer before the
+    operator double-clicks VMD.exe - and an exe started from Explorer inherits
+    Explorer's environment. The launcher then said "uv is not installed" on a
+    machine where it plainly was, with no terminal to find that out from.
+    VMD.bat has never had the problem because it prepends bin\\ itself.
+
+    Looked for by full path rather than by asking PATH again, because the point
+    is to not depend on PATH at all.
+    """
+    for candidate in (root / "bin" / "uv.exe", root / "bin" / "uv"):
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("uv")
+
+
+def child_environment(root: Path) -> dict[str, str]:
+    """The console's environment, with bin\\ in front of PATH.
+
+    A second belt, not a replacement. The launcher starts the console, which
+    starts the recorder, which runs ffmpeg - and the installer puts ffmpeg.exe
+    in bin\\ beside go2rtc and uv. `vmd.storage.recorder.find_tool` already
+    looks there, so recording works without this; putting bin\\ on the child's
+    PATH means everything else resolves the same way whether it goes through
+    that lookup or a bare PATH one, which is one line for one fewer thing that
+    can differ.
+    """
+    environment = dict(os.environ)
+    bin_dir = root / "bin"
+    if bin_dir.is_dir():
+        environment["PATH"] = str(bin_dir) + os.pathsep + environment.get("PATH", "")
+    return environment
+
+
 def hold(message: str) -> int:
     print(message)
     try:
@@ -44,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             "  Keep VMD.exe in the folder it was installed into."
         )
 
-    uv = shutil.which("uv")
+    uv = find_uv(root)
     if uv is None:
         return hold(
             "\n  uv is not installed, so the console cannot start.\n"
@@ -65,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # Run in the project directory so settings.json, recordings and bin\
         # all resolve the way every other part of the system expects.
-        completed = subprocess.run(command, cwd=str(root), check=False)
+        completed = subprocess.run(
+            command, cwd=str(root), check=False, env=child_environment(root)
+        )
     except KeyboardInterrupt:
         return 0
     except OSError as exc:
