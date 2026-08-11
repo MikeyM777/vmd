@@ -2252,8 +2252,11 @@ def live_endpoint(tmp_path: Path, streams: list[str] | None = None, serves=None)
     the same one its tests adopt and refuse - so this file cannot drift into
     testing against a go2rtc that could not exist.
     """
+    # Pointed where `settings_for` points, because a server pointed somewhere
+    # else is not adoptable any more and must not be: that is a console adopting
+    # a go2rtc holding an address the operator has since corrected.
     server = FakeGo2rtc(
-        {name: f"rtsp://camera/{name}" for name in (["thermal"] if streams is None else streams)},
+        {name: "rtsp://10.0.0.2/t" for name in (["thermal"] if streams is None else streams)},
         serves=serves,
     )
     (tmp_path / "streaming.json").write_text(

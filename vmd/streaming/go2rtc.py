@@ -17,6 +17,7 @@ This module owns the process and the config file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -381,6 +382,59 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
     }
 
 
+def config_fingerprint(config: dict) -> str:
+    """A stable summary of the streams a server was started with.
+
+    This is what makes "that server is running settings that have been
+    replaced" answerable at all. go2rtc reads its configuration once, when it
+    starts, and this console rewrites go2rtc.json on every start - so the file
+    beside the running process describes the console that is opening now, not
+    the server that is already up. Nothing on the machine remembered what that
+    server had actually been given, so a corrected password looked exactly like
+    a correct one.
+
+    Not asked of the server. `/api/config` looks like the answer and is not:
+    measured against the bundled go2rtc 1.9.14, it re-reads the file from disk
+    and reported a password corrected and a stream added seconds earlier, both
+    of which the running process had never seen. It agrees with whatever this
+    console last wrote, which is the definition of a check that proves nothing.
+
+    Only `streams`, because only `streams` is about the camera: the two ports
+    are chosen at launch from whatever is free and differ between two identical
+    consoles. A digest rather than the text, because the text is a camera
+    password and this file is not the one place that has to hold it.
+    """
+    streams = config.get("streams") if isinstance(config, dict) else None
+    payload = json.dumps(streams or {}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def without_credentials(source: str) -> str:
+    """The same source string with any username and password taken out.
+
+    Used on both sides of every comparison with what the API reports, and that
+    is the whole reason it exists: go2rtc 1.9.14 hands back the producer URL
+    exactly as configured, password and all, but a version that redacted it
+    would otherwise disagree with every correct configuration for ever - and
+    what this console does with a server it disagrees with is stop it and start
+    another. A check that cannot be wrong about the secret is worth more than
+    one that notices a changed password, which is what the fingerprint above and
+    the DESCRIBE probe are for.
+    """
+    prefix, _, rest = source.partition(":") if source.startswith("ffmpeg:") else ("", "", source)
+    head = f"{prefix}:" if prefix else ""
+    url, hash_sign, options = rest.partition("#")
+    try:
+        parsed = urlsplit(url)
+        if "@" not in parsed.netloc:
+            return source
+        bare = parsed.netloc.split("@", 1)[1]
+        url = urlunsplit((parsed.scheme, bare, parsed.path, parsed.query, parsed.fragment))
+    except ValueError:  # not a URL at all - a file path, or something odd
+        return source
+    return head + url + hash_sign + options
+
+
 def write_config(config: dict, path: Path) -> Path:
     """Write the config as JSON. go2rtc accepts JSON wherever it accepts YAML,
     and JSON removes a whole class of quoting bugs from RTSP URLs, which are
@@ -399,6 +453,10 @@ class StreamingClaim:
     api_port: int = 0
     rtsp_port: int = 0
     written_at: float = 0.0
+    # What that process was actually given to serve; see `config_fingerprint`.
+    # Empty whenever it is not known - a claim written by a console older than
+    # this - which leaves the next console exactly as well off as it was.
+    streams_fingerprint: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -407,6 +465,7 @@ class StreamingClaim:
             "api_port": self.api_port,
             "rtsp_port": self.rtsp_port,
             "written_at": self.written_at,
+            "streams_fingerprint": self.streams_fingerprint,
         }
 
 
@@ -442,6 +501,7 @@ def read_claim_details(pid_path: str | Path) -> StreamingClaim | None:
             api_port=int(payload.get("api_port") or 0),
             rtsp_port=int(payload.get("rtsp_port") or 0),
             written_at=float(payload.get("written_at") or 0.0),
+            streams_fingerprint=str(payload.get("streams_fingerprint") or ""),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -1004,10 +1064,8 @@ class Go2rtcService:
         behind by a go2rtc that did not stay up is cleared by `_reap`, and the
         recorder probes the port before believing it either way.
         """
-        write_config(
-            build_config(self.settings, self.api_port, self.rtsp_port),
-            self.config_path,
-        )
+        config = build_config(self.settings, self.api_port, self.rtsp_port)
+        write_config(config, self.config_path)
         try:
             process = self._spawn([str(self.binary), "-c", str(self.config_path)])
         except OSError:
@@ -1023,7 +1081,9 @@ class Go2rtcService:
         self._forget_adopted_watch()
         self._pump_output(process)
         self._write_endpoint()
-        self._write_claim(getattr(process, "pid", None))
+        # The config it was handed, not the one on disk: this file is rewritten
+        # by the next console before it asks any of these questions.
+        self._write_claim(getattr(process, "pid", None), config_fingerprint(config))
         logger.info(
             "go2rtc started on %s for %s", self.api_base, ", ".join(self.stream_names)
         )
@@ -1053,7 +1113,7 @@ class Go2rtcService:
         except OSError:
             pass
 
-    def _write_claim(self, pid: int | None) -> None:
+    def _write_claim(self, pid: int | None, fingerprint: str = "") -> None:
         """Say which process is serving the video, so the next console can stop it.
 
         The bare number first and on its own, because that is what every reader
@@ -1069,6 +1129,7 @@ class Go2rtcService:
             api_port=self.api_port,
             rtsp_port=self.rtsp_port,
             written_at=time.time(),
+            streams_fingerprint=fingerprint,
         )
         try:
             self.pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1262,6 +1323,9 @@ class Go2rtcService:
             rtsp_port = int(endpoint.get("rtsp_port") or 0)
         except (TypeError, ValueError):
             rtsp_port = 0
+        elsewhere = self._configured_differently(served, api_port, rtsp_port)
+        if elsewhere:
+            return elsewhere
         broken = self.without_a_picture(
             rtsp_port=rtsp_port or None, api_port=api_port, timeout=probe_timeout
         )
@@ -1271,6 +1335,68 @@ class Go2rtcService:
                 f"picture to give for it: {said}"
                 for name, said in sorted(broken.items())
             )
+        return ""
+
+    def _configured_differently(
+        self, served: dict, api_port: int, rtsp_port: int
+    ) -> str:
+        """Why that server cannot have read the settings on disk now, or "".
+
+        Two ways of asking, and the first is the strong one. When this console
+        started that server it wrote down a digest of the streams it handed it;
+        a digest that no longer matches means the settings behind the picture
+        have been replaced - a corrected password, a corrected address, a
+        renamed stream, a changed reader, any of them - and no amount of probing
+        that server could ever discover it, because it is serving perfectly well
+        from settings nobody wants any more.
+
+        The claim has to be about the server being asked about. Two consoles
+        with two go2rtcs would otherwise have this refuse a healthy server on
+        the strength of a claim describing a different one.
+
+        Failing that - a server started by a console older than this, which
+        wrote no digest - what the API says its producers are pointed at, with
+        the credentials taken out of both sides. That still catches a renamed
+        stream and a changed address, and it can never be wrong about a
+        password, which is the failure mode that matters here: refusing a
+        healthy server means stopping it, and stopping it costs the picture.
+        """
+        wanted = {
+            stream.name: source_for(
+                stream, self.settings.camera.username, self.settings.camera.password
+            )
+            for stream in self.settings.camera.streams
+            if stream.enabled and stream.url
+        }
+        claim = read_claim_details(self.pid_path)
+        about_this_server = bool(
+            claim
+            and (not claim.api_port or claim.api_port == api_port)
+            and (not claim.rtsp_port or not rtsp_port or claim.rtsp_port == rtsp_port)
+        )
+        if claim and about_this_server and claim.streams_fingerprint:
+            if claim.streams_fingerprint != config_fingerprint({"streams": wanted}):
+                return (
+                    "it was started with different settings from the ones saved "
+                    "now - the camera password, an address, a stream name or a "
+                    "reader has changed since, and go2rtc reads its settings once, "
+                    "when it starts"
+                )
+            return ""
+        for name, source in sorted(wanted.items()):
+            entry = served.get(name)
+            producers = (entry or {}).get("producers") or []
+            reported = next(
+                (str(p.get("url")) for p in producers if isinstance(p, dict) and p.get("url")),
+                "",
+            )
+            if not reported:
+                continue  # it did not say; nothing is proven either way
+            if without_credentials(reported) != without_credentials(source):
+                return (
+                    f"it is pointed at {without_credentials(reported)} for {name}, "
+                    f"and the settings saved now say {without_credentials(source)}"
+                )
         return ""
 
     def replace(self, why: str) -> None:

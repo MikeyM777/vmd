@@ -1033,6 +1033,132 @@ def test_a_stream_nobody_has_asked_for_yet_is_not_called_broken(tmp_path: Path) 
         server.close()
 
 
+# ------------------------------------------- and that it read these settings
+#
+# The general case of the same defect. go2rtc reads its configuration once, at
+# startup, and this console rewrites go2rtc.json every time it starts - so the
+# file on disk and the settings inside the running process are two different
+# things, and nothing compared them. A corrected password, a corrected address,
+# a renamed stream and a changed reader all land in the same state: a server
+# that is listening, knows the names, and is running something else.
+#
+# It is not asked of the API. `/api/config` looks like the answer and is a trap:
+# measured against the bundled 1.9.14, it re-reads the file from disk, so it
+# reported the corrected password and a stream that had been added since -
+# neither of which the running process had ever seen. It would agree with
+# whatever the console had just written, every time.
+#
+# So the console writes down what it started the server with, and compares that.
+
+
+def claim_with(tmp_path: Path, fingerprint: str, api_port: int, rtsp_port: int) -> None:
+    (tmp_path / "go2rtc.pid").write_text("4242", encoding="utf-8")
+    (tmp_path / "go2rtc.pid.json").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "executable": str(tmp_path / "go2rtc.exe"),
+                "api_port": api_port,
+                "rtsp_port": rtsp_port,
+                "written_at": time.time(),
+                "streams_fingerprint": fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_server_started_before_the_password_was_corrected_is_not_adopted(
+    tmp_path: Path,
+) -> None:
+    """The whole fault in one test.
+
+    This server is listening, it knows the name, and it would even hand over a
+    picture - it is simply running the mistyped password the operator has since
+    corrected, and no probe of it can ever say so. What says so is that this
+    console wrote down what it started that server with.
+    """
+    from vmd.streaming.go2rtc import config_fingerprint
+
+    settings = settings_with(("thermal", "rtsp://cam/t", True))
+    settings.camera.username = "admin"
+    settings.camera.password = "mistyped"
+    was_started_with = config_fingerprint(build_config(settings, 1984, 8554))
+
+    server = FakeGo2rtc({"thermal": "rtsp://admin:mistyped@cam/t"})
+    try:
+        svc = claiming_service(tmp_path)
+        svc.settings.camera.username = "admin"
+        svc.settings.camera.password = "corrected"
+        claim_with(
+            tmp_path,
+            was_started_with,
+            server.endpoint["api_port"],
+            server.endpoint["rtsp_port"],
+        )
+        why = svc.unadoptable(server.endpoint)
+    finally:
+        server.close()
+
+    assert why, "a server running settings that have been replaced was adopted"
+    assert "settings" in why.lower(), why
+
+
+def test_the_console_writes_down_what_it_started_the_server_with(tmp_path: Path) -> None:
+    """And the other half: the same settings must still be adoptable, or every
+    console start replaces a working server and the picture goes for nothing."""
+    from vmd.streaming.go2rtc import config_fingerprint
+
+    svc = claiming_service(tmp_path)
+    svc.start()
+    written = json.loads((tmp_path / "go2rtc.pid.json").read_text(encoding="utf-8"))
+    expected = config_fingerprint(
+        build_config(svc.settings, svc.api_port, svc.rtsp_port)
+    )
+    assert written["streams_fingerprint"] == expected
+
+    server = FakeGo2rtc({"thermal": "rtsp://cam/t"})
+    try:
+        claim_with(
+            tmp_path,
+            expected,
+            server.endpoint["api_port"],
+            server.endpoint["rtsp_port"],
+        )
+        assert svc.unadoptable(server.endpoint) == ""
+    finally:
+        server.close()
+
+
+def test_the_password_is_never_weighed_against_what_the_api_says(tmp_path: Path) -> None:
+    """A server started by a console older than this has nothing written down,
+    so the only thing left to compare is what the API reports - and a go2rtc
+    that redacts the password in that answer would then disagree with every
+    correct config for ever, and be stopped and started for ever with it. The
+    credentials are taken out of both sides before anything is compared."""
+    server = FakeGo2rtc({"thermal": "rtsp://admin:***@cam/t"})
+    try:
+        svc = claiming_service(tmp_path)
+        svc.settings.camera.username = "admin"
+        svc.settings.camera.password = "secret"
+        assert svc.unadoptable(server.endpoint) == ""
+    finally:
+        server.close()
+
+
+def test_a_server_pointed_at_another_address_is_not_adopted(tmp_path: Path) -> None:
+    """Nothing written down, and what it is holding is a different camera."""
+    server = FakeGo2rtc({"thermal": "rtsp://10.9.9.9/old"})
+    try:
+        svc = claiming_service(tmp_path)
+        why = svc.unadoptable(server.endpoint)
+    finally:
+        server.close()
+
+    assert why, "a server pointed at another address was adopted"
+    assert "thermal" in why, why
+
+
 def test_the_proof_cannot_hang_the_console(tmp_path: Path) -> None:
     """It runs at every console start, in front of a blank window. A server that
     accepts the connection and never answers must cost the probe's own bound and
