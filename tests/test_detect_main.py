@@ -14,6 +14,7 @@ from vmd.detect_main import DetectionService, detected_streams, main, parse_args
 from vmd.settings import (
     CameraSettings,
     IgnoreRegion,
+    IgnoreShape,
     DetectionSettings,
     Settings,
     StorageSettings,
@@ -158,6 +159,43 @@ def test_the_painted_ignore_mask_reaches_the_pipeline_that_reads_it(tmp_path):
         assert mask is not None, "the pipeline is reading a config nobody painted"
         assert mask.shape == (8, 8)
         assert mask[0, 0] != 0
+    finally:
+        service.stop()
+
+
+def test_the_drawn_areas_reach_the_detector(tmp_path):
+    """The outline he traced round the treeline has the same journey to make.
+
+    Settings file, service, detector, and finally the arithmetic that looks at
+    the tree. Any step that only carries rectangles leaves him drawing outlines
+    that do nothing at all, which is worse than the tool not existing.
+    """
+    settings = build_settings(tmp_path)
+    settings.camera.streams[0].ignore_shapes = [
+        IgnoreShape(points=[(1, 1), (5, 1), (5, 5)])
+    ]
+    service = service_for(tmp_path, settings)
+    try:
+        assert service.detectors[0].ignore_shapes == [[(1, 1), (5, 1), (5, 5)]]
+    finally:
+        service.stop()
+
+
+def test_a_drawn_area_reaches_the_pipeline_that_reads_it(tmp_path):
+    """Reaching the detector is not the same as reaching the thing that looks."""
+    settings = build_settings(tmp_path)
+    settings.camera.streams[0].ignore_shapes = [
+        IgnoreShape(points=[(0, 0), (4, 0), (4, 4), (0, 4)])
+    ]
+    service = DetectionService(settings, open_capture=lambda url: FakeCapture())
+    try:
+        detector = service.detectors[0]
+        assert detector.step() is True  # one real frame, which paints the mask
+        mask = detector.pipeline.config.ignore_mask
+        assert mask is not None, "the pipeline is reading a config nobody painted"
+        assert mask.shape == (8, 8)
+        assert mask[2, 2] != 0
+        assert mask[7, 7] == 0
     finally:
         service.stop()
 

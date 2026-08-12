@@ -112,6 +112,17 @@ CLOSE_WAIT_MS = 3000
 # click rather than a drag. Nobody releases the mouse on the dot they pressed.
 CLICK_SLOP = 4
 
+# How solid the shading over an ignored area is, out of 255, and how solid the
+# one under the pointer is. The colour itself is the palette's alarm, by name;
+# these are the only part of it decided here, because DESIGN.md names colours
+# and not the opacity a picture is allowed to be dimmed by.
+#
+# Both are low on purpose. He has to be able to see what he is ignoring - an
+# area painted over solidly is an area he cannot check he drew in the right
+# place, which is the fault this whole tool exists to correct.
+SHADE_ALPHA = 50
+SHADE_CHOSEN = 90
+
 # How many frames to decode before keeping one.
 #
 # It was ONE, and one frame off a live RTSP stream is routinely black, green or
@@ -261,11 +272,13 @@ def region_between(
 # ------------------------------------------------------------------ the picture
 
 
-class FramePicker(QWidget):
-    """One frame, with the sky line and the patches drawn over it.
+class PictureArea(QWidget):
+    """One frame from the camera, or the reason there is not one.
 
-    Click puts the line; drag draws a patch. Both are reported in the frame's
-    own dots, so what leaves this widget is what goes in the settings file.
+    Everything both drawing tools need and neither should own twice: the frame,
+    what it is showing while there is no frame, and where inside this widget the
+    picture actually is. What is drawn *on* the picture is the subclass's, in
+    `paint_over`.
 
     When there is no frame it says why, here, in the middle of itself. That is
     not decoration: the waiting sentence used to live in a 12 px muted label in
@@ -274,9 +287,6 @@ class FramePicker(QWidget):
     with `--well`, which is #050607. The report that came back was "black, no
     text", and that was a fair description of what this dialog showed.
     """
-
-    horizon_picked = Signal(int)
-    region_drawn = Signal(object)
 
     # How often the waiting line is redrawn while a fetch is in flight. It says
     # how long it has been trying, because a static sentence could equally mean
@@ -287,11 +297,6 @@ class FramePicker(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image: QImage | None = None
-        self._horizon: int | None = None
-        self._regions: list[tuple[int, int, int, int]] = []
-        self._selected = -1
-        self._press: QPointF | None = None
-        self._drag: QPointF | None = None
         # Not started, in flight, failed, shown. These were one thing -
         # `has_frame()` is False - and they are four different things to an
         # operator standing in front of them.
@@ -359,6 +364,82 @@ class FramePicker(QWidget):
         self._words = ""
         self.update()
 
+    def picture_rect(self) -> QRect:
+        """Where the picture is inside this widget, in the widget's own dots.
+
+        A widget is rarely the frame's shape, so the picture is centred and the
+        rest is dead space. Everything drawn over the picture is positioned
+        against this rather than against the widget.
+        """
+        frame = self.frame_size()
+        scale = scale_of(self.size(), frame)
+        top_left = to_view(0, 0, self.size(), frame)
+        return QRect(
+            int(top_left.x()),
+            int(top_left.y()),
+            int(frame.width() * scale),
+            int(frame.height() * scale),
+        )
+
+    # -- drawing it ---------------------------------------------------------
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(PALETTE["well"]))
+        if not self.has_frame():
+            self._paint_state(painter)
+            painter.end()
+            return
+        painter.drawImage(self.picture_rect(), self._image)
+        self.paint_over(painter, self.picture_rect())
+        painter.end()
+
+    def paint_over(self, painter: QPainter, picture: QRect) -> None:
+        """What this tool draws on the picture. Nothing, until a subclass says."""
+
+    def _paint_state(self, painter: QPainter) -> None:
+        """Whatever there is to say, in the middle of the empty area.
+
+        At the band size rather than the caption size: this is the only thing on
+        screen at the moment it is drawn, and the operator reading it is the one
+        who reported that this dialog was black and said nothing.
+        """
+        if not self._words:
+            return
+        painter.setPen(
+            QColor(PALETTE["warn"] if self._state == "failed" else PALETTE["muted"])
+        )
+        font = painter.font()
+        font.setPixelSize(SIZE_BAND)
+        painter.setFont(font)
+        # Inset, so a long sentence wraps inside the area rather than being cut
+        # off at its edges.
+        room = self.rect().adjusted(SPACE_STEP * 2, SPACE_STEP, -SPACE_STEP * 2, -SPACE_STEP)
+        painter.drawText(
+            room,
+            int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap),
+            self._words,
+        )
+
+
+class FramePicker(PictureArea):
+    """One frame, with the sky line and the patches drawn over it.
+
+    Click puts the line; drag draws a patch. Both are reported in the frame's
+    own dots, so what leaves this widget is what goes in the settings file.
+    """
+
+    horizon_picked = Signal(int)
+    region_drawn = Signal(object)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._horizon: int | None = None
+        self._regions: list[tuple[int, int, int, int]] = []
+        self._selected = -1
+        self._press: QPointF | None = None
+        self._drag: QPointF | None = None
+
     def horizon(self) -> int | None:
         return self._horizon
 
@@ -411,23 +492,9 @@ class FramePicker(QWidget):
         self.update()
         self.region_drawn.emit(region)
 
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(PALETTE["well"]))
-        if not self.has_frame():
-            self._paint_state(painter)
-            painter.end()
-            return
+    def paint_over(self, painter: QPainter, picture: QRect) -> None:
         frame = self.frame_size()
         scale = scale_of(self.size(), frame)
-        top_left = to_view(0, 0, self.size(), frame)
-        picture = QRect(
-            int(top_left.x()),
-            int(top_left.y()),
-            int(frame.width() * scale),
-            int(frame.height() * scale),
-        )
-        painter.drawImage(picture, self._image)
 
         if self._horizon is not None:
             y = to_view(0, self._horizon, self.size(), frame).y()
@@ -442,38 +509,15 @@ class FramePicker(QWidget):
                 int(corner.x()), int(corner.y()), max(1, int(w * scale)), max(1, int(h * scale))
             )
             chosen = index == self._selected
-            painter.fillRect(box, QColor(255, 83, 75, 90 if chosen else 50))
+            shade = QColor(PALETTE["alarm"])
+            shade.setAlpha(SHADE_CHOSEN if chosen else SHADE_ALPHA)
+            painter.fillRect(box, shade)
             painter.setPen(QPen(QColor(PALETTE["alarm"]), 3 if chosen else 1))
             painter.drawRect(box)
 
         if self._press is not None and self._drag is not None:
             painter.setPen(QPen(QColor(PALETTE["ink"]), 1, Qt.PenStyle.DashLine))
             painter.drawRect(QRect(self._press.toPoint(), self._drag.toPoint()))
-        painter.end()
-
-    def _paint_state(self, painter: QPainter) -> None:
-        """Whatever there is to say, in the middle of the empty area.
-
-        At the band size rather than the caption size: this is the only thing on
-        screen at the moment it is drawn, and the operator reading it is the one
-        who reported that this dialog was black and said nothing.
-        """
-        if not self._words:
-            return
-        painter.setPen(
-            QColor(PALETTE["warn"] if self._state == "failed" else PALETTE["muted"])
-        )
-        font = painter.font()
-        font.setPixelSize(SIZE_BAND)
-        painter.setFont(font)
-        # Inset, so a long sentence wraps inside the area rather than being cut
-        # off at its edges.
-        room = self.rect().adjusted(SPACE_STEP * 2, SPACE_STEP, -SPACE_STEP * 2, -SPACE_STEP)
-        painter.drawText(
-            room,
-            int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap),
-            self._words,
-        )
 
 
 # ------------------------------------------------------------- fetching a frame

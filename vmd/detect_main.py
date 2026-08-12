@@ -198,7 +198,12 @@ class DetectionService:
         given there: this is where the vision stack starts being needed, and
         the console imports this module for two constants.
         """
-        from vmd.detect.config import classifier_for, config_from_settings, regions_of
+        from vmd.detect.config import (
+            classifier_for,
+            config_from_settings,
+            regions_of,
+            shapes_of,
+        )
         from vmd.detect.runner import StreamDetector
 
         config = config_from_settings(stream, self.settings.detection)
@@ -211,6 +216,10 @@ class DetectionService:
             open_capture=open_capture,
             pipeline=self._pipeline_factory(config),
             ignore_regions=regions_of(stream),
+            # And the areas he drew round rather than boxed. Both go, because a
+            # settings file written before the drawing tool existed carries
+            # rectangles and nothing already marked out may quietly come back.
+            ignore_shapes=shapes_of(stream),
             # Loads nothing here: the YOLO import is deferred to the first crop
             # worth naming, so this process starts on a machine with no torch
             # and no weights. Off for the thermal by default.

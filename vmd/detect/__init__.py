@@ -47,8 +47,14 @@ _EXPORTS = {
     "classifier_for": "vmd.detect.config",
     "classify_enabled": "vmd.detect.config",
     "config_from_settings": "vmd.detect.config",
-    "mask_from_regions": "vmd.detect.config",
     "regions_of": "vmd.detect.config",
+    "shapes_of": "vmd.detect.config",
+    "contains": "vmd.detect.mask",
+    "mask_from_areas": "vmd.detect.mask",
+    "mask_from_regions": "vmd.detect.mask",
+    "mask_from_shapes": "vmd.detect.mask",
+    "simplify": "vmd.detect.mask",
+    "sparse_outline": "vmd.detect.mask",
     "Event": "vmd.detect.events",
     "EventStore": "vmd.detect.events",
     "above_horizon": "vmd.detect.filters",
@@ -79,10 +85,18 @@ if TYPE_CHECKING:  # pragma: no cover - for readers and type checkers only
         classifier_for,
         classify_enabled,
         config_from_settings,
-        mask_from_regions,
         regions_of,
+        shapes_of,
     )
     from vmd.detect.events import Event, EventStore
+    from vmd.detect.mask import (
+        contains,
+        mask_from_areas,
+        mask_from_regions,
+        mask_from_shapes,
+        simplify,
+        sparse_outline,
+    )
     from vmd.detect.filters import (
         above_horizon,
         implausible_size,

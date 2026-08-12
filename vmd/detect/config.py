@@ -7,12 +7,26 @@ arithmetic over arrays. This is the one place the two meet.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Iterable, Sequence
-
-import numpy as np
 
 from vmd.detect.classify import BudgetedClassifier, NullClassifier, YoloClassifier
+from vmd.detect.mask import mask_from_areas, mask_from_regions, mask_from_shapes
 from vmd.detect.pipeline import PRESETS, DetectionConfig, Tuning
+
+# Painting a mask moved to `vmd/detect/mask.py`, where the drawn outlines are,
+# because the two have to agree about what "inside" means and a settings file
+# carries both. Re-exported here: this is where every caller has always found
+# it, and a rename is churn in six files that changes nothing.
+__all__ = [
+    "StreamDetectionConfig",
+    "classifier_for",
+    "classify_enabled",
+    "config_from_settings",
+    "mask_from_areas",
+    "mask_from_regions",
+    "mask_from_shapes",
+    "regions_of",
+    "shapes_of",
+]
 
 
 @dataclass
@@ -104,30 +118,11 @@ def regions_of(stream) -> list[tuple[int, int, int, int]]:
     return [region.as_tuple() for region in stream.ignore_regions]
 
 
-def mask_from_regions(
-    regions: Iterable[Sequence[int]], width: int, height: int
-) -> np.ndarray | None:
-    """Paint the ignore rectangles into a mask the size of the frame.
+def shapes_of(stream) -> list[list[tuple[int, int]]]:
+    """The stream's drawn outlines, as plain points the detector can use.
 
-    Regions are clipped rather than trusted. The operator painted them against
-    whatever resolution the console was showing, and the stream can change
-    resolution without asking - so a rectangle hanging off the edge must cover
-    the part of the frame it still overlaps, not raise, and not wrap around.
-
-    Returns None when nothing survives clipping, because None is what the
-    pipeline reads as "no mask" and an all-zero array would cost a comparison
-    per blob for no reason.
+    Beside the rectangles and not instead of them. Every area the operator has
+    marked out until now is a rectangle, and both go to the detector so that a
+    settings file written before he could draw one keeps meaning what it meant.
     """
-    mask = np.zeros((int(height), int(width)), dtype=np.uint8)
-    painted = False
-    for region in regions:
-        x, y, w, h = (int(v) for v in region)
-        left = max(x, 0)
-        top = max(y, 0)
-        right = min(x + w, int(width))
-        bottom = min(y + h, int(height))
-        if right <= left or bottom <= top:
-            continue
-        mask[top:bottom, left:right] = 255
-        painted = True
-    return mask if painted else None
+    return [shape.as_tuples() for shape in stream.ignore_shapes]

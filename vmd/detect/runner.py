@@ -24,7 +24,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from vmd.detect.classify import UNNAMED, NullClassifier, named
-from vmd.detect.config import mask_from_regions
+from vmd.detect.mask import mask_from_areas
 from vmd.detect.events import EventStore
 from vmd.detect.pipeline import DetectionConfig, DetectionPipeline
 
@@ -186,6 +186,10 @@ class StreamDetector:
         open_capture: Callable = open_capture_cv2,
         pipeline=None,
         ignore_regions: Sequence[Sequence[int]] = (),
+        # The areas he drew round, alongside the ones he boxed. Both, because a
+        # settings file written before the drawing tool existed carries
+        # rectangles and nothing he already marked out may quietly come back.
+        ignore_shapes: Sequence[Sequence[Sequence[int]]] = (),
         classifier=None,
         clock: Callable[[], float] = time.time,
         # Deliberately a second clock. `clock` stamps events, so it has to be
@@ -270,6 +274,9 @@ class StreamDetector:
         # tree he has painted out go on alarming.
         self.config = getattr(self.pipeline, "config", None) or self.config
         self.ignore_regions = list(ignore_regions)
+        self.ignore_shapes = [
+            [(int(x), int(y)) for x, y in shape] for shape in ignore_shapes
+        ]
         # Never None, so recording an event has one code path. The default
         # names nothing, which on the thermal is the correct answer and not a
         # placeholder.
@@ -980,27 +987,35 @@ class StreamDetector:
         """Build the ignore mask from the size of a real frame, and rebuild it
         when that size changes.
 
-        The operator paints rectangles; only a frame knows how big the frame is.
-        And a frame is not a fixed size: this app re-encodes the camera over
-        ONVIF while it is running, so the stream can change resolution without
-        anybody asking it to. A mask painted once at the first size stops lining
-        up with the picture the moment it changes - the tree the operator
-        painted out comes back, and a patch of ground he never painted goes
-        quiet - so the size it was painted at is remembered and checked.
+        The operator boxes some areas and draws round others; only a frame knows
+        how big the frame is. And a frame is not a fixed size: this app
+        re-encodes the camera over ONVIF while it is running, so the stream can
+        change resolution without anybody asking it to. A mask painted once at
+        the first size stops lining up with the picture the moment it changes -
+        the tree the operator painted out comes back, and a patch of ground he
+        never painted goes quiet - so the size it was painted at is remembered
+        and checked.
+
+        Both kinds go into the one mask. The rectangles are what every settings
+        file in existence carries, the outlines are what he can draw now, and a
+        mask that honoured only one of them would silently give him back a
+        swaying treeline he had already dealt with.
         """
-        if not self.ignore_regions:
+        if not self.ignore_regions and not self.ignore_shapes:
             return
         height, width = frame.shape[:2]
         if self._mask_size == (height, width):
             return
         if self._mask_size is not None:
             logger.info(
-                "%s: the picture is now %dx%d; repainting the ignored regions",
+                "%s: the picture is now %dx%d; repainting the ignored areas",
                 self.stream,
                 width,
                 height,
             )
-        self.config.ignore_mask = mask_from_regions(self.ignore_regions, width, height)
+        self.config.ignore_mask = mask_from_areas(
+            self.ignore_regions, self.ignore_shapes, width, height
+        )
         self._mask_size = (height, width)
 
     def _remember_frame_time(self, index: int, now: float) -> None:

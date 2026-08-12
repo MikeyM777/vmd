@@ -317,6 +317,14 @@ def detector_fingerprint(settings: Settings) -> tuple:
                 stream.classify,
                 stream.horizon_y,
                 tuple(region.as_tuple() for region in stream.ignore_regions),
+                # And the areas he drew round. Left out of this, an outline
+                # traced over a swaying treeline is saved, the detector is not
+                # restarted, and the tree goes on alarming until something else
+                # happens to restart it - which on this machine is the next
+                # power cut.
+                tuple(
+                    tuple(shape.as_tuples()) for shape in stream.ignore_shapes
+                ),
             )
             for stream in settings.camera.streams
         ),

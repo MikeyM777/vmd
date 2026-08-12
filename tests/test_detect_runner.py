@@ -827,6 +827,86 @@ def test_no_regions_means_no_mask(tmp_path):
         store.close()
 
 
+def test_a_drawn_area_is_painted_from_the_first_frame(tmp_path):
+    """An outline the operator traced reaches the mask the same way a box does.
+
+    It is the same journey and the same first frame; only the shape is new.
+    """
+    detector, store = build(tmp_path, ignore_shapes=[[(1, 1), (5, 1), (5, 5), (1, 5)]])
+    try:
+        assert detector.config.ignore_mask is None
+        detector.step()
+        mask = detector.config.ignore_mask
+        assert mask is not None
+        assert mask.shape == (8, 8)
+        assert mask[3, 3] != 0
+        assert mask[7, 7] == 0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_a_box_and_an_outline_are_painted_into_the_same_mask(tmp_path):
+    """Both at once, so a settings file written before the outlines still works.
+
+    Everything he has already marked out is a rectangle. The day he traces his
+    first treeline is not the day those rectangles stop being ignored.
+    """
+    detector, store = build(
+        tmp_path,
+        ignore_regions=[(0, 0, 2, 2)],
+        ignore_shapes=[[(4, 4), (7, 4), (7, 7), (4, 7)]],
+    )
+    try:
+        detector.step()
+        mask = detector.config.ignore_mask
+        assert mask is not None
+        assert mask[0, 0] != 0, "the rectangle from the old settings file"
+        assert mask[5, 5] != 0, "the outline he drew today"
+        assert mask[0, 7] == 0
+    finally:
+        detector.close()
+        store.close()
+
+
+def test_the_drawn_areas_are_repainted_when_the_frame_changes_size(tmp_path):
+    """The same fault as the rectangles', and it is not fixed by them being fixed.
+
+    A mask painted once at the first size stops lining up with the picture the
+    moment the stream re-encodes underneath it, and the traced treeline comes
+    back to life with nothing anywhere saying why.
+    """
+
+    class ResizingCapture:
+        def __init__(self):
+            self.sizes = [(60, 80), (60, 80), (120, 160), (120, 160)]
+
+        def read(self):
+            if not self.sizes:
+                return False, None
+            height, width = self.sizes.pop(0)
+            return True, np.zeros((height, width), dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    detector, store = build(
+        tmp_path,
+        captures=[ResizingCapture()],
+        ignore_shapes=[[(0, 0), (20, 0), (20, 20), (0, 20)]],
+    )
+    try:
+        detector.step()
+        assert detector.config.ignore_mask.shape == (60, 80)
+        detector.step()
+        detector.step()  # the stream is now twice the size
+        assert detector.config.ignore_mask.shape == (120, 160)
+        assert detector.config.ignore_mask[0, 0] != 0
+    finally:
+        detector.close()
+        store.close()
+
+
 # --------------------------------------------------------------------------
 # Frames that arrive but carry nothing
 # --------------------------------------------------------------------------
