@@ -64,6 +64,21 @@ SPACE_ROOM = 12
 SPACE_GROUP = 18
 SPACE_WIDE = 22
 
+# How big a tick box is drawn, in logical pixels.
+#
+# Qt's own is 13, which is 13 real pixels on a 4K panel and about the width of
+# the letter it sits beside. The operator's words are "there should be zero
+# doubt about whether a box is checked or unchecked", read from two metres back,
+# and half the settings on his console are tick boxes. At Windows' 150% scaling
+# this lands at 33 real pixels, which is the size of the tick boxes on a machine
+# that expects to be touched.
+CHECKBOX_SIZE = 22
+
+# How thick its edge is. A hairline around a 22 px box reads as a smudge at two
+# metres; the edge is what says "unchecked" and it has to be as legible as the
+# fill that says "checked".
+CHECKBOX_EDGE = 2
+
 # How wide a form is allowed to get. A settings form is a column of short
 # fields, and a 13-character address stretched across 1900 px of a 4K panel is
 # the single loudest thing wrong with that tab: the eye has to travel the whole
@@ -184,6 +199,50 @@ QPushButton[primary="true"] {{
     padding: {SPACE_STEP}px {SPACE_WIDE}px;
 }}
 QPushButton[primary="true"]:hover {{ background: {p["line_strong"]}; }}
+
+/* A tick box that cannot be misread from two metres back.
+
+   "There should be zero doubt about whether a box is checked or unchecked."
+   Qt's default indicator is 13 logical pixels - smaller than the word next to
+   it - and its checked state is a pale tick inside a pale box, which at this
+   distance is one grey square either way.
+
+   Three signals, and not one of them is colour on its own, because DESIGN.md
+   says colour never carries meaning alone:
+
+   * the box is HOLLOW when it is off and SOLID when it is on, which is the
+     largest difference two shapes of this size can have and survives a
+     colourblind reader, a washed-out panel and a screen at half brightness;
+   * the edge goes from the quiet line colour to full ink;
+   * and the ROW is painted, so what changes is a band the width of the label
+     rather than a square at one end of it - which is what makes a ticked line
+     findable while scanning a column of them rather than only while reading it.
+
+   Ink and not amber: DESIGN.md keeps amber for the one active control on a
+   screen, and a form with nine ticked boxes on it would be nine ambers. White
+   on the page colour is also the largest luminance step this palette has. */
+QCheckBox {{
+    spacing: {SPACE_SNUG}px;
+    padding: {SPACE_TIGHT}px {SPACE_SNUG}px;
+}}
+QCheckBox::indicator {{
+    width: {CHECKBOX_SIZE}px;
+    height: {CHECKBOX_SIZE}px;
+    border: {CHECKBOX_EDGE}px solid {p["line_strong"]};
+    border-radius: 0;
+    background: {p["bg"]};
+}}
+QCheckBox::indicator:hover {{ border-color: {p["ink"]}; }}
+QCheckBox::indicator:checked {{
+    border: {CHECKBOX_EDGE}px solid {p["ink"]};
+    background: {p["ink"]};
+}}
+QCheckBox:checked {{
+    background: {p["raised"]};
+    font-weight: {WEIGHT_VALUE};
+}}
+QCheckBox:disabled {{ color: {p["muted"]}; }}
+QCheckBox::indicator:disabled {{ border-color: {p["line"]}; background: {p["surface"]}; }}
 
 QLineEdit, QComboBox, QSpinBox, QDateEdit, QDoubleSpinBox {{
     background: {p["raised"]};
