@@ -1263,34 +1263,112 @@ def test_the_moment_being_watched_is_written_out_in_full(qtbot, tmp_path: Path) 
         index.close()
 
 
-def test_the_readout_is_bigger_than_the_body_text(qtbot, tmp_path: Path) -> None:
-    """Measured with the application's own appearance on, which is the only
-    measurement that means anything.
+def dressed(qtbot, tmp_path: Path):
+    """A tab wearing the application's own appearance, laid out and painted.
 
-    A stylesheet beats setFont, and the application stylesheet puts a font-size
-    on QWidget. A readout given its size only by setFont reports the size it was
-    asked for and draws at the size of the smallest note on the tab - which is
-    exactly what happened, and what a test reading `font()` could not see.
+    The only measurement that means anything about type on this tab. A
+    stylesheet beats setFont, the application stylesheet puts a font-size on
+    QWidget, and a readout given its size only by setFont REPORTS the size it
+    was asked for while DRAWING at the size of the smallest note on the screen -
+    which is exactly what once happened here, and what a test reading `font()`
+    cannot see. `fontInfo` is what the widget will actually paint with, and it
+    is only true once the widget has been polished.
     """
     from PySide6.QtWidgets import QApplication
 
-    from vmd.desktop.style import SIZE_BODY, stylesheet
+    from vmd.desktop.style import stylesheet
 
     was = QApplication.instance().styleSheet()
     QApplication.instance().setStyleSheet(stylesheet())
-    try:
-        tab, pane, index = build(qtbot, tmp_path)
-        try:
-            tab.show()
-            qtbot.waitExposed(tab)
-            assert tab.readout.fontInfo().pixelSize() > SIZE_BODY, (
-                f"the readout draws at {tab.readout.fontInfo().pixelSize()} px"
-            )
-            assert tab._status.fontInfo().pixelSize() <= SIZE_BODY
-        finally:
-            index.close()
-    finally:
+    tab, pane, index = build(qtbot, tmp_path)
+    tab.resize(1366, 768)
+    tab.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    tab.show()
+    qtbot.wait(1)
+
+    def undress() -> None:
+        index.close()
         QApplication.instance().setStyleSheet(was)
+
+    return tab, pane, index, undress
+
+
+def test_the_clock_is_the_biggest_thing_on_the_tab(qtbot, tmp_path: Path) -> None:
+    """"the running clock at the top is not visible enough".
+
+    It was drawn at the top of the type scale, which is the size the state band
+    is read at from across the room - and the band is a WORD, recognised by its
+    shape before it is read, while this is eight digits that all look alike and
+    three of which change every second. He marks a clip off it. At 16 logical px
+    on a panel scaled to 150% that is 24 real pixels, at two metres, at night.
+
+    Measured against the tab's own body text rather than a number, so it stays
+    true if the scale moves.
+    """
+    from vmd.desktop.style import SIZE_BAND, WEIGHT_VALUE
+
+    tab, _pane, index, undress = dressed(qtbot, tmp_path)
+    try:
+        clock = tab.readout.fontInfo().pixelSize()
+        assert clock > SIZE_BAND, f"the clock draws at {clock} px, the top of the scale"
+        assert clock >= 2 * tab._status.fontInfo().pixelSize(), (
+            f"the clock is {clock} px and the sentence under the bar is "
+            f"{tab._status.fontInfo().pixelSize()} px"
+        )
+        assert tab.readout.fontInfo().weight() >= WEIGHT_VALUE, (
+            f"the clock is drawn at weight {tab.readout.fontInfo().weight()}"
+        )
+    finally:
+        undress()
+
+
+def test_the_clock_is_drawn_in_the_brightest_ink_there_is(qtbot, tmp_path: Path) -> None:
+    """Read off the painted pixels, not off the stylesheet that asked for them.
+
+    A colour named in a stylesheet somebody else's rule overrides is a colour
+    nobody sees, and this label has had exactly that happen to its size.
+    """
+    tab, _pane, index, undress = dressed(qtbot, tmp_path)
+    try:
+        tab.play_at_time(day_bounds(2026, 8, 11)[0])
+        image = tab.readout.grab().toImage()
+        ink = QColor(PALETTE["ink"])
+        painted = {
+            image.pixelColor(x, y).name()
+            for x in range(image.width())
+            for y in range(image.height())
+        }
+        assert ink.name() in painted, (
+            f"the clock is not drawn in {ink.name()}; it is drawn in {sorted(painted)}"
+        )
+    finally:
+        undress()
+
+
+def test_the_pointer_time_and_the_drift_do_not_ride_on_the_clock(
+    qtbot, tmp_path: Path
+) -> None:
+    """They are worth saying and they are not what this readout is for.
+
+    At the clock's size they are also 45 more characters on a row with five
+    buttons to fit at 1280 px, which is how a clock big enough to read ends up
+    pushing the zooms off the screen.
+    """
+    tab, _pane, index, undress = dressed(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "a.mp4"), start, start + 600, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.play_at_time(start + 120)
+        tab.hover_at(0.5)
+
+        assert tab.readout.text() == tab.readout_text, tab.readout.text()
+        assert tab.hover_text and tab.hover_text in tab.readout_note.text()
+        assert (
+            tab.readout_note.fontInfo().pixelSize() < tab.readout.fontInfo().pixelSize()
+        )
+    finally:
+        undress()
 
 
 # ==================================================================== zooming

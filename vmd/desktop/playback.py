@@ -74,6 +74,7 @@ from vmd.desktop.style import (
     MONO,
     PALETTE,
     SIZE_BAND,
+    SIZE_BODY,
     SIZE_HEADING,
     SPACE_SNUG,
     SPACE_STEP,
@@ -105,6 +106,22 @@ logger = logging.getLogger(__name__)
 # as a divider rather than as the thing you click.
 BAR_HEIGHT = 60
 PLAYHEAD_WIDTH = 3
+
+# How big the running clock is drawn.
+#
+# It was `SIZE_BAND`, which is the top of the type scale and is described there
+# as "the state of the whole system, read from across the room". That is the
+# right intent and the wrong distance. The band is a word - `RECORDING`,
+# `DETECTION` - and a word is recognised by its shape long before it is read;
+# the clock is eight digits that all look alike at a glance, three of which
+# change every second, and the operator marking a clip has to read them exactly.
+# He said the readout is not visible enough, and at 16 logical px - 24 real
+# pixels on his panel at Windows' 150% scaling - he is right.
+#
+# Twice the band, derived from it rather than typed, so it moves if the scale
+# moves. It belongs in `vmd/desktop/style.py` beside the other five sizes and it
+# is here instead because that file is being worked in - see the report.
+CLOCK_SIZE = SIZE_BAND * 2
 
 # Where the hour rules go, and how much of the bar they cross. A day drawn as
 # an unbroken strip is a strip: nothing on it says which end is morning, so a
@@ -678,7 +695,7 @@ class PlaybackTab(QWidget):
         row.setSpacing(SPACE_SNUG)
         self.readout = QLabel("")
         font = QFont(self.readout.font())
-        font.setPixelSize(SIZE_BAND)
+        font.setPixelSize(CLOCK_SIZE)
         font.setBold(True)
         self.readout.setFont(font)
         # The size is in the widget's own stylesheet as well as in its font,
@@ -688,9 +705,23 @@ class PlaybackTab(QWidget):
         # drawn at the size of the smallest note on it.
         self.readout.setStyleSheet(
             f"color: {PALETTE['ink']}; font-family: {MONO}; "
-            f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
+            f"font-size: {CLOCK_SIZE}px; font-weight: {WEIGHT_VALUE};"
         )
         row.addWidget(self.readout)
+
+        # Beside the clock and not part of it. The pointer's own time and the
+        # distance between two pictures are worth saying and are not what this
+        # readout is for; drawn at the clock's size they are also 45 more
+        # characters on a row that has five buttons to fit at 1280 px, which is
+        # how a clock big enough to read ends up squeezing the zooms off the
+        # screen. Muted and body-sized: the clock is what carries from two
+        # metres, and these are read by somebody who has come closer.
+        self.readout_note = QLabel("")
+        self.readout_note.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-family: {MONO}; "
+            f"font-size: {SIZE_BODY}px;"
+        )
+        row.addWidget(self.readout_note)
         row.addStretch(1)
 
         self.zoom_buttons: dict[str, QPushButton] = {}
@@ -1735,13 +1766,15 @@ class PlaybackTab(QWidget):
         else:
             when = datetime.datetime.fromtimestamp(self.playhead_time)
             self.readout_text = when.strftime("%H:%M:%S")
-        said = self.readout_text
+        self.readout.setText(self.readout_text)
+        # Everything that is not the clock, in the quiet label beside it.
+        said = ""
         drift = self.drift_seconds()
         if drift is not None and drift >= DRIFT_WORTH_SAYING:
             said += f"   (the two pictures are {drift:.1f} s apart)"
         if self.hover_text:
             said += f"   →  {self.hover_text}"
-        self.readout.setText(said)
+        self.readout_note.setText(said)
 
     def _set_status(self, text: str) -> None:
         self.status_text = text
