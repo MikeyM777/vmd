@@ -300,6 +300,19 @@ class DetectionSettings(Model):
 
     enabled: bool = True
 
+    # Whether an arriving alarm makes a sound as well as lighting the strip.
+    #
+    # On, because this console runs 24/7 in a room and the operator is not
+    # always looking at it: a red strip is announced to an empty chair if he is
+    # turned away, and cleared by the next thing that moves. Off is a real
+    # choice rather than a broken state - somebody sleeping in the same room has
+    # a good reason - and offering it is what stops the speakers being unplugged
+    # instead, which is the same silence with nobody in charge of it.
+    #
+    # See `vmd/desktop/chime.py`: the sound is Windows' own, never blocks the
+    # window, and cannot sound more than once every twelve seconds.
+    alarm_sound: bool = True
+
     # The master switch for the classifier. Off by default: at 700 m a person
     # is about 13 pixels, and a model trained on photographs has nothing useful
     # to say about that - and the weights are an optional install. With it on,

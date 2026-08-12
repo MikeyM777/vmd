@@ -680,6 +680,30 @@ def test_an_arriving_alarm_makes_a_sound(qtbot) -> None:
     assert len(sounds) == 1
 
 
+def test_switching_the_sound_off_in_settings_silences_the_alarm(qtbot) -> None:
+    """The switch has to reach the thing that makes the noise, and it has to
+    reach it on Save rather than on a restart: the person turning it off is
+    trying to sleep, tonight."""
+    from vmd.desktop.chime import Chime
+
+    sounds: list[int] = []
+    chime = Chime(player=lambda: sounds.append(1), clock=lambda: 1000.0)
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", chime=chime)
+
+    quiet = settings_with("thermal")
+    quiet.detection.alarm_sound = False
+    tab.apply(quiet)
+    tab._raise_alarm(Moved())
+    assert tab.alarm_visible(), "the strip must still go up"
+    assert sounds == [], "it made a noise with the sound switched off"
+
+    loud = settings_with("thermal")
+    loud.detection.alarm_sound = True
+    tab.apply(loud)
+    tab._raise_alarm(Moved())
+    assert len(sounds) == 1
+
+
 def test_a_sound_device_that_dies_does_not_cost_him_the_alarm(qtbot) -> None:
     """The strip, the outline and the movement list all matter more than the
     noise. Somebody unplugging a USB headset must not reach the alarm path."""

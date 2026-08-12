@@ -1058,6 +1058,16 @@ class SettingsTab(QWidget):
         # duplication left in the console - two paragraphs, side by side, word
         # for word identical, six inches apart. Everything they say is true of
         # both heads of the gimbal, so this is where they belong.
+        #
+        # Shown only while at least one view is being watched, which is what
+        # `_show_stream_help` decides. Moving them here stopped them being
+        # printed twice; it did not stop them being printed at all, and with
+        # nothing watched these two paragraphs explain a control that is not on
+        # the screen - three paragraphs of preamble before the first box, on the
+        # tab whose complaint was that there is too much on it.
+        #
+        # The tick's own sentence above stays whatever happens: that tick is
+        # always visible, and it is the one he asked about by name.
         self.classify_help = _note(CLASSIFY_HELP)
         streams_outer.addWidget(self.classify_help)
         self.ignore_help = _note(REGIONS_HELP)
@@ -1109,6 +1119,20 @@ class SettingsTab(QWidget):
                 "and how, is set on each card above."
             )
         )
+
+        # First of the extras, and the only one of them he is likely to change.
+        # It is also the only setting on this tab that changes what happens in
+        # the room rather than what happens in the software.
+        self._alarm_sound = QCheckBox("Make a sound when something moves")
+        self._alarm_sound.setToolTip(
+            "A short sound when movement is reported, as well as the red strip "
+            "across the bottom of the pictures.\n\n"
+            "It is on because you are not always looking at the screen. It "
+            "never sounds more than once every twelve seconds, so a windy night "
+            "is one sound and not forty.\n\n"
+            "Turn it off if somebody sleeps in this room."
+        )
+        extras.addWidget(self._alarm_sound)
 
         self._detection_classify = QCheckBox("Allow VMD to try to say what it was")
         self._detection_classify.setToolTip(
@@ -1313,6 +1337,19 @@ class SettingsTab(QWidget):
         self.save_button = QPushButton("Save")
         self.save_button.setProperty("primary", "true")
         self.save_button.clicked.connect(self.save)
+        # Ctrl+S, because the button is at the bottom of a form that is about
+        # 1700 px tall on his screen and he reaches it by scrolling past
+        # everything he has just typed. There was not one shortcut anywhere in
+        # this console before this line.
+        #
+        # Read in this tab's own `keyPressEvent` rather than bound as a Qt
+        # shortcut, which is the rule the rest of this console already follows
+        # and states: `vmd/desktop/window.py` reads Esc and F11 the same way,
+        # because a shortcut is delivered ahead of the key handler and a
+        # swallowed key release is a camera left slewing. It also means this
+        # only fires while the Settings tab is the thing being typed into,
+        # which is the whole of when it should.
+        self.save_button.setToolTip("Write these settings to the file  (Ctrl+S)")
         ending = QHBoxLayout()
         ending.setContentsMargins(0, 0, 0, 0)
         ending.setSpacing(SPACE_GROUP)
@@ -1320,6 +1357,26 @@ class SettingsTab(QWidget):
         ending.addWidget(self.save_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(ending)
         layout.addStretch(1)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Ctrl+S saves, from anywhere on this tab.
+
+        The button is at the bottom of a form about 1700 px tall on his screen,
+        so reaching it means scrolling back past everything he has just typed -
+        and before this there was not one keyboard shortcut anywhere in this
+        console. It is refused while a save is already being applied, for the
+        same reason the button is disabled then: a second restart queued behind
+        the first.
+        """
+        if (
+            event.key() == Qt.Key.Key_S
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            if self.save_button.isEnabled():
+                self.save()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ------------------------------------------------------------- properties
 
@@ -1415,6 +1472,14 @@ class SettingsTab(QWidget):
     @detection_enabled.setter
     def detection_enabled(self, value: bool) -> None:
         self._detection_enabled.setChecked(bool(value))
+
+    @property
+    def alarm_sound(self) -> bool:
+        return self._alarm_sound.isChecked()
+
+    @alarm_sound.setter
+    def alarm_sound(self, value: bool) -> None:
+        self._alarm_sound.setChecked(bool(value))
 
     @property
     def detection_classify(self) -> bool:
@@ -1575,6 +1640,7 @@ class SettingsTab(QWidget):
         Top-aligned, so that one card with its detection settings unfolded does
         not stretch the empty card beside it to the same height.
         """
+        self._show_stream_help()
         while self._streams_layout.count():
             self._streams_layout.takeAt(0)
         for index, row in enumerate(self._rows):
@@ -1603,7 +1669,21 @@ class SettingsTab(QWidget):
         leaves nothing at all remembered from the shape the row used to be. It
         costs a re-layout of two widgets on a button press.
         """
+        self._show_stream_help()
         self._lay_the_cards_out()
+
+    def _show_stream_help(self) -> None:
+        """Only explain the controls that are actually on the screen.
+
+        Two of the three paragraphs above the cards are about settings that are
+        folded away until a view is being watched, which on a console nobody has
+        set up yet is always. Explaining a control he cannot see is the same
+        cost as explaining one twice - it is text between him and the box he
+        came here to type in.
+        """
+        watched = any(row.detect_field.isChecked() for row in self._rows)
+        self.classify_help.setVisible(watched)
+        self.ignore_help.setVisible(watched)
 
     def stream_rows(self) -> list[StreamRowWidget]:
         return list(self._rows)
@@ -1661,6 +1741,7 @@ class SettingsTab(QWidget):
         self.radio_password = settings.radio.password
         self.link_auto = settings.bitrate.mode == "auto"
         self.detection_enabled = settings.detection.enabled
+        self.alarm_sound = settings.detection.alarm_sound
         self.detection_classify = settings.detection.classify
         self.min_travel_px = (
             "" if settings.detection.min_travel_px is None else str(settings.detection.min_travel_px)
@@ -1797,6 +1878,7 @@ class SettingsTab(QWidget):
         payload["detection"] = dict(payload.get("detection", {}))
         payload["detection"].update(
             enabled=self.detection_enabled,
+            alarm_sound=self.alarm_sound,
             classify=self.detection_classify,
             min_travel_px=self.min_travel_px.strip() or None,
         )

@@ -1233,6 +1233,99 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     _said_once(tab, said)
 
 
+def test_ctrl_s_saves_without_scrolling_to_the_bottom_of_the_form(
+    qtbot, tmp_path: Path
+) -> None:
+    """Save is at the bottom of a form about 1700 px tall on his screen, so
+    reaching it means scrolling past everything he has just typed - and there
+    was not one keyboard shortcut anywhere in this console.
+
+    Scoped to this tab on purpose. The Live tab reads arrow keys straight out of
+    its own key handler so that nothing can swallow a key release and leave the
+    camera slewing; a window-wide shortcut would be the first thing in this
+    program allowed to intercept anything.
+    """
+    tab, path = build(qtbot, tmp_path)
+    assert "Ctrl+S" in tab.save_button.toolTip(), "a shortcut nobody is told about"
+
+    tab.camera_host = "10.0.0.9"
+    qtbot.keyClick(tab, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert path.exists(), "Ctrl+S wrote nothing"
+    assert load_settings(path).camera.host == "10.0.0.9"
+
+
+def test_ctrl_s_is_refused_while_a_save_is_still_being_applied(
+    qtbot, tmp_path: Path
+) -> None:
+    """The same reason the button is disabled then: a second restart queued
+    behind the first, of up to three child processes."""
+    tab, path = build(qtbot, tmp_path)
+    tab.camera_host = "10.0.0.9"
+    tab.save_button.setEnabled(False)
+    qtbot.keyClick(tab, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert not path.exists()
+
+
+def test_an_ordinary_s_still_types_an_s(qtbot, tmp_path: Path) -> None:
+    """A key handler that ate every S would make the address fields unusable."""
+    tab, path = build(qtbot, tmp_path)
+    qtbot.keyClick(tab, Qt.Key.Key_S)
+    assert not path.exists(), "a bare S saved the file"
+
+
+def test_the_alarm_sound_can_be_switched_off_and_the_choice_is_saved(
+    qtbot, tmp_path: Path
+) -> None:
+    """Somebody sleeping in the same room has a good reason. Offering the switch
+    is what stops the speakers being unplugged instead - which is the same
+    silence, with nobody in charge of it and no way to tell it happened."""
+    tab, path = build(qtbot, tmp_path)
+    assert tab.alarm_sound is True, "it is on unless he says otherwise"
+    tab.alarm_sound = False
+    assert tab.save() is True
+    assert load_settings(path).detection.alarm_sound is False
+
+
+def test_the_alarm_sound_switch_says_what_it_costs_to_turn_off(
+    qtbot, tmp_path: Path
+) -> None:
+    """It is the only setting on this tab that changes what happens in the room
+    rather than what happens in the software, and the reason to turn it off is
+    not the reason to turn most things off."""
+    tab, _ = build(qtbot, tmp_path)
+    said = tab._alarm_sound.text().lower() + " " + tab._alarm_sound.toolTip().lower()
+    assert "sound" in said
+    assert "sleep" in said, "no reason given for the one state that loses an alarm"
+    banned = ("chime", "decibel", "wav", "audio device", "winsound")
+    assert not any(word in said for word in banned), said
+
+
+def test_nothing_explains_a_control_that_is_not_on_the_screen(
+    qtbot, tmp_path: Path
+) -> None:
+    """Moving the two duplicated paragraphs above the cards stopped them being
+    printed twice. It did not stop them being printed at all - and with nothing
+    watched they explain controls that are folded away, so a console nobody has
+    set up yet opens with three paragraphs of preamble before the first box, on
+    the tab whose complaint was that there is too much on it.
+
+    They come back the moment there is something for them to be about.
+    """
+    tab, _ = build(qtbot, tmp_path, _watched(detect=False))
+    # `isVisibleTo` and never `isVisible`: the tab has not been shown, so
+    # `isVisible` is False for everything on it and the assertion would pass
+    # whatever the code did. A mutation caught exactly that.
+    assert not tab.classify_help.isVisibleTo(tab)
+    assert not tab.ignore_help.isVisibleTo(tab)
+    # The tick's own sentence stays: that tick is always on the screen, and it
+    # is the one he asked about by name.
+    assert tab.detect_help.isVisibleTo(tab)
+
+    tab.stream_rows()[0].detect_field.setChecked(True)
+    assert tab.classify_help.isVisibleTo(tab)
+    assert tab.ignore_help.isVisibleTo(tab)
+
+
 def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path) -> None:
     """"'Name what moved' - what is that?" It reads as an instruction to the
     operator - go and name it - rather than as something the software attempts.

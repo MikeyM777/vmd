@@ -1261,6 +1261,10 @@ class LiveTab(QWidget):
 
     def apply(self, settings: Settings) -> None:
         """Build a pane for every enabled stream, replacing whatever was there."""
+        # Before anything slower, and unconditionally: a save that could not
+        # restart a stream must still have turned the sound off, because the
+        # reason somebody turns it off is that they are trying to sleep.
+        self._chime.set_enabled(bool(settings.detection.alarm_sound))
         for pane in self._panes.values():
             pane.stop()
             # Stopped is not finished. A libVLC pane holds a player, its decoder
