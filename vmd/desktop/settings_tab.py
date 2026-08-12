@@ -403,7 +403,9 @@ class StreamRowWidget(QFrame):
         # itself: "High - notices small or distant movement" is 250 px of words
         # and it is what the operator is picking between.
         outer.addWidget(self.watched)
-        self.detect_field.toggled.connect(self.watched.setVisible)
+        self.detect_field.toggled.connect(
+            lambda shown: self._unfold(self.watched, shown)
+        )
         self.watched.setVisible(self.detect_field.isChecked())
 
         # --- the two that need explaining ------------------------------------
@@ -509,7 +511,9 @@ class StreamRowWidget(QFrame):
         self.set_regions([r.as_tuple() for r in stream.ignore_regions])
 
         self.details.setVisible(False)
-        self.details_button.toggled.connect(self.details.setVisible)
+        self.details_button.toggled.connect(
+            lambda shown: self._unfold(self.details, shown)
+        )
         # Inside the folded block, not beside it: a panel about the sky line of a
         # view nobody is watching is furniture.
         watch.addWidget(self.details)
@@ -517,6 +521,46 @@ class StreamRowWidget(QFrame):
         # What to say when a patch cannot be added. Set by SettingsTab so the
         # row does not need to know where the message line lives.
         self.on_problem = lambda text: None
+        # And who to tell when this card changes size. Set by SettingsTab for
+        # the same reason: the layout that has to be told is the one holding the
+        # cards side by side, which belongs to the form and not to a card.
+        # Harmless on a row built on its own, which is how the tests build one.
+        self.on_refold = lambda: None
+
+    # -------------------------------------------------------------- the folds
+
+    def _unfold(self, block: QWidget, shown: bool) -> None:
+        """Show or hide a folded block, and say so loudly enough to be believed.
+
+        `setVisible` on its own is what drew text over text when **Ignore parts
+        of the picture** was pressed: "How touchy:" landed on the last line of
+        the note above it, and the sky-line note and the one under it were drawn
+        through each other and through **Add a stream**.
+
+        The card grows by about 420 px when this block opens, and it says so:
+        asked directly, it answers with the new height the moment the block is
+        shown. What never hears the answer is the grid that stands the cards
+        side by side. Every sentence on this form is word-wrapped, so the whole
+        column is laid out from heights-for-widths rather than from plain
+        minimums, and each layout on the way up keeps the last height it worked
+        out for the width it was asked about. Qt drops those along a chain of
+        parent WIDGETS, and the grid is a layout inside a layout - not a widget,
+        so it is not on the chain. It went on answering with the height the row
+        was before the fold opened. The box above it was sized from that, and
+        every control on the card was squeezed into a third of the room its own
+        words need: at 1366x768 the card was 371 px of the 794 it asked for.
+
+        Hence `on_refold`, which the form sets, and which puts the cards into
+        the grid again from scratch - the same thing the form already does when
+        a view is added or removed, and the one operation that leaves nothing
+        remembered from the shape the row used to be. A card cannot reach the
+        grid it sits in; the form can. The cost of getting this wrong is not
+        cosmetic: it is the only screen the camera is set up from, drawn so that
+        two settings cannot be told apart.
+        """
+        block.setVisible(shown)
+        self.on_refold()
+
     # ------------------------------------------------------------- the values
 
     def values(self) -> StreamRow:
@@ -1501,6 +1545,7 @@ class SettingsTab(QWidget):
         row.remove_button.clicked.connect(lambda: self.remove_stream_row(row))
         row.on_problem = self._set_message
         row.on_pick = self.open_picker
+        row.on_refold = self._refold
         self._rows.append(row)
         self._lay_the_cards_out()
         # A view added or removed changes how fast the disk fills, which changes
@@ -1539,6 +1584,26 @@ class SettingsTab(QWidget):
                 index % STREAM_COLUMNS,
                 Qt.AlignmentFlag.AlignTop,
             )
+
+    def _refold(self) -> None:
+        """A card has folded or unfolded, so the form above it is out of date.
+
+        Qt invalidates layouts by walking parent WIDGETS, and the grid that puts
+        the cards side by side is a layout inside the Streams box's layout - not
+        a widget, so nothing on that walk ever reaches it. It goes on answering
+        with the height it worked out for the row before the fold opened, and
+        everything above it is sized from that stale answer. On screen that was
+        "How touchy:" drawn through the note above it and the whole card
+        squeezed to a third of the height its own words need.
+
+        Telling it is not enough - `invalidate` schedules the recalculation and
+        a layout answers `heightForWidth` out of its cache without doing it. So
+        the cards go into the grid again from scratch, which is what the form
+        already does when a view is added or removed and the only operation that
+        leaves nothing at all remembered from the shape the row used to be. It
+        costs a re-layout of two widgets on a button press.
+        """
+        self._lay_the_cards_out()
 
     def stream_rows(self) -> list[StreamRowWidget]:
         return list(self._rows)

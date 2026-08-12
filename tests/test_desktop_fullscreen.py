@@ -557,3 +557,45 @@ def test_unfolding_a_stream_card_does_not_draw_text_over_text(
         height,
         "\n".join(problems[:12]),
     )
+
+
+def test_a_stream_card_that_grows_takes_the_form_with_it(
+    qtbot, tmp_path: Path
+) -> None:
+    """The card with one more sentence on it than it has today.
+
+    The collision above was found with two help paragraphs printed on every
+    card. They have been said once above both cards instead, which is a better
+    tab and also, by itself, enough to stop the text colliding - the card got
+    short enough that the fault stopped showing. That is not the same as fixing
+    it. The fault is that the grid holding the cards side by side goes on
+    reporting the height the row was before a fold opened, and it comes back the
+    day somebody puts one more line on a card, which is exactly how it arrived.
+
+    So a card is given one more sentence here - a plain note of the kind this
+    tab is full of - and then unfolded. Nothing about the measurement changes;
+    only the amount of card there is to fit.
+    """
+    from vmd.desktop.settings_tab import CLASSIFY_HELP, _note
+
+    window = console(qtbot, tmp_path)
+    window.resize(1366, 768)
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    window.show()
+    window.tabs.setCurrentIndex(2)
+    QApplication.processEvents()
+
+    settings = window.settings_tab
+    rows = settings.stream_rows()
+    for row in rows:
+        row.watched.layout().addWidget(_note(CLASSIFY_HELP))
+        row.detect_field.setChecked(True)
+    QApplication.processEvents()
+    rows[0].details_button.setChecked(True)
+    QApplication.processEvents()
+
+    problems = mushed(settings) + starved(settings)
+    window.hide()
+    assert problems == [], "one more sentence on a card and it collides again:\n%s" % (
+        "\n".join(problems[:12]),
+    )
