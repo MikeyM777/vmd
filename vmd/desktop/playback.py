@@ -194,6 +194,27 @@ MARK_WIDTH = 3
 MARK_CLICK_PIXELS = MARK_WIDTH / 2 + 0.5
 MARK_TOLERANCE_SECONDS = 30.0
 
+# How hard the day outside the marked clip is knocked back.
+#
+# The marked piece used to be FILLED, in the accent at alpha 70, over a bar
+# whose recorded time is drawn in `ok` green. Amber over green is a slightly
+# different green: on a screen read from two metres the clip he had marked was
+# a shade nobody could find, and picking a different fill would only move the
+# problem to whatever colour the coverage bars happen to be that day.
+#
+# So the standard editing answer instead: the clip is not painted at all, and
+# everything either side of it is put behind a scrim of the page colour. The
+# bright part IS the kept part. It cannot be lost against a coverage colour,
+# because it is not a colour laid over one - it is the absence of the dimming
+# that is over everything else, and it works the same over green coverage, over
+# the well where there is no coverage, and over a red movement mark.
+#
+# Two thirds. Enough that the two halves of the bar are plainly different at a
+# glance; not so much that the excluded footage stops being readable, which
+# matters because dragging a bracket outwards means aiming at footage that is
+# under the scrim at the time.
+DIMMED_ALPHA = 168
+
 # How far before the movement playback starts. An event that begins on the
 # first frame you see is one you have already missed: the approach is the part
 # worth watching.
@@ -339,16 +360,6 @@ class TimelineBar(QWidget):
                 painter.setPen(QColor(PALETTE["muted"]))
                 painter.drawText(4, lane_top + SIZE_HEADING, name)
 
-        # The piece marked to be saved, under the marks and the playhead: it is
-        # a region rather than a moment, and it must not hide either of them.
-        if self._marked is not None:
-            left, right = self._marked
-            x = int(round(left * width))
-            w = max(2, int(round((right - left) * width)))
-            marked = QColor(PALETTE["accent"])
-            marked.setAlpha(70)
-            painter.fillRect(x, 0, min(w, width - x), room, marked)
-
         # Over the coverage, under the playhead: a mark says something happened
         # there, and the playhead says where the operator is looking now. Drawn
         # down to the rules rather than through them, so the hour numerals stay
@@ -358,6 +369,27 @@ class TimelineBar(QWidget):
             x = int(round(fraction * width)) - MARK_WIDTH // 2
             x = min(max(x, 0), max(width - MARK_WIDTH, 0))
             painter.fillRect(x, 0, MARK_WIDTH, room, movement)
+
+        # Everything OUTSIDE the marks, knocked back, so that what is left is
+        # the clip. See DIMMED_ALPHA: the marked piece used to be tinted amber
+        # instead, over a bar whose recorded time is green, and the two mixed
+        # into a slightly different green nobody could find.
+        #
+        # Over the coverage AND over the movement marks, which is the inversion
+        # of what the tint had to promise. A tint had to stay out of the way of
+        # everything; a scrim's whole job is to put everything under it into the
+        # background at once, marks included - a red line outside the clip that
+        # stayed as bright as one inside it would be the loudest thing on the
+        # excluded half of the bar.
+        if self._marked is not None:
+            left, right = self._marked
+            start = min(max(int(round(left * width)), 0), width)
+            end = min(max(int(round(right * width)), 0), width)
+            scrim = QColor(PALETTE["bg"])
+            scrim.setAlpha(DIMMED_ALPHA)
+            painter.fillRect(0, 0, start, room, scrim)
+            painter.fillRect(end, 0, width - end, room, scrim)
+
         if self._playhead is not None:
             x = int(round(self._playhead * width)) - PLAYHEAD_WIDTH // 2
             x = min(max(x, 0), max(width - PLAYHEAD_WIDTH, 0))

@@ -2018,6 +2018,109 @@ def test_a_clip_saved_after_the_marks_crossed_is_the_one_he_marked(
         index.close()
 
 
+# --------------------------------------------------- the clip you can see
+#
+# "the marked range is invisible against the green timeline". It was drawn as a
+# FILL: the accent at alpha 70, laid over a bar whose recorded time is `ok`
+# green. Amber over green is a slightly different green, and at two metres the
+# piece he had marked was a shade nobody could find.
+#
+# Picking another fill colour is not the answer, because the bar's own colours
+# are not fixed - it is green where there is footage, near-black where there is
+# not, and red wherever something moved. The standard editing answer is to dim
+# everything OUTSIDE the marks, so the clip is not a colour at all: it is the
+# part that was left alone. These tests ask that question and never ask for a
+# particular colour.
+
+
+def a_fully_recorded_day(qtbot, tmp_path: Path):
+    """One recording covering the whole day, so every pixel of the bar is
+    coverage and any difference in it is the marking and nothing else."""
+    tab, pane, index = build(qtbot, tmp_path)
+    start, end = day_bounds(2026, 8, 11)
+    index.add("thermal", str(tmp_path / "all.mp4"), start, end, 1000)
+    tab.show_day(2026, 8, 11, stream="thermal")
+    return tab, pane, index, start, end - start
+
+
+def test_the_marked_clip_is_the_bright_part_of_the_bar(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, start, span = a_fully_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + span * 0.45)
+        tab.mark_the_start()
+        tab.play_at_time(start + span * 0.55)
+        tab.mark_the_end()
+        tab.play_at_time(start + span * 0.50)
+
+        tab.bar.resize(600, 60)
+        image = tab.bar.grab().toImage()
+        width = image.width()
+        kept = image.pixelColor(round(width * 0.52), 8)
+        before = image.pixelColor(round(width * 0.20), 8)
+        after = image.pixelColor(round(width * 0.80), 8)
+
+        # Nothing is laid over the clip: it is the recorded colour, untouched.
+        assert kept == QColor(PALETTE["ok"]), kept.name()
+        # And both sides of it are plainly darker. Lightness rather than a
+        # colour, because the answer must not depend on which colour the
+        # coverage happens to be.
+        for outside, where in ((before, "before"), (after, "after")):
+            assert kept.lightness() - outside.lightness() > 30, (
+                f"the day {where} the clip is {outside.name()} against the "
+                f"clip's {kept.name()}"
+            )
+    finally:
+        index.close()
+
+
+def test_a_movement_mark_outside_the_clip_is_dimmed_with_the_rest_of_the_day(
+    qtbot, tmp_path: Path
+) -> None:
+    """The scrim goes over the movement marks too, and that is deliberate.
+
+    The old tint had to stay out of everything's way. A scrim's whole job is to
+    put the excluded day into the background at once - and a red line outside
+    the clip drawn as brightly as one inside it would be the loudest thing on
+    the half of the bar he has just decided to throw away.
+    """
+    start, end = day_bounds(2026, 8, 11)
+    span = end - start
+    events = FakeEvents(
+        [movement(1, start + span * 0.50), movement(2, start + span * 0.20)]
+    )
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "all.mp4"), start, end, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+        tab.play_at_time(start + span * 0.45)
+        tab.mark_the_start()
+        tab.play_at_time(start + span * 0.60)
+        tab.mark_the_end()
+
+        tab.bar.resize(600, 60)
+        image = tab.bar.grab().toImage()
+        width = image.width()
+        inside = _reddest(image, round(width * 0.50))
+        outside = _reddest(image, round(width * 0.20))
+        assert inside is not None and outside is not None, "a mark was not drawn"
+        assert inside.lightness() - outside.lightness() > 20, (
+            f"the movement outside the clip is {outside.name()} and the one "
+            f"inside it is {inside.name()}"
+        )
+    finally:
+        index.close()
+
+
+def _reddest(image, around: int):
+    """The most alarm-coloured pixel within a few of this column."""
+    best = None
+    for x in range(max(around - 4, 0), min(around + 5, image.width())):
+        colour = image.pixelColor(x, 8)
+        if colour.red() > colour.green() and (best is None or colour.red() > best.red()):
+            best = colour
+    return best
+
+
 def test_nothing_can_be_saved_before_a_range_is_marked(qtbot, tmp_path: Path) -> None:
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:
