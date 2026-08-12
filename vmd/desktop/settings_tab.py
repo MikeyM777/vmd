@@ -372,11 +372,10 @@ class StreamRowWidget(QFrame):
         #
         # Behind "Advanced" and defaulting to Normal, so that a console nobody
         # has set up yet asks him one question per view and not two.
-        self.advanced_button = QPushButton("Advanced")
-        self.advanced_button.setCheckable(True)
-        self.advanced_button.setToolTip(
+        self.advanced_button = _fold_button(
+            "Advanced",
             "One setting, for a view that alarms too much or too little. "
-            "Leave it alone until it does."
+            "Leave it alone until it does.",
         )
         watch.addWidget(self.advanced_button)
 
@@ -886,6 +885,30 @@ def _form(parent: QWidget | None = None) -> QFormLayout:
     return form
 
 
+# What a fold that is shut looks like, and what an open one looks like.
+#
+# A caret and not a colour, and not the button's pressed-in look either: the
+# application stylesheet has no opinion about a checked QPushButton, so a fold
+# he has opened and one he has not are drawn as the same rectangle. On a tab
+# that now hides three things behind buttons, "is this open?" has to be
+# answerable from two metres back and without seeing the panel below it - which
+# on a form he has to scroll is often the case.
+SHUT = "▸"   # a right-pointing triangle: there is more this way
+OPEN = "▾"   # a down-pointing triangle: it is below you
+
+
+def _fold_button(text: str, tip: str = "") -> QPushButton:
+    """A button that opens something, and says which way it is pointing."""
+    button = QPushButton(f"{SHUT}  {text}")
+    button.setCheckable(True)
+    if tip:
+        button.setToolTip(tip)
+    button.toggled.connect(
+        lambda open_now: button.setText(f"{OPEN if open_now else SHUT}  {text}")
+    )
+    return button
+
+
 def _note(text: str) -> WrappedNote:
     """A sentence under a control, in the ink notes are written in.
 
@@ -1324,13 +1347,12 @@ class SettingsTab(QWidget):
         # form he came here to type four numbers into. So it is shut by default
         # and it is the last thing on the page: he will not see it again unless
         # he goes looking for it, and it is there on the day he needs it.
-        self.tools_button = QPushButton("Check the camera")
-        self.tools_button.setCheckable(True)
-        self.tools_button.setToolTip(
+        self.tools_button = _fold_button(
+            "Check the camera",
             "The tools for finding out whether the camera is answering, and "
             "what it says when it does.\n\n"
             "Nothing in here changes a setting. You do not need any of it "
-            "unless something is wrong."
+            "unless something is wrong.",
         )
         layout.addWidget(self.tools_button)
 

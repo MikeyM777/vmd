@@ -1801,7 +1801,7 @@ def test_the_camera_tools_are_shut_away_until_he_goes_looking_for_them(
     tab.show()
     QApplication.processEvents()
 
-    assert tab.tools_button.text() == "Check the camera"
+    assert "Check the camera" in tab.tools_button.text()
     assert tab.tools_button.isChecked() is False, "it opens on the busiest box"
     for button in (tab.test_button, tab.find_button, tab.lens_button, tab.report_button):
         assert not button.isVisible(), button.text()
@@ -1812,6 +1812,29 @@ def test_the_camera_tools_are_shut_away_until_he_goes_looking_for_them(
     for button in (tab.test_button, tab.find_button, tab.lens_button, tab.report_button):
         assert button.isVisible(), button.text()
     assert tab._output.isVisible()
+
+
+def test_a_fold_says_which_way_it_is_pointing(qtbot, tmp_path: Path) -> None:
+    """Three things on this tab are now behind a button, and the application
+    stylesheet has no opinion about a checked QPushButton - so a fold he has
+    opened and one he has not were drawn as the same rectangle.
+
+    A caret rather than a colour, and rather than the button's pressed-in look:
+    DESIGN.md says colour never carries meaning alone, and on a form he has to
+    scroll the panel a fold opens is often off the bottom of the screen, so the
+    button has to answer "is this open?" on its own.
+    """
+    from vmd.desktop.settings_tab import OPEN, SHUT
+
+    tab, _ = build(qtbot, tmp_path, _watched(detect=True))
+    folds = [tab.tools_button, tab.stream_rows()[0].advanced_button]
+    for fold in folds:
+        assert fold.text().startswith(SHUT), fold.text()
+        fold.setChecked(True)
+        assert fold.text().startswith(OPEN), fold.text()
+        fold.setChecked(False)
+        assert fold.text().startswith(SHUT), fold.text()
+    assert OPEN != SHUT
 
 
 def test_the_camera_tools_are_the_last_thing_before_save(qtbot, tmp_path: Path) -> None:
