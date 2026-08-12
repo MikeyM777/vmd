@@ -2562,13 +2562,20 @@ class SettingsTab(QWidget):
         not ask this question and must not be shown its answer, let alone its
         failure. The button asking is loud, because somebody pressed it.
         """
-        settings = self.settings_from_form()
-        if settings is None:
-            if not quietly:
+        if quietly:
+            # The settings that were loaded, not the form. Nothing has been
+            # typed yet when this fires, and `settings_from_form` writes to the
+            # message line when it refuses - which would replace whatever `load`
+            # had to say with a complaint about a question the operator did not
+            # ask.
+            settings = self._loaded
+            if not settings.camera.host.strip():
+                return  # no address is not news
+        else:
+            settings = self.settings_from_form()
+            if settings is None:
                 self._output.setPlainText(f"Fix this first: {self.message}")
-            return
-        if quietly and not settings.camera.host.strip():
-            return  # nothing to ask, and no address is not news
+                return
 
         tools = self._camera_tools(settings)
         signals = _ToolSignals()

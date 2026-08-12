@@ -2637,6 +2637,25 @@ def test_opening_the_tab_never_reports_a_question_he_did_not_ask(
     assert not tab.stream_rows()[0].lens_row.isVisibleTo(tab)
 
 
+def test_opening_the_tab_does_not_overwrite_what_load_had_to_say(
+    qtbot, tmp_path: Path
+) -> None:
+    """`settings_from_form` writes to the message line when it refuses, and the
+    message line is where `load` puts the reason a settings file would not read
+    - the one sentence telling him how to get his console back. A question he
+    did not ask must not take it off the screen."""
+    settings = _two_watched_views()
+    settings.camera.streams[1].url = ""  # a view the form will refuse
+    tab, ptz, _path = a_camera(qtbot, tmp_path, crossed())
+    tab.set_streams(list(settings.camera.streams))
+    tab._set_message("The settings file could not be read, so press Save.")
+
+    tab.show()
+    qtbot.waitUntil(lambda: ptz.asked >= 1, timeout=5000)
+    QApplication.processEvents()
+    assert "could not be read" in tab.message, tab.message
+
+
 # ------------------------------------------------------- the two heads, at once
 
 
