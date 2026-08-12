@@ -2797,3 +2797,50 @@ def test_with_nothing_playing_the_readout_says_so_rather_than_the_date_again(
         assert "august" not in said, said
     finally:
         index.close()
+
+
+def test_one_camera_having_a_gap_does_not_blank_the_other(qtbot, tmp_path: Path) -> None:
+    """"Both together" showed nothing at all for any moment the FIRST camera
+    missed, even when the second had it - so a minute the thermal dropped was
+    answered with two black rectangles and a sentence saying there is no
+    recording, while the visible camera had the whole minute on disk.
+
+    One camera having a gap is not both cameras having a gap, and this is the
+    tab he asked to have "both together" fixed on.
+    """
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        # The thermal stops after five minutes. The visible runs for an hour.
+        index.add("thermal", str(tmp_path / "t.mp4"), start, start + 300, 1000)
+        index.add("visible", str(tmp_path / "v.mp4"), start, start + 3600, 1000)
+        tab.show_day(2026, 8, 11, stream=BOTH)
+
+        playing = tab._play_at(start + 1800)  # half an hour in: thermal has none
+
+        assert playing is True, "nothing was shown, though the visible had it"
+        said = tab.status_text.lower()
+        assert "thermal" in said and "visible" in said, said
+        assert NOTHING_RECORDED.lower() not in said, (
+            "told him there is no recording while showing him a recording"
+        )
+    finally:
+        tab.close()
+
+
+def test_both_cameras_missing_a_moment_still_says_there_is_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other half. A picture on screen with a sentence saying there is no
+    recording reads as a fault in the console - and so does the reverse."""
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        index.add("thermal", str(tmp_path / "t.mp4"), start, start + 300, 1000)
+        index.add("visible", str(tmp_path / "v.mp4"), start, start + 300, 1000)
+        tab.show_day(2026, 8, 11, stream=BOTH)
+
+        assert tab._play_at(start + 1800) is False
+        assert "nothing" in tab.status_text.lower(), tab.status_text
+    finally:
+        tab.close()

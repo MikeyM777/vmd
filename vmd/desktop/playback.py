@@ -1414,7 +1414,12 @@ class PlaybackTab(QWidget):
             # footage retention has already reclaimed is answered the same way:
             # the movement was real, and there is nothing left to show.
             self.bar.set_playhead(None)
-            self._stop_second_picture()
+            # The OTHER camera may well have this moment, and until now it was
+            # stopped along with the first - so asking for a minute the thermal
+            # missed showed him nothing at all, on a tab where "Both together"
+            # is the thing he asked to have fixed. One camera having a gap is
+            # not both cameras having a gap.
+            showing_other, other_note = self._point_the_second_picture(when)
             # The clock is somewhere the picture is not, so nothing follows the
             # picture until it is put back on footage. Said here rather than
             # left to the timer to work out, because the timer's own answer -
@@ -1425,10 +1430,22 @@ class PlaybackTab(QWidget):
             note = self._why_nothing(when)
             if event is not None:
                 note += f" The movement on {event.stream} there is no longer on disk."
+            if showing_other:
+                # Name the one that is missing and the one he is looking at. A
+                # picture on the screen with a sentence saying there is no
+                # recording reads as a fault in the console.
+                shown = self.shown_streams()
+                note = (
+                    f"{shown[0]} has nothing recorded here. Showing {shown[1]}."
+                    if len(shown) > 1
+                    else note
+                )
+            else:
+                note += other_note
             self._set_status(note)
             self._draw_readout()
             self._draw_controls()
-            return False
+            return showing_other
 
         self.bar.set_playhead(self._playhead_fraction())
         self.seek_offset = target.offset_seconds
@@ -1450,7 +1467,7 @@ class PlaybackTab(QWidget):
             lead_said = f" - {_duration(lead)} before the movement{whose}"
         # What the other camera has to say about this moment, kept so that the
         # line can be said again when he pauses without losing it.
-        self._watching_note = self._point_the_second_picture(when)
+        _second_showing, self._watching_note = self._point_the_second_picture(when)
         self._say_what_he_is_watching(lead_said)
         self._draw_readout()
         self._draw_controls()
@@ -1485,7 +1502,7 @@ class PlaybackTab(QWidget):
         _ask(pane, "set_rate", self.transport.speed())
         _ask(pane, "set_paused", False)
 
-    def _point_the_second_picture(self, when: float) -> str:
+    def _point_the_second_picture(self, when: float) -> tuple[bool, str]:
         """The other camera at the same moment, and what to say if it has none.
 
         **How honest this is.** The two pictures are two independent libVLC
@@ -1499,7 +1516,7 @@ class PlaybackTab(QWidget):
         """
         shown = self.shown_streams()
         if len(shown) < 2 or self._second_pane is None:
-            return ""
+            return False, ""
         target = seek_target(self._second_segments, when)
         if target is None:
             # A still of the wrong minute beside a live picture is the console
@@ -1507,10 +1524,10 @@ class PlaybackTab(QWidget):
             # camera it was.
             self._stop_second_picture()
             clock = datetime.datetime.fromtimestamp(when).strftime("%H:%M:%S")
-            return f" There is nothing recorded on {shown[1]} at {clock}."
+            return False, f" There is nothing recorded on {shown[1]} at {clock}."
         self._show_second_picture()
         self._point(self._second_pane, target.path, target.offset_seconds, first=False)
-        return ""
+        return True, ""
 
     def _show_second_picture(self) -> None:
         """Put the second picture up, and give it room to be a picture in.
