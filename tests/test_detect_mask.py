@@ -120,6 +120,18 @@ def test_an_outline_is_coarsened_until_it_fits_the_limit() -> None:
     assert 3 <= len(kept) <= 40, len(kept)
 
 
+def test_an_outline_coarsened_to_fit_is_not_coarsened_far_past_it() -> None:
+    """The limit is a ceiling, not a target to overshoot.
+
+    Coarsening by doubling took a hillside that came out at fifty-one points
+    down to twenty-four - a tolerance eight times the one he could see, where
+    four would have fitted. What he is left with is the outline he has to live
+    with, so it goes coarse in small steps.
+    """
+    kept = sparse_outline(a_traced_treeline(), 2.0, limit=MAX_POINTS)
+    assert MAX_POINTS // 2 < len(kept) <= MAX_POINTS, len(kept)
+
+
 def test_a_stray_click_is_not_an_area() -> None:
     """Fewer than three points cannot enclose anything, so nothing is returned."""
     assert sparse_outline([(5, 5), (5, 6)], 2.0) == []

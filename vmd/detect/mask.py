@@ -47,6 +47,15 @@ Point = tuple[int, int]
 # more than a ragged hillside needs and comfortably less than a page.
 MAX_POINTS = 50
 
+# How much coarser to go each time an outline still does not fit in that.
+#
+# Gently. It was double, and double overshoots: a hillside that came out at
+# fifty-one points went straight to twenty-four, thrown away by a tolerance
+# eight times the one he could see where four would have done. Every step costs
+# one pass over points that are already few, and the outline that survives is
+# the one he has to live with.
+COARSER = 1.4
+
 
 # ------------------------------------------------------------- fewer points
 
@@ -102,8 +111,10 @@ def sparse_outline(
     The tolerance is what the operator could see: below it, moving the line
     changes nothing he drew. When even that leaves more points than a settings
     file should carry - a hand that shook, a very ragged skyline - the tolerance
-    is doubled until it fits, because a coarser outline he can still read beats
-    an exact one that has turned his settings into a data file.
+    grows until it fits, because a coarser outline he can still read beats an
+    exact one that has turned his settings into a data file. It grows slowly, so
+    what he is left with is the coarsest outline that fits rather than one far
+    coarser than it needed to be.
 
     Returns nothing at all for anything that cannot enclose an area. Three
     points is the fewest that can, which is what `IgnoreShape` says too, and a
@@ -114,7 +125,7 @@ def sparse_outline(
         return []
     kept = simplify(points, tolerance)
     while len(kept) > limit and tolerance < 1e6:
-        tolerance *= 2.0
+        tolerance *= COARSER
         kept = simplify(points, tolerance)
     kept = _without_repeats(kept)
     if len(kept) < 3 or _area(kept) <= 0.0:
