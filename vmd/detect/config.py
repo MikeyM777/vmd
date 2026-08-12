@@ -127,3 +127,18 @@ def shapes_of(stream) -> list[list[tuple[int, int]]]:
     settings file written before he could draw one keeps meaning what it meant.
     """
     return [shape.as_tuples() for shape in stream.ignore_shapes]
+
+
+def shape_sizes_of(stream) -> list[tuple[int, int]]:
+    """The size of the picture each drawn outline was drawn on, beside it.
+
+    Points on their own are pixels with no scale, and the stream's size is not
+    fixed - it is an ONVIF setting on the camera, and this console has a button
+    that changes it. Without this, a band traced over the treeline on a 1920x1080
+    still lands a third too far right and a third too low on a 1280x720 stream:
+    the mask covers sky, the treeline is watched again, and nothing says so.
+
+    `(0, 0)` for a shape written before this was recorded, which is read as
+    "unknown" and used as it is.
+    """
+    return [(int(shape.frame_w), int(shape.frame_h)) for shape in stream.ignore_shapes]

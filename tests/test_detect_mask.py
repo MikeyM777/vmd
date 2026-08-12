@@ -310,3 +310,48 @@ def test_movement_inside_a_drawn_area_is_not_reported_and_outside_it_is():
     assert walk(120) == [], "a walk through the drawn area was reported anyway"
     # Centred at y = 200 + 12, well below the band.
     assert walk(200), "a walk outside the drawn area was silenced by it"
+
+
+# ------------------------------------- an outline drawn against another picture
+#
+# The exposure the drawn areas arrived with, and the one clipping cannot save
+# them from. The stream's size is an ONVIF setting on the camera and this console
+# has a button that changes it.
+
+
+def test_an_outline_is_put_back_where_he_drew_it_on_a_smaller_picture() -> None:
+    """Traced on a 1920x1080 still, applied to a 1280x720 stream. Every point is
+    comfortably inside the frame, so nothing is clipped and nothing complains -
+    the band simply covers a different third of the picture, the treeline is
+    watched again, and the first anybody knows is a night of alarms."""
+    from vmd.detect.mask import mask_from_areas
+
+    # A band across the middle of the big picture.
+    band = [(0, 540), (1920, 540), (1920, 700), (0, 700)]
+    mask = mask_from_areas((), [band], 1280, 720, drawn_at=[(1920, 1080)])
+    assert mask is not None
+    # 540/1080 of the way down the drawn picture is 360/720 of the way down this
+    # one. Unscaled it would have landed at 540, which is most of the way to the
+    # bottom of a 720-high frame.
+    assert mask[365, 640] == 255, "the band is not where it was drawn"
+    assert mask[540, 640] == 0, "the band is still where the numbers put it"
+
+
+def test_an_outline_with_no_recorded_size_is_left_exactly_as_it_is() -> None:
+    """What every shape written before the size was recorded says. Stretching
+    those by a guess would move areas that are currently right."""
+    from vmd.detect.mask import mask_from_areas
+
+    band = [(0, 300), (640, 300), (640, 400), (0, 400)]
+    mask = mask_from_areas((), [band], 1280, 720, drawn_at=[(0, 0)])
+    assert mask is not None and mask[350, 320] == 255
+
+    same = mask_from_areas((), [band], 1280, 720)
+    assert same is not None and same[350, 320] == 255
+
+
+def test_an_outline_drawn_at_the_size_it_is_shown_at_is_not_touched() -> None:
+    from vmd.detect.mask import rescale
+
+    points = [(10, 20), (30, 40), (50, 60)]
+    assert rescale(points, (1280, 720), 1280, 720) == points

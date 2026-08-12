@@ -190,6 +190,7 @@ class StreamDetector:
         # settings file written before the drawing tool existed carries
         # rectangles and nothing he already marked out may quietly come back.
         ignore_shapes: Sequence[Sequence[Sequence[int]]] = (),
+        shape_sizes: Sequence[Sequence[int]] = (),
         classifier=None,
         clock: Callable[[], float] = time.time,
         # Deliberately a second clock. `clock` stamps events, so it has to be
@@ -277,6 +278,9 @@ class StreamDetector:
         self.ignore_shapes = [
             [(int(x), int(y)) for x, y in shape] for shape in ignore_shapes
         ]
+        # The size of the picture each outline was drawn on. Without it a mask
+        # drawn at one resolution silently covers the wrong part of another.
+        self.shape_sizes = [(int(w), int(h)) for w, h in shape_sizes]
         # Never None, so recording an event has one code path. The default
         # names nothing, which on the thermal is the correct answer and not a
         # placeholder.
@@ -1014,7 +1018,11 @@ class StreamDetector:
                 height,
             )
         self.config.ignore_mask = mask_from_areas(
-            self.ignore_regions, self.ignore_shapes, width, height
+            self.ignore_regions,
+            self.ignore_shapes,
+            width,
+            height,
+            drawn_at=self.shape_sizes,
         )
         self._mask_size = (height, width)
 

@@ -87,6 +87,22 @@ class IgnoreShape(Model):
 
     points: list[tuple[int, int]] = Field(default_factory=list)
 
+    # The size of the picture this was drawn on top of.
+    #
+    # Without it the points are pixels with no scale, and the stream's size is
+    # not fixed: it is an ONVIF setting on the camera, and this console has a
+    # button that changes it. Draw a band over the treeline on a 1920x1080
+    # still, drop the camera to 1280x720, and every point lands 33% too far
+    # right and 33% too low - so the mask covers sky and the treeline is watched
+    # again. Nothing on screen would say so, and the first anybody would know is
+    # a night of alarms nobody can explain.
+    #
+    # Zero means a shape written before this was recorded. Those are used as
+    # they are, which is what they have always done - the guess cannot be
+    # improved on, and refusing them would silently unmask a treeline.
+    frame_w: int = 0
+    frame_h: int = 0
+
     @field_validator("points")
     @classmethod
     def _enough_to_enclose(cls, value: list) -> list:

@@ -219,11 +219,34 @@ def mask_from_shapes(shapes: Iterable[Sequence[Point]], width: int, height: int)
     return mask_from_areas((), shapes, width, height)
 
 
+def rescale(points: Sequence[Point], drawn: Sequence[int], width: int, height: int):
+    """The same outline, on a picture of a different size.
+
+    Drawn against 1920x1080 and applied to 1280x720, an unscaled point lands a
+    third too far right and a third too low - so a band traced over a treeline
+    covers sky instead, the treeline is watched again, and the only sign is a
+    night of alarms nobody can explain. Clipping does not save it: the points
+    are all inside the frame, just in the wrong part of it.
+
+    An unknown size is left alone. That is what every shape written before this
+    was recorded says, and stretching them by a guess would move areas that are
+    currently right.
+    """
+    drawn_w, drawn_h = (int(v) for v in (drawn or (0, 0)))
+    if drawn_w <= 0 or drawn_h <= 0:
+        return list(points)
+    if (drawn_w, drawn_h) == (int(width), int(height)):
+        return list(points)
+    across, down = width / drawn_w, height / drawn_h
+    return [(int(round(x * across)), int(round(y * down))) for x, y in points]
+
+
 def mask_from_areas(
     regions: Iterable[Sequence[int]],
     shapes: Iterable[Sequence[Point]],
     width: int,
     height: int,
+    drawn_at: Iterable[Sequence[int]] | None = None,
 ):
     """One mask, from the boxes and the outlines together.
 
@@ -236,6 +259,13 @@ def mask_from_areas(
     change resolution underneath a setting drawn against another one - and None
     comes back when nothing at all survives, because None is what the pipeline
     reads as "no mask".
+
+    Clipping is not enough on its own, though, and that is what `drawn_at` is
+    for: an outline traced on a 1920x1080 still is entirely inside a 1280x720
+    frame, just a third too far right and a third too low, so nothing is clipped
+    and the mask silently covers the wrong part of the picture. Given the size
+    each outline was drawn against, it is put back where he drew it. The
+    rectangles have no such record and are clipped as before.
     """
     import numpy as np
 
@@ -252,10 +282,14 @@ def mask_from_areas(
             continue
         mask[top:bottom, left:right] = 255
         painted = True
-    for shape in shapes:
+    # Each outline beside the size of the picture it was drawn on, so it can be
+    # put back where he drew it rather than where the numbers happen to land.
+    sizes = list(drawn_at or ())
+    for index, shape in enumerate(shapes):
         points = [(int(x), int(y)) for x, y in shape]
         if len(points) < 3:
             continue
+        points = rescale(points, sizes[index] if index < len(sizes) else (0, 0), width, height)
         painted = _paint_shape(mask, points, width, height) or painted
     return mask if painted else None
 

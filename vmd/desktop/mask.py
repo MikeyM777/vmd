@@ -414,6 +414,23 @@ class MaskDialog(QDialog):
         """The ignored areas, in the picture's own dots."""
         return self.canvas.shapes()
 
+    def frame_size(self) -> tuple[int, int]:
+        """The size of the picture the areas were drawn on top of, in its dots.
+
+        Saved beside the points, and it has to be: points on their own are
+        pixels with no scale, and the stream's size is an ONVIF setting on the
+        camera that this console has a button for. An outline traced here on a
+        1920x1080 still and applied to a 1280x720 stream is entirely inside the
+        frame, a third too far right and a third too low - so nothing is clipped,
+        nothing complains, and the band covers sky while the treeline is watched
+        again. See `vmd/detect/mask.py:rescale`.
+
+        `(0, 0)` when there was no picture to draw on, which is the state where
+        nothing new can have been drawn anyway.
+        """
+        size = self.canvas.frame_size()
+        return (int(size.width()), int(size.height()))
+
     def mode(self) -> str:
         return self.canvas.mode()
 

@@ -202,6 +202,7 @@ class DetectionService:
             classifier_for,
             config_from_settings,
             regions_of,
+            shape_sizes_of,
             shapes_of,
         )
         from vmd.detect.runner import StreamDetector
@@ -220,6 +221,7 @@ class DetectionService:
             # settings file written before the drawing tool existed carries
             # rectangles and nothing already marked out may quietly come back.
             ignore_shapes=shapes_of(stream),
+            shape_sizes=shape_sizes_of(stream),
             # Loads nothing here: the YOLO import is deferred to the first crop
             # worth naming, so this process starts on a machine with no torch
             # and no weights. Off for the thermal by default.
