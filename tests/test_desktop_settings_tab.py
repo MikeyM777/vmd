@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
 from vmd.desktop.settings_tab import PROBE_NAME, SettingsTab
 from vmd.settings import (
@@ -328,6 +328,39 @@ def _watched(name: str = "IR-ch2", **kwargs) -> Settings:
             streams=[StreamSettings(name=name, url="rtsp://10.0.0.2/ch2", **kwargs)],
         )
     )
+
+
+def _two_watched_views() -> Settings:
+    """The camera as it really is: one gimbal, two heads, both watched.
+
+    Every duplication on this tab is invisible with one card on screen, because
+    a paragraph printed once per view is printed once. It is the second view
+    that makes it a defect, and the operator has always had two.
+    """
+    return Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2", detect=True),
+                StreamSettings(name="visible", url="rtsp://10.0.0.2/ch0", detect=True),
+            ],
+        )
+    )
+
+
+def _said_once(tab, said: str) -> None:
+    """Assert a paragraph is on the form exactly once, wherever it lives.
+
+    Not "is it on the card" but "how many times is it drawn": a sentence moved
+    above the cards and left on them as well would pass every other assertion
+    here and be the same defect it was before.
+    """
+    copies = [
+        label
+        for label in tab.findChildren(QLabel)
+        if label.text().strip().lower() == said.strip()
+    ]
+    assert len(copies) == 1, f"the same paragraph is on the form {len(copies)} times"
 
 
 def test_the_detection_choices_on_screen_are_the_ones_from_the_file(
@@ -1184,16 +1217,7 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     and two copies of a paragraph do not explain a thing twice as well, they
     make the reader stop and check whether they differ.
     """
-    two_views = Settings(
-        camera=CameraSettings(
-            host="10.0.0.2",
-            streams=[
-                StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2"),
-                StreamSettings(name="visible", url="rtsp://10.0.0.2/ch0"),
-            ],
-        )
-    )
-    tab, _ = build(qtbot, tmp_path, two_views)
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
     row = tab.stream_rows()[0]
     assert row.detect_field.text() == "Watch for movement"
 
@@ -1206,24 +1230,17 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     assert not any(word in said for word in JARGON), said
 
     # And nowhere else. Any label repeating it is the duplication coming back.
-    from PySide6.QtWidgets import QLabel
-
-    copies = [
-        label
-        for label in tab.findChildren(QLabel)
-        if label.text().strip().lower() == said.strip()
-    ]
-    assert len(copies) == 1, f"the same paragraph is on the form {len(copies)} times"
+    _said_once(tab, said)
 
 
 def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path) -> None:
     """"'Name what moved' - what is that?" It reads as an instruction to the
     operator - go and name it - rather than as something the software attempts.
     """
-    tab, _ = build(qtbot, tmp_path, _watched())
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
     row = tab.stream_rows()[0]
     assert row.classify_label.text().rstrip(":") == "Try to say what it was"
-    said = row.classify_help.text().lower()
+    said = tab.classify_help.text().lower()
     assert said.strip()
     # The three things it might say, so the words themselves say what "it" is.
     for example in ("person", "vehicle", "animal"):
@@ -1233,6 +1250,7 @@ def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path)
     assert "guess" in said, said
     assert "record" in said, said
     assert not any(word in said for word in JARGON), said
+    _said_once(tab, said)
 
 
 def test_the_ignore_control_says_it_is_about_parts_of_the_picture(
@@ -1240,16 +1258,17 @@ def test_the_ignore_control_says_it_is_about_parts_of_the_picture(
 ) -> None:
     """"'Skyline and ignore...' - what is that?" Two nouns from the source code
     joined by an "and", naming neither what it is for nor what it acts on."""
-    tab, _ = build(qtbot, tmp_path, _watched())
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
     row = tab.stream_rows()[0]
     assert row.details_button.text() == "Ignore parts of the picture"
-    said = row.details_help.text().lower()
+    said = tab.ignore_help.text().lower()
     assert said.strip()
     for example in ("sky", "road", "tree"):
         assert example in said, said
     assert "wind" in said, said
     assert "not" in said and "report" in said, said
     assert not any(word in said for word in JARGON), said
+    _said_once(tab, said)
 
 
 def test_the_camera_tools_box_says_it_is_for_checking_the_camera(

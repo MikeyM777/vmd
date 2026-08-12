@@ -25,7 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -506,6 +506,53 @@ def test_no_tab_is_squeezed_below_the_words_it_holds_when_fullscreen(
     for page, name in zip(pages, ["Live", "Playback", "Settings", "Logs"]):
         problems += [f"{name}: {line}" for line in starved(page)]
     assert problems == [], "squeezed below what the words need at %dx%d:\n%s" % (
+        width,
+        height,
+        "\n".join(problems[:12]),
+    )
+
+
+@pytest.mark.parametrize("width,height", SCREENS)
+def test_unfolding_a_stream_card_does_not_draw_text_over_text(
+    qtbot, tmp_path: Path, width: int, height: int
+) -> None:
+    """The Settings tab as he meets it, which is one press at a time.
+
+    Everything above measures a window that was laid out once and looked at.
+    That is not how this tab is used: he opens it, ticks **Watch for movement**
+    on a view, presses **Ignore parts of the picture**, and the card grows by
+    about 420 px underneath a form that has already settled. Pressing that
+    button drew "How touchy:" through the last line of the note above it and
+    two more sentences through each other, at every size on this list, and none
+    of the tests here saw it because none of them pressed anything.
+
+    So the folds are opened AFTER the window has been laid out, and only then is
+    the tab measured. Two views with one of them unfolded, because that is the
+    state in the screenshot and the state the grid gets wrong: a row of cards is
+    as tall as its tallest card, and the height it remembers is the height they
+    both used to be.
+    """
+    window = console(qtbot, tmp_path)
+    window.resize(width, height)
+    # Laid out at the size, never put in front of him: this console runs on a
+    # laptop somebody is watching.
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    window.show()
+    window.tabs.setCurrentIndex(2)
+    QApplication.processEvents()
+
+    settings = window.settings_tab
+    rows = settings.stream_rows()
+    assert len(rows) == 2, "the camera has two heads and the defect needs both"
+    for row in rows:
+        row.detect_field.setChecked(True)
+    QApplication.processEvents()
+    rows[0].details_button.setChecked(True)
+    QApplication.processEvents()
+
+    problems = mushed(settings) + starved(settings)
+    window.hide()
+    assert problems == [], "text drawn through text at %dx%d after a fold opened:\n%s" % (
         width,
         height,
         "\n".join(problems[:12]),

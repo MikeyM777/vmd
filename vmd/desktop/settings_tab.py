@@ -365,8 +365,11 @@ class StreamRowWidget(QFrame):
         self.classify_label.setToolTip(WHY_CLASSIFY)
         watch.addWidget(self.classify_label)
         watch.addWidget(self.classify_field)
-        self.classify_help = _note(CLASSIFY_HELP)
-        watch.addWidget(self.classify_help)
+        # And here too the paragraph is NOT on the card: it is said once above
+        # both of them, in `__init__` below. Same reason as the one above -
+        # guessing what moved means the same thing on both heads of one gimbal,
+        # so printing it on each card is one paragraph twice, side by side and
+        # word for word identical, on the tab he called too busy.
 
         self.sensitivity_field = QComboBox()
         for label, value in SENSITIVITY_CHOICES:
@@ -392,8 +395,8 @@ class StreamRowWidget(QFrame):
             "do not care about."
         )
         watch.addWidget(self.details_button)
-        self.details_help = _note(REGIONS_HELP)
-        watch.addWidget(self.details_help)
+        # The third of the three, and the last one that was still per-card. What
+        # a patch to ignore is for does not change between the two heads either.
 
         # A label above its box rather than beside it. In half a column there is
         # no room for both, and the thing that has to be readable is the choice
@@ -514,7 +517,6 @@ class StreamRowWidget(QFrame):
         # What to say when a patch cannot be added. Set by SettingsTab so the
         # row does not need to know where the message line lives.
         self.on_problem = lambda text: None
-
     # ------------------------------------------------------------- the values
 
     def values(self) -> StreamRow:
@@ -1006,6 +1008,16 @@ class SettingsTab(QWidget):
         # inches apart, on the tab he called too busy.
         self.detect_help = _note(DETECT_HELP)
         streams_outer.addWidget(self.detect_help)
+        # The other two paragraphs that used to be printed once per card, moved
+        # here for the same reason and by the same argument. `fcd32f2` moved the
+        # first of the three and left these; on screen they were the plainest
+        # duplication left in the console - two paragraphs, side by side, word
+        # for word identical, six inches apart. Everything they say is true of
+        # both heads of the gimbal, so this is where they belong.
+        self.classify_help = _note(CLASSIFY_HELP)
+        streams_outer.addWidget(self.classify_help)
+        self.ignore_help = _note(REGIONS_HELP)
+        streams_outer.addWidget(self.ignore_help)
         # Side by side, two across. "Make the vis and thermal in the settings
         # side by side instead of one under the other, so it's easier" - and he
         # is right about why: it is one camera with two heads, he sets them up
