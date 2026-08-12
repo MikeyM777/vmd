@@ -1980,3 +1980,57 @@ def test_nothing_on_this_tab_names_the_machinery(qtbot, tmp_path: Path) -> None:
                 assert word not in text.lower(), text
     finally:
         index.close()
+
+
+def test_zooming_with_no_playhead_lands_on_footage_not_on_the_middle_of_the_clock(
+    qtbot, tmp_path: Path
+) -> None:
+    """The first morning: recording started at midnight and stopped at 01:35.
+
+    He opens the day and presses "1 hour" without having clicked on the bar, so
+    there is no playhead to zoom around. The window used to centre on the middle
+    of what was on screen, which for a whole day is noon - so an hour of zoom
+    jumped to 11:30-12:25, drew an empty bar, and left the line underneath still
+    saying "1h 25m recorded". Everything he had was off the left-hand edge and
+    nothing on the screen said which way to go looking for it.
+
+    So with no playhead the window goes to the footage instead of to the clock.
+    """
+    from vmd.desktop.timeline import ONE_HOUR
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        start, _end = day_bounds(2026, 8, 11)
+        for offset in range(0, 95 * 60, 300):
+            index.add(
+                "thermal", str(tmp_path / f"{offset}.mp4"),
+                start + offset, start + offset + 300, 1000,
+            )
+        tab.show_day(2026, 8, 11, stream="thermal")
+        assert tab.playhead_time is None, "this is the state with nothing clicked"
+
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        assert tab.view_end - tab.view_start == pytest.approx(3600.0)
+        assert tab.coverage, (
+            "an hour of zoom landed on an empty bar: "
+            f"{tab.view_start - start:.0f}s to {tab.view_end - start:.0f}s "
+            "into a day recorded from 0s to 5700s"
+        )
+    finally:
+        index.close()
+
+
+def test_zooming_with_nothing_recorded_at_all_still_gives_an_hour(
+    qtbot, tmp_path: Path
+) -> None:
+    """There is no footage to aim at, so the middle of the day is as good an
+    answer as any - and it must not raise or come back as a whole day."""
+    from vmd.desktop.timeline import ONE_HOUR
+
+    tab, pane, index = build(qtbot, tmp_path)
+    try:
+        tab.show_day(2026, 8, 11, stream="thermal")
+        qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
+        assert tab.view_end - tab.view_start == pytest.approx(3600.0)
+    finally:
+        index.close()

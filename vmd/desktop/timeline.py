@@ -190,6 +190,46 @@ def zoom_window(
     return (start, start + span)
 
 
+def middle_of_the_footage(segments: list[Segment]) -> float | None:
+    """The moment with half of this day's recorded time either side of it.
+
+    Where to zoom to when there is nothing else to say where he is looking. The
+    obvious answer - the middle of what is on screen - is the middle of the
+    clock, and on the day this was found the console had recorded 00:00 to 01:35
+    and an hour of zoom went to 11:30, drew an empty bar, and left the line
+    beneath it saying "1h 25m recorded".
+
+    A median of recorded time rather than the midpoint between the first and
+    last recording, and the difference is the whole point: ten minutes at
+    midnight and ten minutes at noon have their midpoint at 06:00, which is
+    another empty bar. Half the recorded time either side always falls INSIDE a
+    recording, whatever shape the day is, and it leans towards the long stretch
+    rather than the far end - which is where he is likely to be looking anyway.
+
+    Overlapping segments are counted twice, deliberately: this is not a union of
+    the day, it is where the weight of what was recorded lies, and two cameras
+    both recording an hour is an hour that matters twice as much as one.
+
+    None when nothing was recorded. Inventing a moment would put the window back
+    where this started - somewhere nothing happened.
+    """
+    blocks = sorted(
+        ((s.start, s.end) for s in segments if s.end > s.start), key=lambda b: b[0]
+    )
+    total = sum(end - start for start, end in blocks)
+    if total <= 0:
+        return None
+    half = total / 2.0
+    passed = 0.0
+    for start, end in blocks:
+        length = end - start
+        if passed + length >= half:
+            return start + (half - passed)
+        passed += length
+    # Only reachable through floating-point rounding on the last block.
+    return blocks[-1][1]
+
+
 def pan_window(
     view_start: float, view_end: float, by_seconds: float, day_start: float, day_end: float
 ) -> tuple[float, float]:

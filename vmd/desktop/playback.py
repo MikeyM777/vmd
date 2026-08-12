@@ -88,6 +88,7 @@ from vmd.desktop.timeline import (
     coverage_bars,
     day_bounds,
     explain_gap,
+    middle_of_the_footage,
     pan_window,
     seek_target,
     time_at,
@@ -937,9 +938,21 @@ class PlaybackTab(QWidget):
     # ------------------------------------------------------------- the window
 
     def set_zoom(self, zoom: str) -> None:
-        """Show this much of the day, around wherever he is looking now."""
+        """Show this much of the day, around wherever he is looking now.
+
+        Three answers to "around what", in the order they are believed. The
+        playhead, when there is one, because that is the moment he is on. Then
+        the footage: with nothing clicked, the middle of a whole day is noon, and
+        on a console that had recorded 00:00 to 01:35 an hour of zoom jumped to
+        11:30, drew an empty bar, and left the line beneath it still reading "1h
+        25m recorded". Zooming has to land on footage he has, not on the middle
+        of a clock. Only when there is no footage either does the middle of what
+        is on screen stand in, and then nothing is being missed by it.
+        """
         self.zoom = zoom if zoom in ZOOM_SPANS else WHOLE_DAY
         centre = self.playhead_time
+        if centre is None:
+            centre = middle_of_the_footage(self._segments + self._second_segments)
         if centre is None:
             centre = (self.view_start + self.view_end) / 2.0
         self.view_start, self.view_end = zoom_window(

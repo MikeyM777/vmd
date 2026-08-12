@@ -13,6 +13,7 @@ from vmd.desktop.timeline import (
     coverage_bars,
     day_bounds,
     explain_gap,
+    middle_of_the_footage,
     pan_window,
     seek_target,
     time_at,
@@ -488,3 +489,60 @@ def test_the_pieces_come_out_in_time_order_whatever_order_the_index_gave() -> No
     ]
     plan = clip_plan(segments, start + 100, start + 800)
     assert [p.path for p in plan.parts] == ["a.mp4", "b.mp4", "c.mp4"]
+
+
+# --------------------------------------------------- where to zoom to, with no
+# playhead
+#
+# He opens a day and presses "1 hour" without having clicked anywhere. There is
+# no playhead, so there is nothing saying which hour he means - and the middle
+# of the window is the middle of the clock, which on a console that recorded
+# 00:00 to 01:35 is 11:30 and an empty bar under a line still reading "1h 25m
+# recorded". The answer has to be a moment there is footage at.
+
+
+def _seg(start: float, end: float) -> Segment:
+    return Segment(
+        id=1, stream="thermal", path="a.mp4", start=start, end=end, size_bytes=1
+    )
+
+
+def test_the_middle_of_a_single_stretch_of_footage_is_its_middle() -> None:
+    start, _end = day_bounds(2026, 8, 11)
+    middle = middle_of_the_footage([_seg(start, start + 3600)])
+    assert middle == start + 1800.0
+
+
+def test_the_middle_of_the_footage_is_never_in_a_gap() -> None:
+    """Half a day apart, which is the case the middle of the clock gets wrong.
+
+    Two blocks with twelve hours of nothing between them: the midpoint BETWEEN
+    them is the middle of the gap, and half the recorded time either side of the
+    answer is inside one of the blocks. That is the whole difference - this is a
+    median of recorded time, not a midpoint of the span.
+    """
+    start, _end = day_bounds(2026, 8, 11)
+    blocks = [_seg(start, start + 600), _seg(start + 12 * 3600, start + 12 * 3600 + 600)]
+    middle = middle_of_the_footage(blocks)
+    assert any(s.start <= middle <= s.end for s in blocks), middle
+
+
+def test_the_middle_of_the_footage_weighs_the_long_stretch_over_the_short_one() -> None:
+    """An hour in the morning and one minute in the evening is a morning."""
+    start, _end = day_bounds(2026, 8, 11)
+    blocks = [_seg(start + 3600, start + 7200), _seg(start + 20 * 3600, start + 20 * 3600 + 60)]
+    assert start + 3600 <= middle_of_the_footage(blocks) <= start + 7200
+
+
+def test_the_order_the_index_hands_them_over_does_not_matter() -> None:
+    start, _end = day_bounds(2026, 8, 11)
+    blocks = [_seg(start + 7200, start + 10800), _seg(start, start + 3600)]
+    assert middle_of_the_footage(blocks) == middle_of_the_footage(list(reversed(blocks)))
+
+
+def test_no_footage_has_no_middle() -> None:
+    """None rather than a number: a caller that invented one would be back to
+    aiming at a moment nothing was recorded at."""
+    assert middle_of_the_footage([]) is None
+    start, _end = day_bounds(2026, 8, 11)
+    assert middle_of_the_footage([_seg(start, start)]) is None
