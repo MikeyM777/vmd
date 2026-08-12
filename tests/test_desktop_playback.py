@@ -10,6 +10,7 @@ import pytest
 
 from PySide6.QtCore import QDate, QPoint, Qt
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QWidget
 
 from vmd.desktop.playback import BOTH, EVENT_LEAD_SECONDS, NOTHING_RECORDED, PlaybackTab
 from vmd.desktop.style import PALETTE
@@ -1681,6 +1682,108 @@ def test_the_second_picture_is_put_away_when_one_camera_is_chosen(
         assert tab.second_pane.url is not None
         tab.stream_selector.setCurrentText("thermal")
         assert tab.second_pane.url is None
+    finally:
+        index.close()
+
+
+# ------------------------------------------------- two pictures on the screen
+#
+# Everything above this line drives a `FakeVideoPane`, which is not a QWidget -
+# so not one of those tests has ever laid a picture out, and "both together"
+# reported from the field as *"only one picture"* passed all of them. The pane
+# the console really hands this tab is a widget in a splitter, and that is what
+# the next two put on a screen and measure.
+
+
+class WidgetPane(QWidget, FakeVideoPane):
+    """The fake pane, as the thing the console actually builds: a widget."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        QWidget.__init__(self, parent)
+        FakeVideoPane.__init__(self)
+
+    def show(self, url=None, at_seconds: float = 0.0) -> None:  # noqa: A003
+        # QWidget.show() and VideoPane.show(url) are the same word for two
+        # different things, and the widget's own is the one Qt calls.
+        if url is None:
+            QWidget.show(self)
+            return
+        FakeVideoPane.show(self, url, at_seconds)
+
+
+def two_widget_cameras(qtbot, tmp_path: Path, width: int = 1000):
+    tab = PlaybackTab(index=SegmentIndex(tmp_path / "segments.db"), pane=WidgetPane())
+    qtbot.addWidget(tab)
+    index = tab._index
+    start, _end = day_bounds(2026, 8, 11)
+    index.add("thermal", str(tmp_path / "t.mp4"), start, start + 600, 1000)
+    index.add("visible", str(tmp_path / "v.mp4"), start, start + 600, 1000)
+    tab.resize(width, 600)
+    # Laid out and painted, and never on anybody's desktop.
+    tab.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    tab.show()
+    tab.show_day(2026, 8, 11, stream=BOTH)
+    return tab, index, start
+
+
+def test_both_together_puts_two_pictures_on_the_screen(qtbot, tmp_path: Path) -> None:
+    """His words: "only one picture".
+
+    Both panes were built, both were in the splitter, the second was told to
+    play the right file and told to be visible - and it was nought pixels wide,
+    because a QSplitter gives a hidden child no width and does not hand any
+    back when it is shown again. Everything except the one thing he was looking
+    for was working, which is why no test caught it.
+
+    Measured in pixels on a laid-out tab, because pixels are what he was
+    complaining about.
+    """
+    tab, index, start = two_widget_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        first, second = tab._pane, tab.second_pane
+        assert second.isVisibleTo(tab), "the second picture was never put up"
+        assert second.width() > 0, "the second picture is on screen at no width"
+        # Two pictures, not one picture and a sliver: neither of them may be
+        # squeezed into a corner of the other.
+        assert second.width() > first.width() / 3, (
+            f"the two pictures are {first.width()} and {second.width()} px wide"
+        )
+    finally:
+        index.close()
+
+
+def test_one_camera_gets_the_whole_wall_back(qtbot, tmp_path: Path) -> None:
+    """And the room the second picture took is not left behind as a black band."""
+    tab, index, start = two_widget_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        tab.stream_selector.setCurrentText("thermal")
+        tab.play_at_time(start + 120)
+        qtbot.wait(1)  # the splitter re-lays out on the event loop, not inline
+        assert not tab.second_pane.isVisibleTo(tab)
+        assert tab._pane.width() > tab.width() / 2
+    finally:
+        index.close()
+
+
+def test_the_wall_the_operator_dragged_is_not_re_shared_on_every_seek(
+    qtbot, tmp_path: Path
+) -> None:
+    """He can move the divider, and a skip forward may not put it back.
+
+    The fix for "only one picture" shares the wall equally as the second
+    picture goes up. Doing that on every seek instead would be a divider that
+    springs back four times a second.
+    """
+    tab, index, start = two_widget_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        tab._wall.setSizes([700, 300])
+        qtbot.wait(1)
+        his = tab._wall.sizes()
+        tab.play_at_time(start + 240)
+        assert tab._wall.sizes() == his, "the divider moved on its own"
     finally:
         index.close()
 

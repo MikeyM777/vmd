@@ -1333,10 +1333,38 @@ class PlaybackTab(QWidget):
             self._stop_second_picture()
             clock = datetime.datetime.fromtimestamp(when).strftime("%H:%M:%S")
             return f" There is nothing recorded on {shown[1]} at {clock}."
-        if isinstance(self._second_pane, QWidget):
-            self._second_pane.setVisible(True)
+        self._show_second_picture()
         self._point(self._second_pane, target.path, target.offset_seconds, first=False)
         return ""
+
+    def _show_second_picture(self) -> None:
+        """Put the second picture up, and give it room to be a picture in.
+
+        Making it visible is not enough, and that was the whole of "only one
+        picture". A `QSplitter` remembers the width it gave each child, a child
+        that was hidden when the splitter last laid itself out was given zero,
+        and showing it again does not hand any of that back: measured on this
+        wall, the sizes went from [1340, 0] to [1340, 0] and the second picture
+        was on screen at nought pixels wide. `setChildrenCollapsible` does not
+        cover it - that stops the OPERATOR dragging a pane away to nothing, not
+        the splitter arriving there on its own.
+
+        So the two are given equal shares as it goes up. Equal rather than
+        remembered, because this pane has never had a width to remember; and
+        only as it goes up, because this runs on every seek and a wall re-shared
+        four times a second is a divider he cannot move.
+        """
+        if not isinstance(self._second_pane, QWidget):
+            return
+        # isVisibleTo rather than isVisible: on a tab nobody has opened yet
+        # everything is invisible, and that question answered wrongly here puts
+        # the divider back on every seek.
+        if self._second_pane.isVisibleTo(self._wall):
+            return
+        self._second_pane.setVisible(True)
+        # Shares rather than pixels - a splitter scales them to the room it has
+        # - so this says "half each" at every window size.
+        self._wall.setSizes([1] * self._wall.count())
 
     def _stop_second_picture(self) -> None:
         if self._second_pane is None:
