@@ -112,6 +112,13 @@ BUDGET_SLIDER_MAX_GB = 2000
 
 SECONDS_IN_A_DAY = 86400.0
 
+# The two things the line beside "Swap them" has to say: what the button is for
+# before it is pressed, and what happened after. Named here because four
+# different failures put the first one back - a line claiming a swap that did
+# not happen is worse than no line at all.
+SWAP_INVITATION = "The zoom sliders move the wrong pictures:"
+SWAP_DONE = "Swapped. Press Save, then try the sliders:"
+
 # The file `storage_problem` writes and removes to find out whether footage can
 # actually be written to the chosen folder. A name nothing else uses, and one
 # that sorts away from the recordings.
@@ -1222,7 +1229,7 @@ class SettingsTab(QWidget):
         swap_line = QHBoxLayout(self.swap_row)
         swap_line.setContentsMargins(0, 0, 0, 0)
         swap_line.setSpacing(SPACE_SNUG)
-        self.swap_note = _note("The zoom sliders move the wrong pictures:")
+        self.swap_note = _note(SWAP_INVITATION)
         # The one note on this tab that does not wrap. Every other one is a
         # paragraph and wants the width of the column; this one is a caption on
         # a button, and a `WrappedNote` beside a button in a row is handed its
@@ -2510,6 +2517,7 @@ class SettingsTab(QWidget):
 
         answer = next((line for line in lines if isinstance(line, dict)), None)
         if answer is None:
+            self.swap_note.setText(SWAP_INVITATION)
             self._set_message(
                 "The camera could not be asked which lens is behind each "
                 "picture. Nothing was changed."
@@ -2517,6 +2525,7 @@ class SettingsTab(QWidget):
             return
         if not answer.get("ok"):
             reason = str(answer.get("error") or "the camera did not say").strip()
+            self.swap_note.setText(SWAP_INVITATION)
             self._set_message(
                 f"The camera could not be asked which lens is behind each "
                 f"picture: {reason}. Nothing was changed."
@@ -2531,6 +2540,7 @@ class SettingsTab(QWidget):
 
         if not here or not there:
             missing = one if not here else two
+            self.swap_note.setText(SWAP_INVITATION)
             self._set_message(
                 f"The camera did not say which lens is behind \"{missing}\", so "
                 f"there is nothing to swap. Press \"Check the camera\" at the "
@@ -2541,6 +2551,7 @@ class SettingsTab(QWidget):
         if here == there:
             # Not a fault, and saying so is the whole of the answer: a swap
             # cannot fix a camera that is sending one lens down both pictures.
+            self.swap_note.setText(SWAP_INVITATION)
             self._set_message(
                 "Both pictures are on the same lens on this camera, so swapping "
                 "them would change nothing - either slider moves both. That is "
@@ -2551,6 +2562,14 @@ class SettingsTab(QWidget):
         first.set_lenses(profiles, there)
         second.set_lenses(profiles, here)
         self._lay_the_cards_out()
+        # Beside the button as well as on the message line, and that is not
+        # belt and braces. The button is under the camera cards near the top of
+        # a form about 1400 px tall, and the message line is beside Save at the
+        # bottom of it - so the only sign that anything happened was off the
+        # screen he was looking at. An operator who presses this, sees nothing,
+        # and presses it again has undone it, which is the one way this control
+        # can fail him.
+        self.swap_note.setText(SWAP_DONE)
         self._set_message(
             f"Swapped: the zoom slider under \"{one}\" now moves the lens "
             f"\"{two}\" was on, and the other way round. Press Save, then try "

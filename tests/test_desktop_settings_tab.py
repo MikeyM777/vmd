@@ -2627,6 +2627,56 @@ def test_swapping_twice_puts_them_back(qtbot, tmp_path: Path) -> None:
     assert visible.chosen_lens() == "p-ir"
 
 
+def test_a_swap_says_it_happened_where_he_is_looking(qtbot, tmp_path: Path) -> None:
+    """The button is under the camera cards near the top of a form about 1400 px
+    tall; the message line is beside Save at the bottom of it. So the only sign
+    that anything happened was off the screen he was looking at - and an
+    operator who presses this, sees nothing and presses it again has undone it,
+    which is the one way this control can fail him."""
+    from vmd.desktop.settings_tab import SWAP_DONE, SWAP_INVITATION
+
+    tab, _ptz, _path = a_camera(qtbot, tmp_path, crossed())
+    assert tab.swap_note.text() == SWAP_INVITATION
+
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: tab.swap_note.text() != SWAP_INVITATION, timeout=5000)
+    assert tab.swap_note.text() == SWAP_DONE
+    assert "save" in tab.swap_note.text().lower()
+
+
+def test_a_swap_that_did_not_happen_does_not_claim_it_did(
+    qtbot, tmp_path: Path
+) -> None:
+    """Every way this can fail puts the line back, and the case that matters is
+    the second press: a caption still reading "Swapped" over two views whose
+    lenses were not touched this time is worse than no caption, because it is
+    the only thing near the button and it is wrong."""
+    from vmd.desktop.settings_tab import SWAP_DONE, SWAP_INVITATION
+
+    for answer, expect in (
+        ({"ok": False, "error": "cannot reach it", "profiles": []}, "cannot reach"),
+        (
+            crossed(
+                profiles=[{"token": "only", "name": "main", "can_zoom": True}],
+                using={"thermal": "only", "visible": "only"},
+            ),
+            "same lens",
+        ),
+        (crossed(using={"thermal": "p-vis", "visible": ""}), "nothing to swap"),
+    ):
+        tab, ptz, _path = a_camera(qtbot, tmp_path / expect[:6], crossed())
+        # One that works, so the caption is showing the wrong thing to leave up.
+        tab.swap_the_zoom_sliders()
+        qtbot.waitUntil(lambda: tab.swap_note.text() == SWAP_DONE, timeout=5000)
+
+        ptz.answer = answer
+        tab.swap_the_zoom_sliders()
+        qtbot.waitUntil(lambda: expect in tab.message.lower(), timeout=5000)
+        assert tab.swap_note.text() == SWAP_INVITATION, (
+            f"{expect}: the caption still says {tab.swap_note.text()!r}"
+        )
+
+
 def test_swap_is_offered_only_where_it_means_something(qtbot, tmp_path: Path) -> None:
     """"Swap" has no meaning with one view and none with three. Both of those
     are answered by Zoom drives on the cards, which names the lens."""
