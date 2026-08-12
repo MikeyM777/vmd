@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
@@ -28,7 +29,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.style import PALETTE, SIZE_HEADING, SPACE_SNUG, SPACE_STEP
+from vmd.desktop.style import (
+    PALETTE,
+    SIZE_BODY,
+    SIZE_HEADING,
+    SPACE_SNUG,
+    SPACE_STEP,
+    WEIGHT_VALUE,
+)
 
 LOG_LINES = 500
 
@@ -176,8 +184,22 @@ class LogsTab(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(SPACE_SNUG)
+        # Two choices, one of which is always on: a segmented control, drawn the
+        # way this design draws one. They used to be two plain buttons, neither
+        # holding its state and neither marked - the tab showing everything and
+        # the tab showing only faults were the same picture down to the pixel.
+        # That is worse than an unlabelled control: a quiet table means both
+        # "nothing has gone wrong" and "you are only being shown what did", and
+        # on the tab he opens when something is already wrong there was nothing
+        # on screen to say which of the two he was looking at.
         self.all_button = QPushButton("All")
         self.warnings_button = QPushButton("Warnings and errors")
+        self._filter_buttons = QButtonGroup(self)
+        self._filter_buttons.setExclusive(True)
+        for button in (self.all_button, self.warnings_button):
+            button.setCheckable(True)
+            self._filter_buttons.addButton(button)
+        self.all_button.setChecked(True)
         self.follow_checkbox = QCheckBox("Follow")
         self.follow_checkbox.setChecked(True)
         self.all_button.clicked.connect(self._show_all)
@@ -245,6 +267,7 @@ class LogsTab(QWidget):
         )
         layout.addWidget(self.empty, 1)
         self._show_table_or_not()
+        self._draw_filters()
 
     def _show_table_or_not(self) -> None:
         """Whichever of the table and the empty state has something to say."""
@@ -262,6 +285,46 @@ class LogsTab(QWidget):
 
     def set_level_filter(self, level: str) -> None:
         self._filter = level
+        # Whichever way the filter was set - a button, a test, anything later -
+        # the buttons say what it is. A control that only tells the truth when
+        # it was the thing that was pressed is the fault this is fixing.
+        self.all_button.setChecked(level == "ALL")
+        self.warnings_button.setChecked(level != "ALL")
+        self._draw_filters()
+
+    def filter_mark(self, button: QPushButton) -> str:
+        """How this filter button is drawn, so a test can read it off the tab.
+
+        Returned rather than compared here on purpose: what has to be true is
+        that the one that is on does not look like the one that is off, and that
+        is a question about what is drawn, not about a particular colour.
+        """
+        return button.styleSheet()
+
+    def _draw_filters(self) -> None:
+        """Mark the filter that is on.
+
+        Drawn per button rather than left to a `:checked` rule, for the same
+        reason the view chooser on the Live tab is: the application stylesheet
+        has no opinion about a checked button, so both were painted identically
+        and which one was on could only be worked out by reading the table. The
+        mark is the accent bar the tab bar uses for the page you are on and the
+        Playback tab uses for the zoom that is showing - one vocabulary for
+        "this is where you are", and the one amber this design allows at rest.
+        """
+        for button in (self.all_button, self.warnings_button):
+            on = button.isChecked()
+            button.setStyleSheet(
+                f"QPushButton {{ background: "
+                f"{PALETTE['raised'] if on else PALETTE['surface']}; "
+                f"color: {PALETTE['ink'] if on else PALETTE['muted']}; "
+                f"border: 1px solid {PALETTE['line']}; "
+                f"border-bottom: 2px solid "
+                f"{PALETTE['accent'] if on else PALETTE['line']}; "
+                f"font-size: {SIZE_BODY}px; "
+                f"font-weight: {WEIGHT_VALUE if on else 400}; }}"
+                f"QPushButton:hover {{ color: {PALETTE['ink']}; }}"
+            )
 
     @property
     def row_count(self) -> int:

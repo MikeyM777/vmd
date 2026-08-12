@@ -561,3 +561,37 @@ def test_copying_an_empty_table_says_there_was_nothing(qtbot) -> None:
 
     assert tab.copy_note.text(), "silence here reads as a button that did not work"
 
+
+
+def test_which_filter_is_on_is_visible_without_reading_the_table(qtbot) -> None:
+    """The two renders of this tab used to be pixel-identical.
+
+    The filter is how he narrows a screen of lines down to the fault he is
+    chasing, and a filter whose state is invisible is a filter that makes him
+    doubt the log: a quiet Logs tab means "nothing has gone wrong" and "you are
+    only being shown the errors" and there was nothing on screen to say which.
+    Both were plain buttons, neither checkable, neither in a group.
+
+    Measured the way the operator reads it - is the one that is on drawn
+    differently from the one that is not - rather than against a particular
+    colour, so the palette can move without this failing.
+    """
+    tab = LogsTab(LogBuffer(capacity=5))
+    qtbot.addWidget(tab)
+
+    on, off = tab.all_button, tab.warnings_button
+    assert on.isCheckable() and off.isCheckable(), "a filter has to hold its state"
+    assert on.isChecked() and not off.isChecked(), "All is where this tab starts"
+
+    marked = tab.filter_mark(on)
+    assert marked and marked != tab.filter_mark(off), (
+        "the filter that is on is drawn exactly like the one that is not"
+    )
+    # The accent, which is what this design reserves for an active control and
+    # what the Playback tab's own zoom buttons already use.
+    assert PALETTE["accent"] in marked, marked
+
+    qtbot.mouseClick(off, Qt.MouseButton.LeftButton)
+    assert off.isChecked() and not on.isChecked(), "both filters cannot be on"
+    assert tab.filter_mark(off) == marked
+    assert tab.filter_mark(on) != marked
