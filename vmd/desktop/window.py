@@ -1381,10 +1381,18 @@ class ConsoleWindow(QMainWindow):
         if state is None:
             # No glance word: this is never the healthy case, so nothing would
             # ever draw one.
+            # "the services could not be asked what they are doing" was a
+            # sentence about our own source code - "services" is what this
+            # console calls the recorder and the detector between ourselves, and
+            # he has never seen the word - and it ended without saying what to
+            # do, which on the one screen he has is where the sentence has to
+            # end. The glance word stays "services": it is never drawn while the
+            # chip has room for the sentence, and nothing else in the band is
+            # short enough to name this.
             parts.append(
                 (
                     "services",
-                    "the services could not be asked what they are doing",
+                    "VMD cannot see its own recorder and detector. Restart VMD.",
                     "alarm",
                 )
             )

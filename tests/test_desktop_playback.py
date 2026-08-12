@@ -1778,6 +1778,38 @@ def test_the_marks_can_be_cleared(qtbot, tmp_path: Path) -> None:
         index.close()
 
 
+def test_the_two_buttons_about_the_marks_say_that_they_are_about_the_marks(
+    qtbot, tmp_path: Path
+) -> None:
+    """They read **Save it…** and **Clear**, at the far right of a row whose
+    other controls are about the footage, the day and the speed. Save what.
+    Clear what. Both are about the range between **Mark start** and **Mark
+    end**, and neither of them said so.
+    """
+    tab, _pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        assert tab.save_clip.text() == "Save the marked clip"
+        assert tab.clear_marks.text() == "Clear the marks"
+        # Both name the marks the other two buttons make, so the four of them
+        # read as one operation.
+        for said in (tab.save_clip.text(), tab.clear_marks.text()):
+            assert "mark" in said.lower(), said
+        assert "Mark" in tab.mark_start.text() and "Mark" in tab.mark_end.text()
+
+        # And they still do what they did. Longer words on a disabled button
+        # would be a rename that quietly broke the thing it renamed.
+        assert not tab.save_clip.isEnabled(), "offered with nothing marked"
+        tab.play_at_time(noon + 60)
+        tab.mark_start.click()
+        tab.play_at_time(noon + 180)
+        tab.mark_end.click()
+        assert tab.save_clip.isEnabled()
+        tab.clear_marks.click()
+        assert tab.clip_from is None and tab.clip_to is None
+    finally:
+        index.close()
+
+
 def test_saving_a_clip_asks_where_and_writes_there(qtbot, tmp_path: Path) -> None:
     """He chooses the folder: "yeah its nice, although its on the laptop add
     the option to save"."""

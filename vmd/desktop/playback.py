@@ -765,10 +765,17 @@ class PlaybackTab(QWidget):
         self.mark_end = QPushButton("Mark end")
         self.mark_end.setToolTip("End of the piece to save")
         self.mark_end.clicked.connect(self.mark_the_end)
-        self.save_clip = QPushButton("Save it…")
+        # Save WHAT, and clear WHAT. Both of these are about the range between
+        # the two marks and neither of them said so, on a row where the four
+        # buttons beside them are about the footage, the day and the speed. The
+        # words are longer because the row can afford them: they are the last
+        # two on it and the transport takes what it needs first.
+        self.save_clip = QPushButton("Save the marked clip")
         self.save_clip.setToolTip("Write the marked piece to a folder you choose")
         self.save_clip.clicked.connect(lambda: self.save_clip_now())
-        self.clear_marks = QPushButton("Clear")
+        # Not "Unmark", which is a word he would have to take apart. This one
+        # undoes **Mark start** and **Mark end**, and it says so with theirs.
+        self.clear_marks = QPushButton("Clear the marks")
         self.clear_marks.setToolTip("Forget the marks")
         self.clear_marks.clicked.connect(self.forget_the_marks)
         for button in (self.mark_start, self.mark_end, self.save_clip, self.clear_marks):

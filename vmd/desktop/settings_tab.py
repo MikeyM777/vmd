@@ -315,13 +315,19 @@ class StreamRowWidget(QFrame):
         # On this card rather than in a panel of its own: these belong to this
         # view and nothing else, and a panel somewhere else on the tab is how the
         # wrong stream gets marked thermal.
-        self.detect_field = QCheckBox("Watch for movement")
+        # Named after the view it is about, and re-named as the name is typed:
+        # see `_name_the_watch_switch`.
+        self.detect_field = QCheckBox()
         self.detect_field.setChecked(stream.detect)
         self.detect_field.setToolTip(
             "Watch this view and raise an alert when something moves in it.\n\n"
             "Off until you turn it on. A detector pointed at a treeline before "
             "anyone has told it about the trees alarms all day, and an alarm "
             "nobody believes is worse than none."
+        )
+        self._name_the_watch_switch()
+        self.name_field.textChanged.connect(
+            lambda _typed: self._name_the_watch_switch()
         )
         outer.addWidget(self.detect_field)
 
@@ -561,6 +567,31 @@ class StreamRowWidget(QFrame):
         block.setVisible(shown)
         self.on_refold()
 
+    # -------------------------------------------------------------- the name
+
+    def _name_the_watch_switch(self) -> None:
+        """Say which view this switch is about, in the name typed above it.
+
+        There were three controls on this tab whose names were nearly the same
+        sentence - one on each camera card and the master switch below them -
+        and the two on the cards were word for word identical: **Watch for
+        movement**, six inches apart, with nothing in either of them saying
+        which head of the gimbal it belonged to. Ticking one of two identical
+        boxes and then scrolling to a third called **Watch for movement at all**
+        is not a thing anybody should have to reason about at three in the
+        morning.
+
+        So the card's switch says the view's own name, which is the one word on
+        the card that already tells the two of them apart, and it follows the
+        name field as it is typed: a card whose name has just been corrected
+        must not go on offering to watch the old one. Before a name has been
+        typed there is nothing to name it by, and "this view" is the truth.
+        """
+        name = self.name_field.text().strip()
+        self.detect_field.setText(
+            f"Watch {name} for movement" if name else "Watch this view for movement"
+        )
+
     # ------------------------------------------------------------- the values
 
     def values(self) -> StreamRow:
@@ -722,9 +753,9 @@ def _why(exc: OSError) -> str:
 # black rectangle, and a black rectangle is not an answer to "what is the
 # storage situation on this PC".
 SCAN_INVITATION = (
-    "Press Scan this PC and it will look at the drive this folder is on, then "
-    "fill in a budget and an age rule that fit it. Nothing is written until you "
-    "press Save."
+    "Press the button above and it will look at the drive this folder is on, "
+    "then fill in a size and an age rule that fit it. Nothing is written until "
+    "you press Save."
 )
 
 
@@ -823,16 +854,19 @@ def scan_drive(
         "" if days is None else f" - about {_days_in_words(days)} of footage at "
         f"the rate this camera records"
     )
+    # "Suggested budget" named a box that is no longer called that. Every
+    # sentence on this tab names its controls the way the screen names them, or
+    # it is a sentence about a form the operator cannot see.
     lines = [
         found,
-        f"Suggested budget: {budget_gb:.0f} GB{holds}. That is everything free "
+        f"Suggested size: {budget_gb:.0f} GB{holds}. That is everything free "
         f"apart from a slice of the drive left alone, so it can never be filled "
         f"right up.",
     ]
     if days is not None:
         lines.append(
             f"Suggested delete older than: {_days_in_words(days)}, the same as "
-            f"the budget holds, so footage goes for one reason and not two."
+            f"that much space holds, so footage goes for one reason and not two."
         )
     lines.append(
         "Both are suggestions and both are in the boxes below now. Change "
@@ -866,6 +900,16 @@ def _days_in_words(days: int) -> str:
     is not going to be copied into a control that did not have it.
     """
     return "1 day" if days == 1 else f"{days} days"
+
+
+def _picture_rate_in_words(kbps: int) -> str:
+    """A picture rate as one figure with a unit, and never a trailing ".0".
+
+    One unit throughout, because two - "1 Mb/s" here and "600 kb/s" there - is
+    two scales to hold in your head to compare two sentences on one screen.
+    """
+    rate = f"{kbps / 1000.0:.1f}".rstrip("0").rstrip(".")
+    return f"{rate} Mb/s"
 
 
 def _form(parent: QWidget | None = None) -> QFormLayout:
@@ -1091,7 +1135,10 @@ class SettingsTab(QWidget):
         detection_outer = QVBoxLayout(detection_box)
         detection_outer.setSpacing(SPACE_SNUG)
 
-        self._detection_enabled = QCheckBox("Watch for movement at all")
+        # Not "Watch for movement at all", which was the card switch's sentence
+        # with two more words on the end of it - so the master switch and the
+        # thing it is master of read as the same control seen twice.
+        self._detection_enabled = QCheckBox("Watch for movement on any view")
         self._detection_enabled.setToolTip(
             "The master switch. Turning it off stops movement detection and "
             "nothing else - recording keeps running, because it is a separate "
@@ -1145,18 +1192,31 @@ class SettingsTab(QWidget):
         )
         extras.addWidget(self._detection_classify)
 
-        travel_line = _form()
-        self._min_travel = QLineEdit()
-        self._min_travel.setPlaceholderText("empty means use the touchiness setting")
-        self._min_travel.setToolTip(
-            "How far a thing must travel across the picture, in dots, before "
-            "you are told about it. This is what separates a person walking "
-            "from a branch waving in one place.\n\n"
-            "Leave it empty. The touchiness setting already carries a measured "
-            "number for each view, and typing one here overrules a measurement."
-        )
-        travel_line.addRow("Must travel at least (dots)", self._min_travel)
-        extras.addLayout(travel_line)
+        # **Must travel at least (dots)** was here, and it is gone.
+        #
+        # Not the setting - `detection.min_travel_px` is still read by the
+        # detector, still carried across a save, and a file that has a number in
+        # it keeps that number. What is gone is the box, and it was never really
+        # a question being put to the operator:
+        #
+        # * its own tooltip said "Leave it empty";
+        # * its placeholder pointed at "the touchiness setting", which is called
+        #   **How touchy:** and lives inside a camera card, folded away until
+        #   that view is being watched - so the field explained itself by
+        #   naming a control that is not on the screen;
+        # * and it asked for a count of dots in the camera's own frame, which
+        #   is not a quantity anybody can see, estimate or check. Every other
+        #   number in dots on this tab is drawn on a picture instead.
+        #
+        # The review's fallback - move it beside **How touchy:** on the card -
+        # is worse than either keeping it or deleting it, and that is the second
+        # reason this went rather than moved: **How touchy:** is a setting of one
+        # view and this is a setting of all of them, so a copy of it on each card
+        # would be one number wearing two labels, where changing it under
+        # "thermal" silently changed it under "visible" too.
+        #
+        # If it ever has to come back it comes back as a picture, like the sky
+        # line did.
         detection_outer.addWidget(self._detection_extras)
         self._detection_enabled.toggled.connect(self._detection_extras.setVisible)
         self._detection_extras.setVisible(self._detection_enabled.isChecked())
@@ -1185,10 +1245,13 @@ class SettingsTab(QWidget):
 
         scan_line = QHBoxLayout()
         scan_line.setSpacing(SPACE_SNUG)
-        self.scan_button = QPushButton("Scan this PC")
+        # Not "Scan this PC", which reads as a virus scan or as a hunt for
+        # cameras. It reads one drive and suggests two numbers, and the button
+        # can afford to say so: it is the only one in this box.
+        self.scan_button = QPushButton("Look at this drive and suggest a size")
         self.scan_button.setToolTip(
             "Looks at the drive the folder above is on - how big it is, how much "
-            "is free, how much VMD is already using - and fills in a budget and "
+            "is free, how much VMD is already using - and fills in a size and "
             "an age rule to match.\n\n"
             "It changes the two boxes below and nothing else. Nothing is written "
             "until you press Save."
@@ -1223,7 +1286,9 @@ class SettingsTab(QWidget):
         budget_line.setSpacing(SPACE_SNUG)
         budget_line.addWidget(self.budget_slider, 1)
         budget_line.addWidget(self._budget)
-        storage_form.addRow("Budget (GB)", budget_line)
+        # Not "Budget (GB)". Budget is a money word, and what is being asked for
+        # here is not money: it is how much of the drive VMD may fill.
+        storage_form.addRow("How much space VMD may use (GB)", budget_line)
 
         # What the number actually means. A budget in gigabytes is not a
         # quantity anybody has an instinct for; how far back he can look is.
@@ -1279,11 +1344,14 @@ class SettingsTab(QWidget):
         )
         radio_form.addRow("", self.link_auto_field)
 
-        self.link_help = _note(
-            "It never goes below the lowest picture you allow. If the link "
-            "cannot carry even that, it says so in the Logs tab rather than "
-            "spoiling the picture further."
-        )
+        # It used to say "It never goes below the lowest picture you allow",
+        # which points at a setting that is not on this screen and is not on any
+        # screen: `bitrate.floor_kbps`, a number in the file. A sentence about a
+        # limit "you allow" that he has never been shown and cannot change reads
+        # as a control he has missed. So it says the figure instead, out of the
+        # settings that were loaded, and `load` sets it again every time.
+        self.link_help = _note("")
+        self.say_the_lowest_picture(self._loaded)
         radio_form.addRow("", self.link_help)
         layout.addWidget(radio_box)
 
@@ -1300,9 +1368,15 @@ class SettingsTab(QWidget):
         tools_buttons.setSpacing(SPACE_SNUG)
         self.test_button = QPushButton("Test the camera")
         self.test_button.clicked.connect(self.test_camera)
-        self.find_button = QPushButton("Find the right path")
+        # "path" here was the RTSP path - the `/ch2` on the end of the address.
+        # To the man reading this a path is a track, and the button sits two
+        # inches under a box labelled Address that is the thing it fills in.
+        self.find_button = QPushButton("Find the camera's address")
         self.find_button.clicked.connect(self.find_paths)
-        self.fit_button = QPushButton("Fit the camera to the link")
+        # "Fit the camera to the link" reads as an instruction about mounting
+        # one. It asks the camera for a smaller picture, which is what the tick
+        # box two boxes above already says in words.
+        self.fit_button = QPushButton("Turn the picture down to what the link can carry")
         self.fit_button.clicked.connect(self.fit_to_link)
         self.report_button = QPushButton("Save a report")
         self.report_button.clicked.connect(lambda: self.save_report())
@@ -1489,13 +1563,20 @@ class SettingsTab(QWidget):
     def detection_classify(self, value: bool) -> None:
         self._detection_classify.setChecked(bool(value))
 
-    @property
-    def min_travel_px(self) -> str:
-        return self._min_travel.text()
+    def say_the_lowest_picture(self, settings: Settings) -> None:
+        """Put the floor the camera is never asked to go below into words.
 
-    @min_travel_px.setter
-    def min_travel_px(self, value: str) -> None:
-        self._min_travel.setText(str(value))
+        The number itself, because the thing it used to name - "the lowest
+        picture you allow" - is not a control anywhere in this console. A
+        sentence that refers to a setting he cannot find is worse than one that
+        refers to nothing: he goes looking.
+        """
+        self.link_help.setText(
+            f"It never asks the camera for less than "
+            f"{_picture_rate_in_words(settings.bitrate.floor_kbps)}. If the link "
+            f"cannot carry even that, it says so in the Logs tab rather than "
+            f"spoiling the picture further."
+        )
 
     def credential_fields(self) -> list[QLineEdit]:
         """Every field holding a password. They are all plain text on purpose."""
@@ -1743,9 +1824,9 @@ class SettingsTab(QWidget):
         self.detection_enabled = settings.detection.enabled
         self.alarm_sound = settings.detection.alarm_sound
         self.detection_classify = settings.detection.classify
-        self.min_travel_px = (
-            "" if settings.detection.min_travel_px is None else str(settings.detection.min_travel_px)
-        )
+        # How far a thing must travel before it counts is not on this form any
+        # more; `self._loaded` above is what carries it across a save.
+        self.say_the_lowest_picture(settings)
         # The whole stream, not four of its fields: the detection choices belong
         # to the row that shows them, and a row that was handed only a name and
         # an address would write the defaults back over them at the next save.
@@ -1876,11 +1957,14 @@ class SettingsTab(QWidget):
             streams=[row.stream_values() for row in self._rows],
         )
         payload["detection"] = dict(payload.get("detection", {}))
+        # Three of the four. `min_travel_px` is not on this form and is not
+        # written here either, which is exactly how it survives: `payload` starts
+        # from the settings that were loaded, so whatever the file said about it
+        # is still in this dictionary and goes back out unchanged.
         payload["detection"].update(
             enabled=self.detection_enabled,
             alarm_sound=self.alarm_sound,
             classify=self.detection_classify,
-            min_travel_px=self.min_travel_px.strip() or None,
         )
         radio_host = self.radio_host.strip()
         payload["radio"] = dict(payload.get("radio", {}))
@@ -1952,7 +2036,8 @@ class SettingsTab(QWidget):
     def find_paths(self) -> None:
         self._start(
             self.find_button,
-            "Trying the common paths. This takes up to a minute.",
+            "Trying the addresses cameras usually answer on. This takes up to "
+            "a minute.",
             lambda tools, s: tools.find_paths(s),
         )
 
@@ -2240,9 +2325,15 @@ FIELD_LABELS = {
     "camera.password": "Password, under Camera",
     "camera.streams.*.name": "the name of a camera view",
     "camera.streams.*.url": "the address of a camera view",
-    "detection.min_travel_px": "Must travel at least (dots)",
+    # `detection.min_travel_px` was here. The rule is that a field on the form
+    # has its label in this table; the other half of the rule is that a field
+    # taken OFF the form loses it, because the sentence would then point at a
+    # box that is not there to be corrected. Nothing on the screen can put a bad
+    # value into it now - it comes off the file and goes back unchanged - and a
+    # file that has a bad one in it is refused by `load_settings`, in its own
+    # words, before this form is filled in at all.
     "storage.root": "Folder, under Storage",
-    "storage.budget_gb": "Budget (GB)",
+    "storage.budget_gb": "How much space VMD may use (GB)",
     "storage.retention_days": "Delete older than (days)",
     "radio.host": "Address, under Radio",
     "radio.username": "Username, under Radio",

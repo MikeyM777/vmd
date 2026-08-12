@@ -200,7 +200,15 @@ class LogsTab(QWidget):
             button.setCheckable(True)
             self._filter_buttons.addButton(button)
         self.all_button.setChecked(True)
-        self.follow_checkbox = QCheckBox("Follow")
+        # It said "Follow", which does not say what is being followed or what
+        # happens if it is not. It is a tick box, so it is a state and not an
+        # instruction: what it holds true is that the table stays at the newest
+        # line as lines arrive, rather than staying where he scrolled to.
+        self.follow_checkbox = QCheckBox("Keep showing the newest lines")
+        self.follow_checkbox.setToolTip(
+            "With this ticked the table follows the newest line as it arrives. "
+            "Untick it to stay where you have scrolled to while you read."
+        )
         self.follow_checkbox.setChecked(True)
         self.all_button.clicked.connect(self._show_all)
         self.warnings_button.clicked.connect(self._show_warnings_and_errors)

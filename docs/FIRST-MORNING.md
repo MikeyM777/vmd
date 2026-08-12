@@ -50,14 +50,15 @@ meaningless.
 
 **Passwords are shown, not masked.** That is deliberate and was asked for.
 
-While you are here, under **Storage**: press **Scan this PC**. It reads the
+While you are here, under **Storage**: press **Look at this drive and suggest a size**. It reads the
 drive the recordings folder is on — how big, how much is free, how much VMD is
-already using — and fills in a budget and an age rule that fit it, with a report
-you can read line by line. Those are suggestions and stay yours to change; the
-slider beside the budget says what the number means in the only unit anybody has
-an instinct for, which is how far back you can look. **Nothing is written until
-you press Save**, and lowering a budget below what is already on the disk warns
-you what it will delete and makes you press Save twice.
+already using — and fills in **How much space VMD may use (GB)** and an age rule
+that fit it, with a report you can read line by line. Those are suggestions and
+stay yours to change; the slider beside that box says what the number means in
+the only unit anybody has an instinct for, which is how far back you can look.
+**Nothing is written until you press Save**, and lowering it below what is
+already on the disk warns you what it will delete and makes you press Save
+twice.
 
 ---
 
@@ -170,7 +171,8 @@ If your camera is still sending 4K on that stream, expect trouble — the whole
 link is worth about 12 Mb/s (see §11), and that is the link, not the app. Two
 things address it, and underneath they are the same operation:
 
-- **Fit the camera to the link**, in the **Check the camera** box, reads what
+- **Turn the picture down to what the link can carry**, in the **Check the
+  camera** box, reads what
   the camera will accept and caps the encoder bitrate over ONVIF, by hand, when
   you press it. It now reads the value back afterwards and tells you when the
   camera answered yes and changed nothing.
@@ -244,9 +246,10 @@ Then the things that were missing entirely:
   measured and printed** beside the time. Check that number against what you can
   see. A moment only one camera recorded takes the other picture away and says
   which one.
-- **Save a clip.** Mark start, mark end, `Save it…`, and choose where it goes.
-  Somewhere outside the recordings folder — everything in there is on a clock,
-  because retention deletes the oldest footage to stay inside the budget, so the
+- **Save a clip.** Mark start, mark end, **Save the marked clip**, and choose
+  where it goes. Somewhere outside the recordings folder — everything in there
+  is on a clock, because retention deletes the oldest footage to stay inside the
+  space VMD is allowed, so the
   clip of the thing that mattered is already counting down if you leave it
   there. Nothing is re-encoded, so an hour is a disk-to-disk copy and
   what you keep is bit for bit what the camera sent. The cost is that the cut
@@ -262,15 +265,16 @@ about six months late.
 
 ## 9. Detection
 
-Turn it on for one stream — **Watch for movement** on that camera's card in
-Settings. It is off per view on purpose: aimed at a treeline with no ignored
+Turn it on for one stream — the tick on that camera's card in Settings, which
+says the view's own name: **Watch thermal for movement**. It is off per view on
+purpose: aimed at a treeline with no ignored
 patches set, it will alarm all day, and an operator who learns to ignore the
 alarm strip is worse off than one who never had it. Ticking it unfolds the rest
 of that view's settings; leaving it unticked keeps the card down to a name, an
 address and one tick.
 
 Under the cards, the **Movement detection** box has the master switch —
-**Watch for movement at all** — which is on. With it off nothing is watched
+**Watch for movement on any view** — which is on. With it off nothing is watched
 whatever the cards say, and recording carries on either way.
 
 Then press **Ignore parts of the picture** on that card. The panel it opens
@@ -369,7 +373,7 @@ answer. Send that sentence.
 
 Enter the same address, username and password in **Settings** and press Save.
 
-The status line at the bottom shows the signal at a glance. The **Link** panel
+The band across the top shows the signal at a glance. The **Link** panel
 in the Live tab's right-hand column is now three layers, and which one you are
 in is your choice:
 
@@ -432,7 +436,8 @@ At 88% the panel also says what that arithmetic implies: 10.9 Mb/s costing 88%
 of the air means the whole link is worth about 12 Mb/s. That is the number to
 hold against any question about a second stream or a 4K one — not the 194 Mb/s
 the radio estimates. The fix is the camera's bitrate — the automatic loop in
-§6, **Fit the camera to the link**, or the second stream turned off — not
+§6, **Turn the picture down to what the link can carry**, or the second stream
+turned off — not
 anything in this program.
 
 Those are the same two thresholds the automatic bitrate loop acts on. They are

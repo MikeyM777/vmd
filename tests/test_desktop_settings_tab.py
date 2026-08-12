@@ -579,13 +579,11 @@ def test_the_global_detection_switches_are_on_screen_and_saved(qtbot, tmp_path: 
     tab, path = build(qtbot, tmp_path)
     tab.detection_enabled = False
     tab.detection_classify = True
-    tab.min_travel_px = "12"
     assert tab.save() is True
 
     stored = load_settings(path).detection
     assert stored.enabled is False
     assert stored.classify is True
-    assert stored.min_travel_px == 12.0
 
 
 def test_the_global_detection_block_on_screen_is_the_one_from_the_file(
@@ -607,23 +605,83 @@ def test_the_global_detection_block_on_screen_is_the_one_from_the_file(
     assert stored.classify is True
 
 
-def test_a_blank_minimum_travel_follows_the_preset(qtbot, tmp_path: Path) -> None:
+def test_the_box_asking_how_far_a_thing_must_travel_is_off_the_form(
+    qtbot, tmp_path: Path
+) -> None:
+    """**Must travel at least (dots)** asked for a count of dots in the camera's
+    own frame - a quantity nobody can see, estimate or check - and its own
+    tooltip said "Leave it empty". Its placeholder sent him to "the touchiness
+    setting", which is called **How touchy:** and is folded away inside a camera
+    card until that view is being watched.
+
+    A control whose help tells you not to use it, by pointing at a control that
+    is not on the screen, is not a setting. It is a developer's escape hatch,
+    and it was the first thing on the movement box he met on a console nobody
+    had set up yet.
+
+    Off the form, not out of the settings: see the two tests below.
+    """
+    tab, _ = build(qtbot, tmp_path, _watched(detect=True))
+    tab.detection_enabled = True
+
+    assert not hasattr(tab, "min_travel_px"), "the box is back on the form"
+    for label in tab.findChildren(QLabel):
+        assert "must travel" not in label.text().lower(), label.text()
+    # And nothing left over pointing at it: no field on the form sends the
+    # reader to a control that is not there.
+    for field in tab.findChildren(QLineEdit):
+        assert "touchiness" not in field.placeholderText().lower()
+
+
+def test_a_number_the_form_no_longer_shows_still_survives_a_save(
+    qtbot, tmp_path: Path
+) -> None:
+    """Deleting a control is not deleting a setting. Somebody who has a number
+    in his file - and the detector, which still reads it - must not lose it
+    because the form stopped asking.
+
+    This is the same rule that keeps `reader` and the link ceiling alive across
+    a save, and it is the rule that makes taking a control off the screen a safe
+    thing to do at all.
+    """
     settings = Settings()
     settings.detection.min_travel_px = 20.0
     tab, path = build(qtbot, tmp_path, settings)
-    assert tab.min_travel_px == "20.0"
-    tab.min_travel_px = ""
+
+    # A save that touches everything else on the movement box.
+    tab.detection_enabled = False
+    tab.detection_classify = True
     assert tab.save() is True
-    assert load_settings(path).detection.min_travel_px is None
+    assert load_settings(path).detection.min_travel_px == 20.0
+
+    # And a second one, from the settings this save left behind: a value that
+    # survives one round trip and not two is a value that is lost tomorrow.
+    assert tab.save() is True
+    assert load_settings(path).detection.min_travel_px == 20.0
 
 
 def test_a_minimum_travel_the_model_rejects_is_reported_not_swallowed(
     qtbot, tmp_path: Path
 ) -> None:
-    tab, path = build(qtbot, tmp_path)
-    tab.min_travel_px = "-3"
-    assert tab.save() is False
-    assert "travel" in tab.message.lower()
+    """It can no longer be typed, so the only way a bad one arrives is in the
+    file - and that is still refused in words rather than swallowed.
+
+    The tab does not die of it: it is the only tool on this machine that can fix
+    that file, so the boxes fill with the standard settings and the reason goes
+    under them.
+    """
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"detection": {"enabled": True, "min_travel_px": -3}}),
+        encoding="utf-8",
+    )
+    tab = SettingsTab(settings_path=path)
+    qtbot.addWidget(tab)
+    tab.load()
+
+    said = tab.message.lower()
+    assert said.strip(), "a settings file the console refused, refused silently"
+    assert "settings file" in said and "save" in said, said
 
 
 # --- the rules that must not break -------------------------------------------
@@ -1119,7 +1177,23 @@ def test_the_link_switch_says_what_it_does_in_plain_words(qtbot, tmp_path: Path)
 # what is that?", "'Skyline and ignore...' - what is that?". Everything below is
 # one of those sentences turned into something that can fail.
 
-JARGON = ("yolo", "cnn", "classifier", "inference", "model", "sensor", "pixel")
+# Extended by the wording pass of 12 August: "budget" is a money word for a
+# question about disk space, "path" here only ever meant the `/ch2` on the end
+# of an RTSP address, and "go2rtc" is the name of a program he has never heard
+# of and cannot run. All three were on the screen; none of them is a word he
+# would use.
+JARGON = (
+    "yolo",
+    "cnn",
+    "classifier",
+    "inference",
+    "model",
+    "sensor",
+    "pixel",
+    "budget",
+    "path",
+    "go2rtc",
+)
 
 
 def test_the_reader_choice_is_off_the_screen_but_not_out_of_the_file(
@@ -1219,7 +1293,7 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     """
     tab, _ = build(qtbot, tmp_path, _two_watched_views())
     row = tab.stream_rows()[0]
-    assert row.detect_field.text() == "Watch for movement"
+    assert row.detect_field.text() == "Watch thermal for movement"
 
     said = tab.detect_help.text().lower()
     assert said.strip(), "the switch still explains itself only on hover"
@@ -1373,6 +1447,113 @@ def test_the_camera_tools_box_says_it_is_for_checking_the_camera(
     Camera one screen above."""
     tab, _ = build(qtbot, tmp_path)
     assert tab.tools_box.title() == "Check the camera"
+
+
+def test_no_two_switches_for_watching_movement_say_the_same_thing(
+    qtbot, tmp_path: Path
+) -> None:
+    """There were three of them on one screen and two were word for word
+    identical: **Watch for movement** on each camera card, and **Watch for
+    movement at all** below them - which is the card's sentence with two more
+    words on the end.
+
+    Nothing in either card switch said which head of the gimbal it belonged to,
+    so the only way to tell them apart was to look at which card they were
+    drawn on. The name is already on the card, in the box above the switch, and
+    it is the one thing that does tell them apart - so the switch says it.
+    """
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    thermal, visible = tab.stream_rows()
+
+    master = tab._detection_enabled.text()
+    assert master == "Watch for movement on any view"
+    assert thermal.detect_field.text() == "Watch thermal for movement"
+    assert visible.detect_field.text() == "Watch visible for movement"
+
+    said = [master, thermal.detect_field.text(), visible.detect_field.text()]
+    assert len(set(said)) == 3, said
+    # And not merely different: none of them is another one with words added,
+    # which is what made the old pair read as one control seen twice.
+    for one in said:
+        for other in said:
+            if one is not other:
+                assert not other.startswith(one), f"{other!r} begins with {one!r}"
+
+    # It follows the name as it is typed. A card whose name has just been
+    # corrected must not go on offering to watch the one it used to be.
+    thermal.name_field.setText("north fence")
+    assert thermal.detect_field.text() == "Watch north fence for movement"
+    # And before there is a name there is still a sentence.
+    thermal.name_field.setText("")
+    assert thermal.detect_field.text() == "Watch this view for movement"
+
+
+def test_the_room_on_the_drive_is_not_called_a_budget(qtbot, tmp_path: Path) -> None:
+    """"Budget" is a money word, and nothing here is money: he is being asked
+    how much of the drive VMD may fill with footage.
+
+    Nowhere on the tab, not just on the label - a note or a scan report still
+    calling it a budget names a box that is not called that any more, which is
+    the same defect one line along.
+    """
+    tab, _ = build(qtbot, tmp_path)
+    said = [label.text() for label in tab.findChildren(QLabel)]
+    assert "How much space VMD may use (GB)" in said, said
+    for text in said + [tab.budget_slider.toolTip()]:
+        assert "budget" not in text.lower(), text
+
+
+def test_the_scan_button_says_what_it_looks_at_and_what_it_gives_back(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Scan this PC" reads as a virus scan, or as a hunt for cameras. It reads
+    one drive and suggests two numbers."""
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.scan_button.text() == "Look at this drive and suggest a size"
+    assert "scan" not in tab.scan_button.text().lower()
+    # And the sentence under it does not send him looking for a button by a name
+    # that is no longer on it.
+    note = tab.storage_scan_note.text().lower()
+    assert "scan this pc" not in note, note
+    words = (tab.scan_button.text() + " " + tab.scan_button.toolTip()).lower()
+    assert not any(word in words for word in JARGON), words
+
+
+def test_the_link_note_gives_the_figure_rather_than_naming_a_hidden_setting(
+    qtbot, tmp_path: Path
+) -> None:
+    """It said "It never goes below the lowest picture you allow", and there is
+    no such control on this screen or on any screen - it is a number in the
+    file. A limit "you allow" that he has never been shown and cannot change is
+    worse than one that is not mentioned: he goes looking for it.
+
+    So it says the figure, and it says the figure that is actually in force.
+    """
+    settings = Settings()
+    settings.bitrate.floor_kbps = 2000
+    tab, _ = build(qtbot, tmp_path, settings)
+    said = tab.link_help.text()
+    assert "2 Mb/s" in said, said
+    assert "you allow" not in said.lower(), said
+
+    # Read off the file, not typed once into the source: a different floor says
+    # a different number.
+    settings.bitrate.floor_kbps = 1500
+    other, _ = build(qtbot, tmp_path / "other", settings)
+    assert "1.5 Mb/s" in other.link_help.text(), other.link_help.text()
+
+
+def test_the_camera_tool_buttons_say_what_they_do_to_the_camera(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Find the right path" - a path to him is a track; this one was the `/ch2`
+    on the end of an address. "Fit the camera to the link" reads as an
+    instruction about mounting one."""
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.find_button.text() == "Find the camera's address"
+    assert tab.fit_button.text() == "Turn the picture down to what the link can carry"
+    for button in (tab.test_button, tab.find_button, tab.fit_button, tab.report_button):
+        assert not any(word in button.text().lower() for word in JARGON), button.text()
 
 
 # ---------------------------------------------------------------- the storage
@@ -1568,7 +1749,7 @@ def test_a_number_that_will_not_parse_is_refused_by_the_name_on_the_form(
     """
     for field, typed, label in (
         ("retention_days", "two weeks", "Delete older than (days)"),
-        ("min_travel_px", "a lot", "Must travel at least (dots)"),
+        ("budget_gb", "as much as it likes", "How much space VMD may use (GB)"),
     ):
         tab, path = build(qtbot, tmp_path / field)
         tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])

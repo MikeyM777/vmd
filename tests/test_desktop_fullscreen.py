@@ -49,6 +49,7 @@ from vmd.desktop.live import (
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.window import ConsoleWindow
 from vmd.settings import Settings, StreamSettings, save_settings
+from vmd.streaming.go2rtc import NOT_INSTALLED
 
 # The screens this console is actually run on, as the number of logical pixels
 # a fullscreen window gets on each.
@@ -104,7 +105,7 @@ class FakeServices:
     def state(self) -> dict:
         return {
             "recording": False,
-            "streaming": "go2rtc is not installed - run install.bat",
+            "streaming": NOT_INSTALLED,
             "restarts": {},
             "detection": {
                 "enabled": True,

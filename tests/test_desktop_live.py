@@ -1586,6 +1586,28 @@ def test_the_alarm_strip_offers_to_show_the_footage(qtbot) -> None:
     assert [event.id for event in asked] == [2], "Show me asked for nothing"
 
 
+def test_the_two_buttons_on_the_alarm_strip_are_both_plain_words(qtbot) -> None:
+    """**Show me** and **Acknowledge**, side by side: one of them is how a man
+    speaks and the other is how a form does.
+
+    They are read together, in the second after being woken by a red strip, and
+    they are the two things he actually means - go and look, or I have seen it.
+    Pressing it still does not mean he has looked: the button that goes to the
+    footage is the other one, and that has not changed.
+    """
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+    moved(tab, movement(2, started=1_770_000_100.0))
+
+    assert tab._show_me.text() == "Show me"
+    assert tab.acknowledge_button.text() == "Seen it"
+
+    # And it is still the button that clears the strip.
+    assert tab.alarm_visible()
+    tab.acknowledge_button.click()
+    assert not tab.alarm_visible()
+    assert tab.outlined_stream() is None
+
+
 def test_show_me_does_not_take_the_alarm_down(qtbot) -> None:
     """Acknowledge is the only thing that clears the strip, and it still is.
 

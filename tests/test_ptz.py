@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import re
 import threading
 from collections.abc import Iterator
@@ -12,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from vmd.ptz.onvif import OnvifPtz, PtzError
-from vmd.ptz.service import PtzService
+from vmd.ptz.service import IN_WORDS, UNKNOWN_COMMAND, PtzService, in_words
 from vmd.settings import CameraSettings, Settings
 
 USER, PASSWORD = "admin", "s3cret"
@@ -218,6 +219,52 @@ def test_the_service_never_raises_at_the_console(camera: tuple[str, int]) -> Non
     assert result["ok"] is False
     assert result["error"]
     assert service.stop()["ok"] is False
+
+
+def test_a_camera_that_fails_is_logged_in_words_not_in_method_names(
+    camera: tuple[str, int], caplog
+) -> None:
+    """It logged "ptz zoom_poll failed unexpectedly", and that line lands in the
+    Logs tab - the tab he opens when something is already wrong, on a machine
+    with no terminal and no source to look `zoom_poll` up in.
+
+    Every command gets the treatment the zoom readback already had two lines
+    further down: what could not be done, said as a thing that happened to the
+    camera.
+    """
+    service = PtzService(Settings(camera=CameraSettings(host="192.0.2.99")))
+    with caplog.at_level(logging.WARNING):
+        service.move(1, 0, 0)
+        service.stop()
+        service.home()
+    said = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert "the camera would not move" in said, said
+    assert "the camera would not stop moving" in said, said
+    assert "the camera would not go back to where it starts" in said, said
+    # And not one of the names this file calls them by.
+    for name in ("zoom_poll", "zoom_hold", "ptz ", "unexpectedly"):
+        assert name not in said, said
+
+
+def test_every_camera_command_has_a_sentence_of_its_own() -> None:
+    """The sentences are looked up, never built from the command name: one
+    leaking through as "the camera would not zoom_hold" would be the same defect
+    wearing this fix's clothes.
+
+    So every command the sender knows how to send has to be in the table, and
+    anything else is answered by saying that rather than by printing a name.
+    """
+    for command in ("move", "stop", "home", "zoom", "zoom_hold", "zoom_poll"):
+        said = in_words(command)
+        assert said.startswith("the camera would not "), said
+        # No name from this file in it. "move" is also an English word and is
+        # allowed to be; "zoom_hold" is not, and neither is anything else with
+        # the shape of an identifier.
+        assert "_" not in said, said
+    assert in_words("wibble") == UNKNOWN_COMMAND
+    assert "wibble" not in in_words("wibble")
+    assert len(set(IN_WORDS.values())) == len(IN_WORDS), "two commands, one sentence"
 
 
 def test_no_camera_address_says_so(camera: tuple[str, int]) -> None:

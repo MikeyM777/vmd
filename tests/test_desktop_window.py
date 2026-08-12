@@ -16,6 +16,7 @@ from vmd.desktop.app import build_wiring, default_settings_path, pane_factory, p
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.window import ConsoleWindow
+from vmd.streaming.go2rtc import NOT_INSTALLED
 from vmd.settings import (
     CameraSettings,
     Settings,
@@ -275,8 +276,32 @@ def test_the_status_line_survives_services_that_will_not_answer(
     window, _ = build(qtbot, tmp_path, services=AngryServices())
     text = window.status_text()
     assert text
-    assert "could not" in text.lower()
+    assert "cannot see" in text.lower()
     window.heartbeat()
+
+
+def test_the_console_that_cannot_ask_itself_anything_says_so_in_his_words(
+    qtbot, tmp_path: Path
+) -> None:
+    """It said "the services could not be asked what they are doing".
+
+    "services" is what this source calls the recorder and the detector between
+    ourselves; he has never seen the word, and there is nothing on the screen
+    called that. And the sentence stopped without saying what to do, which on a
+    machine with one window, no terminal and no second computer is where the
+    sentence has to end.
+    """
+    window, _ = build(qtbot, tmp_path, services=AngryServices())
+    said = next(
+        words for _glance, words, state in window.status_parts() if state == "alarm"
+    )
+    assert said == "VMD cannot see its own recorder and detector. Restart VMD."
+    # The two parts that carry it: what is wrong, and the one thing he can do.
+    assert "recorder" in said and "detector" in said
+    assert "restart" in said.lower()
+    # And not one word out of the source.
+    for jargon in ("service", "state()", "exception", "heartbeat"):
+        assert jargon not in said.lower(), said
 
 
 # ----------------------------------------------------------- saving settings
@@ -977,7 +1002,7 @@ class SickServices(FakeServices):
     def state(self) -> dict:
         return {
             "recording": True,
-            "streaming": "go2rtc is not installed - run install.bat",
+            "streaming": NOT_INSTALLED,
             "restarts": {},
             "detection": {"enabled": True, "running": False, "reason": "not running"},
         }
@@ -1202,7 +1227,7 @@ def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
     window, _ = build(qtbot, tmp_path, services=SickServices())
     window.heartbeat()
     said = window.band.chips()
-    assert "streaming: go2rtc is not installed - run install.bat" in said
+    assert f"streaming: {NOT_INSTALLED}" in said
     # Detection is broken too, and gave up its sentence to the worse fault - but
     # what it fell back to is a word that says it is broken. It used to fall back
     # to its own name, which is the word for the healthy case: an alarm-red box
@@ -1212,7 +1237,7 @@ def test_a_fault_says_the_whole_sentence_the_footer_used_to_say(
     assert "detection: not running" not in said
     # And it did not give up its glyph or its colour.
     assert window.band.glyphs()[said.index("no detection")] == window.band.glyphs()[
-        said.index("streaming: go2rtc is not installed - run install.bat")
+        said.index(f"streaming: {NOT_INSTALLED}")
     ]
     # And the sentence in the band is a sentence the footer would have said, in
     # full - which is also where the one that stood down can still be read.
@@ -1249,7 +1274,7 @@ def test_the_band_gives_the_room_to_the_worst_fault(qtbot, tmp_path: Path) -> No
     # do about it. "NOT recording" is the symptom.
     named = [
         ("recording", "NOT recording", "alarm"),
-        ("streaming", "streaming: go2rtc is not installed - run install.bat", "alarm"),
+        ("streaming", f"streaming: {NOT_INSTALLED}", "alarm"),
         ("detection", "detection: not running", "alarm"),
     ]
     assert StatusBand.worst(named) == 1
@@ -1318,7 +1343,7 @@ def test_the_band_knows_which_of_its_chips_is_the_bad_one(qtbot, tmp_path: Path)
 
     sick, _ = build(qtbot, tmp_path / "ill", services=SickServices())
     states = dict((words, state) for _glance, words, state in sick.status_parts())
-    assert states["streaming: go2rtc is not installed - run install.bat"] == "alarm"
+    assert states[f"streaming: {NOT_INSTALLED}"] == "alarm"
 
 
 def test_detection_that_nobody_switched_on_is_not_drawn_as_a_fault(

@@ -178,6 +178,28 @@ def test_the_view_follows_new_lines_when_already_at_the_bottom(qtbot) -> None:
     assert "line 40" in tab.text_at(tab.row_count - 1)
 
 
+def test_the_follow_box_says_what_it_follows(qtbot) -> None:
+    """It said "Follow". Follow what, and what happens if it is not ticked?
+
+    It is a tick box, so what it carries is a state rather than an instruction,
+    and the state is that the table stays at the newest line as lines arrive
+    instead of staying where he has scrolled to.
+    """
+    tab = LogsTab(LogBuffer())
+    qtbot.addWidget(tab)
+
+    said = tab.follow_checkbox.text()
+    assert said == "Keep showing the newest lines"
+    assert said != "Follow"
+    # It names the thing it acts on - the lines in the table - and the tooltip
+    # says what unticking it buys, which is the half nobody could guess.
+    assert "lines" in said.lower()
+    assert "scroll" in tab.follow_checkbox.toolTip().lower()
+    # And it is still on to begin with, which is what a console nobody is
+    # sitting at wants.
+    assert tab.follow_checkbox.isChecked()
+
+
 def test_the_view_does_not_move_while_the_operator_has_scrolled_up(qtbot) -> None:
     buffer = LogBuffer(capacity=100)
     logger = logging.getLogger("vmd.test.follow.scrolled")
@@ -406,8 +428,8 @@ def test_everything_logged_before_the_window_existed_still_reaches_the_tab(
 ) -> None:
     """The buffer used to be attached inside ConsoleWindow.__init__, which runs
     after the services have been started. Everything they say while starting -
-    "adopted from an earlier run", "go2rtc is not installed - run install.bat",
-    "could not start the recorder" - went nowhere at all, and those are exactly
+    "adopted from an earlier run", "part of VMD is missing, so there are no
+    pictures", "could not start the recorder" - went nowhere at all, and those are exactly
     the messages this tab exists for on a machine with no terminal."""
     from vmd.desktop.app import start_logging
 

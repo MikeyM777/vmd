@@ -26,6 +26,39 @@ CLOSE_SECONDS = 2.0
 # the camera has gone quiet before the failure itself comes back.
 UNANSWERED_AFTER = 1.5
 
+# What each camera command was trying to do, in the words the Logs tab is read
+# in.
+#
+# It logged the method name: "ptz zoom_poll failed unexpectedly". The Logs tab
+# is the tab he opens when something is already wrong, on a machine with no
+# terminal and no source to look `zoom_poll` up in, and a line he cannot read is
+# a line that sends him to the phone. The same subsystem two lines below already
+# says "the camera would not say where the thermal zoom is"; this is that
+# sentence, for every command.
+#
+# The dictionary is the whole of it - no fallback prose is built from the
+# command name, because a name leaking through as "the camera would not
+# zoom_hold" would be the same defect wearing this fix's clothes.
+IN_WORDS = {
+    "move": "the camera would not move",
+    "stop": "the camera would not stop moving",
+    "home": "the camera would not go back to where it starts",
+    "zoom": "the camera would not zoom",
+    "zoom_hold": "the camera would not keep zooming",
+    "zoom_poll": "the camera would not say where its zoom is",
+}
+
+# When a command arrives that nothing here has a sentence for. It cannot happen
+# from the console - every caller is in this file - so it is a programming
+# fault, and the honest thing is to say that rather than to invent a sentence
+# about a camera.
+UNKNOWN_COMMAND = "the camera was asked for something VMD has no name for"
+
+
+def in_words(action: str) -> str:
+    """What a camera command was trying to do, for the operator to read."""
+    return IN_WORDS.get(action, UNKNOWN_COMMAND)
+
 
 class PtzService:
     """Wraps the camera connection with the two things the console needs:
@@ -120,10 +153,10 @@ class PtzService:
                 work()
                 return {"ok": True}
             except PtzError as exc:
-                logger.warning("ptz %s failed: %s", action, exc)
+                logger.warning("%s: %s", in_words(action), exc)
                 return {"ok": False, "error": str(exc)}
             except Exception as exc:  # noqa: BLE001 - the console outlives the camera
-                logger.exception("ptz %s failed unexpectedly", action)
+                logger.exception("%s", in_words(action))
                 return {"ok": False, "error": str(exc)}
 
     def encoders(self) -> dict:
@@ -626,7 +659,7 @@ class PtzCommands:
                 self._ptz.zoom_poll()
                 return {"ok": True}
         except Exception as exc:  # noqa: BLE001 - the console outlives the camera
-            logger.exception("ptz %s failed unexpectedly", kind)
+            logger.exception("%s", in_words(kind))
             return {"ok": False, "error": str(exc)}
         logger.error("%s: nothing knows how to send %s", self._name, command)
         return {"ok": False, "error": f"unknown camera command {kind}"}

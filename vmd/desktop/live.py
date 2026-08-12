@@ -995,7 +995,13 @@ class LiveTab(QWidget):
         self._show_me = QPushButton("Show me")
         self._show_me.clicked.connect(self.show_the_footage)
         row.addWidget(self._show_me)
-        acknowledge = QPushButton("Acknowledge")
+        # "Acknowledge" is a formal word standing next to a plain one, and the
+        # two buttons are read together: **Show me** and **Seen it** are the two
+        # things a man who has just been woken actually means. The method keeps
+        # its name - it is what the rest of the console calls this - and the
+        # button says what pressing it means.
+        self.acknowledge_button = QPushButton("Seen it")
+        acknowledge = self.acknowledge_button
         acknowledge.clicked.connect(self.acknowledge)
         row.addWidget(acknowledge)
         self._alarm.setVisible(False)

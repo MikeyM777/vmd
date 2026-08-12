@@ -254,6 +254,35 @@ def test_missing_binary_is_reported_not_crashed(tmp_path: Path) -> None:
     assert "install" in svc.status().reason
 
 
+def test_the_missing_server_is_named_as_part_of_vmd_not_as_go2rtc(
+    tmp_path: Path
+) -> None:
+    """This sentence goes on the band across the top of every tab, in a red box,
+    and it was "go2rtc is not installed - run install.bat".
+
+    Two things in it he has never heard of: the name of a program nobody told
+    him this console contains, and a file he cannot run - there is no terminal
+    on that laptop and install.bat is not on his desktop. To him this is one
+    program, so one part of it being missing is a broken install, and
+    reinstalling is both the only thing he can do and the right thing.
+    """
+    svc = Go2rtcService(
+        settings_with(("thermal", "rtsp://cam/t", True)),
+        config_path=tmp_path / "go2rtc.json",
+        binary=None,
+    )
+    svc.start()
+    said = svc.status().reason
+
+    assert said == "part of VMD is missing, so there are no pictures. Reinstall VMD."
+    # What it costs him, so the red box is not a mystery: no pictures.
+    assert "pictures" in said
+    # And the one thing he can do about it, said as an instruction.
+    assert "reinstall vmd" in said.lower()
+    for jargon in ("go2rtc", "install.bat", "binary", ".exe"):
+        assert jargon not in said.lower(), said
+
+
 def test_a_failed_spawn_does_not_raise(tmp_path: Path) -> None:
     """The console must survive anything the streaming server does."""
 

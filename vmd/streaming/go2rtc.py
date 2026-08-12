@@ -44,6 +44,20 @@ stream_logger = logging.getLogger("go2rtc")
 
 BINARY_NAMES = ("go2rtc.exe", "go2rtc")
 
+# Why there are no pictures when the streaming server is not on the disk at all.
+#
+# It said "go2rtc is not installed - run install.bat", which is two things the
+# man reading it has never heard of: the name of a program nobody told him this
+# console contains, and a file he has no way to run - there is no terminal on
+# that laptop, and it is not on his desktop either. This sentence goes on the
+# band across the top of every tab, in a red box, and it has to be the whole of
+# what he needs.
+#
+# "Part of VMD" and not "go2rtc" because go2rtc is our problem, not his: to him
+# this is one program, and one part of it not being there is a broken install.
+# Reinstalling is the only thing he can do about it, and it is the right thing.
+NOT_INSTALLED = "part of VMD is missing, so there are no pictures. Reinstall VMD."
+
 # The longest single line kept from go2rtc. Matches the limit the console puts
 # on the recorder and the detector, for the same reason.
 MAX_LINE_CHARS = 2000
@@ -821,7 +835,7 @@ class Go2rtcService:
         if self.running:
             reason = "streaming"
         elif self.binary is None:
-            reason = "go2rtc is not installed - run install.bat"
+            reason = NOT_INSTALLED
         elif not self.stream_names:
             reason = "no stream addresses set - enter them in Settings"
         elif held_back:
