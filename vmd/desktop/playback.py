@@ -1610,12 +1610,46 @@ class PlaybackTab(QWidget):
     # ---------------------------------------------------------- saving a clip
 
     def mark_the_start(self) -> None:
-        self.clip_from = self.playhead_time
+        """Where the clip begins - and nothing else moves.
+
+        Marking a start used to move the end. `sorted()` stood between these two
+        buttons and everything downstream of them, so the pair of marks was
+        re-read as "earliest, latest" every time it was used, and the words
+        START and END on the buttons meant nothing once the two crossed.
+
+        What that cost him: he watched to 12:10 and pressed **Mark end**. He
+        went back, found the moment he really wanted, 12:20, and pressed **Mark
+        start**. The console then saved 12:10 to 12:20 - ten minutes ENDING at
+        the moment he had just named as the beginning, which is the footage
+        before the thing he was trying to keep and none of the footage after it.
+        Nothing on the screen said so.
+
+        A start after the end does not mean "swap them", because he has just
+        said which is which. It means the end he marked is no longer an end, so
+        it goes, and the line under the bar says it went. The end is never
+        moved to a time he did not name.
+        """
+        when = self.playhead_time
+        self.clip_from = when
+        if when is not None and self.clip_to is not None and self.clip_to <= when:
+            self.clip_to = None
+            self._set_status(
+                "Marked the start. The end was before it, so it has gone - "
+                "play on to where the clip should stop and press Mark end."
+            )
         self._draw_marked_range()
         self._draw_controls()
 
     def mark_the_end(self) -> None:
-        self.clip_to = self.playhead_time
+        """Where the clip stops. The same rule, from the other side."""
+        when = self.playhead_time
+        self.clip_to = when
+        if when is not None and self.clip_from is not None and self.clip_from >= when:
+            self.clip_from = None
+            self._set_status(
+                "Marked the end. The start was after it, so it has gone - "
+                "go back to where the clip should begin and press Mark start."
+            )
         self._draw_marked_range()
         self._draw_controls()
 

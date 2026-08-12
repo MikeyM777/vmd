@@ -1934,6 +1934,90 @@ def test_marking_a_start_and_an_end_makes_a_range(qtbot, tmp_path: Path) -> None
         index.close()
 
 
+def test_marking_a_start_does_not_move_the_end(qtbot, tmp_path: Path) -> None:
+    """The exact sequence, and what it used to save.
+
+    He watches to 12:10 and presses **Mark end**. He goes back, finds the
+    moment he actually wants - 12:20 - and presses **Mark start**. `sorted()`
+    stood between these two buttons and everything downstream, so the pair was
+    re-read as "earliest, latest": the console saved 12:10 to 12:20. Ten
+    minutes ENDING at the moment he had just named as the beginning - the
+    footage before the thing he was keeping and none of the footage after it -
+    with nothing on the screen to say so.
+
+    The end may never be moved to a time he did not name. Here it is dropped,
+    because after a later start it is not an end any more.
+    """
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 600)
+        tab.mark_the_end()
+        assert tab.clip_to == pytest.approx(noon + 600)
+
+        tab.play_at_time(noon + 1200)
+        tab.mark_the_start()
+
+        assert tab.clip_from == pytest.approx(noon + 1200), "the start he asked for"
+        assert tab.clip_to != pytest.approx(noon + 1200), "his start became the end"
+        assert tab.clip_to is None, f"the end moved to {tab.clip_to}"
+        # And he is told, rather than left with a Save button that has quietly
+        # stopped working.
+        assert "end" in tab.status_text.lower(), tab.status_text
+        assert not tab.save_clip.isEnabled()
+    finally:
+        index.close()
+
+
+def test_marking_an_end_before_the_start_does_not_move_the_start(
+    qtbot, tmp_path: Path
+) -> None:
+    """The same rule from the other side, so neither button can reinterpret the
+    other one's mark."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 1200)
+        tab.mark_the_start()
+        tab.play_at_time(noon + 600)
+        tab.mark_the_end()
+
+        assert tab.clip_to == pytest.approx(noon + 600)
+        assert tab.clip_from is None, f"the start moved to {tab.clip_from}"
+        assert "start" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+def test_a_clip_saved_after_the_marks_crossed_is_the_one_he_marked(
+    qtbot, tmp_path: Path
+) -> None:
+    """The whole point of the two above: what ends up on the disk.
+
+    Marking end-then-a-later-start used to write the range BEFORE the start.
+    Now there is nothing to write until he marks an end after it, and when he
+    does, that is the range that is written.
+    """
+    folder = tmp_path / "keep"
+    folder.mkdir()
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.ask_for_folder = lambda: str(folder)
+        tab.run_ffmpeg = _pretend_ffmpeg
+
+        tab.play_at_time(noon + 600)
+        tab.mark_the_end()
+        tab.play_at_time(noon + 1200)
+        tab.mark_the_start()
+        assert tab.save_clip_now(wait=True) is None, "it saved the range he cancelled"
+
+        tab.play_at_time(noon + 1500)
+        tab.mark_the_end()
+        tab.save_clip_now(wait=True)
+        assert tab.clip_from == pytest.approx(noon + 1200)
+        assert tab.clip_to == pytest.approx(noon + 1500)
+    finally:
+        index.close()
+
+
 def test_nothing_can_be_saved_before_a_range_is_marked(qtbot, tmp_path: Path) -> None:
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:
