@@ -244,6 +244,28 @@ DRIFT_WORTH_SAYING = 0.5
 # something the operator was looking at is still on the bar afterwards.
 PAN_FRACTION = 1 / 3
 
+# The two brackets that hold the marked clip, and how far from one the pointer
+# still means it.
+#
+# Drawn as brackets rather than as lines, and that is the only thing keeping
+# them apart from the playhead: both are drawn in the accent, because both are
+# things the operator takes hold of, and this design allows amber for nothing
+# else. A bare amber line at the start of the clip beside a bare amber line at
+# the playhead is two controls with one appearance. The feet turn each one into
+# a shape that says which side of it the footage is on.
+#
+# The grab is deliberately much wider than the drawing, which is the opposite of
+# the rule the MOVEMENT marks follow above. A movement mark competes with the
+# plain time under the pointer, so its target is kept down to the size of the
+# red he is aiming at. A bracket competes with nothing: everywhere on this bar
+# that is not within a few pixels of a bracket means "seek", and there are at
+# most two brackets on it. Sixteen pixels either side is about four millimetres
+# on his panel - what a hand on a laptop trackpad can hit without aiming, which
+# is the only kind of aiming this console may require.
+BRACKET_WIDTH = 5
+BRACKET_FOOT = 9
+BRACKET_GRAB_PIXELS = 16
+
 # The ceiling on `save_clip_now(wait=True)`, which is the path the tests take.
 #
 # Deliberately shorter than this suite's own 30 s per-test limit, and nothing to
@@ -274,6 +296,8 @@ class TimelineBar(QWidget):
         self._marked: tuple[float, float] | None = None
         self._ticks: list[tuple[float, str]] = []
         self._pressed = False
+        # Which bracket the pointer has hold of, if it has hold of one.
+        self._grabbed: str | None = None
         self.setMinimumHeight(BAR_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -309,7 +333,14 @@ class TimelineBar(QWidget):
         self.update()
 
     def set_marked_range(self, marked: tuple[float, float] | None) -> None:
-        """The piece he has marked to save, as fractions of the window."""
+        """The piece he has marked to save, as fractions of the window.
+
+        NOT clamped to the window by the caller, and it matters: a bracket is a
+        handle, and a handle drawn at the edge of the bar for a mark that is
+        really two hours off the left of it is a control that moves the wrong
+        thing when it is grabbed. Outside 0..1 the scrim still knows what to
+        dim; the bracket is simply not drawn.
+        """
         self._marked = marked
         self.update()
 
@@ -390,13 +421,74 @@ class TimelineBar(QWidget):
             painter.fillRect(0, 0, start, room, scrim)
             painter.fillRect(end, 0, width - end, room, scrim)
 
+            # And the handles, over the scrim so they are never dimmed - a
+            # control he cannot see is a control he cannot reach for.
+            handle = QColor(PALETTE["accent"])
+            if 0.0 <= left <= 1.0:
+                self._draw_bracket(painter, start, room, inward=1, colour=handle)
+            if 0.0 <= right <= 1.0:
+                self._draw_bracket(painter, end, room, inward=-1, colour=handle)
+
         if self._playhead is not None:
             x = int(round(self._playhead * width)) - PLAYHEAD_WIDTH // 2
             x = min(max(x, 0), max(width - PLAYHEAD_WIDTH, 0))
             painter.fillRect(x, 0, PLAYHEAD_WIDTH, height, QColor(PALETTE["accent"]))
         painter.end()
 
+    @staticmethod
+    def _draw_bracket(painter, x: int, room: int, inward: int, colour: QColor) -> None:
+        """One `[` or one `]`, with its feet pointing at the footage it keeps.
+
+        `inward` is +1 for the start of the clip and -1 for the end. The upright
+        stands just inside the clip either way, so the two brackets face each
+        other and the marked piece is between them rather than under one of them.
+
+        Keyed out in the page colour first. A bracket is amber and it stands
+        exactly where the bar changes from dimmed to bright, so on one side of
+        it is knocked-back green and on the other is full green - and amber on
+        green is the pair this tab has already lost one control to. The keyline
+        means the shape is read against black at both edges whatever the
+        coverage under it is doing.
+        """
+        upright = x if inward > 0 else x - BRACKET_WIDTH
+        foot = upright if inward > 0 else upright + BRACKET_WIDTH - BRACKET_FOOT
+        key = QColor(PALETTE["bg"])
+        for edge, shape in (
+            (1, (upright, 0, BRACKET_WIDTH, room)),
+            (1, (foot, 0, BRACKET_FOOT, BRACKET_WIDTH)),
+            (1, (foot, room - BRACKET_WIDTH, BRACKET_FOOT, BRACKET_WIDTH)),
+        ):
+            left, top, wide, tall = shape
+            painter.fillRect(left - edge, top - edge, wide + 2 * edge, tall + 2 * edge, key)
+        painter.fillRect(upright, 0, BRACKET_WIDTH, room, colour)
+        painter.fillRect(foot, 0, BRACKET_FOOT, BRACKET_WIDTH, colour)
+        painter.fillRect(foot, room - BRACKET_WIDTH, BRACKET_FOOT, BRACKET_WIDTH, colour)
+
     # ------------------------------------------------------------ the pointer
+
+    def bracket_near(self, x: float) -> str | None:
+        """Which bracket a press at this pixel means, or None for none of them.
+
+        Nearest wins, and the tie between two brackets a few pixels apart - a
+        clip of a couple of seconds at ten-minute zoom - is broken by which side
+        of the clip the pointer is on, so a short clip can still be stretched
+        from either end rather than only from whichever `min` happens to answer.
+        """
+        if self._marked is None:
+            return None
+        width = max(self.width(), 1)
+        left, right = self._marked
+        reach = float("inf")
+        which: str | None = None
+        for name, fraction in (("start", left), ("end", right)):
+            if not 0.0 <= fraction <= 1.0:
+                continue
+            away = abs(x - fraction * width)
+            nearer = away < reach
+            tied = away == reach
+            if nearer or (tied and name == "end" and x > (left + right) / 2 * width):
+                reach, which = away, name
+        return which if reach <= BRACKET_GRAB_PIXELS else None
 
     def _fraction(self, position: QPoint | float) -> float:
         width = max(self.width(), 1)
@@ -406,6 +498,16 @@ class TimelineBar(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt's name
         width = max(self.width(), 1)
         fraction = self._fraction(event.position().x())
+        # A bracket first, and then it is a drag of that bracket and nothing
+        # else. It must not also seek: taking hold of the end of a clip is not
+        # a request to go and watch that moment, and answering it as one would
+        # move the picture every time he adjusted the clip.
+        grabbed = self.bracket_near(event.position().x())
+        if grabbed is not None:
+            self._grabbed = grabbed
+            self._tab.drag_bracket(grabbed, fraction)
+            event.accept()
+            return
         self._pressed = True
         # Seeking on the press rather than on the release, so a plain click is
         # answered the instant it happens. The width goes with the fraction
@@ -417,17 +519,29 @@ class TimelineBar(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt's name
         fraction = self._fraction(event.position().x())
-        if self._pressed:
+        if self._grabbed is not None:
+            self._tab.drag_bracket(self._grabbed, fraction)
+        elif self._pressed:
             # Moved, not sought. A drag across an hour is hundreds of moves, and
             # a seek on each of them is a player asked to open a file five
             # hundred times.
             self._tab.drag_to(fraction)
         else:
+            # The cursor is the only thing that says a bracket can be taken
+            # hold of before he has tried it.
+            self.setCursor(
+                Qt.CursorShape.SplitHCursor
+                if self.bracket_near(event.position().x()) is not None
+                else Qt.CursorShape.PointingHandCursor
+            )
             self._tab.hover_at(fraction)
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt's name
-        if self._pressed:
+        if self._grabbed is not None:
+            self._grabbed = None
+            self._tab.end_bracket_drag()
+        elif self._pressed:
             self._pressed = False
             self._tab.end_drag(self._fraction(event.position().x()))
         event.accept()
@@ -1691,14 +1805,54 @@ class PlaybackTab(QWidget):
         self._draw_marked_range()
         self._draw_controls()
 
+    def drag_bracket(self, which: str, fraction: float) -> None:
+        """Move one end of the marked clip with the mouse, and only that end.
+
+        What he asked for: adjust the clip on the bar he is looking at instead
+        of playing to a moment and pressing a button for each end. The buttons
+        stay - "i rather buttons" is the standing instruction on this tab, and
+        a mark he can only make by dragging is a mark somebody with a trackpad
+        cannot make accurately at all.
+
+        The far end is not touched, and a bracket dragged past it stops there
+        rather than swapping with it. Swapping is what `Mark start` used to do
+        and it is worse with a mouse than with a button: half way through one
+        gesture the thing under his finger would silently become the other end
+        of the clip, and it would keep following him with the range inside out.
+
+        The picture does not move either. Trimming a clip is not a request to
+        go and watch that second, and seeking on every mouse move across the
+        bar is a player asked to open a file five hundred times.
+        """
+        if self.clip_from is None or self.clip_to is None:
+            return
+        when = time_at(fraction, self.view_start, self.view_end)
+        if which == "start":
+            self.clip_from = min(when, self.clip_to)
+        else:
+            self.clip_to = max(when, self.clip_from)
+        self._draw_marked_range()
+        self._draw_controls()
+        # The time he is dragging to, in words, beside the clock. Without it he
+        # is aiming at a pixel: one of them is 72 seconds of a whole day.
+        self.hover_at(fraction)
+
+    def end_bracket_drag(self) -> None:
+        self.hover_at(None)
+
     def _draw_marked_range(self) -> None:
         if self.clip_from is None or self.clip_to is None:
             self.bar.set_marked_range(None)
             return
         span = max(self.view_end - self.view_start, 1.0)
         first, last = sorted((self.clip_from, self.clip_to))
-        left = min(max((first - self.view_start) / span, 0.0), 1.0)
-        right = min(max((last - self.view_start) / span, 0.0), 1.0)
+        # Not clamped to the window. The bar clamps what it dims, and needs the
+        # real fractions to know whether each bracket is on screen at all: a
+        # handle drawn at the edge of the bar for a mark that is two hours off
+        # the left of it is a control that moves the wrong thing when it is
+        # grabbed.
+        left = (first - self.view_start) / span
+        right = (last - self.view_start) / span
         self.bar.set_marked_range((left, right))
 
     def _ask_for_folder(self) -> str:

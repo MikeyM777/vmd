@@ -2121,6 +2121,207 @@ def _reddest(image, around: int):
     return best
 
 
+# ------------------------------------------------- the clip, adjusted by hand
+#
+# "he wants to adjust the clip visually with the mouse". The brackets are an
+# addition to Mark start and Mark end and never a replacement: "i rather
+# buttons" is the standing instruction on this tab, and a mark that can only be
+# made by dragging is a mark somebody on a trackpad cannot place accurately.
+
+
+def a_marked_clip(qtbot, tmp_path: Path, first: float = 0.40, last: float = 0.70):
+    """A whole day recorded, a clip marked across the middle of it, and the bar
+    at a known width so a pixel is a known moment."""
+    tab, pane, index, start, span = a_fully_recorded_day(qtbot, tmp_path)
+    tab.play_at_time(start + span * first)
+    tab.mark_the_start()
+    tab.play_at_time(start + span * last)
+    tab.mark_the_end()
+    tab.bar.resize(1000, 60)
+    return tab, pane, index, start, span
+
+
+def press(qtbot, bar, x: int) -> None:
+    qtbot.mousePress(bar, Qt.MouseButton.LeftButton, pos=QPoint(x, 20))
+
+
+def drag(qtbot, bar, to: int) -> None:
+    qtbot.mouseMove(bar, QPoint(to, 20))
+
+
+def let_go(qtbot, bar, x: int) -> None:
+    qtbot.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=QPoint(x, 20))
+
+
+def test_the_end_bracket_can_be_dragged_and_takes_only_the_end(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path)
+    try:
+        was = tab.clip_from
+        press(qtbot, tab.bar, 700)
+        drag(qtbot, tab.bar, 600)
+        let_go(qtbot, tab.bar, 600)
+
+        assert tab.clip_from == pytest.approx(was), "the start moved with the end"
+        assert tab.clip_to == pytest.approx(start + span * 0.60, abs=1.0)
+    finally:
+        index.close()
+
+
+def test_the_start_bracket_can_be_dragged_and_takes_only_the_start(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path)
+    try:
+        was = tab.clip_to
+        press(qtbot, tab.bar, 400)
+        drag(qtbot, tab.bar, 250)
+        let_go(qtbot, tab.bar, 250)
+
+        assert tab.clip_to == pytest.approx(was), "the end moved with the start"
+        assert tab.clip_from == pytest.approx(start + span * 0.25, abs=1.0)
+    finally:
+        index.close()
+
+
+def test_dragging_the_start_past_the_end_stops_there_rather_than_swapping(
+    qtbot, tmp_path: Path
+) -> None:
+    """Swapping is what Mark start used to do, and it is worse with a mouse.
+
+    Half way through one gesture the thing under his finger would silently
+    become the other end of the clip, and then keep following him with the
+    range inside out.
+    """
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path)
+    try:
+        end_was = tab.clip_to
+        press(qtbot, tab.bar, 400)
+        drag(qtbot, tab.bar, 950)  # well past the end bracket at 700
+        let_go(qtbot, tab.bar, 950)
+
+        assert tab.clip_to == pytest.approx(end_was), "the end was pushed along"
+        assert tab.clip_from == pytest.approx(end_was), "the start went past the end"
+        assert tab.clip_from <= tab.clip_to
+    finally:
+        index.close()
+
+
+# How far from a bracket a hand on a trackpad may land and still mean it.
+#
+# A number written here rather than read out of the module under test, and that
+# is the whole value of it: a test that misses by BRACKET_GRAB_PIXELS moves with
+# the constant, so it passes against a grab of two pixels as happily as against
+# a generous one. It was written that way first and a mutation walked through
+# it. Twelve logical pixels is about three millimetres on his panel.
+A_HAND_MISSES_BY = 12
+
+
+def test_a_bracket_is_caught_by_a_hand_that_misses_it(qtbot, tmp_path: Path) -> None:
+    """A trackpad, not a precision tool. The grab is much wider than the
+    drawing, which is the opposite of the rule the movement marks follow - a
+    movement mark competes with the plain time under the pointer and a bracket
+    competes with nothing.
+    """
+    from vmd.desktop.playback import BRACKET_GRAB_PIXELS, BRACKET_WIDTH
+
+    assert BRACKET_GRAB_PIXELS >= A_HAND_MISSES_BY > BRACKET_WIDTH
+
+    for miss in (-A_HAND_MISSES_BY, A_HAND_MISSES_BY):
+        where = tmp_path / f"miss{abs(miss)}{'left' if miss < 0 else 'right'}"
+        where.mkdir()
+        tab, pane, index, start, span = a_marked_clip(qtbot, where)
+        try:
+            press(qtbot, tab.bar, 700 + miss)
+            drag(qtbot, tab.bar, 600)
+            let_go(qtbot, tab.bar, 600)
+            assert tab.clip_to == pytest.approx(start + span * 0.60, abs=1.0), (
+                f"a press {miss} px from the bracket did not take hold of it"
+            )
+        finally:
+            index.close()
+
+
+def test_a_press_well_away_from_a_bracket_is_still_a_seek(
+    qtbot, tmp_path: Path
+) -> None:
+    """The bar is a timeline first. Marking a clip may not take the click that
+    plays a moment away from the rest of it."""
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path)
+    try:
+        was = (tab.clip_from, tab.clip_to)
+        press(qtbot, tab.bar, 550)
+        let_go(qtbot, tab.bar, 550)
+        assert (tab.clip_from, tab.clip_to) == was
+        assert tab.playhead_time == pytest.approx(start + span * 0.55, abs=1.0)
+    finally:
+        index.close()
+
+
+def test_taking_hold_of_a_bracket_does_not_move_the_picture(
+    qtbot, tmp_path: Path
+) -> None:
+    """Trimming a clip is not a request to go and watch that second, and a seek
+    on every mouse move across the bar is a player asked to open a file five
+    hundred times."""
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path)
+    try:
+        # Left somewhere the bracket is NOT, which is the whole test: marking
+        # the clip leaves the playhead on the end of it, and a press on the end
+        # bracket that seeks would then seek to where the clock already was.
+        tab.play_at_time(start + span * 0.20)
+        standing = tab.playhead_time
+        restarts = pane.restarts
+        press(qtbot, tab.bar, 700)
+        for x in range(690, 600, -10):
+            drag(qtbot, tab.bar, x)
+        let_go(qtbot, tab.bar, 600)
+
+        assert tab.playhead_time == pytest.approx(standing), "the clock moved"
+        assert pane.restarts == restarts, "the player was asked to reopen"
+    finally:
+        index.close()
+
+
+def test_a_mark_off_the_side_of_the_window_has_no_bracket_to_grab(
+    qtbot, tmp_path: Path
+) -> None:
+    """A handle drawn at the edge of the bar for a mark that is really hours
+    off the left of it is a control that moves the wrong thing when it is
+    taken hold of."""
+    tab, pane, index, start, span = a_marked_clip(qtbot, tmp_path, first=0.10)
+    try:
+        tab.play_at_time(start + span * 0.70)
+        tab.set_zoom("1 hour")  # an hour around 16:48; the start is at 02:24
+        tab.bar.resize(1000, 60)
+        assert tab.bar.bracket_near(0) is None
+        assert tab.bar.bracket_near(3) is None
+
+        was = tab.clip_from
+        press(qtbot, tab.bar, 2)
+        let_go(qtbot, tab.bar, 2)
+        assert tab.clip_from == pytest.approx(was), "the edge of the bar moved a mark"
+    finally:
+        index.close()
+
+
+def test_the_two_mark_buttons_still_work_beside_the_brackets(
+    qtbot, tmp_path: Path
+) -> None:
+    """The brackets are an addition. "i rather buttons"."""
+    tab, pane, index, start, span = a_fully_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 60)
+        tab.mark_start.click()
+        tab.play_at_time(start + 180)
+        tab.mark_end.click()
+        assert tab.clip_from == pytest.approx(start + 60)
+        assert tab.clip_to == pytest.approx(start + 180)
+    finally:
+        index.close()
+
+
 def test_nothing_can_be_saved_before_a_range_is_marked(qtbot, tmp_path: Path) -> None:
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:
