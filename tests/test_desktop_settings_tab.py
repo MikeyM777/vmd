@@ -663,6 +663,9 @@ class _FakeMask:
         )
         self._shapes = list(shapes)
         self.accepted = True
+        # The size of the picture he drew on. `(0, 0)` when there was none,
+        # which is what the real dialog answers then.
+        self.size = (1920, 1080)
         # What the operator draws while it is open, which is the only moment he
         # can: `exec` does not come back until the dialog is closed.
         self.draws: list = []
@@ -674,8 +677,11 @@ class _FakeMask:
     def shapes(self):
         return self._shapes
 
+    def frame_size(self):
+        return self.size
 
-def _with_a_fake_mask(monkeypatch, accepted: bool = True, draws=()):
+
+def _with_a_fake_mask(monkeypatch, accepted: bool = True, draws=(), size=(1920, 1080)):
     import vmd.desktop.mask as mask
 
     _FakeMask.opened = []
@@ -685,6 +691,7 @@ def _with_a_fake_mask(monkeypatch, accepted: bool = True, draws=()):
         dialog = _FakeMask(frame, shapes, problem, parent)
         dialog.accepted = accepted
         dialog.draws = [list(shape) for shape in draws]
+        dialog.size = size
         made.append(dialog)
         return dialog
 
@@ -745,6 +752,74 @@ def test_what_was_drawn_on_the_picture_is_what_the_form_holds(
     ]
 
 
+def test_the_size_of_the_picture_he_drew_on_is_saved_with_the_area(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """The points are pixels with no scale of their own, and the stream's size
+    is not fixed: it is a setting on the camera that this console has a button
+    for, two boxes further down the same page.
+
+    Trace a band over the treeline on a 1920x1080 still, drop the camera to
+    1280x720, and every point lands a third too far right and a third too low.
+    Every one of them is still inside the frame, so nothing is clipped and
+    nothing complains - the mask covers sky and the treeline is watched again.
+    The first anybody knows is a night of alarms nobody can explain.
+    """
+    _with_a_fake_mask(
+        monkeypatch, draws=[[(10, 20), (110, 20), (110, 90)]], size=(1920, 1080)
+    )
+    tab = _tab_with_a_camera(qtbot, tmp_path)
+    row = tab.stream_rows()[0]
+
+    tab.open_picker(row)
+    assert row.frame_sizes() == [(1920, 1080)]
+    assert tab.save() is True, tab.message
+
+    stored = load_settings(tmp_path / "settings.json").camera.streams[0].ignore_shapes
+    assert [(sh.frame_w, sh.frame_h) for sh in stored] == [(1920, 1080)]
+    assert [sh.as_tuples() for sh in stored] == [[(10, 20), (110, 20), (110, 90)]]
+
+
+def test_an_area_drawn_before_the_size_was_kept_is_left_exactly_as_it_is(
+    qtbot, tmp_path: Path
+) -> None:
+    """Zero is the "not recorded" value. Those are used as they are, which is
+    what they have always done - the guess cannot be improved on, and refusing
+    them would silently unmask a treeline somebody drew last week."""
+    from vmd.settings import IgnoreShape
+
+    settings = _watched(
+        detect=True, ignore_shapes=[IgnoreShape(points=[(1, 2), (30, 2), (30, 40)])]
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+    row = tab.stream_rows()[0]
+    assert row.frame_sizes() == [(0, 0)]
+
+    assert tab.save() is True
+    stored = load_settings(path).camera.streams[0].ignore_shapes
+    assert [(sh.frame_w, sh.frame_h) for sh in stored] == [(0, 0)]
+    assert [sh.as_tuples() for sh in stored] == [[(1, 2), (30, 2), (30, 40)]]
+
+
+def test_a_size_already_on_a_shape_survives_a_load_and_a_save(
+    qtbot, tmp_path: Path
+) -> None:
+    from vmd.settings import IgnoreShape
+
+    settings = _watched(
+        detect=True,
+        ignore_shapes=[
+            IgnoreShape(points=[(1, 2), (30, 2), (30, 40)], frame_w=1280, frame_h=720)
+        ],
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+    assert tab.stream_rows()[0].frame_sizes() == [(1280, 720)]
+    assert tab.save() is True
+
+    stored = load_settings(path).camera.streams[0].ignore_shapes
+    assert [(sh.frame_w, sh.frame_h) for sh in stored] == [(1280, 720)]
+
+
 def test_closing_the_drawing_tool_without_using_it_changes_nothing(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
@@ -779,6 +854,70 @@ def test_a_camera_that_is_down_still_opens_the_tool_and_says_why(
     handed = _FakeMask.opened[0]
     assert "Nothing answered" in handed["problem"], handed["problem"]
     assert handed["shapes"] == [[(1, 2), (3, 4), (5, 6)]]
+
+
+def test_the_real_drawing_tool_hands_back_the_size_it_drew_at(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """The one test here that uses the real `MaskDialog` rather than a stand-in.
+
+    Everything above pins what this tab does with the answer; this pins that the
+    two halves still fit together - that the dialog takes the picture and the
+    areas in the order they are handed over, and that `frame_size` really is the
+    size of the picture rather than of the widget it was drawn in.
+
+    `exec` is replaced and nothing is shown. This console runs on a laptop
+    somebody is watching, and a modal that appears during a test run is a modal
+    in front of the operator.
+    """
+    from PySide6.QtCore import QBuffer, QByteArray
+    from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter
+
+    import vmd.desktop.mask as mask
+
+    picture = QImage(1920, 1080, QImage.Format.Format_RGB32)
+    painter = QPainter(picture)
+    # A gradient, not a flat fill: a rectangle of one colour is what a
+    # half-decoded first frame off a live stream looks like, and the dialog is
+    # right to refuse one.
+    sky = QLinearGradient(0, 0, 0, 1080)
+    sky.setColorAt(0.0, QColor(20, 24, 32))
+    sky.setColorAt(1.0, QColor(190, 195, 205))
+    painter.fillRect(0, 0, 1920, 1080, sky)
+    painter.end()
+    # Held in a name: a QByteArray passed straight into QBuffer is a Python
+    # temporary, and Qt keeps the pointer after Python has freed it.
+    store = QByteArray()
+    buffer = QBuffer(store)
+    buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+    picture.save(buffer, "PNG")
+
+    built: list = []
+    real = mask.MaskDialog
+
+    def build(frame, shapes, problem="", parent=None):
+        dialog = real(frame, shapes, problem=problem, parent=parent)
+        qtbot.addWidget(dialog)
+        dialog.exec = lambda: 1  # accepted, and never shown
+        built.append(dialog)
+        return dialog
+
+    monkeypatch.setattr(mask, "MaskDialog", build)
+    tab = _tab_with_a_camera(
+        qtbot, tmp_path, grab=lambda settings, stream: bytes(store)
+    )
+    row = tab.stream_rows()[0]
+    row.set_shapes([[(10, 20), (110, 20), (110, 90)]], 640, 360)
+
+    tab.open_picker(row)
+
+    assert len(built) == 1
+    assert built[0].shapes() == [[(10, 20), (110, 20), (110, 90)]], "it lost them"
+    # The picture's own size, not the widget's.
+    assert row.frame_sizes() == [(1920, 1080)], row.frame_sizes()
+    assert tab.save() is True, tab.message
+    stored = load_settings(tmp_path / "settings.json").camera.streams[0].ignore_shapes
+    assert [(sh.frame_w, sh.frame_h) for sh in stored] == [(1920, 1080)]
 
 
 def test_a_stream_with_no_name_is_told_rather_than_asked_of_the_camera(

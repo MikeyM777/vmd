@@ -426,8 +426,22 @@ class StreamRowWidget(QFrame):
         # `_base`, like every other field this form has stopped showing. The
         # detector still honours them; converting them here would be this form
         # rewriting a setting the operator never touched.
-        self._shapes: list[list[tuple[int, int]]] = [
-            shape.as_tuples() for shape in stream.ignore_shapes
+        # Each area is its points AND the size of the picture they were drawn
+        # on. The size is not decoration: the points are pixels with no scale of
+        # their own, and the stream's size is an ONVIF setting on the camera
+        # that this console has a button for. A band traced over the treeline on
+        # a 1920x1080 still and applied to a 1280x720 stream is entirely inside
+        # the frame, a third too far right and a third too low - so nothing is
+        # clipped, nothing complains, and the mask covers sky while the treeline
+        # is watched again. `vmd/detect/mask.py` scales from this; without it
+        # there is nothing to scale from.
+        self._shapes: list[dict] = [
+            {
+                "points": shape.as_tuples(),
+                "frame_w": int(shape.frame_w),
+                "frame_h": int(shape.frame_h),
+            }
+            for shape in stream.ignore_shapes
         ]
         self._say_how_many_areas()
 
@@ -526,12 +540,34 @@ class StreamRowWidget(QFrame):
         self.sensitivity_field.setCurrentIndex(1)  # normal
 
     def shapes(self) -> list[list[tuple[int, int]]]:
-        """The areas drawn on this view, as points. Never words, never numbers."""
-        return [list(shape) for shape in self._shapes]
+        """The areas drawn on this view, as points. Never words, never numbers.
 
-    def set_shapes(self, shapes) -> None:
+        Points only, because that is what the drawing tool takes: it is handed
+        what is already on this view so he can rub one out, and it draws them on
+        whatever picture it has just fetched. The size each one was drawn at is
+        this row's business and `stream_values` writes it out.
+        """
+        return [list(shape["points"]) for shape in self._shapes]
+
+    def frame_sizes(self) -> list[tuple[int, int]]:
+        """The picture size recorded against each area, in the same order."""
+        return [(shape["frame_w"], shape["frame_h"]) for shape in self._shapes]
+
+    def set_shapes(self, shapes, frame_w: int = 0, frame_h: int = 0) -> None:
+        """Replace the areas, recording what size of picture they were drawn on.
+
+        `(0, 0)` is the "not recorded" value and is what a shape written before
+        the size was kept carries. Those are used exactly as they are, which is
+        what they have always done - the guess cannot be improved on, and
+        refusing them would silently unmask a treeline.
+        """
         self._shapes = [
-            [(int(x), int(y)) for x, y in shape] for shape in shapes
+            {
+                "points": [(int(x), int(y)) for x, y in shape],
+                "frame_w": int(frame_w),
+                "frame_h": int(frame_h),
+            }
+            for shape in shapes
         ]
         self._say_how_many_areas()
 
@@ -615,9 +651,7 @@ class StreamRowWidget(QFrame):
             detect=self.detect_field.isChecked(),
             ptz_profile=self.chosen_lens(),
             sensitivity=self.sensitivity(),
-            ignore_shapes=[
-                {"points": [list(point) for point in shape]} for shape in self.shapes()
-            ],
+            ignore_shapes=[dict(shape) for shape in self._shapes],
         )
         return payload
 
@@ -2691,7 +2725,12 @@ class SettingsTab(QWidget):
 
         dialog = MaskDialog(frame, row.shapes(), problem=problem, parent=self)
         if dialog.exec():
-            row.set_shapes(dialog.shapes())
+            # The size of the picture he drew on goes with them. See
+            # `set_shapes`: without it the points are pixels with no scale, and
+            # the one control on this console that changes the stream's size is
+            # two boxes further down the same page.
+            width, height = dialog.frame_size()
+            row.set_shapes(dialog.shapes(), width, height)
             self._refold()
         return dialog
 
