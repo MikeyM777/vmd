@@ -72,6 +72,14 @@ WIDE_WORDS = "wide"
 TIGHT_WORDS = "tele"
 UNKNOWN_CAPTION = "zoom not reported"
 
+# What a reading is called. The readout used to be `42%` and nothing else - a
+# per cent of what, under a picture, beside a slider and two buttons - and the
+# word "zoom" appeared on this control in exactly one state, the one where it
+# had failed. So it named itself only while it was not working, and the reading
+# he might have to say out loud over a radio was a bare number. It is on every
+# reading now, which also makes the three states one vocabulary rather than two.
+ZOOM_WORD = "zoom"
+
 # What the bar says between the console starting and the camera answering.
 #
 # These two are not the same state and must not read as the same state. Lens
@@ -82,6 +90,23 @@ UNKNOWN_CAPTION = "zoom not reported"
 # and removes a fault he would have learned to ignore, which is worse than
 # either state on its own.
 CHECKING_CAPTION = "checking the lens"
+
+
+def _reading(percent: float, edge: str = "") -> str:
+    """One reading of the lens, named. `zoom  42%`, `zoom 100% tele`.
+
+    The per cent is fixed at three columns and the caption is drawn in the mono
+    face, so the number does not shuffle sideways between 9% and 10% under a
+    picture somebody is watching.
+    """
+    return f"{ZOOM_WORD} {percent:3.0f}% {edge}".rstrip()
+
+
+# Every string this caption can hold, for the one measurement that matters: the
+# slider beside it must not change length as the lens moves. Measured across all
+# of them rather than across the two fault captions, because naming the readings
+# is exactly the change that could make a READING the longest of them.
+CAPTIONS = (UNKNOWN_CAPTION, CHECKING_CAPTION, _reading(100, TIGHT_WORDS), _reading(0, WIDE_WORDS))
 
 
 class ZoomBar(QWidget):
@@ -133,14 +158,6 @@ class ZoomBar(QWidget):
         self._caption.setStyleSheet(
             f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
             f" font-family: {MONO};"
-        )
-        # Wide enough for the longest thing it ever says, so the slider beside
-        # it does not change length every time the lens moves.
-        self._caption.setMinimumWidth(
-            max(
-                self._caption.fontMetrics().horizontalAdvance(words)
-                for words in (UNKNOWN_CAPTION, CHECKING_CAPTION)
-            )
         )
         self._caption.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -206,7 +223,7 @@ class ZoomBar(QWidget):
         finally:
             self._echoing = False
         if not known:
-            self._caption.setText(self._unknown)
+            self._say(self._unknown)
             self._caption.setToolTip(self._unknown_tip)
             self._caption.setStyleSheet(
                 f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
@@ -215,11 +232,31 @@ class ZoomBar(QWidget):
             return
         percent = self._position * 100.0
         edge = WIDE_WORDS if percent <= 1 else (TIGHT_WORDS if percent >= 99 else "")
-        self._caption.setText(f"{percent:3.0f}% {edge}".rstrip())
+        self._say(_reading(percent, edge))
         self._caption.setToolTip("")
         self._caption.setStyleSheet(
             f"color: {PALETTE['ink'] if edge else PALETTE['muted']};"
             f" font-size: {SIZE_SMALL}px; font-family: {MONO};"
+        )
+
+    def _say(self, words: str) -> None:
+        """Put a caption up, and keep the room it takes the same either way.
+
+        The width is worked out here rather than once at construction, and it
+        has to be: the caption's face and size come from a stylesheet, and a
+        stylesheet is resolved when the widget is polished - which is after the
+        constructor has run. Measured there, every string came out at the
+        default face's width and the guarantee this exists for was not kept:
+        with the readings named, the slider moved by twenty pixels between
+        "zoom not reported" and "zoom  42%", under a picture somebody is
+        watching, every time the camera answered.
+        """
+        self._caption.setText(words)
+        self._caption.setMinimumWidth(
+            max(
+                self._caption.fontMetrics().horizontalAdvance(other)
+                for other in CAPTIONS
+            )
         )
 
     def set_checking(self, checking: bool) -> None:

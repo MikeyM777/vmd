@@ -253,3 +253,61 @@ def test_the_buttons_never_take_the_keyboard_away_from_steering(qtbot) -> None:
     qtbot.addWidget(bar)
     for button in bar.buttons():
         assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_the_readout_names_what_it_is_a_number_of(qtbot) -> None:
+    """`42%` on its own, under a picture, beside a slider and two buttons.
+
+    A per cent of what. The word "zoom" appeared on this control in exactly one
+    state - `zoom not reported` - so it named itself only while it was not
+    working, and the one reading he might have to say out loud over a radio was
+    a bare number. Every reading carries the noun now, in all three states, and
+    the ends of the travel keep the words they had: "tele" and "wide" are the
+    answer to the question he actually asked.
+    """
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    for where in (0.0, 0.42, 1.0):
+        bar.set_position(where)
+        said = bar.caption().lower()
+        assert "zoom" in said, said
+        assert "%" in said, said
+    bar.set_position(1.0)
+    assert "tele" in bar.caption().lower()
+    bar.set_position(0.0)
+    assert "wide" in bar.caption().lower()
+
+
+def test_naming_the_readout_did_not_make_it_change_width(qtbot) -> None:
+    """The noun is worth nothing if the slider beside it moves when it appears.
+
+    Measured across every string this caption can hold, not only across the two
+    it used to be measured across, because that is the assumption the noun could
+    quietly break: the widest reading is now a position and not a fault.
+    """
+    from vmd.desktop.zoombar import CHECKING_CAPTION, UNKNOWN_CAPTION
+
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    bar.resize(400, 24)
+
+    def slider_width() -> int:
+        # Laid out before it is measured. Without this the widths are whatever
+        # they were when the bar was resized, and the measurement would pass
+        # however the caption was sized - which is the shape of a test that
+        # cannot fail.
+        bar.layout().activate()
+        return bar.slider().width()
+
+    widths = set()
+    for where in (0.0, 0.05, 0.5, 0.999, 1.0):
+        bar.set_position(where)
+        widths.add(slider_width())
+    for checking in (True, False):
+        bar.set_position(None)
+        bar.set_checking(checking)
+        widths.add(slider_width())
+    assert len(widths) == 1, (
+        f"the slider is {sorted(widths)} px wide depending on what the caption "
+        f"says; the longest are {UNKNOWN_CAPTION!r} and {CHECKING_CAPTION!r}"
+    )
