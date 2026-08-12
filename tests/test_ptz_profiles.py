@@ -144,6 +144,28 @@ def test_one_lens_is_never_given_to_two_streams_when_there_are_two_lenses() -> N
     assert len(set(chosen.values())) == 2
 
 
+def test_two_addresses_for_one_picture_are_recognised_as_one_picture() -> None:
+    """What is compared is the channel and nothing else.
+
+    The camera answers GetStreamUri with its own idea of its address, which
+    differs from the one the operator typed in every way except the part that
+    matters: a different host, no credentials, sometimes another port, and on
+    some firmware a session token that is different on every call - which would
+    make one picture look like two and decide nothing at all.
+    """
+    from vmd.ptz.onvif import rtsp_path
+
+    typed = "rtsp://admin:pw@192.168.1.251:554/ch2"
+    answered = "rtsp://10.0.0.7/ch2?session=8f3a91"
+    assert rtsp_path(typed) == rtsp_path(answered) == "/ch2"
+
+    assert rtsp_path("rtsp://host/ch2/") == "/ch2", "a trailing slash is not a channel"
+    assert rtsp_path("rtsp://host/CH2") == "/ch2", "case is not a channel either"
+    assert rtsp_path("rtsp://host/ch0") != rtsp_path("rtsp://host/ch2")
+    assert rtsp_path("rtsp://host") == "", "no path is no answer"
+    assert rtsp_path("") == ""
+
+
 def test_a_profile_that_cannot_be_zoomed_is_never_given_to_a_zoom_bar() -> None:
     """The fault the operator actually reported: "only the vis is zooming".
 

@@ -102,6 +102,104 @@ def test_a_camera_with_two_lenses_is_not_reported_as_sharing_one() -> None:
     assert Lenses(FakeCamera(), STREAMS).shared() is False
 
 
+class ByAddress(FakeCamera):
+    """A camera that serves each profile at its own RTSP path.
+
+    Listed deliberately in the OPPOSITE order to the operator's views, which is
+    the whole fault: `match_profiles` pairs the two lists in order, and on his
+    camera the orders disagree.
+    """
+
+    def __init__(self, serving: dict[str, str] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.serving = serving or {"p-ir": "/ch0", "p-vis": "/ch2"}
+        self.asked_for_addresses: list[str] = []
+
+    def stream_uri(self, profile: str) -> str:
+        self.asked_for_addresses.append(profile)
+        path = self.serving.get(profile, "")
+        return f"rtsp://10.0.0.7:554{path}" if path else ""
+
+
+HIS_URLS = {
+    "thermal": "rtsp://10.0.0.7:554/ch2",
+    "visible": "rtsp://10.0.0.7:554/ch0",
+}
+
+
+def test_the_camera_is_asked_which_profile_serves_which_picture() -> None:
+    """The fault he reported: "the visible camera slider controls the thermal
+    camera, and the thermal slider controls the visible camera."
+
+    The pairing was inferred from profile names and the order the camera
+    happened to list things in, and on his camera that order is the opposite of
+    the order he listed his views in. He typed one address per picture, copied
+    off the camera - so the camera can be asked which profile serves it, and
+    `/ch2` matches `/ch2` whatever anything is called.
+    """
+    # Named so that the name-matching guess gets it BACKWARDS, exactly as his
+    # camera does. Only the addresses can put it right.
+    camera = ByAddress(serving={"p-ir": "/ch0", "p-vis": "/ch2"})
+    lenses = Lenses(camera, STREAMS, urls=HIS_URLS)
+    assert lenses.find() is True
+
+    assert lenses.token("thermal") == "p-vis", "the sliders are still crossed"
+    assert lenses.token("visible") == "p-ir"
+
+    lenses.go_to("thermal", 0.9)
+    assert camera.zoomed == [(0.9, "p-vis")]
+
+
+def test_the_addresses_are_asked_for_once_and_not_on_every_beat() -> None:
+    """Two or three round trips on a link measured at 88% of its airtime is a
+    fair price once. It is not a fair price every two seconds."""
+    camera = ByAddress()
+    clock = Clock()
+    lenses = Lenses(camera, STREAMS, urls=HIS_URLS, clock=clock)
+    for _ in range(50):
+        clock.tick(2.0)
+        lenses.poll()
+    assert len(camera.asked_for_addresses) == 2, camera.asked_for_addresses
+
+
+def test_one_address_serving_two_profiles_decides_nothing() -> None:
+    """A main and a sub stream of the same picture. Picking either would be a
+    coin toss dressed up as evidence, so the names keep the last word."""
+    camera = ByAddress(serving={"p-ir": "/ch2", "p-vis": "/ch2"})
+    lenses = Lenses(camera, STREAMS, urls=HIS_URLS)
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-ir", "a tie was treated as an answer"
+
+
+def test_the_zoom_goes_to_the_profile_that_can_zoom_on_that_sensor() -> None:
+    """The profile serving the picture is not always the one that can zoom it:
+    a main and a sub stream are one lens, and only one may carry PTZ."""
+    camera = ByAddress(serving={"p-sub": "/ch2", "p-main": "/ch0"})
+    camera._profiles = [
+        Profile(token="p-sub", name="sub", source="src1", ptz=False),
+        Profile(token="p-main", name="main", source="src1", ptz=True),
+    ]
+    lenses = Lenses(camera, ["thermal"], urls={"thermal": "rtsp://10.0.0.7:554/ch2"})
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-main", "pointed at a profile with no PTZ"
+
+
+def test_a_camera_that_will_not_give_addresses_falls_back_to_the_names() -> None:
+    """Nothing to correct with is not a reason to have no answer at all."""
+    lenses = Lenses(FakeCamera(), STREAMS, urls=HIS_URLS)
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-ir"
+
+
+def test_what_he_picked_by_hand_still_beats_the_address() -> None:
+    """Evidence beats inference, and he beats both. He can see which picture
+    answers."""
+    camera = ByAddress()
+    lenses = Lenses(camera, STREAMS, urls=HIS_URLS, chosen={"thermal": "p-ir"})
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-ir"
+
+
 def test_the_operator_can_say_which_lens_a_view_drives() -> None:
     """The fault he reported: "only the vis is zooming". Whatever the cause -
     the guess was backwards, or the thermal profile has no PTZ - no rule written

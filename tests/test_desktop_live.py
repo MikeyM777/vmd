@@ -576,7 +576,7 @@ def test_switching_tabs_stops_a_camera_a_child_widget_started_moving(qtbot) -> N
     tabs.addTab(QWidget(), "Settings")
     qtbot.addWidget(tabs)
 
-    tab._movement.setFocus()
+    tab._movement_line.setFocus()
     QApplication.instance().sendEvent(
         tab, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
     )
@@ -1000,13 +1000,6 @@ def test_an_unidentified_event_leaves_the_confidence_blank(qtbot) -> None:
     for lie in ("0%", "0.0", "unknown", "none", "nothing"):
         assert lie not in confidence.lower()
         assert lie not in what.lower()
-
-
-def test_the_list_says_that_blank_means_unidentified_not_uncertain(qtbot) -> None:
-    tab, _, _ = build(qtbot, "thermal", events=FakeEvents())
-    note = tab.movement_note().lower()
-    assert "unidentified" in note
-    assert "uncertain" in note
 
 
 def test_a_named_event_shows_what_it_was_and_how_sure(qtbot) -> None:
@@ -1435,20 +1428,36 @@ def test_a_camera_with_no_views_says_so_rather_than_showing_black(qtbot) -> None
     assert tab._no_views.isVisibleTo(tab), "a black rectangle is not an explanation"
 
 
-def test_the_movement_list_says_when_nothing_has_moved(qtbot) -> None:
-    """An empty table is a black rectangle with a header on it, and a black
-    rectangle is indistinguishable from a list that failed to load."""
+def test_the_movement_line_says_when_nothing_has_moved(qtbot) -> None:
+    """The table is gone from the column - he asked for it - and the record is
+    not. What is left is one line, and it still has to say which nothing this
+    is: nothing has moved, or nothing is watching."""
     events = FakeEvents()
     tab, _, _ = build(qtbot, "thermal", events=events)
     tab.refresh()
     assert tab.recent_rows() == []
-    assert tab._movement_empty.isVisibleTo(tab)
-    assert tab._movement.isVisibleTo(tab) is False
+    assert "nothing has moved" in tab.movement_note().lower()
+    assert tab._movement_line.isEnabled() is False, "a press that would do nothing"
 
     events.events.append(movement(1, stream="thermal", started=1_770_000_123.0))
     tab.refresh()
-    assert tab._movement.isVisibleTo(tab)
-    assert tab._movement_empty.isVisibleTo(tab) is False
+    said = tab.movement_note().lower()
+    assert "1 movement" in said, said
+    assert tab._movement_line.isEnabled() is True
+
+
+def test_the_movement_line_counts_what_there_is_and_names_the_newest(qtbot) -> None:
+    """A count and a time is the whole of what a glance needs. The list of every
+    movement is a tab away, which is where he said it belongs."""
+    tab, _, _ = build(
+        qtbot,
+        "thermal",
+        events=FakeEvents([movement(1), movement(2, started=1_770_000_100.0)]),
+    )
+    tab.refresh()
+    said = tab.movement_note().lower()
+    assert "2 movements" in said, said
+    assert "watch" in said, "it never says it can be pressed"
 
 
 def test_the_side_column_grows_with_the_window(qtbot) -> None:
@@ -1638,9 +1647,9 @@ def test_show_me_asks_for_nothing_when_there_is_no_alarm(qtbot) -> None:
     assert asked == []
 
 
-def test_double_clicking_a_movement_asks_for_its_footage(qtbot) -> None:
-    """The same call from the list, which is where he looks for the one that
-    happened four minutes ago rather than the one happening now."""
+def test_pressing_the_movement_line_asks_for_the_newest_footage(qtbot) -> None:
+    """Where he looks for the one that happened four minutes ago, rather than
+    the one happening now. The strip answers for the one happening now."""
     tab, _ptz, _panes = build(
         qtbot,
         "thermal",
@@ -1651,35 +1660,20 @@ def test_double_clicking_a_movement_asks_for_its_footage(qtbot) -> None:
 
     asked: list = []
     tab.show_footage.connect(asked.append)
-    table = tab._movement
-    table.resize(320, 120)
-    # The press and then the double click, which is the pair a real double
-    # click delivers: the view only calls a second click a double one when the
-    # press before it landed on the same row.
-    where = QPointF(table.visualItemRect(table.item(0, 0)).center())
-    for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
-        QApplication.instance().sendEvent(
-            table.viewport(),
-            QMouseEvent(
-                kind,
-                where,
-                QPointF(table.viewport().mapToGlobal(where.toPoint())),
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier,
-            ),
-        )
-
-    # Newest first, so the top row is the later movement.
-    assert [event.id for event in asked] == [2], tab.recent_rows()
+    tab._movement_line.click()
+    assert len(asked) == 1
+    assert asked[0] is tab._shown[0], "took him to the wrong movement"
 
 
-def test_a_double_click_below_the_last_row_asks_for_nothing(qtbot) -> None:
-    """An empty table is a real state - nothing has moved yet - and a click in
-    the space under the rows must not be answered with somebody else's event."""
-    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+def test_pressing_the_movement_line_with_nothing_behind_it_asks_for_nothing(
+    qtbot,
+) -> None:
+    """Nothing having moved is a real state, and a control that answers a press
+    with somebody else's event - or with an exception - is worse than one that
+    says it has nothing."""
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents())
     tab.refresh()
     asked: list = []
     tab.show_footage.connect(asked.append)
-    tab._show_row(7)
+    tab._show_newest()
     assert asked == []

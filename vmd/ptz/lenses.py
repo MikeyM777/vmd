@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import time
 
-from vmd.ptz.onvif import PtzError, match_profiles
+from vmd.ptz.onvif import PtzError, match_profiles, rtsp_path
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,14 @@ class Lenses:
         streams: list[str],
         clock=time.monotonic,
         chosen: dict[str, str] | None = None,
+        urls: dict[str, str] | None = None,
     ) -> None:
         self._camera = camera
         self._streams = list(streams)
         self._clock = clock
+        # The address the operator typed for each picture, which is how the
+        # camera can be asked which profile serves it. See `_by_address`.
+        self._urls = dict(urls or {})
         # What the operator picked by hand, per view, overruling the guess. See
         # `StreamSettings.ptz_profile`: no rule about vendor naming is right on
         # every camera, and a wrong guess here is silent.
@@ -159,7 +163,11 @@ class Lenses:
             return False
 
         self._offered = list(profiles)
+        # Worked out from the names first, then corrected by asking the camera
+        # which profile actually serves each address. The second is evidence and
+        # the first is inference, so the second wins wherever it has an answer.
         self._tokens = match_profiles(self._streams, profiles)
+        self._tokens.update(self._by_address(profiles))
         # The operator's own answer, on top of the guess. A token that this
         # camera has never heard of is dropped rather than sent: it is what a
         # settings file carried over from a different camera looks like, and
@@ -187,6 +195,75 @@ class Lenses:
                 len(self._streams),
             )
         return True
+
+    def _by_address(self, profiles: list) -> dict[str, str]:
+        """Ask the camera which profile serves each picture's address.
+
+        This is the answer to the fault he reported - "the visible camera slider
+        controls the thermal camera, and the thermal slider controls the
+        visible". The pairing had been inferred from profile names and the order
+        the camera happened to list things in, and on his camera that order is
+        the opposite of the order he listed his views in.
+
+        He typed one address per picture, copied off the camera. The camera can
+        say which profile it serves that address from. `/ch2` matches `/ch2`, and
+        no guess about a vendor's spelling can overrule it.
+
+        Two rules keep this from becoming a new way to be silently wrong:
+
+        * an address that matches more than one profile decides nothing. That is
+          the same picture offered twice - a main and a sub stream - and picking
+          either would be a coin toss dressed as evidence.
+        * the profile that serves the picture is not always the one that can
+          zoom it. The main and the sub stream are one lens, and only one of
+          them may carry PTZ, so what is taken from the match is the VIDEO
+          SOURCE - the sensor - and the zoomable profile on it is what is used.
+        """
+        wanted = {
+            name: rtsp_path(self._urls.get(name, ""))
+            for name in self._streams
+            if rtsp_path(self._urls.get(name, ""))
+        }
+        if not wanted:
+            return {}
+
+        serving: dict[str, list] = {}
+        for profile in profiles:
+            try:
+                where = self._camera.stream_uri(profile.token)
+            except PtzError as exc:
+                logger.debug("no address for %s: %s", profile.token, exc)
+                continue
+            except AttributeError:
+                # A camera object from before this existed. Nothing to correct
+                # with, so the names have the last word, exactly as before.
+                return {}
+            path = rtsp_path(where)
+            if path:
+                serving.setdefault(path, []).append(profile)
+
+        found: dict[str, str] = {}
+        for name, path in wanted.items():
+            matched = serving.get(path) or []
+            if len(matched) != 1:
+                continue
+            behind = matched[0]
+            # The sensor this picture comes from, then the profile on that
+            # sensor that can actually be zoomed.
+            same_lens = [
+                profile
+                for profile in profiles
+                if (profile.source or profile.token) == (behind.source or behind.token)
+            ]
+            zoomable = [profile for profile in same_lens if profile.can_zoom()]
+            found[name] = (zoomable or same_lens or [behind])[0].token
+            logger.info(
+                "%s is served by %s, so its zoom goes to %s",
+                name,
+                behind.token,
+                found[name],
+            )
+        return found
 
     def token(self, stream: str) -> str | None:
         """The profile token for one picture, or None if it could not be placed."""

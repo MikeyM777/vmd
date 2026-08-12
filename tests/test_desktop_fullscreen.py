@@ -483,7 +483,7 @@ def test_the_side_columns_wrapped_sentences_ask_for_the_height_they_need(
     live, _playback, _settings, _logs = as_fullscreen(qtbot, window, 1366, 768)
     still_given_up(window)
 
-    for note in (live._ptz_note, live._movement_note):
+    for note in (live._ptz_note, live._keys_note):
         needed = note.heightForWidth(max(note.width(), 1))
         assert note.minimumHeight() >= needed, (
             f"{note.text()[:60]!r} asks for {note.minimumHeight()} px and needs {needed}"
@@ -548,7 +548,7 @@ def test_unfolding_a_stream_card_does_not_draw_text_over_text(
     for row in rows:
         row.detect_field.setChecked(True)
     QApplication.processEvents()
-    rows[0].details_button.setChecked(True)
+    rows[0].advanced_button.setChecked(True)
     QApplication.processEvents()
 
     problems = mushed(settings) + starved(settings)
@@ -577,7 +577,7 @@ def test_a_stream_card_that_grows_takes_the_form_with_it(
     tab is full of - and then unfolded. Nothing about the measurement changes;
     only the amount of card there is to fit.
     """
-    from vmd.desktop.settings_tab import CLASSIFY_HELP, _note
+    from vmd.desktop.settings_tab import DETECT_HELP, _note
 
     window = console(qtbot, tmp_path)
     window.resize(1366, 768)
@@ -589,10 +589,10 @@ def test_a_stream_card_that_grows_takes_the_form_with_it(
     settings = window.settings_tab
     rows = settings.stream_rows()
     for row in rows:
-        row.watched.layout().addWidget(_note(CLASSIFY_HELP))
+        row.watched.layout().addWidget(_note(DETECT_HELP))
         row.detect_field.setChecked(True)
     QApplication.processEvents()
-    rows[0].details_button.setChecked(True)
+    rows[0].advanced_button.setChecked(True)
     QApplication.processEvents()
 
     problems = mushed(settings) + starved(settings)

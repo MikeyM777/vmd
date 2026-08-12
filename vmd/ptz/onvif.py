@@ -279,6 +279,30 @@ def match_profiles(streams: list[str], profiles: list[Profile]) -> dict[str, str
     return chosen
 
 
+def rtsp_path(url: str) -> str:
+    """The part of an RTSP address that says WHICH picture, and nothing else.
+
+    Everything before the path is about how to reach the camera and differs
+    between two addresses for the same stream: the camera answers GetStreamUri
+    with its own idea of its address - sometimes a different host, usually
+    without the credentials the operator typed, occasionally on another port.
+    What is left, `/ch2`, is the channel, and that is the whole question.
+
+    Any query string goes too. Some firmware appends a session token that is
+    different on every call, which would make one picture look like two.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    without_scheme = text.split("://", 1)[-1]
+    slash = without_scheme.find("/")
+    if slash < 0:
+        return ""
+    path = without_scheme[slash:]
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    return path.rstrip("/").lower()
+
+
 def _word_in(word: str, said: str) -> bool:
     """Whether `word` appears in `said` as a word rather than inside another.
 
@@ -555,6 +579,41 @@ class OnvifPtz:
         if not self.capability.profiles:
             self.connect()
         return list(self.capability.profiles)
+
+    def stream_uri(self, profile: str) -> str:
+        """The RTSP address this profile is served at, or "" if it will not say.
+
+        The end of the guessing. Which profile is the thermal picture was worked
+        out from the profile's NAME and its video source token - inference about
+        one vendor's spelling - and on the operator's own camera it came out
+        backwards: the slider under the visible picture zoomed the thermal lens
+        and the slider under the thermal picture zoomed the visible one.
+
+        This asks the camera the question directly instead. He typed an address
+        into Settings, one per picture, copied from the camera itself; the
+        camera can say which profile serves that address. `/ch2` matches `/ch2`.
+        That is not a heuristic that can be wrong about a vendor - it is the
+        camera identifying its own pictures.
+
+        One call per profile, made once at discovery and never again. Two or
+        three round trips on a link with nothing spare, in exchange for the
+        zoom controls being attached to the right glass.
+        """
+        body = (
+            f'<GetStreamUri xmlns="{MEDIA}">'
+            '<StreamSetup xmlns:tt="http://www.onvif.org/ver10/schema">'
+            "<tt:Stream>RTP-Unicast</tt:Stream>"
+            "<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport>"
+            "</StreamSetup>"
+            f"<ProfileToken>{_xml(profile)}</ProfileToken>"
+            "</GetStreamUri>"
+        )
+        try:
+            text = self._post("/onvif/media_service", body)
+        except PtzError as exc:
+            logger.debug("%s: no stream address for %s: %s", self.host, profile, exc)
+            return ""
+        return _first(r"<(?:\w+:)?Uri>(.*?)</(?:\w+:)?Uri>", text) or ""
 
     # --------------------------------------------------------------- moving
 

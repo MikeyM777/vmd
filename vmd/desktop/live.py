@@ -824,7 +824,13 @@ class LiveTab(QWidget):
         # left. It used to share the leftover with a stretch, which is why the
         # bottom of a 1080p column was four hundred pixels of empty grey next to
         # a list squeezed into a box the size of five rows.
-        self._side_layout.addWidget(self._build_movement_box(), 1)
+        # No stretch on it any more, and a stretch after it instead. It used
+        # to be a table, and a table earns the leftover height; it is one line
+        # now, and giving that the rest of the column drew a tall empty box with
+        # a sentence floating in the middle of it - which reads as a panel that
+        # failed to load, on the panel that reports intruders.
+        self._side_layout.addWidget(self._build_movement_box())
+        self._side_layout.addStretch(1)
 
         # The column scrolls rather than squeezing. It carries five boxes now -
         # streams, link, storage, movement, steering - and on a laptop screen
@@ -875,9 +881,7 @@ class LiveTab(QWidget):
         cut: list[str] = []
         for label in (
             self._ptz_note,
-            self._movement_note,
             self._keys_note,
-            self._movement_empty,
             self._alarm_label,
             self._lens_note,
         ):
@@ -1008,65 +1012,51 @@ class LiveTab(QWidget):
         return self._alarm
 
     def _build_movement_box(self) -> QWidget:
-        box = QGroupBox("Recent movement")
+        """One line about what has moved today, and a way to go and look at it.
+
+        This was a four-column table of every recent movement, and it took the
+        bottom half of the side column for the whole of a quiet day. He asked
+        for it gone - "remove the recent movement component entirely" - and he
+        is right about the space: the column is beside the pictures, and the
+        pictures are what he is there for.
+
+        What is NOT gone is the record. Pressed on it he said "panel", not the
+        events: an intrusion at 03:40 while he is turned away is announced by
+        the strip, cleared by the next thing that moves, and without a record
+        there would then be no trace of it anywhere he can reach. So the events
+        are still read, still counted, still what the alarm strip is raised
+        from, and still in Playback - and this line is the door to them.
+        """
+        box = QGroupBox("Movement")
         layout = QVBoxLayout(box)
         layout.setSpacing(SPACE_SNUG)
-        self._movement = QTableWidget(0, 4)
-        self._movement.setHorizontalHeaderLabels(["Time", "Stream", "What", "Confidence"])
-        self._movement.verticalHeader().setVisible(False)
-        self._movement.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._movement.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._movement.setShowGrid(False)
-        self._movement.setAlternatingRowColors(False)
-        # The three narrow columns to their contents, the last to whatever is
-        # left. All four to their contents pushed "Confidence" off the right of
-        # a 300 px column on a laptop panel, and a movement list you have to
-        # scroll sideways to read is one nobody reads.
-        header = self._movement.horizontalHeader()
-        for column in (0, 1, 2):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setHighlightSections(False)
-        # Left-aligned, so a heading with less room than it wants loses its tail
-        # rather than both its ends: "Confide" is a word being cut short, and
-        # "nfiden" is something the operator has to stop and work out.
-        header.setDefaultAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        # A button rather than a label, because it goes somewhere. Flat, so it
+        # reads as a line of text that happens to be clickable rather than as
+        # another control competing with the steering above it.
+        self._movement_line = QPushButton(NOTHING_YET)
+        self._movement_line.setFlat(True)
+        self._movement_line.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._movement_line.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._movement_line.setStyleSheet(
+            f"QPushButton {{ border: 0; background: transparent; text-align: left;"
+            f" padding: {SPACE_TIGHT}px 0; color: {PALETTE['muted']}; }}"
+            f" QPushButton:hover {{ color: {PALETTE['ink']}; }}"
         )
-        # The list fits the column instead of scrolling sideways inside it.
-        # Three columns to their contents and the last to whatever is left: the
-        # time, the stream and what it was are the values an operator reads, and
-        # none of them may be elided. "Confidence" takes the remainder, and its
-        # heading is elided by Qt when the remainder is small - which is the
-        # right thing to lose, because "81%" is the part that carries anything.
-        #
-        # This is also why SIDE_MIN_WIDTH is what it is: those three columns and
-        # a readable percentage need about 290 px of list, and the column's
-        # borders, padding and scrollbar take the rest.
-        self._movement.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # A double click, not a single one. A single click is how a row gets
-        # selected and how the list gets read, and turning that into a tab
-        # change would make the list unreadable - he could not look at what
-        # moved at 14:02 without being taken away from the pictures.
-        self._movement.cellDoubleClicked.connect(self._show_row)
-        layout.addWidget(self._movement, 1)
-        # Shown in the table's place while there is nothing in it. An empty
-        # table is a black rectangle, and a black rectangle is indistinguishable
-        # from a list that failed to load - which is the wrong thing to leave an
-        # operator guessing about on the one panel that reports intruders.
-        self._movement_empty = WrappedNote(NOTHING_YET)
-        self._movement_empty.setStyleSheet(
-            f"color: {PALETTE['muted']}; padding: {SPACE_ROOM}px;"
-        )
-        self._movement_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._movement_empty, 1)
+        self._movement_line.clicked.connect(self._show_newest)
+        layout.addWidget(self._movement_line)
         self._show_movement_or_not()
-        self._movement_note = WrappedNote(UNIDENTIFIED_NOTE)
-        self._movement_note.setStyleSheet(
-            f"color: {PALETTE['muted']}; font-size: {SIZE_SMALL}px;"
-        )
-        layout.addWidget(self._movement_note)
         return box
+
+    def _show_newest(self) -> None:
+        """Take him to the most recent movement, if there is one.
+
+        The line is only worth clicking when it has something behind it, and a
+        click that does nothing is worse than one that cannot be made - so the
+        line says so and this is harmless when there is nothing.
+        """
+        if not self._shown:
+            return
+        self.show_footage.emit(self._shown[0])
 
     def set_watching(self, state: str) -> None:
         """Whether anything is watching for movement: ok, muted or a fault.
@@ -1080,26 +1070,52 @@ class LiveTab(QWidget):
         self._show_movement_or_not()
 
     def movement_empty_words(self) -> str:
-        """What the empty movement list is saying, for the window and the tests."""
-        return self._movement_empty.text()
+        """What the movement line is saying. For the window and the tests."""
+        return self._movement_line.text()
 
     def _show_movement_or_not(self) -> None:
-        """Whichever of the list and the empty state has something to say."""
-        empty = self._movement.rowCount() == 0
-        self._movement.setVisible(not empty)
-        self._movement_empty.setVisible(empty)
-        if not empty:
+        """What the one line says, which is one of four things.
+
+        Three of them are about nothing having moved, and they are not the same
+        thing: nothing HAS moved, nothing is being watched because he turned it
+        off, and nothing is being watched because something is broken. The
+        panel that reports intruders is the last place in this console that may
+        give the reassuring one of those by default.
+
+        The fourth is the useful one - a count, and a way to go and see it.
+        """
+        shown = list(self._shown)
+        if shown:
+            when = datetime.datetime.fromtimestamp(shown[0].started).strftime("%H:%M")
+            counted = (
+                f"{len(shown)} movements, the last at {when}"
+                if len(shown) > 1
+                else f"1 movement, at {when}"
+            )
+            self._movement_line.setText(f"{counted}  -  press to watch it")
+            self._movement_line.setEnabled(True)
+            self._movement_line.setStyleSheet(
+                f"QPushButton {{ border: 0; background: transparent; text-align: left;"
+                f" padding: {SPACE_TIGHT}px 0; color: {PALETTE['ink']}; }}"
+                f" QPushButton:hover {{ color: {PALETTE['accent']}; }}"
+            )
             return
-        # Which of the three empty states this is. `ok` is the only one where
-        # "nothing has moved" is a fact rather than an assumption; the other two
-        # are the console saying so about a detector that is not looking.
+
         watching = getattr(self, "_watching", "ok")
         if watching == "ok":
-            self._movement_empty.setText(NOTHING_YET)
+            words = NOTHING_YET
         elif watching == "muted":
-            self._movement_empty.setText(NOT_WATCHING_OFF)
+            words = NOT_WATCHING_OFF
         else:
-            self._movement_empty.setText(NOT_WATCHING_BROKEN)
+            words = NOT_WATCHING_BROKEN
+        self._movement_line.setText(words)
+        # Nothing to go and look at, so nothing to press. Drawn as a line of
+        # text rather than as a control that quietly does nothing.
+        self._movement_line.setEnabled(False)
+        self._movement_line.setStyleSheet(
+            f"QPushButton {{ border: 0; background: transparent; text-align: left;"
+            f" padding: {SPACE_TIGHT}px 0; color: {PALETTE['muted']}; }}"
+        )
 
     def _refresh_events(self) -> None:
         """Read the movement list, raise the alarm on anything new.
@@ -1143,27 +1159,15 @@ class LiveTab(QWidget):
         self._fill_movement(events)
 
     def _fill_movement(self, events) -> None:
+        """Take the movements, newest first, and say how many there are.
+
+        They are kept whole rather than turned into cells: the line above is a
+        summary, and what a press on it needs is the movement itself. Parsing
+        "14:02:31" back out of a label would be the same arithmetic done twice,
+        badly, and would lose the day the moment it crossed midnight.
+        """
         self.rebuilds += 1
-        # Kept beside the rows they became, so a double click can be answered
-        # with the movement itself rather than by parsing "14:02:31" back out of
-        # a cell - which is the same arithmetic done a second time, badly, and
-        # would lose the day the moment the list crossed midnight.
         self._shown = list(events)
-        self._movement.setRowCount(len(events))
-        for row, event in enumerate(events):
-            named = bool(event.label)
-            cells = [
-                datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S"),
-                event.stream,
-                # Blank, not "unknown" and never "0%". An unnamed event is a
-                # confirmed one: something moved. A number in this cell would
-                # read as "the detector saw nothing", which is a lie about the
-                # only thing this system exists to report.
-                event.label if named else "",
-                f"{event.confidence * 100:.0f}%" if named else "",
-            ]
-            for column, text in enumerate(cells):
-                self._movement.setItem(row, column, QTableWidgetItem(text))
         self._show_movement_or_not()
 
     def _raise_alarm(self, event) -> None:
@@ -1193,11 +1197,6 @@ class LiveTab(QWidget):
         if self._alarm_event is None:
             return
         self.show_footage.emit(self._alarm_event)
-
-    def _show_row(self, row: int, _column: int = 0) -> None:
-        """The same request, from a double-clicked row in the list."""
-        if 0 <= row < len(self._shown):
-            self.show_footage.emit(self._shown[row])
 
     def acknowledge(self) -> None:
         """The operator has seen it. Clear the strip and the outline."""
@@ -1251,16 +1250,28 @@ class LiveTab(QWidget):
         return self._link_panel.lines()
 
     def movement_note(self) -> str:
-        return self._movement_note.text()
+        """The one line about movement. Kept under its old name for the window."""
+        return self._movement_line.text()
 
     def recent_rows(self) -> list[tuple[str, str, str, str]]:
+        """The movements themselves, in the shape the table used to show.
+
+        The table is gone from the screen and the record is not: this is read by
+        the window's tests and is the shape they were written against. It comes
+        from the events rather than from cells, which is where it should always
+        have come from.
+        """
         rows: list[tuple[str, str, str, str]] = []
-        for row in range(self._movement.rowCount()):
-            cells = []
-            for column in range(self._movement.columnCount()):
-                item = self._movement.item(row, column)
-                cells.append(item.text() if item is not None else "")
-            rows.append(tuple(cells))  # type: ignore[arg-type]
+        for event in self._shown:
+            named = bool(event.label)
+            rows.append(
+                (
+                    datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S"),
+                    event.stream,
+                    event.label if named else "",
+                    f"{event.confidence * 100:.0f}%" if named else "",
+                )
+            )
         return rows
 
     # ---------------------------------------------------------------- streams

@@ -1991,12 +1991,14 @@ def test_show_me_says_it_when_the_footage_is_gone(qtbot, tmp_path: Path) -> None
     window.close()
 
 
-def test_double_clicking_a_movement_takes_him_to_it_too(qtbot, tmp_path: Path) -> None:
+def test_the_movement_line_takes_him_to_it_too(qtbot, tmp_path: Path) -> None:
+    """The table it used to be double-clicked in is gone from the column - he
+    asked for it - and the way to the footage is not."""
     start, events_path = a_day_with(tmp_path, recorded=True)
     window, _ = build(qtbot, tmp_path, events_path=events_path)
     alarmed(window, events_path, start + 3660)
 
-    window.live._show_row(0)
+    window.live._show_newest()
 
     assert window.tabs.currentWidget() is window.playback
     assert "a.mp4" in window.playback.status_text, window.playback.status_text

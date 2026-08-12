@@ -115,6 +115,11 @@ class PtzService:
                     stream.name: stream.ptz_profile
                     for stream in settings.camera.streams
                 },
+                # The address he typed for each picture. It is what lets the
+                # camera be asked which profile serves which picture, instead
+                # of the console inferring it from profile names - which came
+                # out backwards on his camera.
+                urls={stream.name: stream.url for stream in settings.camera.streams},
             )
             if camera is not None
             else None
