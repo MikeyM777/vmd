@@ -54,28 +54,29 @@ class StreamDetectionConfig(DetectionConfig):
 
 
 def classify_enabled(stream, detection) -> bool:
-    """Does the classifier run on this stream?
+    """Does the classifier run on this stream? No. It never runs.
 
-    Two questions, in order:
+    The operator asked for it to stop: "I need movement notifications, but not
+    accurate identification." He is right, and the arithmetic was always
+    against it - at 700 m a person is about 13 pixels across on the thermal
+    head, and a model trained on photographs has nothing to say about that.
+    What it bought him was a guess he could not check, on events he was being
+    told about anyway.
 
-    1. Is it on at all? `detection.classify` is the master switch, off by
-       default, because the weights are an optional install and a labelled
-       event is a convenience where an event is the point.
-    2. Then: what did the operator say about *this* stream? `stream.classify`
-       is the answer when it is set. When it is None - which is what every
-       existing settings file says - the answer is drawn from the one fact the
-       operator was asked for: a thermal stream is not classified, because at
-       700 m a person is 13 pixels and a model trained on photographs has
-       nothing to say about that.
+    So this returns False, and the two controls that used to feed it are off
+    the settings form. Nothing here ever decided whether a confirmed track
+    became an event; it decided only whether the event arrived with a name
+    attached, and now none of them do.
 
-    Nothing here can stop a confirmed track becoming an event. This decides
-    only whether the event arrives with a name attached.
+    `stream.classify` and `detection.classify` stay in the model on purpose:
+    every settings file in existence has them, and a field removed from the
+    model is a file that stops loading on a machine with no terminal. They are
+    read by nothing. Taken and ignored here rather than dropped from the
+    signature, because three callers pass them and a signature change would be
+    churn in every one of them for an argument that is now always ignored.
     """
-    if not detection.classify:
-        return False
-    if stream.classify is not None:
-        return bool(stream.classify)
-    return not stream.thermal
+    del stream, detection
+    return False
 
 
 def classifier_for(stream, detection):

@@ -714,41 +714,39 @@ def test_a_settings_file_written_before_the_classifier_existed_still_loads(tmp_p
     assert stream.classify is None
 
 
-def test_the_classifier_is_off_for_a_thermal_stream_by_default():
-    """13 pixels is not identifiable, so the default is not to ask - even with
-    the master switch on."""
-    thermal = StreamSettings(name="ch1", url="rtsp://x", thermal=True)
-    assert classify_enabled(thermal, DetectionSettings(classify=True)) is False
+def test_naming_what_moved_never_runs_whatever_the_file_says():
+    """The operator's own instruction: "I need movement notifications, but not
+    accurate identification."
+
+    Every combination that used to switch it on, because the point is that
+    there is no longer a combination that does. The master switch on, a stream
+    asking for it by name, a stream that is not the thermal head - all off.
+
+    The two fields are still in the model and still round-trip through the
+    file: every settings file in existence has them, and a field removed from
+    the model is a file that stops loading on a machine with no terminal. They
+    are simply read by nothing.
+    """
+    on = DetectionSettings(classify=True)
+    for stream in (
+        StreamSettings(name="ch1", url="rtsp://x", thermal=True),
+        StreamSettings(name="ch2", url="rtsp://x", thermal=False),
+        StreamSettings(name="ch1", url="rtsp://x", thermal=True, classify=True),
+        StreamSettings(name="ch2", url="rtsp://x", classify=True),
+        StreamSettings(name="ch2", url="rtsp://x", classify=False),
+    ):
+        assert classify_enabled(stream, on) is False, stream
+        assert classify_enabled(stream, DetectionSettings(classify=False)) is False
 
 
-def test_the_classifier_is_on_for_a_visible_stream_when_the_master_switch_is_on():
-    visible = StreamSettings(name="ch2", url="rtsp://x", thermal=False)
-    assert classify_enabled(visible, DetectionSettings(classify=True)) is True
-
-
-def test_the_master_switch_wins():
-    visible = StreamSettings(name="ch2", url="rtsp://x", classify=True)
-    assert classify_enabled(visible, DetectionSettings(classify=False)) is False
-
-
-def test_the_operator_can_force_the_classifier_on_for_a_thermal_stream():
-    """Nothing in the file says which stream is thermal except the operator, so
-    the operator can also overrule the conclusion drawn from it."""
-    thermal = StreamSettings(name="ch1", url="rtsp://x", thermal=True, classify=True)
-    assert classify_enabled(thermal, DetectionSettings(classify=True)) is True
-
-
-def test_the_operator_can_force_the_classifier_off_for_a_visible_stream():
-    visible = StreamSettings(name="ch2", url="rtsp://x", classify=False)
-    assert classify_enabled(visible, DetectionSettings(classify=True)) is False
-
-
-def test_a_stream_named_thermal_is_not_assumed_to_be_thermal():
-    """The user's camera names its streams ch1 and ch2. Guessing from a name
-    would be wrong on the only camera this system has."""
-    named = StreamSettings(name="thermal", url="rtsp://x")
-    assert named.thermal is False
-    assert classify_enabled(named, DetectionSettings(classify=True)) is True
+def test_movement_is_still_reported_with_naming_gone():
+    """Naming never had a veto and losing it must not become one. This is the
+    whole promise made to him: he keeps the notifications and loses the guess.
+    """
+    stream = StreamSettings(name="ch1", url="rtsp://x", thermal=True)
+    config = config_from_settings(stream, DetectionSettings(classify=True))
+    assert config.classify is False
+    assert config.sensitivity == "normal", "the detector itself was disturbed"
 
 
 def test_the_new_stream_fields_round_trip(tmp_path):
@@ -770,30 +768,31 @@ def test_the_new_stream_fields_round_trip(tmp_path):
     assert written["camera"]["streams"][0]["thermal"] is True
 
 
-def test_the_stream_config_carries_the_decision():
-    stream = StreamSettings(name="ch1", url="rtsp://x", thermal=True)
-    config = config_from_settings(stream, DetectionSettings(classify=True))
-    assert config.classify is False
+def test_every_stream_gets_the_classifier_that_does_nothing():
+    """`NullClassifier` and not None, so the runner keeps one code path around
+    the thing that must never stop an event being written.
+
+    Both heads, and a stream that asked for naming by name: with naming gone
+    there is no stream anywhere that gets a real one, which is what stops the
+    detection process ever reaching for weights that are not installed.
+    """
+    for stream in (
+        StreamSettings(name="ch1", url="rtsp://x", thermal=True),
+        StreamSettings(name="ch2", url="rtsp://x"),
+        StreamSettings(name="ch2", url="rtsp://x", classify=True),
+    ):
+        classifier = classifier_for(stream, DetectionSettings(classify=True))
+        assert isinstance(classifier, NullClassifier), stream
 
 
-def test_a_stream_that_is_not_classified_gets_the_null_classifier():
-    stream = StreamSettings(name="ch1", url="rtsp://x", thermal=True)
-    classifier = classifier_for(stream, DetectionSettings(classify=True))
-    assert isinstance(classifier, NullClassifier)
+def test_the_detector_process_never_builds_a_classifier_for_any_stream(tmp_path):
+    """End of the seam: naming is off the form, so it is off in the process.
 
-
-def test_a_stream_that_is_classified_gets_a_budgeted_one_that_has_loaded_nothing():
-    """Building the detector must not load YOLO: the process has to start on a
-    laptop where the weights are missing."""
-    stream = StreamSettings(name="ch2", url="rtsp://x")
-    classifier = classifier_for(stream, DetectionSettings(classify=True))
-    assert isinstance(classifier, BudgetedClassifier)
-    assert isinstance(classifier.inner, YoloClassifier)
-    assert classifier.inner.loaded is False
-
-
-def test_the_detector_process_gives_each_stream_its_own_decision(tmp_path):
-    """End of the seam: what the operator typed reaches the detector that runs."""
+    The master switch is turned on here on purpose - it is what an existing
+    settings file may well say - and it still buys nothing. That is the test:
+    the way naming is switched off is not "nobody ticks the box", it is that
+    the process no longer has a path to a real classifier.
+    """
     from vmd.detect_main import DetectionService
     from vmd.settings import CameraSettings, StorageSettings
 
@@ -811,9 +810,7 @@ def test_the_detector_process_gives_each_stream_its_own_decision(tmp_path):
     try:
         by_stream = {d.stream: d.classifier for d in service.detectors}
         assert isinstance(by_stream["ch1"], NullClassifier)
-        assert isinstance(by_stream["ch2"], BudgetedClassifier)
-        # Building the service must not have loaded a model.
-        assert by_stream["ch2"].inner.loaded is False
+        assert isinstance(by_stream["ch2"], NullClassifier)
     finally:
         service.stop()
 
