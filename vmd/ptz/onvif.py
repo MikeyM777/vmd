@@ -80,6 +80,20 @@ class Profile:
     token: str
     name: str = ""
     source: str = ""
+    # Whether this profile carries a PTZ configuration, which is what decides
+    # whether it can be zoomed at all. A profile without one answers an
+    # AbsoluteMove with a fault - and on a multi-spectral head it is common for
+    # only one of the two pictures to have PTZ, so a zoom bar pointed at the
+    # other is a control that can never work no matter what is done to it.
+    #
+    # `None` means the camera did not say, which is not the same as "no": some
+    # firmware leaves the configuration out of GetProfiles and still accepts
+    # PTZ. Absent is treated as "might", present-and-false as "cannot".
+    ptz: bool | None = None
+
+    def can_zoom(self) -> bool:
+        """Whether it is worth pointing a zoom control at this profile."""
+        return self.ptz is not False
 
 
 # Words a camera puts in a profile or source name when it means one lens or the
@@ -133,7 +147,13 @@ def read_profiles(text: str) -> list[Profile]:
     depending on the firmware, so the prefix is skipped rather than matched.
     """
     profiles: list[Profile] = []
-    for block in re.findall(r"<(?:\w+:)?Profiles\b(.*?)</(?:\w+:)?Profiles>", text, re.DOTALL):
+    blocks = re.findall(r"<(?:\w+:)?Profiles\b(.*?)</(?:\w+:)?Profiles>", text, re.DOTALL)
+    # Whether this answer mentions PTZ configurations at all. A camera that
+    # never mentions them has not said that its profiles lack PTZ - it has said
+    # nothing - and reading silence as "cannot zoom" would take the zoom away
+    # from every camera whose firmware leaves the section out.
+    says_ptz = "PTZConfiguration" in text
+    for block in blocks:
         token = _first(r'token="([^"]+)"', block)
         if not token:
             continue
@@ -147,6 +167,7 @@ def read_profiles(text: str) -> list[Profile]:
                     block,
                 )
                 or "",
+                ptz=("PTZConfiguration" in block) if says_ptz else None,
             )
         )
     if profiles:
@@ -186,6 +207,20 @@ def match_profiles(streams: list[str], profiles: list[Profile]) -> dict[str, str
     """
     if not profiles:
         return {}
+
+    # Only profiles that can actually be zoomed are candidates, when the camera
+    # said which those are. This is the difference between a control that is
+    # pointed at the wrong lens and one that is pointed at something that is not
+    # a lens at all: a profile with no PTZ configuration answers every zoom with
+    # a fault, for ever, and on a multi-spectral head it is common for only one
+    # of the two pictures to have PTZ.
+    #
+    # If that leaves nothing - every profile refuses PTZ - the filter is dropped
+    # rather than returning an empty map, because a bar pointed at a profile
+    # that probably will not work still beats a bar pointed at nothing, and the
+    # console says which of those it is either way.
+    zoomable = [profile for profile in profiles if profile.can_zoom()]
+    profiles = zoomable or profiles
 
     chosen: dict[str, str] = {}
     taken: set[str] = set()

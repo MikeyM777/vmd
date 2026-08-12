@@ -1374,6 +1374,129 @@ def test_the_alarm_sound_switch_says_what_it_costs_to_turn_off(
     assert not any(word in said for word in banned), said
 
 
+def test_which_lens_a_view_zooms_can_be_chosen_and_is_saved(
+    qtbot, tmp_path: Path
+) -> None:
+    """The fault he reported: "only the vis is zooming". Which media profile
+    belongs to which picture is worked out from the camera's own naming, which
+    is a guess - and a wrong guess is silent, because the camera accepts the
+    command and carries it out on the other lens.
+
+    He can see which picture answers. Nothing in this program can.
+    """
+    tab, path = build(qtbot, tmp_path, _watched(name="thermal"))
+    row = tab.stream_rows()[0]
+    assert row.chosen_lens() == "", "it starts on the worked-out answer"
+
+    row.set_lenses(
+        [
+            {"token": "p-vis", "name": "Visible", "can_zoom": True},
+            {"token": "p-ir", "name": "Thermal", "can_zoom": True},
+        ]
+    )
+    row.lens_field.setCurrentIndex(row.lens_field.findData("p-ir"))
+    assert tab.save() is True
+    assert load_settings(path).camera.streams[0].ptz_profile == "p-ir"
+
+
+def test_the_lens_chooser_stays_out_of_the_way_until_there_is_a_choice(
+    qtbot, tmp_path: Path
+) -> None:
+    """A single-sensor camera has one answer, and a control offering one answer
+    is furniture on the tab whose complaint was that there is too much on it."""
+    tab, _ = build(qtbot, tmp_path, _watched(name="thermal"))
+    row = tab.stream_rows()[0]
+    assert not row.lens_row.isVisibleTo(tab), "offered before the camera said anything"
+
+    row.set_lenses([{"token": "only", "name": "mainstream", "can_zoom": True}])
+    assert not row.lens_row.isVisibleTo(tab), "one lens is not a choice"
+
+    row.set_lenses(
+        [
+            {"token": "a", "name": "one", "can_zoom": True},
+            {"token": "b", "name": "two", "can_zoom": True},
+        ]
+    )
+    assert row.lens_row.isVisibleTo(tab)
+
+
+def test_a_lens_that_cannot_zoom_is_offered_saying_so(qtbot, tmp_path: Path) -> None:
+    """Offering it silently is offering a setting that cannot work. On a
+    multi-spectral head it is common for only one picture to carry PTZ, and that
+    is the likeliest reason a thermal slider does nothing."""
+    tab, _ = build(qtbot, tmp_path, _watched(name="thermal"))
+    row = tab.stream_rows()[0]
+    row.set_lenses(
+        [
+            {"token": "p-vis", "name": "Visible", "can_zoom": True},
+            {"token": "p-ir", "name": "Thermal", "can_zoom": False},
+        ]
+    )
+    labels = [row.lens_field.itemText(i) for i in range(row.lens_field.count())]
+    said = " | ".join(labels).lower()
+    assert "cannot zoom" in said, labels
+
+
+def test_a_lens_saved_against_another_camera_is_kept_rather_than_dropped(
+    qtbot, tmp_path: Path
+) -> None:
+    """Silently resetting a setting he made is how he stops trusting the form.
+    `Lenses` refuses to send an unknown token anyway, and says so in the log."""
+    tab, _ = build(qtbot, tmp_path, _watched(name="thermal", ptz_profile="p-elsewhere"))
+    row = tab.stream_rows()[0]
+    row.set_lenses([{"token": "a", "name": "one", "can_zoom": True}])
+    assert row.chosen_lens() == "p-elsewhere"
+    labels = [row.lens_field.itemText(i) for i in range(row.lens_field.count())]
+    assert any("not on this camera" in text for text in labels), labels
+
+
+def test_what_the_camera_said_about_its_lenses_is_put_into_words() -> None:
+    from vmd.desktop.settings_tab import lens_lines
+
+    said = " | ".join(
+        lens_lines(
+            {
+                "ok": True,
+                "shared": False,
+                "profiles": [
+                    {"token": "p-vis", "name": "Visible", "can_zoom": True},
+                    {"token": "p-ir", "name": "Thermal", "can_zoom": False},
+                ],
+                "using": {"visible": "p-vis", "thermal": "p-ir"},
+            }
+        )
+    ).lower()
+    assert "visible" in said and "thermal" in said
+    assert "cannot zoom" in said, said
+    assert "zoom drives" in said, "it never says where to change it"
+    banned = ("onvif", "profile token", "absolutemove", "ptzconfiguration")
+    assert not any(word in said for word in banned), said
+
+
+def test_a_camera_that_would_not_answer_about_lenses_says_why() -> None:
+    from vmd.desktop.settings_tab import lens_lines
+
+    said = " ".join(lens_lines({"ok": False, "error": "cannot reach 192.168.1.251"}))
+    assert "cannot reach 192.168.1.251" in said
+
+
+def test_both_pictures_on_one_lens_is_explained_rather_than_left_a_mystery() -> None:
+    from vmd.desktop.settings_tab import lens_lines
+
+    said = " ".join(
+        lens_lines(
+            {
+                "ok": True,
+                "shared": True,
+                "profiles": [{"token": "only", "name": "main", "can_zoom": True}],
+                "using": {"thermal": "only", "visible": "only"},
+            }
+        )
+    ).lower()
+    assert "same lens" in said
+    assert "not a fault in vmd" in said
+
+
 def test_nothing_explains_a_control_that_is_not_on_the_screen(
     qtbot, tmp_path: Path
 ) -> None:

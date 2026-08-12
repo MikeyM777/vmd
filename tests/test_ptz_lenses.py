@@ -102,6 +102,47 @@ def test_a_camera_with_two_lenses_is_not_reported_as_sharing_one() -> None:
     assert Lenses(FakeCamera(), STREAMS).shared() is False
 
 
+def test_the_operator_can_say_which_lens_a_view_drives() -> None:
+    """The fault he reported: "only the vis is zooming". Whatever the cause -
+    the guess was backwards, or the thermal profile has no PTZ - no rule written
+    here can be right on every camera, and a wrong guess is silent: the camera
+    accepts the command and carries it out somewhere else.
+
+    So he can overrule it. He can see the picture respond; nothing in this file
+    can.
+    """
+    camera = FakeCamera()
+    lenses = Lenses(camera, STREAMS, chosen={"thermal": "p-vis", "visible": "p-ir"})
+    lenses.go_to("thermal", 0.8)
+    assert camera.zoomed == [(0.8, "p-vis")], "the choice was ignored"
+
+
+def test_a_view_with_no_choice_made_still_gets_the_worked_out_answer() -> None:
+    """The override is per view, and an empty one is not a choice."""
+    camera = FakeCamera()
+    lenses = Lenses(camera, STREAMS, chosen={"thermal": "", "visible": ""})
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-ir"
+
+
+def test_a_chosen_profile_this_camera_does_not_have_is_dropped() -> None:
+    """What a settings file carried over from a different camera looks like.
+    Sending that token would be a zoom that faults for a reason nothing
+    explains, so the guess is used instead."""
+    camera = FakeCamera()
+    lenses = Lenses(camera, STREAMS, chosen={"thermal": "p-from-another-camera"})
+    assert lenses.find() is True
+    assert lenses.token("thermal") == "p-ir"
+
+
+def test_the_profiles_the_camera_offers_can_be_read_for_the_form() -> None:
+    """The Settings tab has to list them for him to choose from."""
+    lenses = Lenses(FakeCamera(), STREAMS)
+    assert lenses.offered() == []
+    lenses.find()
+    assert [profile.token for profile in lenses.offered()] == ["p-ir", "p-vis"]
+
+
 def test_a_camera_that_lists_nothing_is_a_reason_rather_than_a_crash() -> None:
     lenses = Lenses(FakeCamera(profiles=[]), STREAMS)
     assert lenses.find() is False

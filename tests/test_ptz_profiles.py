@@ -144,6 +144,59 @@ def test_one_lens_is_never_given_to_two_streams_when_there_are_two_lenses() -> N
     assert len(set(chosen.values())) == 2
 
 
+def test_a_profile_that_cannot_be_zoomed_is_never_given_to_a_zoom_bar() -> None:
+    """The fault the operator actually reported: "only the vis is zooming".
+
+    On a multi-spectral head it is common for only one of the two pictures to
+    carry a PTZ configuration. A profile without one answers every AbsoluteMove
+    with a fault - so a zoom bar pointed at it is a control that cannot work no
+    matter what is done to it, and nothing on screen says why. The camera tells
+    us which those are, in the same answer we were already reading, and we were
+    not looking at it.
+    """
+    profiles = [
+        Profile(token="p-ir", name="Thermal", source="src1", ptz=False),
+        Profile(token="p-vis", name="Visible", source="src0", ptz=True),
+    ]
+    chosen = match_profiles(["thermal"], profiles)
+    assert chosen.get("thermal") != "p-ir", "pointed at a profile with no PTZ"
+
+
+def test_a_camera_that_says_nothing_about_ptz_keeps_all_its_profiles() -> None:
+    """Silence is not a refusal. Some firmware leaves the PTZ configuration out
+    of GetProfiles and still accepts PTZ perfectly well, and reading that as
+    "cannot zoom" would take the zoom away from every such camera."""
+    profiles = read_profiles(NAMED)
+    assert all(profile.ptz is None for profile in profiles)
+    assert match_profiles(STREAMS, profiles) == {"thermal": "p-ir", "visible": "p-vis"}
+
+
+def test_a_camera_where_nothing_has_ptz_still_gets_a_bar_each() -> None:
+    """Rather than an empty map. A bar pointed at a profile that will probably
+    refuse still beats a bar pointed at nothing, and the console says which of
+    those it is either way."""
+    profiles = [
+        Profile(token="a", name="one", source="src0", ptz=False),
+        Profile(token="b", name="two", source="src1", ptz=False),
+    ]
+    assert len(match_profiles(STREAMS, profiles)) == 2
+
+
+def test_whether_a_profile_has_ptz_is_read_off_the_camera() -> None:
+    with_ptz = answer(
+        '<GetProfilesResponse xmlns="http://www.onvif.org/ver10/media/wsdl">'
+        '<Profiles token="p1"><Name>vis</Name>'
+        '<PTZConfiguration token="ptz0"><Name>ptz</Name></PTZConfiguration>'
+        "</Profiles>"
+        '<Profiles token="p2"><Name>ir</Name></Profiles>'
+        "</GetProfilesResponse>"
+    )
+    profiles = read_profiles(with_ptz)
+    assert [profile.ptz for profile in profiles] == [True, False]
+    assert profiles[0].can_zoom() is True
+    assert profiles[1].can_zoom() is False
+
+
 def test_a_word_inside_another_word_is_not_a_thermal_lens() -> None:
     """"ir" is inside "third", "wire" and "direct". A profile called `Direct` is
     not the infrared sensor, and it is listed FIRST here on purpose: a match

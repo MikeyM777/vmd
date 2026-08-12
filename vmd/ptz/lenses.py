@@ -97,10 +97,23 @@ class Lenses:
     is how commands start timing out.
     """
 
-    def __init__(self, camera, streams: list[str], clock=time.monotonic) -> None:
+    def __init__(
+        self,
+        camera,
+        streams: list[str],
+        clock=time.monotonic,
+        chosen: dict[str, str] | None = None,
+    ) -> None:
         self._camera = camera
         self._streams = list(streams)
         self._clock = clock
+        # What the operator picked by hand, per view, overruling the guess. See
+        # `StreamSettings.ptz_profile`: no rule about vendor naming is right on
+        # every camera, and a wrong guess here is silent.
+        self._chosen = {
+            name: token for name, token in (chosen or {}).items() if token
+        }
+        self._offered: list = []
         self._tokens: dict[str, str] = {}
         self._positions: dict[str, float | None] = {}
         # When each lens was last commanded. Not when it was last read: the
@@ -145,7 +158,23 @@ class Lenses:
             self.reason = "the camera listed no media profiles, so there is no lens to zoom"
             return False
 
+        self._offered = list(profiles)
         self._tokens = match_profiles(self._streams, profiles)
+        # The operator's own answer, on top of the guess. A token that this
+        # camera has never heard of is dropped rather than sent: it is what a
+        # settings file carried over from a different camera looks like, and
+        # sending it would be a zoom that faults for a reason nothing explains.
+        known = {profile.token for profile in profiles}
+        for name, token in self._chosen.items():
+            if token in known:
+                self._tokens[name] = token
+            else:
+                logger.warning(
+                    "%s is set to use the camera profile %r, which this camera "
+                    "does not offer; working it out instead",
+                    name,
+                    token,
+                )
         self._absolute = bool(getattr(self._camera.capability, "absolute_zoom", False))
         self._found = True
         self.reason = "ready"
@@ -162,6 +191,19 @@ class Lenses:
     def token(self, stream: str) -> str | None:
         """The profile token for one picture, or None if it could not be placed."""
         return self._tokens.get(stream)
+
+    def streams(self) -> list[str]:
+        """The pictures this was built for, in the order the operator listed them."""
+        return list(self._streams)
+
+    def offered(self) -> list:
+        """Every profile the camera listed, for the operator to choose from.
+
+        Discovery has to have happened for this to say anything, and it does not
+        force it: this is read by a form being drawn, and a form that blocked on
+        a camera at the far end of a radio link would freeze the window.
+        """
+        return list(self._offered)
 
     def absolute(self) -> bool:
         """Whether a lens can be sent to a zoom rather than only nudged."""

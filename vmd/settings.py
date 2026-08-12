@@ -185,6 +185,21 @@ class StreamSettings(Model):
     # 4K head on one camera behave nothing alike on a link under pressure.
     reader: Literal["auto", "ffmpeg"] = "auto"
 
+    # Which of the camera's media profiles this view's zoom bar drives. Empty
+    # means "work it out", which is what `vmd/ptz/onvif.py:match_profiles` does.
+    #
+    # It exists because working it out is guesswork about a vendor's naming, and
+    # when that guess is wrong nothing reports it: the camera accepts the
+    # command and carries it out on the other lens, or on a profile with no PTZ
+    # at all, and what the operator sees is a slider that does nothing. That is
+    # indistinguishable from a command lost over the radio link, which is the
+    # fault this project has spent the most time chasing.
+    #
+    # So the guess stays the default and the operator can overrule it, which is
+    # the only answer that is right on every camera - he can see the picture
+    # respond, and no amount of reasoning here can.
+    ptz_profile: str = ""
+
 
 class CameraSettings(Model):
     host: str = ""

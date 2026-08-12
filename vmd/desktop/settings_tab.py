@@ -329,6 +329,34 @@ class StreamRowWidget(QFrame):
         self.name_field.textChanged.connect(
             lambda _typed: self._name_the_watch_switch()
         )
+        # Which of the camera's lenses this picture's zoom bar drives.
+        #
+        # Hidden until the camera has said it has more than one, which is what
+        # `set_lenses` decides: on a single-sensor camera this is a question
+        # with one answer, and a control offering one answer is furniture on a
+        # tab whose complaint was that there is too much on it.
+        #
+        # It exists because the automatic answer is a guess about a vendor's
+        # naming, and a wrong guess is silent - the camera accepts the command
+        # and carries it out on the other picture. He reported exactly that:
+        # "only the vis is zooming".
+        self.lens_row = QWidget()
+        lens_line = QHBoxLayout(self.lens_row)
+        lens_line.setContentsMargins(0, 0, 0, 0)
+        lens_line.setSpacing(SPACE_SNUG)
+        lens_label = QLabel("Zoom drives")
+        self.lens_field = QComboBox()
+        self.lens_field.setToolTip(
+            "Which of the camera's lenses this picture's zoom slider moves.\n\n"
+            "Leave it on \"Work it out for me\" unless the slider moves the "
+            "wrong picture, or does nothing. Then pick another one and try it - "
+            "you can see which picture answers."
+        )
+        lens_line.addWidget(lens_label)
+        lens_line.addWidget(self.lens_field, 1)
+        outer.addWidget(self.lens_row)
+        self.set_lenses([], stream.ptz_profile)
+
         outer.addWidget(self.detect_field)
 
         # The sentence explaining what that tick does is NOT here. It used to
@@ -678,6 +706,43 @@ class StreamRowWidget(QFrame):
         item.setData(_REGION_ROLE, region)
         self.regions_list.addItem(item)
 
+    def set_lenses(self, profiles: list[dict], current: str = "") -> None:
+        """Offer the camera's lenses, keeping whatever was already chosen.
+
+        A token saved against a different camera is kept as an entry of its own
+        rather than dropped, because silently resetting a setting the operator
+        made is how he ends up not trusting the form. `Lenses` refuses to send
+        an unknown token anyway, and says so in the log.
+        """
+        chosen = current or self.chosen_lens()
+        self.lens_field.blockSignals(True)
+        try:
+            self.lens_field.clear()
+            self.lens_field.addItem("Work it out for me", "")
+            for profile in profiles:
+                token = str(profile.get("token", ""))
+                if not token:
+                    continue
+                name = str(profile.get("name") or "").strip()
+                # Said plainly when the camera has told us. A lens with no PTZ
+                # cannot zoom whatever is pointed at it, and offering it without
+                # saying so is offering a setting that cannot work.
+                cannot = "" if profile.get("can_zoom", True) else "  (cannot zoom)"
+                label = f"{name} - {token}" if name else token
+                self.lens_field.addItem(f"{label}{cannot}", token)
+            if chosen and self.lens_field.findData(chosen) < 0:
+                self.lens_field.addItem(f"{chosen}  (not on this camera)", chosen)
+            index = self.lens_field.findData(chosen)
+            self.lens_field.setCurrentIndex(max(index, 0))
+        finally:
+            self.lens_field.blockSignals(False)
+        # One lens is not a choice, and neither is none.
+        self.lens_row.setVisible(len(profiles) > 1 or bool(chosen))
+
+    def chosen_lens(self) -> str:
+        data = self.lens_field.currentData()
+        return "" if data is None else str(data)
+
     def stream_values(self) -> dict:
         """Everything this row knows, as StreamSettings would take it.
 
@@ -693,6 +758,7 @@ class StreamRowWidget(QFrame):
             reader=reader,
             detect=self.detect_field.isChecked(),
             thermal=self.thermal_field.isChecked(),
+            ptz_profile=self.chosen_lens(),
             classify=self.classify(),
             sensitivity=self.sensitivity(),
             horizon_y=self.horizon(),
@@ -701,6 +767,47 @@ class StreamRowWidget(QFrame):
             ],
         )
         return payload
+
+
+def lens_lines(answer: dict) -> list[str]:
+    """What the camera said about its lenses, in words. Pure, and tested as such.
+
+    Written for somebody who has never heard of a media profile. What he needs
+    from it is one thing: whether each picture's zoom slider is pointed at that
+    picture's lens - and, when it is not, that he can change it on the card.
+    """
+    if not answer.get("ok"):
+        reason = str(answer.get("error") or "the camera did not say").strip()
+        return [f"Could not ask the camera about its lenses: {reason}"]
+
+    profiles = list(answer.get("profiles") or [])
+    using = dict(answer.get("using") or {})
+    lines = [f"The camera has {len(profiles)} picture(s) it can send:"]
+    for profile in profiles:
+        token = str(profile.get("token", ""))
+        name = str(profile.get("name") or "").strip()
+        called = f"{name} ({token})" if name else token
+        driving = [view for view, chosen in using.items() if chosen == token]
+        who = f" - the zoom slider under {', '.join(driving)}" if driving else ""
+        cannot = "" if profile.get("can_zoom", True) else "  ** this one cannot zoom **"
+        lines.append(f"    {called}{who}{cannot}")
+
+    missing = [view for view, chosen in using.items() if not chosen]
+    for view in missing:
+        lines.append(f"    {view} has no lens behind it, so its zoom slider cannot work.")
+
+    if answer.get("shared") and len(using) > 1:
+        lines.append("")
+        lines.append(
+            "Both pictures are on the same lens, so either slider moves both. "
+            "That is what this camera reported, not a fault in VMD."
+        )
+    lines.append("")
+    lines.append(
+        "If a slider moves the wrong picture, pick a different lens under "
+        "\"Zoom drives\" on that camera's card above, then press Save and try it."
+    )
+    return lines
 
 
 def storage_problem(root, beside: Path) -> str:
@@ -1378,9 +1485,20 @@ class SettingsTab(QWidget):
         # box two boxes above already says in words.
         self.fit_button = QPushButton("Turn the picture down to what the link can carry")
         self.fit_button.clicked.connect(self.fit_to_link)
+        # Which lens is behind which picture. It fills the chooser on each
+        # camera card as well as printing what it found, which is the only way
+        # the operator can fix a zoom bar that moves the wrong picture.
+        self.lens_button = QPushButton("Which lens is behind which picture?")
+        self.lens_button.clicked.connect(self.ask_about_lenses)
         self.report_button = QPushButton("Save a report")
         self.report_button.clicked.connect(lambda: self.save_report())
-        for button in (self.test_button, self.find_button, self.fit_button, self.report_button):
+        for button in (
+            self.test_button,
+            self.find_button,
+            self.fit_button,
+            self.lens_button,
+            self.report_button,
+        ):
             tools_buttons.addWidget(button)
         tools_buttons.addStretch(1)
         tools_outer.addLayout(tools_buttons)
@@ -2041,6 +2159,55 @@ class SettingsTab(QWidget):
             lambda tools, s: tools.find_paths(s),
         )
 
+    def ask_about_lenses(self) -> None:
+        """Ask the camera what lenses it has, and offer them on every card.
+
+        The reason this exists is a fault the operator hit: "only the vis is
+        zooming". Which media profile belongs to which picture is worked out
+        from the profile names and the video sources, which is a guess about a
+        vendor's naming - and when it guesses wrong nothing reports it, because
+        the camera accepts the command and carries it out on the other lens.
+
+        So the guess is shown, and can be overruled. He can see which picture
+        answers; nothing in this program can.
+        """
+        settings = self.settings_from_form()
+        if settings is None:
+            self._output.setPlainText(f"Fix this first: {self.message}")
+            return
+
+        tools = self._camera_tools(settings)
+        signals = _ToolSignals()
+        signals.progress.connect(self._append_line)
+        signals.done.connect(
+            lambda lines: self._lenses_found(self.lens_button, signals, lines)
+        )
+        self._running.append(signals)
+        self.lens_button.setEnabled(False)
+        self._output.setPlainText("Asking the camera about its lenses")
+        self._pool.start(
+            _ToolJob(lambda: [tools.lenses(settings)], signals)
+        )
+
+    def _lenses_found(self, button: QPushButton, signals: _ToolSignals, lines: list) -> None:
+        """Print what the camera said, and put it into the choosers."""
+        button.setEnabled(True)
+        if signals in self._running:
+            self._running.remove(signals)
+
+        answer = next((line for line in lines if isinstance(line, dict)), None)
+        if answer is None:
+            for line in lines:
+                self._output.appendPlainText(str(line))
+            return
+        for line in lens_lines(answer):
+            self._output.appendPlainText(line)
+
+        profiles = list(answer.get("profiles") or [])
+        for row in self._rows:
+            row.set_lenses(profiles)
+        self._lay_the_cards_out()
+
     def fit_to_link(self) -> None:
         self._start(
             self.fit_button,
@@ -2219,6 +2386,15 @@ class CameraTools:
 
     def diagnose(self, settings: Settings) -> list[str]:
         return self._diagnose(settings)
+
+    def lenses(self, settings: Settings) -> dict:
+        """Which lenses the camera has, and which picture each one drives now.
+
+        A dict rather than the lines every other tool returns, because the form
+        does something with this as well as printing it: it fills in the chooser
+        on each camera card. `_lens_lines` turns it into the words.
+        """
+        return self._ptz.zoom_profiles()
 
     def fit_to_link(self, settings: Settings) -> list[str]:
         result = self._ptz.fit_encoders_to_link(settings.bitrate.ceiling_kbps)

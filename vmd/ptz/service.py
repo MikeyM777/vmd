@@ -108,7 +108,14 @@ class PtzService:
         # old one across a settings change would point the thermal zoom at
         # a profile token from a camera that is no longer there.
         lenses = (
-            Lenses(camera, [stream.name for stream in settings.camera.streams])
+            Lenses(
+                camera,
+                [stream.name for stream in settings.camera.streams],
+                chosen={
+                    stream.name: stream.ptz_profile
+                    for stream in settings.camera.streams
+                },
+            )
             if camera is not None
             else None
         )
@@ -335,6 +342,45 @@ class PtzService:
         """
         lenses = self.lenses
         return None if lenses is None else lenses.position(stream)
+
+    def zoom_profiles(self) -> dict:
+        """Every lens the camera offers, and which picture each one drives now.
+
+        For the Settings tab, so the operator can overrule a mapping that is
+        wrong - which is the only fix that works on every camera, because he can
+        see the picture respond and no rule written here can.
+
+        Slow: it may cross the link. It belongs on a worker, which is where the
+        camera tools already run it from.
+        """
+        with self._lock:
+            lenses = self.lenses
+            if lenses is None:
+                return {"ok": False, "error": "no camera address set", "profiles": []}
+            try:
+                found = lenses.find()
+            except Exception as exc:  # noqa: BLE001 - the form must survive this
+                logger.exception("could not ask the camera what lenses it has")
+                return {"ok": False, "error": str(exc), "profiles": []}
+            if not found:
+                return {"ok": False, "error": lenses.reason, "profiles": []}
+            return {
+                "ok": True,
+                "error": "",
+                "shared": lenses.shared(),
+                "profiles": [
+                    {
+                        "token": profile.token,
+                        "name": profile.name,
+                        "source": profile.source,
+                        "can_zoom": profile.can_zoom(),
+                    }
+                    for profile in lenses.offered()
+                ],
+                "using": {
+                    stream: lenses.token(stream) or "" for stream in lenses.streams()
+                },
+            }
 
     def zoom_ready(self) -> dict:
         """What the zoom controls should look like before anybody touches them."""
