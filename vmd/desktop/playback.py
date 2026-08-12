@@ -127,6 +127,12 @@ TICK_STEPS = (
 # What the tab says before anything has been recorded at all.
 NOTHING_RECORDED = "Nothing has been recorded yet."
 
+# What the big readout says when there is no moment to show. It is a clock the
+# rest of the time, and a clock reading nothing is a clock that has stopped -
+# which on this tab would be read as the tab having failed rather than as
+# nothing having been picked yet.
+NOT_PLAYING = "Not playing"
+
 # The entry in the camera list that means both at once. Offered only when there
 # are exactly two: with three, "both" does not say which two.
 BOTH = "Both together"
@@ -1676,13 +1682,24 @@ class PlaybackTab(QWidget):
         self.clear_marks.setEnabled(self.clip_from is not None or self.clip_to is not None)
 
     def _draw_readout(self) -> None:
-        """The moment being watched, big, with the pointer's own time beside it."""
+        """The moment being watched, big, with the pointer's own time beside it.
+
+        The time and not the date. The day is named in the picker forty pixels
+        above this and cannot change without that button changing first, so
+        writing it here as well drew "Wednesday 12 August 2026" twice on one
+        screen in two different type sizes - which reads as a fault rather than
+        as emphasis. What this readout is for is the one thing on the tab that
+        moves while he watches, and it now spends all of itself on that.
+
+        With nothing playing there is no moment at all, so it says that instead
+        of naming the day a second time. Never blank: the biggest thing on the
+        tab going empty is indistinguishable from the tab having failed.
+        """
         if self.playhead_time is None:
-            when = datetime.datetime.fromtimestamp((self.view_start + self.view_end) / 2)
-            self.readout_text = when.strftime("%A %d %B %Y")
+            self.readout_text = NOT_PLAYING
         else:
             when = datetime.datetime.fromtimestamp(self.playhead_time)
-            self.readout_text = when.strftime("%A %d %B %Y   %H:%M:%S")
+            self.readout_text = when.strftime("%H:%M:%S")
         said = self.readout_text
         drift = self.drift_seconds()
         if drift is not None and drift >= DRIFT_WORTH_SAYING:

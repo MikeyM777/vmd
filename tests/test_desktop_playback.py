@@ -1245,12 +1245,19 @@ def test_a_day_with_footage_is_drawn_differently_from_an_empty_one(
 
 
 def test_the_moment_being_watched_is_written_out_in_full(qtbot, tmp_path: Path) -> None:
+    """To the second, and not rounded to the minute: a clip is marked off this
+    readout and a minute is a long time to be wrong by.
+
+    The DAY is no longer part of it. It used to be, and the day is still written
+    out in full - in the picker above, which is where it is chosen and the only
+    place it can be changed from. See the test below.
+    """
     tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
     try:
         tab.play_at_time(noon + 125)
         said = tab.readout_text
         assert "12:02:05" in said, said
-        assert "2026" in said and "August" in said, said
+        assert tab.date_selector.button.text().strip(), "the day has to be somewhere"
     finally:
         index.close()
 
@@ -2032,5 +2039,48 @@ def test_zooming_with_nothing_recorded_at_all_still_gives_an_hour(
         tab.show_day(2026, 8, 11, stream="thermal")
         qtbot.mouseClick(tab.zoom_buttons[ONE_HOUR], Qt.MouseButton.LeftButton)
         assert tab.view_end - tab.view_start == pytest.approx(3600.0)
+    finally:
+        index.close()
+
+
+def test_the_day_is_named_once_on_the_tab_and_not_twice(qtbot, tmp_path: Path) -> None:
+    """"Wednesday 12 August 2026" was drawn in the day-picker button and again
+    as the heading forty pixels below it.
+
+    The picker is where the day is chosen and where it belongs. What the big
+    readout is for is the moment inside that day - the one thing on this tab
+    that changes while he watches - and spending two thirds of it on a date that
+    cannot change without the button above it changing first buys nothing and
+    reads as a fault: the same words twice, in two different type sizes, for no
+    reason the reader can find.
+    """
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 125)
+        picked = tab.date_selector.button.text()
+        assert "August" in picked and "2026" in picked, picked
+
+        said = tab.readout_text
+        assert "12:02:05" in said, said
+        for word in ("August", "2026", "Tuesday"):
+            assert word not in said, f"the day is drawn twice: {picked!r} and {said!r}"
+    finally:
+        index.close()
+
+
+def test_with_nothing_playing_the_readout_says_so_rather_than_the_date_again(
+    qtbot, tmp_path: Path
+) -> None:
+    """The state the tab opens in. There is no moment to show, so showing the
+    date was showing the button above it a second time - and it left the biggest
+    thing on the tab saying something that was already said and nothing about
+    whether anything was playing."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        assert tab.playhead_time is None
+        said = tab.readout_text.lower()
+        assert said.strip(), "the readout must never be blank"
+        assert "playing" in said, said
+        assert "august" not in said, said
     finally:
         index.close()
