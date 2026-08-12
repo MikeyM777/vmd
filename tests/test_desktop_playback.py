@@ -2844,3 +2844,32 @@ def test_both_cameras_missing_a_moment_still_says_there_is_nothing(
         assert "nothing" in tab.status_text.lower(), tab.status_text
     finally:
         tab.close()
+
+
+def test_the_clock_is_drawn_at_the_size_the_scale_says(qtbot, tmp_path: Path) -> None:
+    """It is the one figure on this tab that IS the tab, and it lives in the
+    type scale rather than inside this file - a size defined in one tab is a
+    size the next tab cannot honour.
+
+    Measured off the widget with the application's own appearance on, because a
+    stylesheet beats `setFont` and this exact readout has been drawn at the
+    wrong size before for that reason.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from vmd.desktop.style import SIZE_BAND, SIZE_CLOCK, stylesheet
+
+    was = QApplication.instance().styleSheet()
+    QApplication.instance().setStyleSheet(stylesheet())
+    try:
+        tab, _pane, _index = build(qtbot, tmp_path)
+        try:
+            tab.resize(1366, 768)
+            tab.show()
+            qtbot.waitExposed(tab)
+            assert tab.readout.fontInfo().pixelSize() == SIZE_CLOCK
+            assert SIZE_CLOCK > SIZE_BAND, "the sixth size is not bigger than the fifth"
+        finally:
+            tab.close()
+    finally:
+        QApplication.instance().setStyleSheet(was)

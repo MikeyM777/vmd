@@ -33,9 +33,10 @@ MONO = '"Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace'
 
 # ------------------------------------------------------------------ type scale
 #
-# Five sizes and no more. Everything used to be one size, which is the same as
-# having no hierarchy at all: the sentence saying nothing is being recorded was
-# drawn exactly like the sentence explaining what an arrow key does.
+# Six sizes and no more, and the sixth had to argue for itself. Everything used
+# to be one size, which is the same as having no hierarchy at all: the sentence
+# saying nothing is being recorded was drawn exactly like the sentence
+# explaining what an arrow key does.
 #
 # The numbers are logical pixels, and the case that decides them is Windows
 # display scaling: a 1920x1080 laptop panel at 150% reports 1280x720 logical
@@ -47,6 +48,18 @@ SIZE_TITLE = 14    # tab labels, the name of the application
 SIZE_BODY = 13     # the default: values, sentences, form fields
 SIZE_SMALL = 12    # notes and captions under something else
 SIZE_HEADING = 11  # section headings, table headers, units
+
+# The one figure on a tab that IS the tab. Twice the band, and derived from it
+# so the two cannot drift apart.
+#
+# The sixth size, and the rule above is why it is written down here rather than
+# in the file that wanted it. Playback has one job - showing him a moment - and
+# the moment being shown is a clock. At band size it sat in a row of buttons
+# reading as one more label among them, and "make the font bold, adjust the
+# colour, ensure it is highly visible" was the operator asking for the hierarchy
+# this scale exists to provide. A size defined inside one tab is a size the next
+# tab cannot honour and nothing can hold to account.
+SIZE_CLOCK = SIZE_BAND * 2
 
 WEIGHT_HEADING = 600
 WEIGHT_VALUE = 600

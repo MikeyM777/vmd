@@ -73,7 +73,7 @@ from vmd.desktop.live import WrappedNote
 from vmd.desktop.style import (
     MONO,
     PALETTE,
-    SIZE_BAND,
+    SIZE_CLOCK,
     SIZE_BODY,
     SIZE_HEADING,
     SPACE_SNUG,
@@ -107,21 +107,14 @@ logger = logging.getLogger(__name__)
 BAR_HEIGHT = 60
 PLAYHEAD_WIDTH = 3
 
-# How big the running clock is drawn.
+# The running clock's size lives in the type scale, as `SIZE_CLOCK`.
 #
-# It was `SIZE_BAND`, which is the top of the type scale and is described there
-# as "the state of the whole system, read from across the room". That is the
-# right intent and the wrong distance. The band is a word - `RECORDING`,
-# `DETECTION` - and a word is recognised by its shape long before it is read;
-# the clock is eight digits that all look alike at a glance, three of which
-# change every second, and the operator marking a clip has to read them exactly.
-# He said the readout is not visible enough, and at 16 logical px - 24 real
-# pixels on his panel at Windows' 150% scaling - he is right.
-#
-# Twice the band, derived from it rather than typed, so it moves if the scale
-# moves. It belongs in `vmd/desktop/style.py` beside the other five sizes and it
-# is here instead because that file is being worked in - see the report.
-CLOCK_SIZE = SIZE_BAND * 2
+# The reasoning went with it, but the measurement is worth keeping beside the
+# thing it was taken from: the band is a word - `RECORDING`, `DETECTION` - and a
+# word is recognised by its shape long before it is read. The clock is eight
+# digits that all look alike at a glance, three of which change every second,
+# and the operator marking a clip has to read them exactly. Same intent, a
+# different distance.
 
 # Where the hour rules go, and how much of the bar they cross. A day drawn as
 # an unbroken strip is a strip: nothing on it says which end is morning, so a
@@ -845,7 +838,7 @@ class PlaybackTab(QWidget):
         row.setSpacing(SPACE_SNUG)
         self.readout = QLabel("")
         font = QFont(self.readout.font())
-        font.setPixelSize(CLOCK_SIZE)
+        font.setPixelSize(SIZE_CLOCK)
         font.setBold(True)
         self.readout.setFont(font)
         # The size is in the widget's own stylesheet as well as in its font,
@@ -855,7 +848,7 @@ class PlaybackTab(QWidget):
         # drawn at the size of the smallest note on it.
         self.readout.setStyleSheet(
             f"color: {PALETTE['ink']}; font-family: {MONO}; "
-            f"font-size: {CLOCK_SIZE}px; font-weight: {WEIGHT_VALUE};"
+            f"font-size: {SIZE_CLOCK}px; font-weight: {WEIGHT_VALUE};"
         )
         row.addWidget(self.readout)
 
