@@ -22,6 +22,7 @@ from PySide6.QtCore import Qt
 
 from vmd.desktop.zoombar import (
     CHECKING_CAPTION,
+    HOLD_AFTER_ASKING,
     CREEP,
     NUDGE,
     STEPS,
@@ -311,3 +312,107 @@ def test_naming_the_readout_did_not_make_it_change_width(qtbot) -> None:
         f"the slider is {sorted(widths)} px wide depending on what the caption "
         f"says; the longest are {UNKNOWN_CAPTION!r} and {CHECKING_CAPTION!r}"
     )
+
+
+# ------------------------------------------- the drag, and what it costs the link
+#
+# "Make sure the slider is working accurately." Two things made it inaccurate,
+# and neither was the arithmetic.
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def tick(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_dragging_asks_the_lens_for_one_zoom_and_not_sixty(qtbot) -> None:
+    """`valueChanged` fires on every intermediate value. Dragging the handle
+    across the bar therefore asked for sixty different zooms in a second, at a
+    camera whose replies were last measured at two seconds - so the lens spent
+    the drag chasing positions he had already left, and stopped somewhere he had
+    passed through rather than where he let go.
+    """
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.1)
+    went, _crept = commands(bar)
+
+    bar.slider().setSliderDown(True)
+    for value in range(20, 80, 5):        # the drag
+        bar.slider().setValue(value)
+    assert went == [], f"{len(went)} commands sent mid-drag"
+
+    # Letting go. `setSliderDown(False)` is what Qt emits `sliderReleased` from,
+    # so this is the real gesture and not a signal poked by hand.
+    bar.slider().setSliderDown(False)
+    assert went == [("visible", 0.75)], went
+
+
+def test_a_click_on_the_groove_still_asks_at_once(qtbot) -> None:
+    """The ways of moving a slider that produce one value and mean it - the
+    arrow keys, the wheel, a click on the groove - must not wait for a release
+    that is never coming."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.1)
+    went, _crept = commands(bar)
+    bar.slider().setValue(70)
+    assert went == [("visible", 0.7)]
+
+
+def test_the_handle_is_not_dragged_out_from_under_him(qtbot) -> None:
+    """The lens takes seconds to travel and the console reads it back while it
+    does, so a reading arriving mid-drag is where the lens WAS. Writing that into
+    the handle pulls it backwards under the mouse."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+    bar.set_position(0.12)               # the lens, still back where it started
+    assert bar.slider().value() == 80, "the handle jumped back mid-drag"
+
+
+def test_a_stale_reading_does_not_snap_the_handle_back_after_he_lets_go(
+    qtbot,
+) -> None:
+    """The same thing a second later, which is worse: he has stopped, the handle
+    is where he wants it, and then it moves on its own."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+    bar.slider().setSliderDown(False)
+
+    clock.tick(2.0)
+    bar.set_position(0.15)               # still travelling
+    assert bar.slider().value() == 80, "the handle was pulled back while travelling"
+
+    clock.tick(HOLD_AFTER_ASKING)
+    bar.set_position(0.80)               # arrived, and now believed
+    assert bar.slider().value() == 80
+
+
+def test_the_reading_underneath_is_never_held_back(qtbot) -> None:
+    """The caption IS the camera's answer, and watching it climb towards where
+    he let go is the only sign the lens is on its way. Freezing that with the
+    handle would leave him with no feedback at all."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+
+    bar.set_position(0.34)
+    assert "34" in bar.caption(), bar.caption()

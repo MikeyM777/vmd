@@ -29,6 +29,7 @@ and buttons that still work.
 from __future__ import annotations
 
 import logging
+import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -71,6 +72,16 @@ CREEP = 0.35
 WIDE_WORDS = "wide"
 TIGHT_WORDS = "tele"
 UNKNOWN_CAPTION = "zoom not reported"
+
+# How long after the operator last asked for a zoom the handle is left where he
+# put it, whatever the camera says.
+#
+# The lens is still travelling for most of this. Readings that arrive while it
+# is are where the lens WAS, and writing them into the handle drags it back out
+# from under him - so it stays put until it has had a fair chance of being true.
+# Longer than the settling window `vmd/ptz/lenses.py` reads over, so the last
+# reading of a journey is the first one allowed to move the handle.
+HOLD_AFTER_ASKING = 7.0
 
 # What a reading is called. The readout used to be `42%` and nothing else - a
 # per cent of what, under a picture, beside a slider and two buttons - and the
@@ -123,15 +134,25 @@ class ZoomBar(QWidget):
     #: The operator is holding a button: keep going at this speed, or stop at 0.
     creep = Signal(str, float)
 
-    def __init__(self, name: str, absolute: bool = True, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        absolute: bool = True,
+        parent: QWidget | None = None,
+        clock=time.monotonic,
+    ) -> None:
         super().__init__(parent)
         self._name = name
+        self._clock = clock
         self._absolute = absolute
         self._position: float | None = None
         # Set while the slider is being moved by code rather than by a person.
         # Without it, drawing the camera's answer would look exactly like a new
         # command and the two would chase each other round the link.
         self._echoing = False
+        # When he last asked for a zoom, so a reading of where the lens used to
+        # be cannot pull the handle out from under him. See HOLD_AFTER_ASKING.
+        self._asked_at: float | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -147,7 +168,21 @@ class ZoomBar(QWidget):
         self._slider.setToolTip("Where the lens is. Drag to send it somewhere.")
         self._slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._slider.setStyleSheet(_SLIDER_STYLE)
+        # Two connections, and the split is the whole of why dragging this used
+        # to feel wrong.
+        #
+        # `valueChanged` fires on every intermediate value. Dragging the handle
+        # across the bar therefore asked the lens for sixty different zooms in a
+        # second, at a camera whose replies were last measured at two seconds -
+        # so the lens spent the drag chasing positions the operator had already
+        # left, and arrived somewhere he had passed through rather than where he
+        # let go. It is kept only for the ways of moving a slider that produce
+        # one value and mean it: the arrow keys, the wheel, a click on the
+        # groove. While the handle is held, it says nothing.
+        #
+        # `sliderReleased` is the drag: one command, at the value he stopped on.
         self._slider.valueChanged.connect(self._slid)
+        self._slider.sliderReleased.connect(self._let_go)
 
         self._unknown = UNKNOWN_CAPTION
         self._unknown_tip = (
@@ -200,10 +235,26 @@ class ZoomBar(QWidget):
         if not (self._absolute and self._position is not None):
             self.creep.emit(self._name, 0.0)
 
+    def _recently_asked(self) -> bool:
+        """Whether he has touched this slider recently enough to still own it."""
+        if self._asked_at is None:
+            return False
+        return (self._clock() - self._asked_at) < HOLD_AFTER_ASKING
+
     def _slid(self, value: int) -> None:
         if self._echoing:
             return
+        if self._slider.isSliderDown():
+            # Mid-drag. The handle follows the mouse, and the lens is told once,
+            # when he lets go. See the two connections above.
+            return
+        self._asked_at = self._clock()
         self.go_to.emit(self._name, value / STEPS)
+
+    def _let_go(self) -> None:
+        """The end of a drag: one command, at the value he stopped on."""
+        self._asked_at = self._clock()
+        self.go_to.emit(self._name, self._slider.value() / STEPS)
 
     # -------------------------------------------------------------- the answer
 
@@ -217,11 +268,25 @@ class ZoomBar(QWidget):
         self._position = None if position is None else _clamp(position)
         known = self._position is not None
         self._slider.setEnabled(known)
-        self._echoing = True
-        try:
-            self._slider.setValue(0 if not known else round(self._position * STEPS))
-        finally:
-            self._echoing = False
+        # The handle is only moved when he is not the one moving it, and not for
+        # a moment after he was.
+        #
+        # The lens takes seconds to travel and the console reads it back while
+        # it does, so the readings arriving during and just after a drag are
+        # where the lens WAS. Writing those into the handle pulled it backwards
+        # out from under the mouse, and again a second after he let go - which
+        # is a control that argues with the person using it, and is most of what
+        # "make sure the slider is working accurately" is about.
+        #
+        # The caption underneath is not held back: that IS the camera's answer,
+        # and watching it climb towards where he let go is the feedback that the
+        # lens is on its way.
+        if not self._slider.isSliderDown() and not self._recently_asked():
+            self._echoing = True
+            try:
+                self._slider.setValue(0 if not known else round(self._position * STEPS))
+            finally:
+                self._echoing = False
         if not known:
             self._say(self._unknown)
             self._caption.setToolTip(self._unknown_tip)

@@ -34,12 +34,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from vmd.ptz.lenses import Lenses  # noqa: E402
 from vmd.ptz.onvif import (  # noqa: E402
     MEDIA,
     OnvifPtz,
     PtzError,
-    match_profiles,
     read_profiles,
+    rtsp_path,
 )
 from vmd.settings import load_settings  # noqa: E402
 
@@ -121,18 +122,72 @@ def main() -> int:
         )
     print()
 
-    names = [stream.name for stream in camera.streams]
-    chosen = match_profiles(names, profiles)
-    print("what the console does with that today:")
+    # What the camera says each profile is served at. This is the evidence the
+    # console now pairs on, and if the pairing is still crossed on his camera
+    # this is where it went wrong - so it is printed whole rather than summarised.
+    print("what address the camera serves each profile at:")
+    served: dict[str, str] = {}
+    for profile in profiles:
+        try:
+            where = ptz.stream_uri(profile.token)
+        except PtzError as exc:
+            print(f"    {profile.token:<22} refused: {exc}")
+            continue
+        path = rtsp_path(where)
+        served[profile.token] = path
+        print(f"    {profile.token:<22} {where or '(said nothing)'}")
+        print(f"    {'':<22} -> the part that is compared: {path or '(none)'}")
+    print()
+
+    print("what you typed for each picture, and what it is compared as:")
     for stream in camera.streams:
-        token = chosen.get(stream.name)
+        print(f"    {stream.name:<12} {stream.url}")
+        print(f"    {'':<12} -> {rtsp_path(stream.url) or '(none)'}")
+    print()
+
+    # The verdict on the matching, said plainly, because this is the whole
+    # question: did the addresses decide it, and if not, why not.
+    print("did the addresses settle it?")
+    for stream in camera.streams:
+        wanted = rtsp_path(stream.url)
+        if not wanted:
+            print(f"    {stream.name:<12} NO - nothing to compare in the address you typed")
+            continue
+        hits = [token for token, path in served.items() if path and path == wanted]
+        if len(hits) == 1:
+            print(f"    {stream.name:<12} YES - {hits[0]}")
+        elif not hits:
+            print(
+                f"    {stream.name:<12} NO - no profile is served at {wanted}. "
+                "The camera calls its own address something else."
+            )
+        else:
+            print(
+                f"    {stream.name:<12} NO - {len(hits)} profiles are served at "
+                f"{wanted} ({', '.join(hits)}), so it decides nothing."
+            )
+    print()
+
+    names = [stream.name for stream in camera.streams]
+    lenses = Lenses(
+        ptz,
+        names,
+        urls={stream.name: stream.url for stream in camera.streams},
+        chosen={stream.name: stream.ptz_profile for stream in camera.streams},
+    )
+    lenses.find()
+    print("so the console will drive:")
+    for stream in camera.streams:
+        token = lenses.token(stream.name)
         if token is None:
             print(f"    {stream.name:<12} -> NOTHING (its zoom bar cannot work)")
             continue
         can = ptz_by_token.get(token)
         warn = "" if can is not False else "   <-- this profile has no PTZ config"
-        print(f"    {stream.name:<12} -> {token}{warn}")
-    if len(set(chosen.values())) == 1 and len(chosen) > 1:
+        picked = "  (you chose this by hand)" if stream.ptz_profile == token else ""
+        print(f"    {stream.name:<12} -> {token}{warn}{picked}")
+    chosen = {s.name: lenses.token(s.name) for s in camera.streams}
+    if len({t for t in chosen.values() if t}) == 1 and len(chosen) > 1:
         print("    ** both views point at the SAME profile: one bar moves the other's picture **")
     print()
 
@@ -158,7 +213,7 @@ def main() -> int:
         print(f"    uv run python spike/probe_zoom.py --move {names[0] if names else 'thermal'}")
         return 0
 
-    token = chosen.get(args.move)
+    token = lenses.token(args.move)
     if token is None:
         raise SystemExit(f"There is no view called {args.move!r} with a profile behind it.")
 
