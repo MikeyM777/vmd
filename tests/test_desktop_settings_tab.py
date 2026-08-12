@@ -2379,6 +2379,264 @@ def test_the_age_rule_note_invents_nothing_when_the_folder_is_not_there(
     assert "90 days" in said, said
 
 
+# ------------------------------------------------- the sliders that are crossed
+#
+# He pulled the last fix for this and reported back: still crossed. "The thermal
+# zoom slider moves the vis and the vis zoom slider moves the thermal."
+#
+# There has been a per-view override on each card all along - Zoom drives - and
+# it was useless to him twice over. It is hidden until the camera has said it
+# has more than one lens, and the only thing that made the camera say so was a
+# button buried inside Check the camera, which he has no reason to have pressed.
+# A fix that lives behind a tool he has never heard of is not a fix.
+
+
+class _FakePtz:
+    """A camera that answers about its lenses, and counts being asked."""
+
+    def __init__(self, answer: dict) -> None:
+        self.answer = answer
+        self.asked = 0
+
+    def zoom_profiles(self) -> dict:
+        self.asked += 1
+        return self.answer
+
+
+TWO_LENSES = [
+    {"token": "p-vis", "name": "Visible", "can_zoom": True},
+    {"token": "p-ir", "name": "Thermal", "can_zoom": True},
+]
+
+
+def crossed(**over) -> dict:
+    """What the camera says when the two sliders are crossed: thermal on the
+    visible lens and the other way round. Which is indistinguishable, from here,
+    from them being right - the camera answers the same either way, and only the
+    operator can see which picture moved."""
+    answer = {
+        "ok": True,
+        "error": "",
+        "shared": False,
+        "profiles": TWO_LENSES,
+        "using": {"thermal": "p-vis", "visible": "p-ir"},
+    }
+    answer.update(over)
+    return answer
+
+
+def a_camera(qtbot, tmp_path: Path, answer: dict):
+    from vmd.desktop.settings_tab import CameraTools
+
+    ptz = _FakePtz(answer)
+    tools = CameraTools(
+        ptz=ptz, find_paths=lambda s, on_progress: [], diagnose=lambda s: []
+    )
+    path = tmp_path / "settings.json"
+    save_settings(_two_watched_views(), path)
+    tab = SettingsTab(settings_path=path, tools=tools)
+    qtbot.addWidget(tab)
+    tab.disk_usage = a_drive(total_gb=1000, free_gb=500)
+    tab.load()
+    return tab, ptz, path
+
+
+def test_swapping_exchanges_the_two_views_lenses(qtbot, tmp_path: Path) -> None:
+    """One press, and nothing to understand. He can SEE that each slider moves
+    the other picture; that sentence is the whole of the input this needs."""
+    tab, _ptz, _path = a_camera(qtbot, tmp_path, crossed())
+    thermal, visible = tab.stream_rows()
+    assert thermal.chosen_lens() == "", "it starts on the worked-out answer"
+
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: thermal.chosen_lens() != "", timeout=5000)
+
+    # The camera said thermal was on p-vis and visible on p-ir. Exchanged.
+    assert thermal.chosen_lens() == "p-ir"
+    assert visible.chosen_lens() == "p-vis"
+    assert tab.message
+    assert "save" in tab.message.lower(), tab.message
+
+
+def test_a_swap_survives_a_save(qtbot, tmp_path: Path) -> None:
+    """It writes ptz_profile on both views, which is what makes it stick across
+    a restart. Written as a choice, not as a fact about this afternoon."""
+    tab, _ptz, path = a_camera(qtbot, tmp_path, crossed())
+    thermal, _visible = tab.stream_rows()
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: thermal.chosen_lens() != "", timeout=5000)
+
+    assert tab.save() is True, tab.message
+    stored = {s.name: s.ptz_profile for s in load_settings(path).camera.streams}
+    assert stored == {"thermal": "p-ir", "visible": "p-vis"}
+
+
+def test_swapping_twice_puts_them_back(qtbot, tmp_path: Path) -> None:
+    """The one thing a non-engineer must be able to do with a control he does
+    not understand: undo it by pressing it again. `using` comes back from the
+    camera reflecting what is set now, so the second press is the first press
+    read backwards."""
+    tab, ptz, _path = a_camera(qtbot, tmp_path, crossed())
+    thermal, visible = tab.stream_rows()
+
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: thermal.chosen_lens() == "p-ir", timeout=5000)
+
+    ptz.answer = crossed(using={"thermal": "p-ir", "visible": "p-vis"})
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: thermal.chosen_lens() == "p-vis", timeout=5000)
+    assert visible.chosen_lens() == "p-ir"
+
+
+def test_swap_is_offered_only_where_it_means_something(qtbot, tmp_path: Path) -> None:
+    """"Swap" has no meaning with one view and none with three. Both of those
+    are answered by Zoom drives on the cards, which names the lens."""
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    tab.show()
+    QApplication.processEvents()
+    assert tab.swap_row.isVisible()
+
+    tab.set_streams(list(_three_streams().camera.streams))
+    QApplication.processEvents()
+    assert not tab.swap_row.isVisible(), "offered with three views"
+
+    tab.set_streams([("only", "rtsp://a/1", True, "auto")])
+    QApplication.processEvents()
+    assert not tab.swap_row.isVisible(), "offered with one view"
+
+
+def test_the_swap_control_says_the_fault_in_his_words(qtbot, tmp_path: Path) -> None:
+    """His sentence, not ours: "the thermal zoom slider moves the vis". He is
+    not looking for a setting called ptz_profile, he is looking for the line
+    that describes what he can see happening."""
+    from vmd.desktop.style import FORM_MAX_WIDTH, stylesheet
+
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    said = (tab.swap_note.text() + " " + tab.swap_button.text()).lower()
+    assert "zoom" in said, said
+    assert "wrong" in said, said
+    assert "swap" in said, said
+    words = said + " " + tab.swap_button.toolTip().lower()
+    for jargon in ("onvif", "profile", "token", "ptz", "media"):
+        assert jargon not in words, words
+
+    # And it is drawn on one line beside its button. A `WrappedNote` in a row
+    # with a button is handed its narrowest useful width, which broke six words
+    # over three lines with 700 px of empty column next to them.
+    tab.setStyleSheet(stylesheet())
+    tab.show()
+    tab.setGeometry(0, 0, FORM_MAX_WIDTH, 1200)
+    QApplication.processEvents()
+    assert tab.swap_note.height() < 2 * tab.swap_button.height(), (
+        f"{tab.swap_note.height()} px for one line of caption"
+    )
+    assert tab.swap_note.width() >= tab.swap_note.minimumSizeHint().width()
+
+
+def test_a_camera_that_cannot_be_asked_says_so_and_swaps_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """A button that reports a crossed pair of sliders and then does nothing
+    visible is the fault he already reported, wearing a fix's clothes."""
+    tab, _ptz, _path = a_camera(
+        qtbot,
+        tmp_path,
+        {"ok": False, "error": "cannot reach 192.0.2.99", "profiles": []},
+    )
+    thermal, visible = tab.stream_rows()
+
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: "cannot reach" in tab.message, timeout=5000)
+
+    assert "192.0.2.99" in tab.message, tab.message
+    assert "nothing was changed" in tab.message.lower(), tab.message
+    assert thermal.chosen_lens() == ""
+    assert visible.chosen_lens() == ""
+
+
+def test_both_pictures_on_one_lens_is_explained_rather_than_swapped(
+    qtbot, tmp_path: Path
+) -> None:
+    """A swap cannot fix a camera sending one lens down both pictures, and the
+    operator has to be told that rather than left pressing a button that
+    changes nothing."""
+    tab, _ptz, _path = a_camera(
+        qtbot,
+        tmp_path,
+        crossed(
+            shared=True,
+            profiles=[{"token": "only", "name": "main", "can_zoom": True}],
+            using={"thermal": "only", "visible": "only"},
+        ),
+    )
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: "same lens" in tab.message, timeout=5000)
+
+    said = tab.message.lower()
+    assert "same lens" in said, said
+    assert "not a fault in vmd" in said, said
+    assert tab.stream_rows()[0].chosen_lens() == ""
+
+
+def test_a_view_the_camera_says_nothing_about_is_not_silently_swapped(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, _ptz, _path = a_camera(
+        qtbot, tmp_path, crossed(using={"thermal": "p-vis", "visible": ""})
+    )
+    tab.swap_the_zoom_sliders()
+    qtbot.waitUntil(lambda: "nothing to swap" in tab.message, timeout=5000)
+
+    assert "visible" in tab.message, tab.message
+    assert "nothing to swap" in tab.message.lower(), tab.message
+    assert tab.stream_rows()[0].chosen_lens() == ""
+
+
+def test_the_lens_choosers_are_filled_when_the_tab_is_first_opened(
+    qtbot, tmp_path: Path
+) -> None:
+    """Zoom drives is hidden until the camera has said it has more than one
+    lens, and the only thing that made it say so was a button inside Check the
+    camera - now shut by default, and never pressed by him. A control that
+    appears only after a tool he has never heard of is a control that does not
+    exist."""
+    tab, ptz, _path = a_camera(qtbot, tmp_path, crossed())
+    thermal = tab.stream_rows()[0]
+    assert not thermal.lens_row.isVisibleTo(tab), "offered before the camera answered"
+
+    tab.show()
+    qtbot.waitUntil(lambda: ptz.asked >= 1, timeout=5000)
+    qtbot.waitUntil(lambda: thermal.lens_row.isVisibleTo(tab), timeout=5000)
+    offered = [thermal.lens_field.itemData(i) for i in range(thermal.lens_field.count())]
+    assert "p-vis" in offered and "p-ir" in offered, offered
+
+    # Once. The tab is shown every time he comes back to it, and this crosses
+    # the radio link.
+    tab.hide()
+    tab.show()
+    QApplication.processEvents()
+    assert ptz.asked == 1, ptz.asked
+
+
+def test_opening_the_tab_never_reports_a_question_he_did_not_ask(
+    qtbot, tmp_path: Path
+) -> None:
+    """The console starts on the Live tab of a machine whose camera may be off.
+    Opening Settings must not greet him with a camera failure he did not ask
+    about - and must not fill the report box, which is the record of what the
+    buttons under it said."""
+    tab, ptz, _path = a_camera(
+        qtbot, tmp_path, {"ok": False, "error": "cannot reach it", "profiles": []}
+    )
+    tab.show()
+    qtbot.waitUntil(lambda: ptz.asked >= 1, timeout=5000)
+    QApplication.processEvents()
+
+    assert "cannot reach" not in tab.message, tab.message
+    assert tab.output_text() == "", tab.output_text()
+    assert not tab.stream_rows()[0].lens_row.isVisibleTo(tab)
+
+
 # ------------------------------------------------------- the two heads, at once
 
 

@@ -1057,6 +1057,10 @@ class SettingsTab(QWidget):
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._running: list[_ToolSignals] = []
+        # Whether the camera has been asked, once, what lenses it has. See
+        # `showEvent`: the answer is what makes **Zoom drives** appear on the
+        # cards at all.
+        self._asked_about_lenses = False
 
         # Everything on this tab is inside a scroll area, and it is not a
         # preference: this form is six boxes, a stream row per camera view, and
@@ -1163,6 +1167,49 @@ class SettingsTab(QWidget):
         for column in range(STREAM_COLUMNS):
             self._streams_layout.setColumnStretch(column, 1)
         streams_outer.addLayout(self._streams_layout)
+        # The one fix for crossed zoom sliders that needs nothing explained.
+        #
+        # He pulled the last fix for this and reported back: still crossed. "The
+        # thermal zoom slider moves the vis and the vis zoom slider moves the
+        # thermal." There has been a per-view override on each card all along -
+        # **Zoom drives** - and it was useless to him twice over: it is hidden
+        # until the camera has said it has more than one lens, and the only
+        # thing that made the camera say so was a button buried inside **Check
+        # the camera**, which he has no reason to have pressed.
+        #
+        # What he knows is the whole of what is needed: he can SEE that each
+        # slider moves the other picture. So the control is that sentence and a
+        # button, and it asks him to understand nothing about media profiles,
+        # tokens or ONVIF - one press exchanges the two views' lenses.
+        #
+        # Quiet, because on an installation where the sliders are right this is
+        # a line about a fault that is not happening.
+        self.swap_row = QWidget()
+        swap_line = QHBoxLayout(self.swap_row)
+        swap_line.setContentsMargins(0, 0, 0, 0)
+        swap_line.setSpacing(SPACE_SNUG)
+        self.swap_note = _note("The zoom sliders move the wrong pictures:")
+        # The one note on this tab that does not wrap. Every other one is a
+        # paragraph and wants the width of the column; this one is a caption on
+        # a button, and a `WrappedNote` beside a button in a row is handed its
+        # narrowest useful width - which broke six words over three lines with
+        # 700 px of empty column beside them.
+        self.swap_note.setWordWrap(False)
+        self.swap_button = QPushButton("Swap them")
+        self.swap_button.setToolTip(
+            "For when the zoom slider under one picture moves the other "
+            "picture.\n\n"
+            "It asks the camera which lens is behind each view, exchanges the "
+            "two, and puts the answer on the cards above. Press Save afterwards "
+            "and try the sliders again.\n\n"
+            "Nothing else about the camera is changed."
+        )
+        self.swap_button.clicked.connect(self.swap_the_zoom_sliders)
+        swap_line.addWidget(self.swap_note)
+        swap_line.addWidget(self.swap_button)
+        swap_line.addStretch(1)
+        streams_outer.addWidget(self.swap_row)
+
         # **Add a stream** was here, and **Remove** was on every card. Both are
         # gone, and the second is the one that matters.
         #
@@ -2059,6 +2106,11 @@ class SettingsTab(QWidget):
         """
         watched = any(row.detect_field.isChecked() for row in self._rows)
         self.ignore_help.setVisible(watched)
+        # "Swap them" means nothing with one view and nothing with three: there
+        # is no pair to exchange. The camera this console is built around has
+        # exactly two heads, and anything else is answered by **Zoom drives** on
+        # the cards, which says which lens each picture is on by name.
+        self.swap_row.setVisible(len(self._rows) == 2)
 
     def stream_rows(self) -> list[StreamRowWidget]:
         return list(self._rows)
@@ -2381,7 +2433,119 @@ class SettingsTab(QWidget):
             lambda tools, s: tools.find_paths(s),
         )
 
-    def ask_about_lenses(self) -> None:
+    def swap_the_zoom_sliders(self) -> None:
+        """Exchange the two views' lenses, because he can see they are crossed.
+
+        "The thermal zoom slider moves the vis and the vis zoom slider moves the
+        thermal." That sentence is the entire input this control needs, and it
+        is the only input he has: which media profile belongs to which picture is
+        worked out from a vendor's naming, the guess is silent when it is wrong,
+        and nothing in this program can see which picture answered.
+
+        So it asks the camera for the mapping it is using now - including the
+        automatic answer, which is the one that is wrong - swaps the two, and
+        writes both into `ptz_profile` so the choice survives a save and a
+        restart. Off the window thread, because it crosses the radio link.
+        """
+        if len(self._rows) != 2:
+            return
+        settings = self.settings_from_form()
+        if settings is None:
+            return
+
+        tools = self._camera_tools(settings)
+        signals = _ToolSignals()
+        signals.done.connect(lambda lines: self._swap_arrived(signals, lines))
+        self._running.append(signals)
+        self.swap_button.setEnabled(False)
+        self._set_message(
+            "Asking the camera which lens is behind each picture.", quiet=True
+        )
+        self._pool.start(_ToolJob(lambda: [tools.lenses(settings)], signals))
+
+    def _swap_arrived(self, signals: _ToolSignals, lines: list) -> None:
+        """Put the exchange on the cards, or say why there was nothing to do.
+
+        Every way this can fail ends in a sentence on the message line. A button
+        that reports a crossed pair of sliders and then does nothing visible is
+        the fault he already reported, wearing a fix's clothes.
+        """
+        self.swap_button.setEnabled(True)
+        if signals in self._running:
+            self._running.remove(signals)
+
+        answer = next((line for line in lines if isinstance(line, dict)), None)
+        if answer is None:
+            self._set_message(
+                "The camera could not be asked which lens is behind each "
+                "picture. Nothing was changed."
+            )
+            return
+        if not answer.get("ok"):
+            reason = str(answer.get("error") or "the camera did not say").strip()
+            self._set_message(
+                f"The camera could not be asked which lens is behind each "
+                f"picture: {reason}. Nothing was changed."
+            )
+            return
+
+        profiles = list(answer.get("profiles") or [])
+        using = dict(answer.get("using") or {})
+        first, second = self._rows
+        one, two = first.values()[0], second.values()[0]
+        here, there = using.get(one, ""), using.get(two, "")
+
+        if not here or not there:
+            missing = one if not here else two
+            self._set_message(
+                f"The camera did not say which lens is behind \"{missing}\", so "
+                f"there is nothing to swap. Press \"Check the camera\" at the "
+                f"bottom of this page and then \"Which lens is behind which "
+                f"picture?\" to see what it did say."
+            )
+            return
+        if here == there:
+            # Not a fault, and saying so is the whole of the answer: a swap
+            # cannot fix a camera that is sending one lens down both pictures.
+            self._set_message(
+                "Both pictures are on the same lens on this camera, so swapping "
+                "them would change nothing - either slider moves both. That is "
+                "what the camera reported, not a fault in VMD."
+            )
+            return
+
+        first.set_lenses(profiles, there)
+        second.set_lenses(profiles, here)
+        self._lay_the_cards_out()
+        self._set_message(
+            f"Swapped: the zoom slider under \"{one}\" now moves the lens "
+            f"\"{two}\" was on, and the other way round. Press Save, then try "
+            f"the sliders again. Press this again to put them back.",
+            quiet=True,
+        )
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Ask the camera about its lenses the first time this tab is opened.
+
+        **Zoom drives** on each card is hidden until the camera has said it has
+        more than one lens, and until now the only thing that made the camera
+        say so was a button inside **Check the camera** - which is now shut by
+        default and which he has no reason to press. A control that only appears
+        after a tool he has never heard of is a control that does not exist.
+
+        On being shown rather than on `load`, and once: the tab is built when the
+        console starts and the console starts on the Live tab, so asking at load
+        would cross the radio link for a page nobody is looking at. Quietly, off
+        the window thread, and any failure is dropped - this is a chooser being
+        offered, not an answer anybody asked for.
+        """
+        super().showEvent(event)
+        if self._asked_about_lenses:
+            return
+        self._asked_about_lenses = True
+        self.ask_about_lenses(quietly=True)
+
+    def ask_about_lenses(self, quietly: bool = False) -> None:
         """Ask the camera what lenses it has, and offer them on every card.
 
         The reason this exists is a fault the operator hit: "only the vis is
@@ -2392,38 +2556,63 @@ class SettingsTab(QWidget):
 
         So the guess is shown, and can be overruled. He can see which picture
         answers; nothing in this program can.
+
+        `quietly` is the tab asking on its own behalf when it is first opened.
+        Then nothing is printed and nothing is complained about: the operator did
+        not ask this question and must not be shown its answer, let alone its
+        failure. The button asking is loud, because somebody pressed it.
         """
         settings = self.settings_from_form()
         if settings is None:
-            self._output.setPlainText(f"Fix this first: {self.message}")
+            if not quietly:
+                self._output.setPlainText(f"Fix this first: {self.message}")
             return
+        if quietly and not settings.camera.host.strip():
+            return  # nothing to ask, and no address is not news
 
         tools = self._camera_tools(settings)
         signals = _ToolSignals()
-        signals.progress.connect(self._append_line)
         signals.done.connect(
-            lambda lines: self._lenses_found(self.lens_button, signals, lines)
+            lambda lines: self._lenses_found(
+                self.lens_button, signals, lines, quietly=quietly
+            )
         )
         self._running.append(signals)
+        if quietly:
+            self._pool.start(_ToolJob(lambda: [tools.lenses(settings)], signals))
+            return
+        signals.progress.connect(self._append_line)
         self.lens_button.setEnabled(False)
         self._output.setPlainText("Asking the camera about its lenses")
-        self._pool.start(
-            _ToolJob(lambda: [tools.lenses(settings)], signals)
-        )
+        self._pool.start(_ToolJob(lambda: [tools.lenses(settings)], signals))
 
-    def _lenses_found(self, button: QPushButton, signals: _ToolSignals, lines: list) -> None:
+    def _lenses_found(
+        self,
+        button: QPushButton,
+        signals: _ToolSignals,
+        lines: list,
+        quietly: bool = False,
+    ) -> None:
         """Print what the camera said, and put it into the choosers."""
-        button.setEnabled(True)
+        if not quietly:
+            button.setEnabled(True)
         if signals in self._running:
             self._running.remove(signals)
 
         answer = next((line for line in lines if isinstance(line, dict)), None)
         if answer is None:
-            for line in lines:
-                self._output.appendPlainText(str(line))
+            if not quietly:
+                for line in lines:
+                    self._output.appendPlainText(str(line))
             return
-        for line in lens_lines(answer):
-            self._output.appendPlainText(line)
+        if not quietly:
+            for line in lens_lines(answer):
+                self._output.appendPlainText(line)
+        elif not answer.get("ok"):
+            # Nobody asked, so nobody is told. The chooser stays hidden, which
+            # is the state it was already in.
+            logger.info("the camera did not say what lenses it has: %s", answer.get("error"))
+            return
 
         profiles = list(answer.get("profiles") or [])
         for row in self._rows:
