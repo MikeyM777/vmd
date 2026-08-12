@@ -70,6 +70,39 @@ class IgnoreRegion(Model):
         return (self.x, self.y, self.w, self.h)
 
 
+class IgnoreShape(Model):
+    """A drawn outline of the frame where movement is not news.
+
+    The rectangle above could not describe the thing it was most needed for: a
+    treeline is a ragged band across a hillside, and boxing it either throws
+    away the sky above it or leaves half the branches watched. The operator drew
+    that conclusion himself - "yes, free hand".
+
+    Points, in frame pixels, in the order they were drawn, joined back to the
+    first. The same reasons as the rectangle: it survives a resolution change by
+    being clipped rather than corrupted, and a settings file stays something a
+    person can read. Nothing here is ever shown to him as numbers - see
+    `vmd/desktop/mask.py`, which is a picture and a mouse and nothing else.
+    """
+
+    points: list[tuple[int, int]] = Field(default_factory=list)
+
+    @field_validator("points")
+    @classmethod
+    def _enough_to_enclose(cls, value: list) -> list:
+        # Three points is the fewest that can enclose anything. Fewer is a
+        # stray click, and a shape with no area would silently ignore nothing
+        # while sitting in the list looking like it was doing something.
+        if len(value) < 3:
+            raise ValueError("a drawn area needs at least three points")
+        if any(x < 0 or y < 0 for x, y in value):
+            raise ValueError("a drawn area must stay inside the picture")
+        return value
+
+    def as_tuples(self) -> list[tuple[int, int]]:
+        return [(int(x), int(y)) for x, y in self.points]
+
+
 class StreamSettings(Model):
     name: str
     url: str
@@ -141,6 +174,11 @@ class StreamSettings(Model):
     sensitivity: Literal["low", "normal", "high"] = "normal"
 
     ignore_regions: list[IgnoreRegion] = Field(default_factory=list)
+
+    # Drawn areas, which is what the rectangles above could not describe. Both
+    # are honoured together: a settings file written before this existed keeps
+    # working, and nothing the operator already marked is lost.
+    ignore_shapes: list[IgnoreShape] = Field(default_factory=list)
 
     # Is this the thermal head? Asked, rather than guessed.
     #
