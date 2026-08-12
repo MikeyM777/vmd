@@ -26,12 +26,30 @@ from vmd.settings import (
 )
 
 
-def build(qtbot, tmp_path: Path, settings: Settings | None = None):
+def a_drive(total_gb: float, free_gb: float):
+    """A drive of a stated size, in the shape shutil.disk_usage answers in.
+
+    Every tab in this file is given one. The form measures the real drive
+    otherwise, and the form now refuses a size bigger than the drive - so a test
+    that types 250 GB would pass on the machine it was written on and fail on a
+    smaller one. A test whose answer depends on the laptop it runs on is not a
+    test.
+    """
+    from types import SimpleNamespace
+
+    total = int(total_gb * 1024**3)
+    free = int(free_gb * 1024**3)
+    return lambda path: SimpleNamespace(total=total, used=total - free, free=free)
+
+
+def build(qtbot, tmp_path: Path, settings: Settings | None = None, drive=None):
     path = tmp_path / "settings.json"
     if settings is not None:
         save_settings(settings, path)
     tab = SettingsTab(settings_path=path)
     qtbot.addWidget(tab)
+    # Before `load`, which is what measures the drive.
+    tab.disk_usage = drive or a_drive(total_gb=1000, free_gb=500)
     tab.load()
     return tab, path
 
@@ -1996,15 +2014,6 @@ def test_the_camera_tool_buttons_say_what_they_do_to_the_camera(
 # nicer and easier, like a slider for the budget. If the user wants, he can edit."
 
 
-def a_drive(total_gb: float, free_gb: float):
-    """A drive of a stated size, in the shape shutil.disk_usage answers in."""
-    from types import SimpleNamespace
-
-    total = int(total_gb * 1024**3)
-    free = int(free_gb * 1024**3)
-    return lambda path: SimpleNamespace(total=total, used=total - free, free=free)
-
-
 def test_scanning_this_pc_fills_in_the_budget_and_the_age_rule(
     qtbot, tmp_path: Path
 ) -> None:
@@ -2048,6 +2057,68 @@ def test_the_scan_says_in_plain_words_what_it_found(qtbot, tmp_path: Path) -> No
     assert "suggest" in lower, said
     for jargon in ("bytes", "gib", "disk_usage", "retention", "budget_gb"):
         assert jargon not in lower, said
+
+
+def test_the_scan_names_the_drive_and_says_why_it_disagrees_with_the_label(
+    qtbot, tmp_path: Path
+) -> None:
+    """"The laptop have 950gb", and VMD says 884.
+
+    Both are right. VMD divides by 1024 three times and calls the answer GB,
+    which is exactly what Windows does - so This PC on his own machine says 884
+    too - while the sticker counts a gigabyte as a thousand million bytes. A
+    number he believes is wrong is a number he stops reading, and this is the
+    number the whole Storage box is about.
+
+    So the drive is named, which is the one word that lets him put the two
+    figures side by side, and the reason is said once where the figure first
+    appears.
+    """
+    root = with_footage(tmp_path)
+    tab, _ = build(qtbot, tmp_path, budgeted(root, 100.0))
+    tab.disk_usage = a_drive(total_gb=884, free_gb=500)
+    tab.scan_this_pc()
+    said = tab.storage_scan_note.text()
+
+    # Named, so This PC can be opened beside it.
+    assert "Drive " in said, said
+    assert "Windows" in said, said
+    # And the two numbers that do not agree, both of them, in one sentence.
+    assert "950" in said, said
+    assert "884" in said, said
+    assert "gib" not in said.lower(), "the exact unit is the one he cannot check"
+
+
+def test_a_folder_that_cannot_be_read_is_not_reported_as_empty(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Nothing recorded" and "nobody could look" are different sentences and
+    only one of them is good news. `recorded_bytes` answers None for the second
+    and its own docstring says that must not be read as zero - and "VMD's own
+    footage comes to nothing yet" under a folder full of footage nobody could
+    count is the reading that loses him the most."""
+    from vmd.desktop.settings_tab import scan_drive
+
+    there = tmp_path / "recordings"
+    there.mkdir()
+    words = scan_drive(
+        there,
+        1_000_000.0,
+        usage=a_drive(total_gb=1000, free_gb=500),
+        recorded=lambda root: None,
+    ).words
+    assert "nothing yet" not in words, words
+    assert "could not be read" in words, words
+
+    # And the ordinary first run - the folder is simply not there yet, because
+    # the recorder makes it - still says the plain thing.
+    first_run = scan_drive(
+        tmp_path / "not-yet",
+        1_000_000.0,
+        usage=a_drive(total_gb=1000, free_gb=500),
+        recorded=lambda root: None,
+    ).words
+    assert "nothing yet" in first_run, first_run
 
 
 def test_what_the_scan_suggested_is_still_his_to_change(qtbot, tmp_path: Path) -> None:
@@ -2118,16 +2189,194 @@ def test_the_slider_says_how_many_days_of_footage_the_budget_buys(
     assert any(character.isdigit() for character in small), small
 
 
-def test_typing_a_budget_bigger_than_the_slider_is_not_thrown_away(
+def test_the_slider_stops_where_the_drive_stops(qtbot, tmp_path: Path) -> None:
+    """From the first time the tab is opened, not from the first time he presses
+    the scan button.
+
+    The slider used to run to an invented 2000 GB. On a drive that holds 884 the
+    far end of it is a size nothing can ever reach, so the handle says nothing
+    about how full anything is - and three quarters along means three quarters
+    of a number that does not exist.
+    """
+    tab, _ = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    assert tab.budget_slider.maximum() == 884, tab.budget_slider.maximum()
+
+
+def test_a_size_bigger_than_the_drive_is_refused_in_words(
     qtbot, tmp_path: Path
 ) -> None:
-    """The slider has to end somewhere and a drive does not have to agree with
-    where. The box is the setting; the slider is a way of moving it."""
-    tab, path = build(qtbot, tmp_path)
-    wanted = tab.budget_slider.maximum() + 4000
-    tab.budget_gb = str(wanted)
+    """"The laptop have 950gb and the VMD doesnt stop me in the budget."
+
+    The deleting was never wrong - retention removes the oldest segments to stay
+    inside the size. The fault is that the form let him name a size the drive
+    can never reach, and a threshold nothing can cross is a threshold that never
+    fires: nothing is deleted, and the drive fills up until recording stops.
+    """
+    tab, path = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    tab.budget_gb = "2000"
+
+    assert tab.save() is False, "a size the drive cannot hold was accepted"
+    said = tab.message
+    assert "884" in said, said
+    assert "2000" in said, said
+    # Named, so it can be put beside This PC on his own machine.
+    assert "Drive" in said, said
+    # And it says what goes wrong, not merely that it is not allowed.
+    assert "deleted" in said.lower(), said
+    assert not path.exists() or load_settings(path).storage.budget_gb != 2000.0
+
+
+def test_a_size_past_the_end_of_the_drive_is_said_as_it_is_typed(
+    qtbot, tmp_path: Path
+) -> None:
+    """Not only at Save. The line under the box was promising "about 19 days of
+    footage" for a size the drive can never hold, which is the form agreeing
+    with the mistake for as long as it takes him to reach the button."""
+    tab, _ = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    tab.budget_gb = "2000"
+
+    said = tab.budget_days_note.text().lower()
+    assert "884" in said, said
+    assert "day" not in said, "it still promises footage it can never hold"
+
+    tab.budget_gb = "800"
+    assert "day" in tab.budget_days_note.text().lower()
+
+
+def test_the_size_he_typed_is_never_quietly_rewritten(qtbot, tmp_path: Path) -> None:
+    """Refused, not clamped. Rewriting a number he typed is how a form loses a
+    field, and this is the field that decides how much footage he keeps: he has
+    to see that what he chose is not what will be in force."""
+    tab, _ = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    tab.budget_gb = "2000"
+    tab.save()
+    assert tab.budget_gb == "2000", "the form corrected him behind his back"
+
+
+def test_a_size_the_drive_can_hold_saves_as_it_always_did(
+    qtbot, tmp_path: Path
+) -> None:
+    """Only the impossible case is refused. Everything else goes through on the
+    first press, as every other setting on this page does."""
+    tab, path = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    tab.budget_gb = "800"
     assert tab.save() is True, tab.message
-    assert load_settings(path).storage.budget_gb == float(wanted)
+    assert load_settings(path).storage.budget_gb == 800.0
+
+
+def test_a_drive_that_cannot_be_read_refuses_nothing_on_a_guess(
+    qtbot, tmp_path: Path
+) -> None:
+    """A folder on a drive letter with nothing behind it is already refused a
+    line above this, in words about the real fault. Refusing it a second time on
+    the strength of a size nobody could measure would name the wrong problem."""
+
+    def refuses(path):
+        raise OSError(5, "The device is not ready")
+
+    tab, _ = build(qtbot, tmp_path, drive=refuses)
+    assert tab._drive_gb is None
+    tab.budget_gb = "100000"
+    assert tab._bigger_than_the_drive(tab.settings_from_form()) == ""
+
+
+# ------------------------------------------- what the age rule actually does
+#
+# "Delete older than (days)" stays: asked whether there is a legal requirement,
+# he said yes. What was wrong is that it was tied to nothing - he can set 90
+# days while holding six, and a rule that will not fire for another eighty-four
+# reads exactly like a rule that is working.
+
+
+def holding(tab, days: float) -> None:
+    """Put a stated number of days of footage on the drive, without writing it.
+
+    His case is six days against a ninety-day rule, and six days of footage at
+    the rate this camera records is about 1.3 GB of files - not something a
+    test writes. What the form actually reads is one measurement of the folder,
+    so that is what is set: the walk is what is being skipped, not the
+    arithmetic.
+    """
+    tab._footage_bytes = int(days * 86400 * tab._footage_rate())
+    tab._say_what_the_age_rule_does()
+
+
+def test_the_age_rule_says_it_is_deleting_nothing_when_it_is_deleting_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """His complaint, in his own numbers: ninety days set while holding six.
+
+    Nothing on the screen said the rule would not fire for another eighty-four
+    days, so the box read exactly like a rule that was working - and it is the
+    number he would point at if anybody asked how long footage is kept.
+    """
+    tab, _ = build(qtbot, tmp_path)
+    tab.retention_days = "90"
+    holding(tab, days=6)
+
+    said = tab.retention_note.text().lower()
+    assert said.strip(), "the box still says nothing about what it does"
+    assert "6 days" in said, said
+    assert "90 days" in said, said
+    assert "nothing" in said, said
+    # And it points at the rule that IS deleting his footage.
+    assert "size above" in said, said
+
+
+def test_the_age_rule_says_so_when_it_is_the_one_deleting(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other half. A rule shorter than the footage there is really does
+    delete, and then it is the rule that decides rather than the size."""
+    tab, _ = build(qtbot, tmp_path)
+    tab.retention_days = "3"
+    holding(tab, days=6)
+
+    said = tab.retention_note.text().lower()
+    assert "6 days" in said, said
+    assert "3 days" in said, said
+    assert "deleted" in said, said
+    assert "deletes nothing" not in said, said
+
+
+def test_an_empty_age_rule_says_what_that_means(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab.retention_days = ""
+    holding(tab, days=6)
+    said = tab.retention_note.text().lower()
+    assert "age" in said, said
+    assert "size above" in said, said
+
+
+def test_a_few_minutes_of_footage_is_not_rounded_up_to_a_day(
+    qtbot, tmp_path: Path
+) -> None:
+    """`_days_of_footage` never answers zero, and it is right not to for a size:
+    a size that holds part of a day holds something. This is not a size, it is a
+    measurement - and "about 1 day" for four minutes of footage is the box lying
+    in the direction that makes the age rule look reasonable."""
+    root = with_footage(tmp_path, megabytes=3)
+    tab, _ = build(qtbot, tmp_path, budgeted(root, 100.0))
+    tab.retention_days = "90"
+
+    said = tab.retention_note.text().lower()
+    assert "less than a day" in said, said
+    assert "1 day of footage" not in said, said
+
+
+def test_the_age_rule_note_invents_nothing_when_the_folder_is_not_there(
+    qtbot, tmp_path: Path
+) -> None:
+    """First run: the recorder has not made the folder yet. An invented amount
+    of footage under a rule about deleting footage is the worst sentence this
+    box could carry, so it says nothing about how much there is - and still says
+    what the rule does."""
+    tab, _ = build(qtbot, tmp_path, budgeted(tmp_path / "not-yet", 100.0))
+    tab.retention_days = "90"
+
+    said = tab.retention_note.text().lower()
+    assert "you have" not in said, said
+    assert "90 days" in said, said
 
 
 # ------------------------------------------------------- the two heads, at once

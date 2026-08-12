@@ -739,6 +739,56 @@ class DriveScan:
     drive_gb: float | None = None
 
 
+def drive_under(root) -> Path:
+    """The nearest folder above `root` that exists, which is on the same drive.
+
+    The recordings folder does not have to be there yet - first run is exactly
+    the state the storage controls are useful in - and asking the operating
+    system about a folder that is not there answers with an error rather than
+    with the drive it would be on.
+    """
+    probe = Path(root)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return probe
+
+
+def drive_name(root) -> str:
+    """What Windows calls the drive this folder is on: `C:`, or empty.
+
+    On the console this is always a drive letter, and it is the whole point of
+    printing it: it is the one word that lets him put VMD's figure and This PC's
+    figure side by side. `Path.anchor` is `C:\\`; the trailing separator is
+    dropped because nothing on that screen writes one.
+    """
+    anchor = Path(drive_under(root)).anchor
+    return anchor.rstrip("\\/") if anchor else ""
+
+
+# Why the number VMD prints is not the number on the laptop's own label.
+#
+# His words: "the laptop have 950gb". `bytes_in_words` divides by 1024 three
+# times and calls the answer GB, so a drive sold as 950 GB - which is
+# 950,000,000,000 bytes - prints as 884 GB. Both figures are correct and they
+# count a gigabyte differently.
+#
+# The decision was to keep dividing by 1024, for one reason: Windows does the
+# same and labels it GB too, so This PC on his own machine says 884 as well.
+# Printing GiB would be exact and would match nothing he can put beside it;
+# printing decimal GB would match the sticker and disagree with the only other
+# place on the console he could check. So VMD prints what Windows prints, names
+# the drive so the two can be compared, and says once - here, where the figure
+# first appears - why the sticker is a bigger number. A number he thinks is
+# wrong is a number he stops believing, and this is the number the whole
+# storage box is about.
+WHY_THE_STICKER_DISAGREES = (
+    "That is the same figure Windows shows for this drive under This PC. It is "
+    "smaller than the size printed on the laptop - a drive sold as \"950 GB\" "
+    "shows as about 884 GB in Windows - because the two count a gigabyte "
+    "differently. Nothing is missing."
+)
+
+
 def scan_drive(
     root: Path,
     rate_bytes_per_second: float,
@@ -771,12 +821,9 @@ def scan_drive(
     usage = usage or shutil.disk_usage
     recorded = recorded or recorded_bytes
 
-    # The folder does not have to exist yet - first run is exactly the moment
-    # this button is useful - so the question is asked of the nearest parent
-    # that does, which is on the same drive.
-    probe = Path(root)
-    while not probe.exists() and probe.parent != probe:
-        probe = probe.parent
+    probe = drive_under(root)
+    named = drive_name(root)
+    called = f"Drive {named}" if named else "This computer's drive"
     try:
         space = usage(str(probe))
     except OSError as exc:
@@ -786,7 +833,21 @@ def scan_drive(
             f"computer can reach."
         )
 
-    ours = recorded(root) or 0
+    # Three states and not two. `recorded_bytes` answers None when the folder
+    # cannot be walked, and its own docstring says that must not be read as
+    # zero - "nothing recorded" and "nobody could look" are different sentences
+    # and only one of them is good news. The one that is ordinary is the folder
+    # not being there at all, which is first run: the recorder makes it.
+    ours = recorded(root)
+    if ours is None and Path(root).exists():
+        footage = "could not be counted - that folder could not be read"
+        ours = 0
+    elif not ours:
+        footage = "nothing yet"
+        ours = 0
+    else:
+        footage = bytes_in_words(ours)
+
     room = space.free + ours
     reserve = max(space.total * DRIVE_RESERVE_FRACTION, DRIVE_RESERVE_FLOOR_BYTES)
     budget_bytes = room - reserve
@@ -796,13 +857,14 @@ def scan_drive(
     # read line by line or not at all. "0 KB" is not an amount of footage; the
     # first run has none, and saying so is shorter and truer.
     found = (
-        f"This computer's drive holds {bytes_in_words(space.total)} and "
+        f"{called} holds {bytes_in_words(space.total)} and "
         f"{bytes_in_words(space.free)} of it is free. VMD's own footage on it "
-        f"comes to {bytes_in_words(ours) if ours else 'nothing yet'}."
+        f"comes to {footage}."
     )
     if budget_bytes < SMALLEST_WORTHWHILE_BUDGET_BYTES:
         return DriveScan(
-            found + "\nThere is not enough room left on it to suggest anything. "
+            found + "\n" + WHY_THE_STICKER_DISAGREES
+            + "\nThere is not enough room left on it to suggest anything. "
             "Free some space on this drive, or point the folder above at "
             "another one, and scan again.",
             drive_gb=drive_gb,
@@ -819,6 +881,7 @@ def scan_drive(
     # it is a sentence about a form the operator cannot see.
     lines = [
         found,
+        WHY_THE_STICKER_DISAGREES,
         f"Suggested size: {budget_gb:.0f} GB{holds}. That is everything free "
         f"apart from a slice of the drive left alone, so it can never be filled "
         f"right up.",
@@ -976,6 +1039,18 @@ class SettingsTab(QWidget):
         # got one, and so the one filesystem call this tab makes from a button
         # press is in a place anybody can find.
         self.disk_usage = shutil.disk_usage
+        # What the last look at the drive found: its size in GB and what Windows
+        # calls it. None until something has looked, and None again whenever the
+        # drive cannot be read - which is a state the form has to be able to be
+        # in, because the folder can name a drive letter with nothing behind it.
+        self._drive_gb: float | None = None
+        self._drive_name = ""
+        # How much footage is on the drive now, in bytes, or None when the
+        # folder cannot be read. Measured when the tab is loaded and when the
+        # folder changes, and held rather than asked for again: it is a
+        # directory walk, and the sentence it feeds is redrawn on every keystroke
+        # in the age box.
+        self._footage_bytes: int | None = None
         # One at a time, and never on the UI thread: finding the right path
         # probes two dozen addresses and takes up to a minute. A console that
         # stops repainting for a minute is a console the operator restarts.
@@ -1254,11 +1329,22 @@ class SettingsTab(QWidget):
             self._budget.fontMetrics().horizontalAdvance("000000000")
         )
         self.budget_slider = QSlider(Qt.Orientation.Horizontal)
+        # A scale that means something, from the first time the tab is opened.
+        #
+        # It used to run to an invented 2000 GB until somebody pressed the scan
+        # button. On a drive that holds 884 GB that puts the far end of the
+        # slider at a size the drive can never reach, so the handle says nothing
+        # about how full anything is - and it let him set a size bigger than the
+        # drive, which is the fault he reported: "the laptop have 950gb and the
+        # VMD doesnt stop me in the budget". `_fit_the_slider_to_the_drive`
+        # measures the drive at load and whenever the folder is changed.
         self.budget_slider.setRange(1, BUDGET_SLIDER_MAX_GB)
         self.budget_slider.setStyleSheet(SLIDER_STYLE)
         self.budget_slider.setToolTip(
             "How much of the drive VMD is allowed to fill with footage. When it "
-            "is full the oldest footage is deleted to keep recording going."
+            "is full the oldest footage is deleted to keep recording going.\n\n"
+            "It stops at the size of the drive, because a size bigger than the "
+            "drive is one nothing can ever reach."
         )
         budget_line = QHBoxLayout()
         budget_line.setSpacing(SPACE_SNUG)
@@ -1288,6 +1374,23 @@ class SettingsTab(QWidget):
         self._days = QLineEdit()
         self._days.setPlaceholderText("empty means never delete by age")
         storage_form.addRow("Delete older than (days)", self._days)
+
+        # What the age rule means given what is actually on the drive.
+        #
+        # He is right that the box was not tied to anything: it let him set 90
+        # days while holding six, and a rule that will not fire for another
+        # eighty-four days reads exactly like a rule that is working. It is
+        # staying - asked whether there is a legal requirement, he said yes - so
+        # the fix is to make it honest rather than to take it away.
+        self.retention_note = _note("")
+        storage_form.addRow("", self.retention_note)
+        self._days.textChanged.connect(lambda _typed: self._say_what_the_age_rule_does())
+        # The folder decides both the drive the slider is scaled to and how much
+        # footage there is to talk about, and it is typed rather than chosen.
+        # On `editingFinished` and not on every keystroke: this walks a directory
+        # tree, and `C`, `C:`, `C:\\`, `C:\\f`... is a walk per letter.
+        self._root.editingFinished.connect(self._the_folder_changed)
+
         storage_outer.addLayout(storage_form)
         layout.addWidget(storage_box)
 
@@ -1600,28 +1703,149 @@ class SettingsTab(QWidget):
         """Look at the drive, say what is on it, and fill in the two numbers.
 
         The two settings this fills in are the ones he had no way of arriving
-        at: a budget in gigabytes and an age in days, on a form that never told
+        at: a size in gigabytes and an age in days, on a form that never told
         him how big the drive was. Both stay editable, and neither is written
         anywhere until Save - this button changes two boxes and a sentence.
         """
-        root = Path(self.storage_root.strip() or "recordings")
-        if not root.is_absolute():
-            root = self.settings_path.parent / root
-        found = scan_drive(root, self._footage_rate(), usage=self.disk_usage)
+        found = scan_drive(
+            self._recordings_folder(), self._footage_rate(), usage=self.disk_usage
+        )
         self.storage_scan_note.setText(found.words)
-        if found.drive_gb is not None:
-            # The slider now measures something real: how much of THIS drive the
-            # footage may take. Before a scan it has an invented scale, because
-            # nothing has asked the drive how big it is - and a handle sitting at
-            # 5% of an invented scale says nothing at all.
-            self.budget_slider.setMaximum(
-                max(int(found.drive_gb), int(found.budget_gb or 0), 1)
-            )
+        self._fit_the_slider_to_the_drive()
         if found.budget_gb is None:
             return  # nothing could be worked out, and the sentence says why
         self.budget_gb = f"{found.budget_gb:.0f}"
         if found.days is not None:
             self.retention_days = str(found.days)
+        self._say_what_the_age_rule_does()
+
+    def _recordings_folder(self) -> Path:
+        """The folder on screen, anchored the way `load_settings` anchors it."""
+        root = Path(self.storage_root.strip() or "recordings")
+        if not root.is_absolute():
+            root = self.settings_path.parent / root
+        return root
+
+    def _the_folder_changed(self) -> None:
+        """A new folder is a new drive and a different pile of footage."""
+        self._footage_bytes = None
+        self._fit_the_slider_to_the_drive()
+        self._say_what_the_age_rule_does()
+
+    def _fit_the_slider_to_the_drive(self) -> None:
+        """Put the far end of the slider where the drive actually ends.
+
+        A slider that runs past the end of the drive is not merely a wrong
+        scale. It is the fault he reported - "the laptop have 950gb and the VMD
+        doesnt stop me in the budget" - because the far end of it is a size that
+        can never be reached, and a size that can never be reached means the
+        oldest footage is never deleted to make room. Retention does its job
+        perfectly and the drive fills up anyway.
+
+        The typed box is left completely alone. It is the setting, the slider is
+        only a way of moving it, and a form that rewrites a number the operator
+        typed is a form he stops believing. A number past the drive is caught at
+        Save instead, in a sentence - see `_bigger_than_the_drive`.
+        """
+        folder = self._recordings_folder()
+        self._drive_name = drive_name(folder)
+        try:
+            self._drive_gb = self.disk_usage(str(drive_under(folder))).total / 1024**3
+        except OSError:
+            # A drive letter with nothing behind it. Nothing is known about how
+            # big it is, so the slider goes back to a length rather than a
+            # measurement, and Save refuses nothing on the strength of a guess.
+            self._drive_gb = None
+        top = int(self._drive_gb) if self._drive_gb else BUDGET_SLIDER_MAX_GB
+        # `setMaximum` drags the handle back when the current value is past the
+        # new end, and the handle moving rewrites the box. Held shut for exactly
+        # that: the typed size is the setting and this is a change of scale.
+        self._syncing_budget = True
+        try:
+            self.budget_slider.setMaximum(max(top, 1))
+        finally:
+            self._syncing_budget = False
+        self._budget_typed(self._budget.text())
+
+    def _how_much_footage(self) -> int | None:
+        """Bytes of footage on the drive now, measured once and remembered.
+
+        None when the folder cannot be walked, which includes the ordinary
+        first-run state of it not being there yet. None is not zero: "nothing
+        recorded" and "nobody could look" are different sentences, and only one
+        of them is something to tell him.
+        """
+        if self._footage_bytes is None:
+            self._footage_bytes = recorded_bytes(self._recordings_folder())
+        return self._footage_bytes
+
+    def _say_what_the_age_rule_does(self) -> None:
+        """Say what "delete older than" means given the footage there really is.
+
+        His complaint about this box was that it is not tied to reality: he can
+        set 90 days while holding six days of footage, and nothing anywhere says
+        that the rule will not fire for another eighty-four. A number that looks
+        like it is doing something and is not is worse than no number, because
+        it is the number he will point at when asked how long footage is kept.
+
+        The box stays - he was asked whether there is a legal requirement and
+        said yes - so what changes is that the line under it says which of the
+        two rules is actually deleting his footage.
+        """
+        typed = self.retention_days.strip()
+        held, days = self._how_far_back_it_goes()
+        if not typed:
+            self.retention_note.setText(
+                held + "Nothing is deleted because of its age. Footage goes only "
+                "when the size above is full, oldest first."
+            )
+            return
+        try:
+            rule = int(float(typed))
+        except ValueError:
+            # Half-typed, or not a number at all. The save refuses it by the
+            # name on the form; a sentence under it guessing at what he meant
+            # would be a second opinion nobody asked for.
+            self.retention_note.setText("")
+            return
+        if days is not None and rule > days:
+            self.retention_note.setText(
+                f"{held}Nothing is deleted by age until it is "
+                f"{_days_in_words(rule)} old, so today this rule deletes nothing "
+                f"- the size above is what decides."
+            )
+            return
+        self.retention_note.setText(
+            f"{held}Anything older than {_days_in_words(rule)} is deleted, "
+            f"whether there is room for it or not."
+        )
+
+    def _how_far_back_it_goes(self) -> tuple[str, float | None]:
+        """How much footage there is, in words and as a number of days.
+
+        Two returns because the sentence and the comparison want different
+        things: he is told "about 6 days", and the rule is compared against the
+        unrounded figure so that 6 days of footage and a 6-day rule do not read
+        as a rule that never fires.
+
+        `None` when the folder could not be walked - which includes the folder
+        not being there yet, on the first run - and then nothing is said about
+        it at all. An invented amount of footage under a rule about deleting
+        footage is the worst sentence this box could carry.
+        """
+        have = self._how_much_footage()
+        rate = self._footage_rate()
+        if have is None or rate <= 0:
+            return "", None
+        days = have / rate / SECONDS_IN_A_DAY
+        if days < 1:
+            # `_days_of_footage` never answers zero, and it is right not to for
+            # a size: a size that holds part of a day holds something. This is
+            # not a size, it is a measurement, and "about 1 day" for four
+            # minutes of footage is the box lying in the direction that makes
+            # the age rule look reasonable.
+            return "You have less than a day of footage. ", days
+        return f"You have about {_days_in_words(int(days))} of footage. ", days
 
     def _footage_rate(self) -> float:
         """How fast footage arrives, in bytes a second. An estimate, and a
@@ -1655,7 +1879,8 @@ class SettingsTab(QWidget):
         A number past the end of the slider parks the handle at the end and is
         otherwise left completely alone. The box is the setting: rewriting what
         somebody typed is how a form loses a field, and this one is the field
-        that deletes footage when it goes down.
+        that deletes footage when it goes down. A number past the end of the
+        drive is caught at Save, in a sentence, rather than corrected here.
         """
         if not self._syncing_budget:
             self._syncing_budget = True
@@ -1673,13 +1898,31 @@ class SettingsTab(QWidget):
             finally:
                 self._syncing_budget = False
         self._say_how_many_days()
+        # How long the footage he has goes back does not change, but which of
+        # the two rules is deleting it does.
+        self._say_what_the_age_rule_does()
 
     def _say_how_many_days(self) -> None:
-        """How far back this budget lets him look, beside the budget."""
+        """How far back this size lets him look, beside the size.
+
+        Or, when the size is past the end of the drive, that it is - said here
+        rather than only at Save, because a line under the box promising "about
+        19 days of footage" for a size the drive can never hold is the form
+        agreeing with the mistake. Save refuses it in full; this is the shorter
+        version, at the moment he types it.
+        """
         try:
             budget_gb = float(self._budget.text())
         except ValueError:
             budget_gb = 0.0
+        if self._drive_gb is not None and budget_gb > self._drive_gb:
+            called = f"Drive {self._drive_name}" if self._drive_name else "this drive"
+            self.budget_days_note.setText(
+                f"That is more than {called} holds ({self._drive_gb:.0f} GB), so "
+                f"nothing would ever be deleted to make room and the drive would "
+                f"fill up. Save will not accept it."
+            )
+            return
         days = _days_of_footage(budget_gb, self._footage_rate())
         if days is None:
             self.budget_days_note.setText("")
@@ -1877,6 +2120,12 @@ class SettingsTab(QWidget):
         # How far a thing must travel before it counts is not on this form any
         # more; `self._loaded` above is what carries it across a save.
         self.say_the_lowest_picture(settings)
+        # Both of these touch the filesystem, and both are the reason the two
+        # storage numbers can be said anything about at all: how big the drive
+        # is, and how much footage is on it.
+        self._footage_bytes = None
+        self._fit_the_slider_to_the_drive()
+        self._say_what_the_age_rule_does()
         # The whole stream, not four of its fields: the detection choices belong
         # to the row that shows them, and a row that was handed only a name and
         # an address would write the defaults back over them at the next save.
@@ -1898,6 +2147,11 @@ class SettingsTab(QWidget):
             self._set_message(problem)
             return False
 
+        too_big = self._bigger_than_the_drive(settings)
+        if too_big:
+            self._set_message(too_big)
+            return False
+
         warning = self._budget_warning(settings)
         if warning:
             self._set_message(warning)
@@ -1916,6 +2170,41 @@ class SettingsTab(QWidget):
         except Exception:  # noqa: BLE001 - the file is written; the rest is not the save
             logger.exception("the saved settings could not be handed to the console")
         return True
+
+    def _bigger_than_the_drive(self, settings: Settings) -> str:
+        """Refuse a size the drive can never reach, and say why in one sentence.
+
+        "The laptop have 950gb and the VMD doesnt stop me in the budget." The
+        deleting itself was never wrong - retention removes the oldest segments
+        to stay inside the size - but a size larger than the drive is a
+        threshold nothing can cross, so nothing is ever deleted and the drive
+        fills up instead. Recording then stops, on the console whose entire job
+        is not stopping.
+
+        Refused rather than quietly clamped. Rewriting a number he typed is how
+        a form loses a field, and this is the field that decides how much
+        footage he keeps: he has to see that the number he chose is not the
+        number that will be in force. It says the drive by name and gives the
+        figure, so the sentence can be checked against This PC.
+
+        Silent when nothing is known about the drive. A drive letter with
+        nothing behind it is already refused a line above this, by
+        `storage_problem`, in words about the real fault.
+        """
+        if not settings.storage.budget_enabled:
+            return ""
+        if self._drive_gb is None:
+            return ""
+        if settings.storage.budget_gb <= self._drive_gb:
+            return ""
+        called = f"Drive {self._drive_name}" if self._drive_name else "This drive"
+        return (
+            f"{called} holds {self._drive_gb:.0f} GB, so {settings.storage.budget_gb:g} "
+            f"GB is a size it can never reach. Old footage is only deleted once "
+            f"that size is used up, so a size bigger than the drive means nothing "
+            f"is ever deleted and the drive fills up instead. Type "
+            f"{self._drive_gb:.0f} or less."
+        )
 
     def _budget_warning(self, settings: Settings) -> str:
         """Say what lowering the budget is about to delete, once, before it does.
