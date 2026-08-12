@@ -717,6 +717,10 @@ class PlaybackTab(QWidget):
         # (fraction of the window, the event) for every mark on the bar.
         self.event_marks: list[tuple[float, object]] = []
         self.status_text = ""
+        # Whether the line under the bar is the one describing the picture, and
+        # what is on the end of it. See `_say_what_he_is_watching`.
+        self._about_the_picture = False
+        self._watching_note = ""
         self.readout_text = ""
         self.hover_text = ""
         self.dragging = False
@@ -1066,6 +1070,7 @@ class PlaybackTab(QWidget):
         self.day_start, self.day_end = day_bounds(date.year(), date.month(), date.day())
         self.playhead_time = None
         self._stop_second_picture()
+        self._watching_note = ""
         self._showing = None
         # A different day is a different set of files, so nothing is standing on
         # footage until something is played again.
@@ -1399,7 +1404,6 @@ class PlaybackTab(QWidget):
         when = min(max(when, self.day_start), self.day_end)
         self.playhead_time = when
         self._keep_in_view(when)
-        clock = datetime.datetime.fromtimestamp(when).strftime("%H:%M:%S")
 
         target = seek_target(self._segments, when)
         if target is None:
@@ -1432,28 +1436,22 @@ class PlaybackTab(QWidget):
         self._point(self._pane, target.path, target.offset_seconds, first=True)
         logger.info("playing %s from %.1f s in", Path(target.path).name, target.offset_seconds)
 
-        # The name of the recording is on the end of both sentences and not in
-        # the middle of either: it is the only place on this tab that says which
-        # file on disk this is, which is what he needs if he ever wants to take
-        # a copy of it by hand - and it is the last thing he cares about while
-        # he is watching.
-        name = Path(target.path).name
+        # The lead it really got, not the one it asked for. A movement two
+        # seconds into a file is played from that file's first frame, and saying
+        # "5s before" about it would be the console rounding a measurement up in
+        # front of somebody making a decision from it.
+        lead_said = ""
         if event is not None:
-            # The lead it really got, not the one it asked for. A movement two
-            # seconds into a file is played from that file's first frame, and
-            # saying "5s before" about it would be the console rounding a
-            # measurement up in front of somebody making a decision from it.
-            note = (
-                f"{clock} - {_duration(lead)} before the movement on "
-                f"{event.stream}, {name}"
-            )
-        else:
-            note = (
-                f"Playing {self.shown_streams()[0]} from {clock} - "
-                f"{name}, {_duration(target.offset_seconds)} in"
-            )
-        note += self._point_the_second_picture(when)
-        self._set_status(note)
+            # The camera is named only when the sentence has not just named it.
+            # "Playing thermal from 01:00:55 - 5s before the movement on
+            # thermal" says thermal twice on a tab whose standing complaint is
+            # that there is too much on it.
+            whose = "" if self.shown_streams() == [event.stream] else f" on {event.stream}"
+            lead_said = f" - {_duration(lead)} before the movement{whose}"
+        # What the other camera has to say about this moment, kept so that the
+        # line can be said again when he pauses without losing it.
+        self._watching_note = self._point_the_second_picture(when)
+        self._say_what_he_is_watching(lead_said)
         self._draw_readout()
         self._draw_controls()
         self._follow_while_playing()
@@ -1636,6 +1634,12 @@ class PlaybackTab(QWidget):
     def set_paused(self, paused: bool) -> None:
         for pane in self._pictures():
             _ask(pane, "set_paused", paused)
+        # The line under the bar says whether the picture is running, so it is
+        # said again - but only when it is the line about the picture. A gap
+        # explanation, or the answer from a save, is somebody else's sentence
+        # and must survive a press of the space bar.
+        if self._about_the_picture:
+            self._say_what_he_is_watching()
         self._draw_controls()
         self._follow_while_playing()
 
@@ -1996,9 +2000,57 @@ class PlaybackTab(QWidget):
             said += f"   →  {self.hover_text}"
         self.readout_note.setText(said)
 
-    def _set_status(self, text: str) -> None:
+    def _say_what_he_is_watching(self, lead: str = "") -> None:
+        """The line under the bar, rewritten from what is true right now.
+
+        What it said before: `Playing thermal from 14:46:55 - 53100.mp4, 1m 55s
+        in`. Three things wrong with that for the man reading it.
+
+        `53100.mp4` is the name of a file on a disk he has no way of opening and
+        no reason to. It was put there so he could take a copy of a recording by
+        hand - which means a terminal, which he does not have. What it actually
+        did was end every sentence on this tab with five characters of noise, in
+        the place a sentence is most likely to be read.
+
+        `1m 55s in` is a distance into something the sentence never names. Into
+        the file: a five-minute box the recorder happened to close at that
+        moment, which is not a thing in his world at all. There is no question
+        an operator asks that this is the answer to.
+
+        And it said nothing about whether the picture was moving. He pressed
+        Pause and every word under the bar stayed exactly as it was.
+
+        So: what he is watching, from when, and whether it is running - and the
+        camera named rather than assumed, because with both up it is two of
+        them. The name of the recording is in the log, which is where the person
+        who wants a filename is already looking.
+        """
+        self._set_status(
+            self._watching_sentence() + lead + self._watching_note,
+            about_the_picture=True,
+        )
+
+    def _watching_sentence(self) -> str:
+        shown = self.shown_streams()
+        who = " and ".join(shown) if shown else "the camera"
+        if self.playhead_time is None:
+            return f"Nothing is playing on {who}"
+        clock = datetime.datetime.fromtimestamp(self.playhead_time).strftime("%H:%M:%S")
+        if bool(_ask(self._pane, "paused")):
+            # "Held", not "paused": the same word the button under it uses would
+            # be better still, and the button says Pause because that is what
+            # pressing it DOES. Two controls' worth of vocabulary for one state.
+            return f"Holding {who} still at {clock}"
+        return f"Playing {who} from {clock}"
+
+    def _set_status(self, text: str, about_the_picture: bool = False) -> None:
         self.status_text = text
         self._status.setText(text)
+        # Whether this line is the one describing the picture, and may therefore
+        # be rewritten when he pauses. The gap explanations, the sentence naming
+        # how much was recorded, and the answer from a save are all somebody
+        # else's and must survive a press of the space bar.
+        self._about_the_picture = about_the_picture
 
     def _report_unreadable(self, error: Exception) -> None:
         """A catalogue that cannot be read is a message, not a traceback.

@@ -1970,7 +1970,11 @@ def test_show_me_takes_him_to_the_footage(qtbot, tmp_path: Path) -> None:
 
     assert window.tabs.currentWidget() is window.playback, "he is still on the Live tab"
     assert window.playback.stream_selector.currentText() == "thermal"
-    assert "a.mp4" in window.playback.status_text, window.playback.status_text
+    # The line under the bar names the camera and the moment, and never the
+    # file: "a.mp4" is a name he has no way of opening and no reason to.
+    said = window.playback.status_text
+    assert "thermal" in said and "before the movement" in said, said
+    assert ".mp4" not in said, said
     window.close()
 
 
@@ -2001,7 +2005,11 @@ def test_the_movement_line_takes_him_to_it_too(qtbot, tmp_path: Path) -> None:
     window.live._show_newest()
 
     assert window.tabs.currentWidget() is window.playback
-    assert "a.mp4" in window.playback.status_text, window.playback.status_text
+    # The line under the bar names the camera and the moment, and never the
+    # file: "a.mp4" is a name he has no way of opening and no reason to.
+    said = window.playback.status_text
+    assert "thermal" in said and "before the movement" in said, said
+    assert ".mp4" not in said, said
     window.close()
 
 

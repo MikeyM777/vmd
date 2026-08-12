@@ -1028,6 +1028,118 @@ def test_the_line_stops_following_once_the_footage_has_run_out(
         index.close()
 
 
+# ------------------------------------------------- the line under the bar
+#
+# It read `Playing thermal from 14:46:55 - 53100.mp4, 1m 55s in`.
+#
+# `53100.mp4` is a file on a disk he has no way of opening and no reason to; it
+# was put there so a recording could be copied by hand, which means a terminal,
+# which he does not have. `1m 55s in` is a distance into something the sentence
+# never names - into the file, a five-minute box the recorder happened to close
+# at that moment, which is not a thing in his world at all. And nothing in it
+# said whether the picture was moving: he pressed Pause and every word stayed.
+
+
+def test_the_line_under_the_bar_says_what_and_from_when(qtbot, tmp_path: Path) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 125)
+        said = tab.status_text
+        assert "thermal" in said, said
+        assert "12:02:05" in said, said
+        assert said.lower().startswith("playing"), said
+    finally:
+        index.close()
+
+
+def test_the_line_under_the_bar_never_names_a_file(qtbot, tmp_path: Path) -> None:
+    """Not on the ordinary sentence and not on the one about a movement.
+
+    The name is in the log, which is where the person who wants a filename is
+    already looking, and it is written there on the same seek.
+    """
+    start, _end = day_bounds(2026, 8, 11)
+    when = start + 3600 + 100
+    events = FakeEvents([movement(1, when)])
+    tab, pane, index = build_with_events(qtbot, tmp_path, events)
+    try:
+        index.add("thermal", str(tmp_path / "53100.mp4"), start + 3600, start + 3900, 1000)
+        tab.show_day(2026, 8, 11, stream="thermal")
+
+        tab.play_at_time(start + 3700)
+        assert ".mp4" not in tab.status_text, tab.status_text
+        assert "53100" not in tab.status_text, tab.status_text
+
+        tab.click_at((when - start) / day_span())  # the movement mark
+        assert "before the movement" in tab.status_text, tab.status_text
+        assert ".mp4" not in tab.status_text, tab.status_text
+    finally:
+        index.close()
+
+
+def test_the_line_under_the_bar_never_measures_into_the_file(
+    qtbot, tmp_path: Path
+) -> None:
+    """"1m 55s in" - into what? Into a five-minute box the recorder happened to
+    close there, which is not a thing he has ever been told about."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        # Two minutes into the day's third five-minute recording.
+        tab.play_at_time(noon + 720)
+        assert " in" not in tab.status_text, tab.status_text
+        assert "2m 00s" not in tab.status_text, tab.status_text
+    finally:
+        index.close()
+
+
+def test_the_line_under_the_bar_says_whether_the_picture_is_running(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path)
+    try:
+        tab.play_at_time(noon + 125)
+        running = tab.status_text
+        assert "playing" in running.lower(), running
+
+        tab.transport.play_button.click()
+        held = tab.status_text
+        assert held != running, "pausing changed nothing under the bar"
+        assert "playing" not in held.lower(), held
+        assert "12:02:05" in held, held
+
+        tab.transport.play_button.click()
+        assert "playing" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+def test_pausing_does_not_wipe_the_sentence_explaining_a_gap(
+    qtbot, tmp_path: Path
+) -> None:
+    """The gap explanation is somebody else's sentence and has to survive a
+    press of the space bar - it is the answer to the question he asked."""
+    tab, pane, index, noon = a_recorded_day(qtbot, tmp_path, minutes=60)
+    try:
+        tab.play_at_time(noon + 60)
+        tab.play_at_time(noon + 7200)
+        assert "no recording" in tab.status_text.lower()
+        tab.set_paused(True)
+        assert "no recording" in tab.status_text.lower(), tab.status_text
+    finally:
+        index.close()
+
+
+def test_both_cameras_are_both_named_under_the_bar(qtbot, tmp_path: Path) -> None:
+    """With two pictures up, "Playing thermal" would name one of them."""
+    tab, pane, index, start = two_cameras(qtbot, tmp_path)
+    try:
+        tab.play_at_time(start + 120)
+        said = tab.status_text
+        assert "thermal" in said and "visible" in said, said
+    finally:
+        index.close()
+
+
 def test_a_click_into_a_gap_is_not_undone_a_quarter_of_a_second_later(
     qtbot, tmp_path: Path
 ) -> None:
