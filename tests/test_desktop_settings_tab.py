@@ -5,8 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QGroupBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+)
 
 from vmd.desktop.settings_tab import PROBE_NAME, SettingsTab
 from vmd.settings import (
@@ -118,21 +125,41 @@ def test_the_streams_on_screen_are_the_streams_from_the_file(qtbot, tmp_path: Pa
     assert [row.name_field.text() for row in tab.stream_rows()] == ["IR-ch2", "day"]
 
 
-def test_a_stream_added_in_the_window_is_the_stream_that_is_saved(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path)
-    qtbot.mouseClick(tab.add_stream_button, Qt.MouseButton.LeftButton)
+def test_the_list_of_views_cannot_be_added_to_or_cut_down_from_this_form(
+    qtbot, tmp_path: Path
+) -> None:
+    """**Add a stream** and **Remove** are both gone, and the second is the one
+    that matters.
 
-    row = tab.stream_rows()[-1]
-    qtbot.keyClicks(row.name_field, "IR-ch2")
-    qtbot.keyClicks(row.url_field, "rtsp://10.0.0.2/ch2")
+    He asked for Add to go: the camera is one gimbal with two heads and the
+    views are a property of the hardware, so a button offering a third is a
+    button offering a mistake. Remove had to go with it, and not out of
+    symmetry - out of asymmetry. With Add gone, one stray click on Remove costs
+    a camera view permanently, and the way back is hand-editing JSON on a
+    machine with no terminal and no second computer.
+    """
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    assert not hasattr(tab, "add_stream_button"), "Add is back"
+    for row in tab.stream_rows():
+        assert not hasattr(row, "remove_button"), "Remove is back"
+    # And not merely renamed: nothing on this form adds or destroys a view.
+    for button in tab.findChildren(QPushButton):
+        said = button.text().lower()
+        assert "add a stream" not in said, said
+        assert said.strip() != "remove", said
 
-    assert tab.streams() == [("IR-ch2", "rtsp://10.0.0.2/ch2", True, "auto")]
-    assert tab.save() is True
 
-    stored = load_settings(path).camera.streams
-    assert [(s.name, s.url, s.enabled, s.reader) for s in stored] == [
-        ("IR-ch2", "rtsp://10.0.0.2/ch2", True, "auto")
-    ]
+def test_a_settings_file_with_three_views_still_draws_and_saves_three(
+    qtbot, tmp_path: Path
+) -> None:
+    """Locked is not fixed at two. `set_streams` is untouched, so the file's own
+    list is what the form shows and what it writes back - which is the whole
+    reason locking the list is safe rather than a second way to lose a camera.
+    """
+    tab, path = build(qtbot, tmp_path, _three_streams())
+    assert len(tab.stream_rows()) == 3
+    assert tab.save() is True, tab.message
+    assert [s.name for s in load_settings(path).camera.streams] == ["one", "two", "three"]
 
 
 def test_there_is_no_switch_for_whether_a_view_is_used(qtbot, tmp_path: Path) -> None:
@@ -163,7 +190,9 @@ def test_the_streams_box_says_that_a_line_on_it_is_a_view_in_use(
     tab, _ = build(qtbot, tmp_path)
     said = tab.streams_help.text().lower()
     assert said.strip()
-    assert "remove" in said, said
+    assert "used" in said, said
+    # And it must not send him to a button that is no longer on the form.
+    assert "remove" not in said, said
     banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
     assert not any(word in said for word in banned), said
 
@@ -177,8 +206,11 @@ def test_a_view_switched_off_in_an_old_file_comes_back_on_and_the_form_says_so(
     a camera view the operator can see on the form, cannot switch back on, and
     is given no reason for. So it is adopted: the row is a view in use, like
     every other row. Adopting it silently would be the mirror mistake, so the
-    message line names the view and says what happens at the next Save, and
-    points at Remove for the operator who really did mean it off.
+    message line names the view and says what happens at the next Save.
+
+    It used to end by pointing at **Remove**, and that button is gone. A
+    sentence naming a control that is not on the screen sends him looking for
+    it, which is worse than saying nothing.
     """
     settings = Settings(
         camera=CameraSettings(
@@ -193,19 +225,24 @@ def test_a_view_switched_off_in_an_old_file_comes_back_on_and_the_form_says_so(
 
     assert "day" in tab.message, tab.message
     assert "thermal" not in tab.message, "only the one that was off is named"
-    assert "remove" in tab.message.lower(), tab.message
+    assert "remove" not in tab.message.lower(), tab.message
+    assert "used again" in tab.message.lower(), tab.message
 
     assert tab.save() is True
     assert [s.enabled for s in load_settings(path).camera.streams] == [True, True]
 
 
-def test_removing_a_row_removes_that_stream_and_leaves_the_rest(qtbot, tmp_path: Path) -> None:
+def test_replacing_the_list_still_replaces_it(qtbot, tmp_path: Path) -> None:
+    """The operator cannot cut a view out any more, but `load` still can - it
+    empties the form and fills it from the file every time it runs, and that
+    path goes straight through the row removal that used to be a button."""
     tab, path = build(qtbot, tmp_path)
     tab.set_streams(
         [("thermal", "rtsp://a/1", True, "auto"), ("day", "rtsp://a/2", True, "auto")]
     )
-    qtbot.mouseClick(tab.stream_rows()[0].remove_button, Qt.MouseButton.LeftButton)
+    assert [name for name, _, _, _ in tab.streams()] == ["thermal", "day"]
 
+    tab.set_streams([("day", "rtsp://a/2", True, "auto")])
     assert [name for name, _, _, _ in tab.streams()] == ["day"]
     assert tab.save() is True
     assert [s.name for s in load_settings(path).camera.streams] == ["day"]
@@ -366,37 +403,23 @@ def _said_once(tab, said: str) -> None:
 def test_the_detection_choices_on_screen_are_the_ones_from_the_file(
     qtbot, tmp_path: Path
 ) -> None:
-    settings = _watched(
-        detect=True,
-        thermal=True,
-        classify=True,
-        sensitivity="high",
-        horizon_y=340,
-        ignore_regions=[IgnoreRegion(x=10, y=20, w=30, h=40)],
-    )
+    settings = _watched(detect=True, sensitivity="high")
     tab, _ = build(qtbot, tmp_path, settings)
     row = tab.stream_rows()[0]
 
     assert row.detect_field.isChecked() is True
-    assert row.thermal_field.isChecked() is True
-    assert row.classify() is True
     assert row.sensitivity() == "high"
-    assert row.horizon() == 340
-    assert row.horizon_enabled_field.isChecked() is True
-    assert row.regions() == [(10, 20, 30, 40)]
 
 
-def test_ticking_detect_and_thermal_is_what_reaches_the_file(qtbot, tmp_path: Path) -> None:
+def test_ticking_the_watch_switch_is_what_reaches_the_file(qtbot, tmp_path: Path) -> None:
     tab, path = build(qtbot, tmp_path, _watched())
     row = tab.stream_rows()[0]
     row.detect_field.setChecked(True)
-    row.thermal_field.setChecked(True)
     row.set_sensitivity("low")
     assert tab.save() is True
 
     stored = load_settings(path).camera.streams[0]
     assert stored.detect is True
-    assert stored.thermal is True
     assert stored.sensitivity == "low"
 
 
@@ -411,179 +434,364 @@ def test_every_sensitivity_offered_is_one_the_model_accepts(qtbot, tmp_path: Pat
         assert load_settings(path).camera.streams[0].sensitivity == choice
 
 
-# --- the three states of `classify` -----------------------------------------
+# --- naming what moved, which is gone ----------------------------------------
 #
-# None means "follow the sensor" and is the default. A two-state checkbox cannot
-# say it, and collapsing it to False would quietly turn the classifier off on the
-# visible head, where it is the whole point of having one.
+# "I need movement notifications, but not accurate identification." Two controls
+# used to feed it - a chooser on each camera card and a master tick in the
+# movement box - and both are off the form. `vmd/detect/config.py` is where it is
+# actually switched off; this is only the half of it he can see.
 
 
-def test_classify_offers_three_states_and_all_three_round_trip(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path, _watched())
+def test_nothing_on_this_tab_offers_to_name_what_moved(qtbot, tmp_path: Path) -> None:
+    """Not a control renamed, not a control folded away: no control.
+
+    Both cards are unfolded here, and their Advanced fold opened too, because a
+    chooser behind a fold is a chooser that comes back the first time he ticks
+    a box.
+    """
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    for row in tab.stream_rows():
+        row.detect_field.setChecked(True)
+        row.advanced_button.setChecked(True)
+        assert not hasattr(row, "classify_field"), "the chooser is back on the card"
+    assert not hasattr(tab, "_detection_classify"), "the master tick is back"
+    assert not hasattr(SettingsTab, "detection_classify"), "the master tick is back"
+
+    words = " ".join(
+        [label.text() for label in tab.findChildren(QLabel)]
+        + [button.text() for button in tab.findChildren(QPushButton)]
+        + [box.text() for box in tab.findChildren(QCheckBox)]
+    ).lower()
+    for said in ("say what it was", "name what moved", "identif", "what it was"):
+        assert said not in words, said
+
+
+def test_a_file_that_asked_for_naming_keeps_its_answer_and_gets_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """Two halves, and both matter.
+
+    The fields stay in the file: every settings file in the field has them, and
+    a form that silently rewrote them would be doing the thing this whole file
+    exists to prevent. And they buy nothing: `classify_enabled` returns False
+    whatever they say, so this is not a running feature with its switch hidden.
+    """
+    from vmd.detect.config import classify_enabled
+
+    settings = _watched(detect=True, classify=True)
+    settings.detection.classify = True
+    tab, path = build(qtbot, tmp_path, settings)
+    assert tab.save() is True, tab.message
+
+    stored = load_settings(path)
+    assert stored.detection.classify is True, "a setting was rewritten behind him"
+    assert stored.camera.streams[0].classify is True
+    assert classify_enabled(stored.camera.streams[0], stored.detection) is False
+
+
+# --- the heat camera tick, which is gone -------------------------------------
+
+
+def test_the_heat_camera_tick_is_off_the_form_but_not_out_of_the_file(
+    qtbot, tmp_path: Path
+) -> None:
+    """`stream.thermal` had exactly one consumer in the whole codebase - the
+    line deciding whether naming ran. With naming gone it decides nothing, so
+    the tick asked a question with no consequence anywhere.
+
+    Off the form, not out of the file: a stream marked thermal is still marked
+    thermal after a load and a save.
+    """
+    tab, path = build(qtbot, tmp_path, _watched(detect=True, thermal=True))
     row = tab.stream_rows()[0]
-    offered = [row.classify_field.itemData(i) for i in range(row.classify_field.count())]
-    assert offered == [None, True, False]
-
-    for choice in (None, True, False):
-        row.set_classify(choice)
-        assert row.classify() is choice
-        assert tab.save() is True
-        assert load_settings(path).camera.streams[0].classify is choice
-
-
-def test_follow_the_sensor_is_the_state_a_new_stream_starts_in(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path)
-    qtbot.mouseClick(tab.add_stream_button, Qt.MouseButton.LeftButton)
-    row = tab.stream_rows()[-1]
-    qtbot.keyClicks(row.name_field, "day")
-    qtbot.keyClicks(row.url_field, "rtsp://10.0.0.2/ch0")
-
-    assert row.classify() is None
+    assert not hasattr(row, "thermal_field"), "the tick is back"
+    for box in tab.findChildren(QCheckBox):
+        assert "heat" not in box.text().lower(), box.text()
     assert tab.save() is True
-    assert load_settings(path).camera.streams[0].classify is None
+    assert load_settings(path).camera.streams[0].thermal is True
 
 
-def test_the_classify_control_says_what_it_means_in_plain_words(qtbot, tmp_path: Path) -> None:
-    """The operator is not technical and will never read the spec. Whatever the
-    wording, it has to name the three choices without an acronym in sight."""
-    tab, _ = build(qtbot, tmp_path, _watched())
+# --- the sky line, which is gone from the form -------------------------------
+
+
+def test_the_sky_line_is_off_the_form_but_not_out_of_the_file(
+    qtbot, tmp_path: Path
+) -> None:
+    """It was a number of dots counted down from the top edge of a frame he was
+    not looking at, and setting it too low deletes real movement below it and
+    never says it did. A skyline is a shape across the top of a picture, and
+    there is a tool for shapes now - one tool is better than two.
+
+    `horizon_y` stays in the model and is carried across a save untouched.
+    """
+    tab, path = build(qtbot, tmp_path, _watched(detect=True, horizon_y=340))
     row = tab.stream_rows()[0]
-    labels = [row.classify_field.itemText(i) for i in range(row.classify_field.count())]
-    assert all(label.strip() for label in labels)
-    assert len(set(labels)) == 3
-    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
-    for text in labels + [row.classify_field.toolTip()]:
-        assert not any(word in text.lower() for word in banned), text
-    # Why the thermal head is different has to be on screen, not in a document -
-    # and on both controls, because a tooltip is only read by whoever hovers
-    # over that one control.
-    for told in (row.classify_field.toolTip(), row.thermal_field.toolTip()):
-        assert "700" in told and "13" in told, told
+    assert not hasattr(row, "horizon_field"), "the box is back"
+    assert not hasattr(row, "horizon_enabled_field"), "the tick is back"
+    row.detect_field.setChecked(True)
+    row.advanced_button.setChecked(True)
+    for box in tab.findChildren(QCheckBox):
+        assert "sky" not in box.text().lower(), box.text()
 
-
-# --- the horizon -------------------------------------------------------------
-
-
-def test_the_horizon_is_off_until_it_is_turned_on(qtbot, tmp_path: Path) -> None:
-    """A wrong horizon deletes real detections and says nothing, so a number
-    typed into the box means nothing until the operator ticks it on."""
-    tab, path = build(qtbot, tmp_path, _watched())
-    row = tab.stream_rows()[0]
-    assert row.horizon_enabled_field.isChecked() is False
-    row.horizon_field.setValue(340)
-    assert row.horizon() is None
-    assert tab.save() is True
-    assert load_settings(path).camera.streams[0].horizon_y is None
-
-
-def test_turning_the_horizon_on_saves_the_pixel_row(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path, _watched())
-    row = tab.stream_rows()[0]
-    row.horizon_enabled_field.setChecked(True)
-    row.horizon_field.setValue(340)
     assert tab.save() is True
     assert load_settings(path).camera.streams[0].horizon_y == 340
 
 
-def test_turning_the_horizon_off_again_disables_the_rule(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path, _watched(horizon_y=340))
+# --- the parts of the picture to ignore --------------------------------------
+#
+# `120 x 80 dots, at 30 across and 40 down`, in a list, beside four spin boxes
+# labelled across, down, wide and tall. Exactly what he asked to be rid of, and
+# a sentence nobody can check against a picture they are not looking at.
+
+
+def test_the_areas_are_never_shown_as_words_or_numbers(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QListWidget, QSpinBox
+
+    tab, _ = build(qtbot, tmp_path, _watched(detect=True))
     row = tab.stream_rows()[0]
-    row.horizon_enabled_field.setChecked(False)
-    assert tab.save() is True
-    assert load_settings(path).camera.streams[0].horizon_y is None
+    row.set_shapes([[(30, 40), (150, 40), (150, 120), (30, 120)]])
+    row.detect_field.setChecked(True)
+    row.advanced_button.setChecked(True)
+
+    for gone in ("regions_list", "region_x", "region_y", "region_w", "region_h",
+                 "add_region_button", "remove_region_button", "pick_button"):
+        assert not hasattr(row, gone), gone
+    assert tab.findChildren(QListWidget) == []
+    assert tab.findChildren(QSpinBox) == []
+
+    words = " ".join(
+        [label.text() for label in tab.findChildren(QLabel)]
+        + [button.text() for button in tab.findChildren(QPushButton)]
+    ).lower()
+    for number in ("30", "40", "150", "120"):
+        assert number not in words, words
+    for jargon in ("dots", "across and", " wide", " tall"):
+        assert jargon not in words, words
 
 
-def test_the_horizon_control_says_what_the_number_is(qtbot, tmp_path: Path) -> None:
-    """A bare number box is useless: nobody knows whether 340 is metres, degrees
-    or a row of pixels, and the picture is not on screen to check against."""
-    tab, _ = build(qtbot, tmp_path, _watched())
-    row = tab.stream_rows()[0]
-    # On the box itself, not only in a tooltip nobody hovers over: the number
-    # is meaningless without its unit and its direction.
-    beside_the_box = row.horizon_field.suffix().lower()
-    assert "top" in beside_the_box, beside_the_box
-    assert any(word in beside_the_box for word in ("dot", "pixel")), beside_the_box
-    # And the longer warning, wherever it is written.
-    told = (row.horizon_field.toolTip() + row.horizon_enabled_field.toolTip()).lower()
-    assert "sky" in told, told
+def test_the_areas_in_the_file_are_loaded_and_the_button_says_how_many(
+    qtbot, tmp_path: Path
+) -> None:
+    """The count and nothing else. It answers the one question anybody has
+    before pressing the button - is there anything in there already - without
+    printing a coordinate he could not have checked."""
+    from vmd.settings import IgnoreShape
 
-
-# --- ignore regions ----------------------------------------------------------
-
-
-def test_the_regions_already_in_the_file_are_listed(qtbot, tmp_path: Path) -> None:
     settings = _watched(
-        ignore_regions=[IgnoreRegion(x=1, y=2, w=3, h=4), IgnoreRegion(x=5, y=6, w=7, h=8)]
+        detect=True,
+        ignore_shapes=[
+            IgnoreShape(points=[(1, 2), (30, 2), (30, 40)]),
+            IgnoreShape(points=[(5, 6), (7, 6), (7, 9), (5, 9)]),
+        ],
     )
     tab, _ = build(qtbot, tmp_path, settings)
     row = tab.stream_rows()[0]
-    assert row.regions() == [(1, 2, 3, 4), (5, 6, 7, 8)]
-    assert row.regions_list.count() == 2
+    assert row.shapes() == [
+        [(1, 2), (30, 2), (30, 40)],
+        [(5, 6), (7, 6), (7, 9), (5, 9)],
+    ]
+    assert "2" in row.mask_button.text(), row.mask_button.text()
+    assert "Parts to ignore" in row.mask_button.text()
+
+    row.set_shapes([])
+    assert row.mask_button.text() == "Parts to ignore"
 
 
-def test_a_region_typed_in_is_added_and_saved(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path, _watched())
+def test_an_area_drawn_on_the_picture_is_what_is_saved(qtbot, tmp_path: Path) -> None:
+    tab, path = build(qtbot, tmp_path, _watched(detect=True))
     row = tab.stream_rows()[0]
-    row.region_x.setValue(100)
-    row.region_y.setValue(200)
-    row.region_w.setValue(50)
-    row.region_h.setValue(60)
-    qtbot.mouseClick(row.add_region_button, Qt.MouseButton.LeftButton)
+    row.set_shapes([[(10, 20), (110, 20), (110, 90), (10, 90)]])
+    assert tab.save() is True, tab.message
 
-    assert row.regions() == [(100, 200, 50, 60)]
-    assert tab.save() is True
-    stored = load_settings(path).camera.streams[0].ignore_regions
-    assert [r.as_tuple() for r in stored] == [(100, 200, 50, 60)]
+    stored = load_settings(path).camera.streams[0].ignore_shapes
+    assert [shape.as_tuples() for shape in stored] == [
+        [(10, 20), (110, 20), (110, 90), (10, 90)]
+    ]
 
 
-def test_a_region_with_no_area_is_refused_rather_than_written(qtbot, tmp_path: Path) -> None:
-    tab, path = build(qtbot, tmp_path, _watched())
-    row = tab.stream_rows()[0]
-    row.region_x.setValue(10)
-    row.region_y.setValue(10)
-    row.region_w.setValue(0)
-    row.region_h.setValue(0)
-    qtbot.mouseClick(row.add_region_button, Qt.MouseButton.LeftButton)
-    assert row.regions() == []
-    assert tab.message
-
-
-def test_a_wrong_region_can_be_deleted(qtbot, tmp_path: Path) -> None:
-    """An operator who has a region in the wrong place needs a way out of it,
-    and hand-editing the file is not one."""
+def test_the_older_rectangles_are_carried_across_untouched(qtbot, tmp_path: Path) -> None:
+    """Nothing on this form shows them any more, and nothing on it rewrites
+    them either. A form that quietly converted a setting the operator never
+    touched is the same failure as one that quietly deletes it - and the
+    detector still honours them."""
     settings = _watched(
-        ignore_regions=[IgnoreRegion(x=1, y=2, w=3, h=4), IgnoreRegion(x=5, y=6, w=7, h=8)]
+        detect=True, ignore_regions=[IgnoreRegion(x=1, y=2, w=3, h=4)]
     )
     tab, path = build(qtbot, tmp_path, settings)
-    row = tab.stream_rows()[0]
-    row.regions_list.setCurrentRow(0)
-    qtbot.mouseClick(row.remove_region_button, Qt.MouseButton.LeftButton)
-
-    assert row.regions() == [(5, 6, 7, 8)]
+    tab.stream_rows()[0].set_shapes([[(9, 9), (99, 9), (99, 99)]])
     assert tab.save() is True
-    stored = load_settings(path).camera.streams[0].ignore_regions
-    assert [r.as_tuple() for r in stored] == [(5, 6, 7, 8)]
+
+    stored = load_settings(path).camera.streams[0]
+    assert [r.as_tuple() for r in stored.ignore_regions] == [(1, 2, 3, 4)]
+    assert [sh.as_tuples() for sh in stored.ignore_shapes] == [[(9, 9), (99, 9), (99, 99)]]
 
 
-def test_the_regions_control_says_what_a_region_is_for(qtbot, tmp_path: Path) -> None:
-    tab, _ = build(qtbot, tmp_path, _watched())
+# --- and the tool the button opens -------------------------------------------
+
+
+class _FakeMask:
+    """A stand-in for `MaskDialog`, which is modal and would stop a test dead.
+
+    It records what it was handed, because that is half of what is being
+    tested: the tab has to give the drawing tool a picture and the areas that
+    are already on this view, not an empty list it will then overwrite.
+    """
+
+    opened: list = []
+
+    def __init__(self, frame, shapes, problem="", parent=None) -> None:
+        _FakeMask.opened.append(
+            {"frame": frame, "shapes": shapes, "problem": problem}
+        )
+        self._shapes = list(shapes)
+        self.accepted = True
+        # What the operator draws while it is open, which is the only moment he
+        # can: `exec` does not come back until the dialog is closed.
+        self.draws: list = []
+
+    def exec(self) -> bool:
+        self._shapes.extend(self.draws)
+        return self.accepted
+
+    def shapes(self):
+        return self._shapes
+
+
+def _with_a_fake_mask(monkeypatch, accepted: bool = True, draws=()):
+    import vmd.desktop.mask as mask
+
+    _FakeMask.opened = []
+    made: list = []
+
+    def build(frame, shapes, problem="", parent=None):
+        dialog = _FakeMask(frame, shapes, problem, parent)
+        dialog.accepted = accepted
+        dialog.draws = [list(shape) for shape in draws]
+        made.append(dialog)
+        return dialog
+
+    monkeypatch.setattr(mask, "MaskDialog", build)
+    return made
+
+
+def _tab_with_a_camera(qtbot, tmp_path: Path, grab=None):
+    from vmd.desktop.settings_tab import CameraTools
+
+    tools = CameraTools(
+        ptz=None,
+        find_paths=lambda s, on_progress: [],
+        diagnose=lambda s: [],
+        grab_frame=(grab or (lambda settings, stream: b"a-picture")),
+    )
+    path = tmp_path / "settings.json"
+    save_settings(_watched(name="thermal", detect=True), path)
+    tab = SettingsTab(settings_path=path, tools=tools)
+    qtbot.addWidget(tab)
+    tab.load()
+    return tab
+
+
+def test_the_button_opens_the_drawing_tool_with_this_view_s_picture(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    made = _with_a_fake_mask(monkeypatch)
+    tab = _tab_with_a_camera(qtbot, tmp_path)
     row = tab.stream_rows()[0]
-    told = (row.regions_help.text() + row.regions_list.toolTip()).lower()
+    row.set_shapes([[(1, 2), (3, 4), (5, 6)]])
+
+    tab.open_picker(row)
+
+    assert len(made) == 1
+    handed = _FakeMask.opened[0]
+    assert handed["frame"] == b"a-picture", "it opened with no picture in it"
+    assert handed["shapes"] == [[(1, 2), (3, 4), (5, 6)]], handed["shapes"]
+    assert handed["problem"] == ""
+
+
+def test_what_was_drawn_on_the_picture_is_what_the_form_holds(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    _with_a_fake_mask(monkeypatch, draws=[[(10, 20), (110, 20), (110, 90)]])
+    tab = _tab_with_a_camera(qtbot, tmp_path)
+    row = tab.stream_rows()[0]
+
+    tab.open_picker(row)
+    assert row.shapes() == [[(10, 20), (110, 20), (110, 90)]]
+    # And the button beside it counts what is now behind it.
+    assert "1" in row.mask_button.text(), row.mask_button.text()
+
+    assert tab.save() is True, tab.message
+    stored = load_settings(tmp_path / "settings.json").camera.streams[0]
+    assert [sh.as_tuples() for sh in stored.ignore_shapes] == [
+        [(10, 20), (110, 20), (110, 90)]
+    ]
+
+
+def test_closing_the_drawing_tool_without_using_it_changes_nothing(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    _with_a_fake_mask(
+        monkeypatch, accepted=False, draws=[[(9, 9), (99, 9), (99, 99)]]
+    )
+    tab = _tab_with_a_camera(qtbot, tmp_path)
+    row = tab.stream_rows()[0]
+    row.set_shapes([[(1, 2), (3, 4), (5, 6)]])
+
+    tab.open_picker(row)
+
+    assert row.shapes() == [[(1, 2), (3, 4), (5, 6)]], "a cancelled draw was kept"
+
+
+def test_a_camera_that_is_down_still_opens_the_tool_and_says_why(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """The camera being off must not take away the ability to undo a mistake
+    made while it was working. Areas already drawn are still his to delete, so
+    the tool opens - carrying the reason there is no picture behind them."""
+
+    def refuse(settings, stream):
+        raise RuntimeError("Nothing answered at that address.")
+
+    _with_a_fake_mask(monkeypatch)
+    tab = _tab_with_a_camera(qtbot, tmp_path, grab=refuse)
+    row = tab.stream_rows()[0]
+    row.set_shapes([[(1, 2), (3, 4), (5, 6)]])
+
+    assert tab.open_picker(row) is not None, "a dead camera locked him out"
+    handed = _FakeMask.opened[0]
+    assert "Nothing answered" in handed["problem"], handed["problem"]
+    assert handed["shapes"] == [[(1, 2), (3, 4), (5, 6)]]
+
+
+def test_a_stream_with_no_name_is_told_rather_than_asked_of_the_camera(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    _with_a_fake_mask(monkeypatch)
+    tab = _tab_with_a_camera(qtbot, tmp_path)
+    row = tab.stream_rows()[0]
+    row.name_field.setText("")
+
+    assert tab.open_picker(row) is None
+    assert tab.message
+    assert _FakeMask.opened == [], "it went to the camera anyway"
+
+
+def test_the_ignore_control_says_what_it_is_for(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path, _two_watched_views())
+    told = tab.ignore_help.text().lower()
     assert "tree" in told, told
+    assert "sky" in told, told
 
 
 # --- the global block --------------------------------------------------------
 
 
-def test_the_global_detection_switches_are_on_screen_and_saved(qtbot, tmp_path: Path) -> None:
+def test_the_global_detection_switch_is_on_screen_and_saved(qtbot, tmp_path: Path) -> None:
     tab, path = build(qtbot, tmp_path)
     tab.detection_enabled = False
-    tab.detection_classify = True
     assert tab.save() is True
 
-    stored = load_settings(path).detection
-    assert stored.enabled is False
-    assert stored.classify is True
+    assert load_settings(path).detection.enabled is False
 
 
 def test_the_global_detection_block_on_screen_is_the_one_from_the_file(
@@ -593,16 +801,11 @@ def test_the_global_detection_block_on_screen_is_the_one_from_the_file(
     switch: the operator turns detection off and it comes back at the next save."""
     settings = Settings()
     settings.detection.enabled = False
-    settings.detection.classify = True
     tab, path = build(qtbot, tmp_path, settings)
 
     assert tab.detection_enabled is False
-    assert tab.detection_classify is True
     assert tab.save() is True
-
-    stored = load_settings(path).detection
-    assert stored.enabled is False
-    assert stored.classify is True
+    assert load_settings(path).detection.enabled is False
 
 
 def test_the_box_asking_how_far_a_thing_must_travel_is_off_the_form(
@@ -650,7 +853,7 @@ def test_a_number_the_form_no_longer_shows_still_survives_a_save(
 
     # A save that touches everything else on the movement box.
     tab.detection_enabled = False
-    tab.detection_classify = True
+    tab.alarm_sound = False
     assert tab.save() is True
     assert load_settings(path).detection.min_travel_px == 20.0
 
@@ -772,6 +975,13 @@ def _three_streams() -> Settings:
 
 
 def _detection_of(path: Path) -> dict[str, tuple]:
+    """Every per-view setting, whether the form still shows it or not.
+
+    `thermal`, `classify`, `horizon_y` and the older rectangles are on this list
+    on purpose. The form stopped showing them; carrying them is the rule that
+    made taking them off the screen a safe thing to do at all, and a test that
+    only checked the fields still drawn would not notice them being dropped.
+    """
     return {
         s.name: (
             s.detect,
@@ -780,41 +990,46 @@ def _detection_of(path: Path) -> dict[str, tuple]:
             s.sensitivity,
             s.horizon_y,
             tuple(r.as_tuple() for r in s.ignore_regions),
+            tuple(tuple(sh.as_tuples()) for sh in s.ignore_shapes),
         )
         for s in load_settings(path).camera.streams
     }
 
 
-def test_removing_a_row_does_not_move_detection_onto_another_stream(
+def test_replacing_the_list_does_not_move_detection_onto_another_stream(
     qtbot, tmp_path: Path
 ) -> None:
-    """Attaching the thermal flag to the wrong head is this form's version of the
-    bug that once deleted the operator's streams."""
+    """Attaching one view's settings to another head is this form's version of
+    the bug that once deleted the operator's streams. It cannot be reached from
+    a button any more, but `load` empties and refills the form every time."""
     tab, path = build(qtbot, tmp_path, _three_streams())
-    qtbot.mouseClick(tab.stream_rows()[0].remove_button, Qt.MouseButton.LeftButton)
+    before = _detection_of(path)
+    kept = [s for s in load_settings(path).camera.streams if s.name != "one"]
+    tab.set_streams(kept)
     assert tab.save() is True
 
     after = _detection_of(path)
     assert list(after) == ["two", "three"]
-    assert after["two"] == (True, False, True, "high", 200, ((2, 2, 2, 2),))
-    assert after["three"] == (False, False, None, "normal", None, ())
+    for name in ("two", "three"):
+        assert after[name] == before[name]
 
 
-def test_adding_a_row_does_not_disturb_the_streams_already_there(qtbot, tmp_path: Path) -> None:
+def test_a_view_added_to_the_file_does_not_disturb_the_ones_already_there(
+    qtbot, tmp_path: Path
+) -> None:
     tab, path = build(qtbot, tmp_path, _three_streams())
     before = _detection_of(path)
-    qtbot.mouseClick(tab.add_stream_button, Qt.MouseButton.LeftButton)
-    row = tab.stream_rows()[-1]
-    qtbot.keyClicks(row.name_field, "four")
-    qtbot.keyClicks(row.url_field, "rtsp://a/4")
-    row.thermal_field.setChecked(True)
+    grown = list(load_settings(path).camera.streams) + [
+        StreamSettings(name="four", url="rtsp://a/4", thermal=True)
+    ]
+    tab.set_streams(grown)
     assert tab.save() is True
 
     after = _detection_of(path)
     assert list(after) == ["one", "two", "three", "four"]
     for name in ("one", "two", "three"):
         assert after[name] == before[name]
-    assert after["four"] == (False, True, None, "normal", None, ())
+    assert after["four"] == (False, True, None, "normal", None, (), ())
 
 
 def test_reordering_the_streams_carries_each_ones_detection_with_it(
@@ -971,9 +1186,8 @@ def test_nothing_on_a_stream_row_is_cut_in_half_inside_the_column(
         control.text()
         for control in (
             row.detect_field,
-            row.thermal_field,
-            row.details_button,
-            row.remove_button,
+            row.mask_button,
+            row.advanced_button,
         )
         if control.width() < control.minimumSizeHint().width()
     ]
@@ -1014,7 +1228,7 @@ def test_no_button_on_a_stream_row_is_clipped_by_its_own_label(
     tab.load()
     row = tab.add_stream_row("thermal", "rtsp://10.0.0.2/thermal")
     row.detect_field.setChecked(True)
-    row.details_button.setChecked(True)
+    row.advanced_button.setChecked(True)
     tab.show()
     tab.setGeometry(0, 0, FORM_MAX_WIDTH, 1400)
     QApplication.processEvents()
@@ -1022,14 +1236,9 @@ def test_no_button_on_a_stream_row_is_clipped_by_its_own_label(
     cut = [
         (control.text(), control.width(), control.minimumSizeHint().width())
         for control in (
-            row.pick_button,
-            row.add_region_button,
-            row.remove_region_button,
-            row.horizon_enabled_field,
-            row.region_x,
-            row.region_y,
-            row.region_w,
-            row.region_h,
+            row.mask_button,
+            row.advanced_button,
+            row.sensitivity_field,
         )
         if control.width() < control.minimumSizeHint().width()
     ]
@@ -1227,24 +1436,18 @@ def test_the_reader_choice_is_off_the_screen_but_not_out_of_the_file(
 def test_the_detection_controls_are_out_of_sight_until_he_asks_for_them(
     qtbot, tmp_path: Path
 ) -> None:
-    """"Too much going on." Seven controls per camera view, six of which mean
-    nothing until the first one is switched on.
+    """"Too much going on." What is left under the tick is two buttons, and
+    neither means anything until the first one is switched on.
 
     Folded away, never deleted: he has said he wants to test movement detection
-    in the next days, so every one of these has to be there the moment he ticks
-    the box.
+    in the next days, so both have to be there the moment he ticks the box.
     """
     tab, _ = build(qtbot, tmp_path, _watched())
     tab.show()
     QApplication.processEvents()
     row = tab.stream_rows()[0]
 
-    hidden = (
-        row.thermal_field,
-        row.classify_field,
-        row.sensitivity_field,
-        row.details_button,
-    )
+    hidden = (row.mask_button, row.advanced_button)
     assert row.detect_field.isVisible(), "the one switch that stays has gone too"
     for control in hidden:
         assert not control.isVisible(), f"{control} is on screen with watching off"
@@ -1258,6 +1461,48 @@ def test_the_detection_controls_are_out_of_sight_until_he_asks_for_them(
     QApplication.processEvents()
     for control in hidden:
         assert not control.isVisible(), f"{control} stayed out"
+
+
+def test_how_touchy_is_behind_advanced_and_starts_at_normal(
+    qtbot, tmp_path: Path
+) -> None:
+    """He asked for **How touchy:** to be removed or hidden. Hidden.
+
+    Removing it would leave him with a detector aimed at a treeline 700 m away
+    that either alarms all night or says nothing, and no control anywhere that
+    moves it between those two states - and he has said he means to test
+    movement detection over the coming days. So it stays, behind a door, at the
+    setting that is right until something proves otherwise.
+    """
+    tab, _ = build(qtbot, tmp_path, _watched(detect=True))
+    tab.show()
+    QApplication.processEvents()
+    row = tab.stream_rows()[0]
+
+    assert row.sensitivity() == "normal", "it does not start where it should"
+    assert not row.sensitivity_field.isVisible(), "it is on the card at rest"
+    assert not row.sensitivity_label.isVisible()
+    assert row.advanced_button.isVisible(), "and no way to reach it"
+    assert row.advanced_button.isChecked() is False, "the door starts open"
+
+    row.advanced_button.setChecked(True)
+    QApplication.processEvents()
+    assert row.sensitivity_field.isVisible()
+    assert row.sensitivity_label.isVisible()
+
+
+def test_a_touchiness_chosen_behind_advanced_survives_the_door_closing(
+    qtbot, tmp_path: Path
+) -> None:
+    """Hidden is not reset. This is the same rule as the fold above it, and it
+    is the one that makes hiding a setting instead of deleting it honest."""
+    tab, path = build(qtbot, tmp_path, _watched(detect=True))
+    row = tab.stream_rows()[0]
+    row.advanced_button.setChecked(True)
+    row.set_sensitivity("high")
+    row.advanced_button.setChecked(False)
+    assert tab.save() is True
+    assert load_settings(path).camera.streams[0].sensitivity == "high"
 
 
 def test_folding_the_detection_controls_away_does_not_forget_them(
@@ -1274,8 +1519,8 @@ def test_folding_the_detection_controls_away_does_not_forget_them(
 
     stored = load_settings(path).camera.streams[0]
     assert stored.detect is False
-    assert stored.thermal is True, "the heat flag was lost when the box folded"
-    assert stored.sensitivity == "high"
+    assert stored.sensitivity == "high", "the touchiness went when the box folded"
+    assert stored.thermal is True, "a field the form no longer shows was reset"
 
 
 def test_the_switch_for_watching_says_on_the_form_what_watching_does(
@@ -1500,57 +1745,34 @@ def test_both_pictures_on_one_lens_is_explained_rather_than_left_a_mystery() -> 
 def test_nothing_explains_a_control_that_is_not_on_the_screen(
     qtbot, tmp_path: Path
 ) -> None:
-    """Moving the two duplicated paragraphs above the cards stopped them being
-    printed twice. It did not stop them being printed at all - and with nothing
-    watched they explain controls that are folded away, so a console nobody has
-    set up yet opens with three paragraphs of preamble before the first box, on
-    the tab whose complaint was that there is too much on it.
+    """The paragraph about parts to ignore is about a button that is folded away
+    until a view is watched - so on a console nobody has set up yet it is
+    preamble before the first box, on the tab whose complaint was that there is
+    too much on it.
 
-    They come back the moment there is something for them to be about.
+    It comes back the moment there is something for it to be about.
     """
     tab, _ = build(qtbot, tmp_path, _watched(detect=False))
     # `isVisibleTo` and never `isVisible`: the tab has not been shown, so
     # `isVisible` is False for everything on it and the assertion would pass
     # whatever the code did. A mutation caught exactly that.
-    assert not tab.classify_help.isVisibleTo(tab)
     assert not tab.ignore_help.isVisibleTo(tab)
     # The tick's own sentence stays: that tick is always on the screen, and it
     # is the one he asked about by name.
     assert tab.detect_help.isVisibleTo(tab)
 
     tab.stream_rows()[0].detect_field.setChecked(True)
-    assert tab.classify_help.isVisibleTo(tab)
     assert tab.ignore_help.isVisibleTo(tab)
 
 
-def test_the_naming_control_is_not_called_name_what_moved(qtbot, tmp_path: Path) -> None:
-    """"'Name what moved' - what is that?" It reads as an instruction to the
-    operator - go and name it - rather than as something the software attempts.
-    """
-    tab, _ = build(qtbot, tmp_path, _two_watched_views())
-    row = tab.stream_rows()[0]
-    assert row.classify_label.text().rstrip(":") == "Try to say what it was"
-    said = tab.classify_help.text().lower()
-    assert said.strip()
-    # The three things it might say, so the words themselves say what "it" is.
-    for example in ("person", "vehicle", "animal"):
-        assert example in said, said
-    # And the two things about it that matter more than the guess: it is a guess,
-    # and it never decides whether anything is recorded or reported.
-    assert "guess" in said, said
-    assert "record" in said, said
-    assert not any(word in said for word in JARGON), said
-    _said_once(tab, said)
-
-
-def test_the_ignore_control_says_it_is_about_parts_of_the_picture(
-    qtbot, tmp_path: Path
-) -> None:
+def test_the_ignore_control_is_called_parts_to_ignore(qtbot, tmp_path: Path) -> None:
     """"'Skyline and ignore...' - what is that?" Two nouns from the source code
-    joined by an "and", naming neither what it is for nor what it acts on."""
+    joined by an "and", naming neither what it is for nor what it acts on. Then
+    **Ignore parts of the picture**, which named an action rather than a thing.
+    It is a list of parts of the picture, so that is what it says."""
     tab, _ = build(qtbot, tmp_path, _two_watched_views())
     row = tab.stream_rows()[0]
-    assert row.details_button.text() == "Ignore parts of the picture"
+    assert row.mask_button.text() == "Parts to ignore"
     said = tab.ignore_help.text().lower()
     assert said.strip()
     for example in ("sky", "road", "tree"):
@@ -1561,15 +1783,80 @@ def test_the_ignore_control_says_it_is_about_parts_of_the_picture(
     _said_once(tab, said)
 
 
-def test_the_camera_tools_box_says_it_is_for_checking_the_camera(
+def test_the_camera_tools_are_shut_away_until_he_goes_looking_for_them(
     qtbot, tmp_path: Path
 ) -> None:
-    """"The camera - is it relevant anymore?" It is: on a machine with no
-    terminal it is the only way to find out whether the camera answers at all.
-    What it was missing is a title saying that, next to a box already called
-    Camera one screen above."""
+    """"The camera - is it relevant anymore?" - and then, plainly: get rid of it.
+
+    Refused. It is the only diagnostic on a machine with no terminal and no
+    second computer, and *Which lens is behind which picture?* is the only cure
+    for the fault he reported himself. What is true in the complaint is that it
+    was the biggest thing on the page and always open: five buttons and a black
+    rectangle under a form he came here to type four numbers into.
+
+    So it is shut, and it is last. He will not meet it again unless he goes
+    looking, and it is there on the day he needs it.
+    """
     tab, _ = build(qtbot, tmp_path)
-    assert tab.tools_box.title() == "Check the camera"
+    tab.show()
+    QApplication.processEvents()
+
+    assert tab.tools_button.text() == "Check the camera"
+    assert tab.tools_button.isChecked() is False, "it opens on the busiest box"
+    for button in (tab.test_button, tab.find_button, tab.lens_button, tab.report_button):
+        assert not button.isVisible(), button.text()
+    assert not tab._output.isVisible(), "the black rectangle is still there"
+
+    tab.tools_button.setChecked(True)
+    QApplication.processEvents()
+    for button in (tab.test_button, tab.find_button, tab.lens_button, tab.report_button):
+        assert button.isVisible(), button.text()
+    assert tab._output.isVisible()
+
+
+def test_the_camera_tools_are_the_last_thing_before_save(qtbot, tmp_path: Path) -> None:
+    """Shut is only half of it. A shut box in the middle of the form is still a
+    thing he scrolls past twice on the way to the number he came for."""
+    tab, _ = build(qtbot, tmp_path)
+    tab.show()
+    tab.setGeometry(0, 0, 1366, 2400)
+    QApplication.processEvents()
+
+    tools = tab.tools_button.mapTo(tab, QPoint(0, 0)).y()
+    for box in tab.findChildren(QGroupBox):
+        assert box.mapTo(tab, QPoint(0, 0)).y() < tools, box.title()
+    assert tab.save_button.mapTo(tab, QPoint(0, 0)).y() > tools
+
+
+def test_no_camera_tool_button_is_clipped_by_its_own_label(
+    qtbot, tmp_path: Path
+) -> None:
+    """Five of these on one line was about 1500 px of buttons in a column that
+    stops at 980, and Qt clips a button at BOTH ends rather than eliding one -
+    which is how the longest of them came out reading "urn the picture down to
+    what the link can carr"."""
+    from vmd.desktop.style import FORM_MAX_WIDTH, stylesheet
+
+    tab, _ = build(qtbot, tmp_path)
+    tab.setStyleSheet(stylesheet())
+    tab.tools_button.setChecked(True)
+    tab.show()
+    tab.setGeometry(0, 0, FORM_MAX_WIDTH, 1600)
+    QApplication.processEvents()
+
+    cut = [
+        (button.text(), button.width(), button.minimumSizeHint().width())
+        for button in (
+            tab.tools_button,
+            tab.test_button,
+            tab.find_button,
+            tab.fit_button,
+            tab.lens_button,
+            tab.report_button,
+        )
+        if button.width() < button.minimumSizeHint().width()
+    ]
+    assert cut == [], f"cut off: {cut}"
 
 
 def test_no_two_switches_for_watching_movement_say_the_same_thing(

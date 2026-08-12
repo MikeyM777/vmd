@@ -29,7 +29,6 @@ from vmd.desktop.picker import (
     to_frame,
     to_view,
 )
-from vmd.desktop.settings_tab import CameraTools, SettingsTab
 from vmd.settings import CameraSettings, Settings, StreamSettings
 
 FRAME = QSize(1280, 720)
@@ -341,6 +340,20 @@ def test_nothing_on_screen_is_written_for_an_engineer(qtbot) -> None:
 
 
 # ------------------------------------------------------ back into the settings
+#
+# There was a section here, and it has moved rather than gone: the Settings tab
+# no longer opens this dialog. It opens `vmd/desktop/mask.py`, which is a
+# picture and a mouse and nothing else, because the operator asked to be rid of
+# the numbers this one puts beside the picture - a sky line counted in dots from
+# the top edge, and a list reading `120 x 80 dots, at 30 across and 40 down`.
+#
+# What that section tested - a stream with no name being told rather than asked
+# of the camera, a camera that is down not blocking the rest of the form, and
+# what comes back landing in the setting - is tested against the dialog the tab
+# actually opens now, in `tests/test_desktop_settings_tab.py`.
+#
+# `grab_frame` below is still this module's, and still the one thing the tab
+# imports from here.
 
 
 def _settings() -> Settings:
@@ -350,110 +363,6 @@ def _settings() -> Settings:
             streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2")],
         )
     )
-
-
-def a_tab(qtbot, tmp_path: Path, grab=None):
-    tools = CameraTools(
-        ptz=None,
-        find_paths=lambda s, on_progress: [],
-        diagnose=lambda s: [],
-        grab_frame=(lambda settings, stream: (grab or a_frame)()),
-    )
-    tab = SettingsTab(settings_path=tmp_path / "settings.json", tools=tools)
-    qtbot.addWidget(tab)
-    tab.load()
-    tab.set_streams(list(_settings().camera.streams))
-    return tab
-
-
-def test_what_was_drawn_on_the_picture_is_what_the_form_holds(
-    qtbot, tmp_path: Path
-) -> None:
-    tab = a_tab(qtbot, tmp_path)
-    row = tab.stream_rows()[0]
-    dialog = tab.open_picker(row)
-    assert dialog is not None
-    qtbot.waitUntil(dialog.picker.has_frame, timeout=5000)
-
-    sized(dialog.picker, 320, 180)
-    qtbot.mouseClick(dialog.picker, Qt.MouseButton.LeftButton, pos=QPoint(100, 45))
-    qtbot.mousePress(dialog.picker, Qt.MouseButton.LeftButton, pos=QPoint(40, 20))
-    qtbot.mouseRelease(dialog.picker, Qt.MouseButton.LeftButton, pos=QPoint(120, 70))
-    dialog.accept()
-
-    assert row.horizon() == 180, "a line drawn on the picture must reach the setting"
-    assert row.horizon_enabled_field.isChecked() is True
-    assert row.regions() == [(160, 80, 320, 200)]
-    assert tab.save() is True
-    from vmd.settings import load_settings
-
-    stored = load_settings(tmp_path / "settings.json").camera.streams[0]
-    assert stored.horizon_y == 180
-    assert [r.as_tuple() for r in stored.ignore_regions] == [(160, 80, 320, 200)]
-
-
-def test_cancelling_the_picture_changes_nothing_in_the_form(qtbot, tmp_path: Path) -> None:
-    tab = a_tab(qtbot, tmp_path)
-    row = tab.stream_rows()[0]
-    row.set_horizon(340)
-    row.set_regions([(1, 2, 3, 4)])
-    dialog = tab.open_picker(row)
-    qtbot.waitUntil(dialog.picker.has_frame, timeout=5000)
-    sized(dialog.picker, 320, 180)
-    qtbot.mouseClick(dialog.picker, Qt.MouseButton.LeftButton, pos=QPoint(100, 45))
-    dialog.reject()
-
-    assert row.horizon() == 340
-    assert row.regions() == [(1, 2, 3, 4)]
-
-
-def test_a_camera_that_is_down_never_blocks_the_boxes_that_already_work(
-    qtbot, tmp_path: Path
-) -> None:
-    """The camera being off must not stop anybody configuring the machine."""
-
-    def refuse():
-        raise FrameUnavailable("Nothing answered at that address.")
-
-    tab = a_tab(qtbot, tmp_path, grab=refuse)
-    row = tab.stream_rows()[0]
-    dialog = tab.open_picker(row)
-    qtbot.waitUntil(lambda: bool(dialog.problem_text()), timeout=5000)
-    dialog.reject()
-
-    # The numbers are still there to be typed, and they still save.
-    row.horizon_enabled_field.setChecked(True)
-    row.horizon_field.setValue(340)
-    row.region_x.setValue(1)
-    row.region_y.setValue(2)
-    row.region_w.setValue(3)
-    row.region_h.setValue(4)
-    row.add_region()
-    assert tab.save() is True
-    from vmd.settings import load_settings
-
-    stored = load_settings(tmp_path / "settings.json").camera.streams[0]
-    assert stored.horizon_y == 340
-    assert [r.as_tuple() for r in stored.ignore_regions] == [(1, 2, 3, 4)]
-
-
-def test_a_stream_with_no_name_is_told_rather_than_asked_of_the_camera(
-    qtbot, tmp_path: Path
-) -> None:
-    tab = a_tab(qtbot, tmp_path)
-    row = tab.stream_rows()[0]
-    row.name_field.setText("")
-    assert tab.open_picker(row) is None
-    assert tab.message
-
-
-def test_the_button_that_opens_the_picture_is_on_the_row(qtbot, tmp_path: Path) -> None:
-    tab = a_tab(qtbot, tmp_path)
-    row = tab.stream_rows()[0]
-    assert row.pick_button.text().strip()
-    banned = ("yolo", "cnn", "classifier", "inference", "model", "sensor")
-    words = (row.pick_button.text() + row.pick_button.toolTip()).lower()
-    assert not any(word in words for word in banned), words
 
 
 # ------------------------------------------------------------- the grab itself
@@ -897,21 +806,16 @@ def test_nothing_ticks_once_the_picture_has_arrived(qtbot) -> None:
     assert picker._waiting.isActive() is False
 
 
-def test_the_dialog_puts_its_failure_on_the_picture(qtbot, tmp_path: Path) -> None:
+def test_the_dialog_puts_its_failure_on_the_picture(qtbot) -> None:
     """The whole point: it is on screen where the operator is already looking,
     and not only in the column beside it."""
 
     def refuse():
         raise FrameUnavailable("The camera did not send a picture.")
 
-    tab = a_tab(qtbot, tmp_path, grab=refuse)
-    row = tab.stream_rows()[0]
-    dialog = tab.open_picker(row)
-    assert dialog is not None
+    dialog = a_dialog(qtbot, grab=refuse)
     qtbot.waitUntil(lambda: dialog.picker.state() == "failed", timeout=5000)
     assert "did not send a picture" in dialog.picker.state_words()
-    # And the labels that were there before have not been taken away.
-    assert dialog.problem_text()
 
 
 def test_no_button_in_the_picker_is_clipped_by_its_own_label(qtbot) -> None:

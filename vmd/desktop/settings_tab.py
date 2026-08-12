@@ -36,14 +36,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -120,40 +117,24 @@ SECONDS_IN_A_DAY = 86400.0
 # that sorts away from the recordings.
 PROBE_NAME = ".vmd-write-test"
 
-# The rectangle itself, kept on the list item rather than parsed back out of the
-# words shown to the operator. The words are for reading; the numbers are the
-# setting, and re-deriving one from the other is how a patch quietly moves.
-_REGION_ROLE = int(Qt.ItemDataRole.UserRole)
-
-# The three positions of `classify`, in the order they are offered, with the
-# value each one saves. None is first because it is the default and the right
-# answer for almost everyone: "follow the sensor" in the model's words, which is
-# not a sentence to put in front of the operator.
-CLASSIFY_CHOICES: list[tuple[str, bool | None]] = [
-    ("Work it out for me", None),
-    ("Always try to name it", True),
-    ("Never try to name it", False),
-]
-
-# Why the thermal head is different, in the only place the operator will ever
-# read it. The numbers are from the design: at 700 m a person is about 13 dots
-# across on the thermal sensor, which is not a photograph of anything.
-WHY_THERMAL = (
-    "This view comes from the heat camera.\n\n"
-    "It matters for one reason. At about 700 m away, a person is only around "
-    "13 dots across on the heat picture - far too small to tell a person from a "
-    "dog from a post. So naming what moved is left switched off for the heat "
-    "camera, and left on for the ordinary one.\n\n"
-    "Movement is still reported either way. Naming it is a bonus, never a "
-    "condition."
-)
+# Naming what moved is gone from this tab, and with it the paragraph that used
+# to explain why the thermal head was treated differently. His instruction: "I
+# need movement notifications, but not accurate identification." See
+# `vmd/detect/config.py`, where it is now switched off at the source rather than
+# merely unticked - a control that is off by default is a control somebody turns
+# on one afternoon, and this one bought a guess he could not check.
+#
+# `Heat camera` went with it. Traced through the whole codebase, `stream.thermal`
+# had exactly one consumer - the line that decided whether naming ran - so with
+# naming gone the tick was a question with no consequence at all. Both fields
+# stay in the model: a settings file in the field has them, and a field removed
+# from the model is a file that stops loading on a laptop with no terminal.
 
 # The three sentences he asked for, in the only place he will read them: on the
 # form, under the control, in the ink notes are written in.
 #
-# "'Watch for movement' - what is that?", "'Name what moved' - what is that?",
-# "'Skyline and ignore...' - what is that?" - all three asked by the person
-# these labels were written for. A tooltip is read by whoever hovers over that
+# "'Watch for movement' - what is that?", "'Skyline and ignore...' - what is
+# that?" - both asked by the person these labels were written for. A tooltip is read by whoever hovers over that
 # one control, which on a console driven from two metres back is nobody. The
 # review of this tab says it plainly: a control whose name only makes sense on
 # hover is a control with the wrong name, and the tooltips here were already
@@ -164,26 +145,10 @@ DETECT_HELP = (
     "carries on either way - this only decides whether you are told."
 )
 
-CLASSIFY_HELP = (
-    "After something has moved, VMD can have a guess at what it was: a person, a "
-    "vehicle, an animal. It is only ever a guess, and it never decides whether "
-    "anything is recorded or reported - a thing it cannot name is still reported."
-)
-
 REGIONS_HELP = (
     "The sky, a road you do not care about, a tree that moves in the wind - "
     "anything you mark in here is not reported. Everything outside it is still "
     "watched."
-)
-
-WHY_CLASSIFY = (
-    "After something has moved, VMD can try to say what it was - a person, a "
-    "dog, a car.\n\n"
-    "\"Work it out for me\" is the safe answer: it tries on the ordinary camera "
-    "and does not bother on the heat camera, where a person 700 m away is only "
-    "about 13 dots across and nothing can be told apart at that size.\n\n"
-    "Whatever this is set to, movement is still reported. Naming it never "
-    "decides whether you are told."
 )
 
 SENSITIVITY_CHOICES: list[tuple[str, str]] = [
@@ -192,27 +157,13 @@ SENSITIVITY_CHOICES: list[tuple[str, str]] = [
     ("High - notices small or distant movement", "high"),
 ]
 
-WHY_HORIZON = (
-    "Everything above this line is treated as sky, so birds are not reported.\n\n"
-    "The number is counted in dots (pixels) down from the TOP edge of the "
-    "picture - not metres, not degrees. So 0 is the very top and a bigger "
-    "number is further down.\n\n"
-    "Leave this switched off unless you know the number. A line set too low "
-    "throws away real movement below it and never tells you it did. Off is a "
-    "perfectly good setting."
-)
-
-WHICH_NUMBER_IS_WHICH = (
-    "The four numbers are dots (pixels) in the picture: how far across from the "
-    "left edge, how far down from the top edge, then how wide and how tall."
-)
-
-WHY_REGIONS = (
-    "A patch listed here is never reported. It is the only reliable answer to "
-    "one particular tree that sways, a flag, or a busy road you do not care "
-    "about. Everything outside these patches is still watched.\n\n"
-    + WHICH_NUMBER_IS_WHICH
-)
+# `WHY_HORIZON`, `WHICH_NUMBER_IS_WHICH` and `WHY_REGIONS` stood here, and all
+# three were paragraphs explaining a number in dots of the camera's own frame:
+# how far down the sky line was, and how far across, down, wide and tall a patch
+# to ignore was. Not one of those is a quantity anybody can see or check against
+# a picture he is not looking at, which is why every one of them needed a
+# paragraph. They are drawn now - see `vmd/desktop/mask.py` - and a picture with
+# a mouse on it needs no paragraph at all.
 
 
 class StreamRowWidget(QFrame):
@@ -221,26 +172,35 @@ class StreamRowWidget(QFrame):
     a camera calls its streams whatever it likes and the form has to keep up.
 
     Every one of those choices lives on this widget rather than in a list held
-    beside it, because that is what makes removing, adding and reordering rows
-    safe. A detection setting matched to a stream by position is a thermal flag
-    waiting to land on the wrong head.
+    beside it, because that is what makes reordering rows safe. A detection
+    setting matched to a stream by position is a setting waiting to land on the
+    wrong head.
 
-    Two things it used to ask and no longer does.
+    Four things it used to ask and no longer does.
 
     **Whether the view is used at all.** It was a tick box called `Use this
     view`, and the operator's verdict was "useless, of course use that view, if
-    it's added". He is right, and the reason is not taste: the reward for
-    remembering the tick is the state you were already in, and the price of
-    missing it is a camera that is silently not shown, not recorded and not
-    watched. `enabled` is still in the settings file and everything downstream
-    still reads it; this form simply always writes True, because a line on the
-    list IS a view in use and the way to stop using one is `Remove`.
+    it's added". The reward for remembering the tick was the state you were
+    already in, and the price of missing it was a camera silently not shown,
+    not recorded and not watched. `enabled` is still in the settings file and
+    everything downstream still reads it; this form always writes True.
 
     **Which client reads the stream.** `auto` or `ffmpeg`, and the honest
     explanation is "try the other one if the picture will not come up", which is
     not a question to put to somebody setting a camera up for the first time.
     The setting keeps working and a file that says `ffmpeg` still says `ffmpeg`
     after a save; it is just not on the screen.
+
+    **Whether this is the heat camera.** Traced right through: `stream.thermal`
+    had exactly one consumer in the whole codebase, and that was the line
+    deciding whether naming ran. Naming is gone, so the tick was a question with
+    no consequence anywhere.
+
+    **Whether to try to name what moved.** His instruction, in his words: "I
+    need movement notifications, but not accurate identification."
+
+    The card can no longer be removed either, and that is deliberate rather than
+    an omission: see `SettingsTab._build_streams_box`.
 
     The rest of the card is a column rather than a row because two of these
     stand side by side now, so each has about 360 px to live in - and a control
@@ -300,10 +260,12 @@ class StreamRowWidget(QFrame):
         self.url_field = QLineEdit(stream.url)
         self.url_field.setPlaceholderText("rtsp://address/path")
 
-        self.remove_button = QPushButton("Remove")
-
+        # `Remove` was here, beside the name. It is gone, and the reason is
+        # asymmetry: with `Add a stream` gone too, one stray click on it costs a
+        # camera permanently and the only way back is hand-editing JSON on a
+        # machine with no terminal. The two views are a fixed property of a
+        # two-sensor camera on a gimbal, not a list anybody curates.
         top.addWidget(self.name_field, 1)
-        top.addWidget(self.remove_button)
         outer.addLayout(top)
         # The address on its own line. In half a column there is no room for a
         # name and an address side by side, and the address is the longer of the
@@ -372,38 +334,56 @@ class StreamRowWidget(QFrame):
         # Everything below the switch, in one widget so that one line of code
         # shows or hides all of it.
         #
-        # "Too much going on." Seven controls per camera view, six of which are
-        # answers to a question - how should this view be watched - that nobody
-        # is asking until the first one is ticked. Folded, never deleted: he has
-        # said he wants to test movement detection in the next days, and a
-        # setting that has been removed is not a setting that can be tested.
+        # "Too much going on." Folded, never deleted: he has said he wants to
+        # test movement detection in the next days, and a setting that has been
+        # removed is not a setting that can be tested.
         self.watched = QWidget()
         watch = QVBoxLayout(self.watched)
         watch.setContentsMargins(SPACE_ROOM, SPACE_TIGHT, 0, 0)
         watch.setSpacing(SPACE_TIGHT)
 
-        self.thermal_field = QCheckBox("Heat camera")
-        self.thermal_field.setChecked(stream.thermal)
-        self.thermal_field.setToolTip(WHY_THERMAL)
-        watch.addWidget(self.thermal_field)
+        # The one thing on this card he actually does. It used to be called
+        # "Sky line and ignored patches" - two nouns lifted out of the source and
+        # joined by an "and" - then "Ignore parts of the picture", which named
+        # the action but not the thing. It is a list of parts of the picture, so
+        # that is what it says.
+        self.mask_button = QPushButton("Parts to ignore")
+        self.mask_button.setToolTip(
+            "Shows one picture from this view and lets you draw round anything "
+            "you do not want reported: the sky, a road, a tree that sways.\n\n"
+            "Draw it, do not type it. Nothing in here is a number you could "
+            "have known."
+        )
+        # Set by SettingsTab, which is the only thing that knows how to reach a
+        # camera. A row on its own can still be built and tested with nothing
+        # installed.
+        self.on_pick = lambda row: None
+        self.mask_button.clicked.connect(lambda: self.on_pick(self))
+        watch.addWidget(self.mask_button)
 
-        self.classify_field = QComboBox()
-        for label, value in CLASSIFY_CHOICES:
-            self.classify_field.addItem(label, value)
-        self.classify_field.setToolTip(WHY_CLASSIFY)
-        self.set_classify(stream.classify)
-        # It said "Name what moved", which reads as an instruction to the
-        # operator rather than as something the software attempts - and he asked
-        # what it was.
-        self.classify_label = QLabel("Try to say what it was:")
-        self.classify_label.setToolTip(WHY_CLASSIFY)
-        watch.addWidget(self.classify_label)
-        watch.addWidget(self.classify_field)
-        # And here too the paragraph is NOT on the card: it is said once above
-        # both of them, in `__init__` below. Same reason as the one above -
-        # guessing what moved means the same thing on both heads of one gimbal,
-        # so printing it on each card is one paragraph twice, side by side and
-        # word for word identical, on the tab he called too busy.
+        # --- and, behind a door, the one knob that tunes a treeline ----------
+        #
+        # He asked for **How touchy:** to be removed or hidden. Hidden: he has
+        # said he wants to test movement detection over the coming days, and
+        # sensitivity is the only control that tunes a detector pointed at a
+        # treeline 700 m away. Removing it would leave him with a detector that
+        # either alarms all night or says nothing, and no way to move between
+        # those two states.
+        #
+        # Behind "Advanced" and defaulting to Normal, so that a console nobody
+        # has set up yet asks him one question per view and not two.
+        self.advanced_button = QPushButton("Advanced")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setToolTip(
+            "One setting, for a view that alarms too much or too little. "
+            "Leave it alone until it does."
+        )
+        watch.addWidget(self.advanced_button)
+
+        self.advanced = QWidget()
+        advanced = QVBoxLayout(self.advanced)
+        advanced.setContentsMargins(SPACE_ROOM, SPACE_TIGHT, 0, 0)
+        advanced.setSpacing(SPACE_TIGHT)
 
         self.sensitivity_field = QComboBox()
         for label, value in SENSITIVITY_CHOICES:
@@ -414,143 +394,43 @@ class StreamRowWidget(QFrame):
             "notices only large, clear movement. Start at Normal."
         )
         self.set_sensitivity(stream.sensitivity)
-        sensitivity_label = QLabel("How touchy:")
-        sensitivity_label.setToolTip(self.sensitivity_field.toolTip())
-        watch.addWidget(sensitivity_label)
-        watch.addWidget(self.sensitivity_field)
-
-        # It said "Sky line and ignored patches": two nouns lifted out of the
-        # source and joined by an "and", naming neither what it is for nor what
-        # it acts on. He asked what it was.
-        self.details_button = QPushButton("Ignore parts of the picture")
-        self.details_button.setCheckable(True)
-        self.details_button.setToolTip(
-            "The two settings for a view that keeps alarming on something you "
-            "do not care about."
-        )
-        watch.addWidget(self.details_button)
-        # The third of the three, and the last one that was still per-card. What
-        # a patch to ignore is for does not change between the two heads either.
-
         # A label above its box rather than beside it. In half a column there is
         # no room for both, and the thing that has to be readable is the choice
         # itself: "High - notices small or distant movement" is 250 px of words
         # and it is what the operator is picking between.
+        self.sensitivity_label = QLabel("How touchy:")
+        self.sensitivity_label.setToolTip(self.sensitivity_field.toolTip())
+        advanced.addWidget(self.sensitivity_label)
+        advanced.addWidget(self.sensitivity_field)
+        self.advanced.setVisible(False)
+        self.advanced_button.toggled.connect(
+            lambda shown: self._unfold(self.advanced, shown)
+        )
+        watch.addWidget(self.advanced)
+
         outer.addWidget(self.watched)
         self.detect_field.toggled.connect(
             lambda shown: self._unfold(self.watched, shown)
         )
         self.watched.setVisible(self.detect_field.isChecked())
 
-        # --- the two that need explaining ------------------------------------
-        self.details = QFrame()
-        self.details.setFrameShape(QFrame.Shape.StyledPanel)
-        details_layout = QVBoxLayout(self.details)
-        details_layout.setContentsMargins(8, 6, 8, 6)
-        details_layout.setSpacing(4)
-
-        # The picture. Every number under it is a dot of the camera's frame, and
-        # a dot of a frame is not a thing anybody can estimate by eye - so this
-        # button, which fetches one frame and lets the line and the patches be
-        # drawn on it, sits above them rather than beside them.
-        self.pick_button = QPushButton("Show me the picture and let me draw on it")
-        self.pick_button.setToolTip(
-            "Fetches one still picture from this view. Click it to put the sky "
-            "line, drag a box over anything to ignore.\n\n"
-            "If the camera cannot be reached the boxes below still work; they "
-            "are the same settings, typed instead of drawn."
-        )
-        # Set by SettingsTab, which is the only thing that knows how to reach a
-        # camera. A row on its own can still be built and tested with nothing
-        # installed.
-        self.on_pick = lambda row: None
-        self.pick_button.clicked.connect(lambda: self.on_pick(self))
-        details_layout.addWidget(self.pick_button)
-
-        self.horizon_enabled_field = QCheckBox("Ignore everything above a sky line")
-        self.horizon_enabled_field.setToolTip(WHY_HORIZON)
-        self.horizon_field = QSpinBox()
-        self.horizon_field.setRange(0, 100000)
-        self.horizon_field.setSuffix(" dots from the top")
-        self.horizon_field.setToolTip(WHY_HORIZON)
-        self.set_horizon(stream.horizon_y)
-        self.horizon_enabled_field.toggled.connect(self.horizon_field.setEnabled)
-        self.horizon_field.setEnabled(self.horizon_enabled_field.isChecked())
-        # The tick and its number stacked rather than side by side. Together
-        # they are about 400 px of controls, and half a form column is 360.
-        details_layout.addWidget(self.horizon_enabled_field)
-        horizon_line = QHBoxLayout()
-        horizon_line.setSpacing(SPACE_SNUG)
-        horizon_line.addWidget(self.horizon_field)
-        horizon_line.addStretch(1)
-        details_layout.addLayout(horizon_line)
-
-        self.horizon_help = _note(
-            "Draw the line on the picture above rather than guessing the "
-            "number: a line set too low throws away real movement below it and "
-            "never tells you it did. If the camera cannot be reached, leave the "
-            "sky line off unless someone has read the number off a picture for "
-            "you. Off is a perfectly safe setting."
-        )
-        details_layout.addWidget(self.horizon_help)
-
-        # Only the half of WHY_REGIONS that is not already said above. What a
-        # patch is FOR is now written under the button that opens this panel, and
-        # having it twice on one card, in two wordings, is exactly the "too much
-        # going on" this tab was cut down for. What is left is the half that
-        # cannot be said anywhere else: which number is which.
-        self.regions_help = _note(WHICH_NUMBER_IS_WHICH)
-        details_layout.addWidget(self.regions_help)
-
-        self.regions_list = QListWidget()
-        self.regions_list.setToolTip(WHY_REGIONS)
-        self.regions_list.setMaximumHeight(90)
-        details_layout.addWidget(self.regions_list)
-
-        # Two by two, and for the same reason this row was split off the row
-        # above it before: the form column stops growing, so a row that asks for
-        # more than it can have is not shrunk by Qt - it is clipped, at both
-        # ends, and what came out was `elete the selected patc` beside four spin
-        # boxes that had lost the words saying which number was which. Half a
-        # column is 360 px and four of these need about 500, so the four numbers
-        # are two lines now, and the button that lost its first and last letters
-        # says the two words that matter.
+        # The areas he has drawn, held as points and never shown as numbers.
         #
-        # The four numbers first, then the two buttons that act on them, which
-        # is also the order they are used in.
-        numbers = QGridLayout()
-        numbers.setHorizontalSpacing(SPACE_SNUG)
-        numbers.setVerticalSpacing(SPACE_TIGHT)
-        self.region_x = _region_box("across")
-        self.region_y = _region_box("down")
-        self.region_w = _region_box("wide")
-        self.region_h = _region_box("tall")
-        for index, box in enumerate(
-            (self.region_x, self.region_y, self.region_w, self.region_h)
-        ):
-            numbers.addWidget(box, index // 2, index % 2)
-        details_layout.addLayout(numbers)
-
-        region_buttons = QHBoxLayout()
-        region_buttons.setSpacing(SPACE_SNUG)
-        self.add_region_button = QPushButton("Add this patch")
-        self.remove_region_button = QPushButton("Delete patch")
-        region_buttons.addWidget(self.add_region_button)
-        region_buttons.addWidget(self.remove_region_button)
-        region_buttons.addStretch(1)
-        details_layout.addLayout(region_buttons)
-
-        self.add_region_button.clicked.connect(self.add_region)
-        self.remove_region_button.clicked.connect(self.remove_selected_region)
-        self.set_regions([r.as_tuple() for r in stream.ignore_regions])
-
-        self.details.setVisible(False)
-        self.details_button.toggled.connect(
-            lambda shown: self._unfold(self.details, shown)
-        )
-        # Inside the folded block, not beside it: a panel about the sky line of a
-        # view nobody is watching is furniture.
-        watch.addWidget(self.details)
+        # `120 x 80 dots, at 30 across and 40 down` was on this card, four
+        # times over, in a list beside four spin boxes - and it is exactly what
+        # he asked to be rid of. A dot of a camera frame is not a quantity
+        # anybody can see, estimate or check, so the only honest control for one
+        # is the picture itself.
+        #
+        # `ignore_regions` - the older rectangles - are NOT read into this and
+        # NOT written from it. They are carried across a save untouched inside
+        # `_base`, like every other field this form has stopped showing. The
+        # detector still honours them; converting them here would be this form
+        # rewriting a setting the operator never touched.
+        self._shapes: list[list[tuple[int, int]]] = [
+            shape.as_tuples() for shape in stream.ignore_shapes
+        ]
+        self._say_how_many_areas()
 
         # What to say when a patch cannot be added. Set by SettingsTab so the
         # row does not need to know where the message line lives.
@@ -566,10 +446,9 @@ class StreamRowWidget(QFrame):
     def _unfold(self, block: QWidget, shown: bool) -> None:
         """Show or hide a folded block, and say so loudly enough to be believed.
 
-        `setVisible` on its own is what drew text over text when **Ignore parts
-        of the picture** was pressed: "How touchy:" landed on the last line of
-        the note above it, and the sky-line note and the one under it were drawn
-        through each other and through **Add a stream**.
+        `setVisible` on its own is what drew text over text when the fold under
+        a card was opened: "How touchy:" landed on the last line of the note
+        above it, and two more sentences were drawn through each other.
 
         The card grows by about 420 px when this block opens, and it says so:
         asked directly, it answers with the new height the moment the block is
@@ -637,19 +516,6 @@ class StreamRowWidget(QFrame):
             self._base.get("reader", "auto"),
         )
 
-    def classify(self) -> bool | None:
-        return self.classify_field.currentData()
-
-    def set_classify(self, value: bool | None) -> None:
-        # `is`, not findData: findData compares with ==, and False == 0 == None
-        # in enough of Qt's variant handling to land "never name it" on "work it
-        # out for me" without a word of complaint.
-        for index in range(self.classify_field.count()):
-            if self.classify_field.itemData(index) is value:
-                self.classify_field.setCurrentIndex(index)
-                return
-        self.classify_field.setCurrentIndex(0)
-
     def sensitivity(self) -> str:
         return self.sensitivity_field.currentData()
 
@@ -660,51 +526,34 @@ class StreamRowWidget(QFrame):
                 return
         self.sensitivity_field.setCurrentIndex(1)  # normal
 
-    def horizon(self) -> int | None:
-        """The sky line, or None when the rule is off - which is not the same as
-        zero. Zero would mean the whole picture is sky."""
-        if not self.horizon_enabled_field.isChecked():
-            return None
-        return int(self.horizon_field.value())
+    def shapes(self) -> list[list[tuple[int, int]]]:
+        """The areas drawn on this view, as points. Never words, never numbers."""
+        return [list(shape) for shape in self._shapes]
 
-    def set_horizon(self, value: int | None) -> None:
-        self.horizon_enabled_field.setChecked(value is not None)
-        self.horizon_field.setValue(int(value) if value is not None else 0)
-
-    def regions(self) -> list[tuple[int, int, int, int]]:
-        return [
-            self.regions_list.item(i).data(_REGION_ROLE) for i in range(self.regions_list.count())
+    def set_shapes(self, shapes) -> None:
+        self._shapes = [
+            [(int(x), int(y)) for x, y in shape] for shape in shapes
         ]
+        self._say_how_many_areas()
 
-    def set_regions(self, regions) -> None:
-        self.regions_list.clear()
-        for region in regions:
-            self._append_region(tuple(int(n) for n in region))
+    def _say_how_many_areas(self) -> None:
+        """Count them on the button, and nothing else about them.
 
-    def add_region(self) -> bool:
-        """Add the patch in the four boxes, or say why it is not a patch."""
-        x, y = self.region_x.value(), self.region_y.value()
-        w, h = self.region_w.value(), self.region_h.value()
-        if w <= 0 or h <= 0:
-            self.on_problem(
-                "A patch to ignore needs a width and a height greater than zero."
-            )
-            return False
-        self._append_region((x, y, w, h))
-        return True
-
-    def remove_selected_region(self) -> None:
-        row = self.regions_list.currentRow()
-        if row < 0:
-            self.on_problem("Select the patch to delete first.")
-            return
-        self.regions_list.takeItem(row)
-
-    def _append_region(self, region: tuple[int, int, int, int]) -> None:
-        x, y, w, h = region
-        item = QListWidgetItem(f"{w} x {h} dots, at {x} across and {y} down")
-        item.setData(_REGION_ROLE, region)
-        self.regions_list.addItem(item)
+        The count is the one fact about a set of drawn areas that is worth a
+        word: it says whether pressing this opens an empty picture or one that
+        has been marked up, which is the only question anybody has before
+        opening it. What is NOT here is where they are or how big - `120 x 80
+        dots, at 30 across and 40 down` is what he asked to be rid of, and it
+        was never a sentence anybody could check against a picture they could
+        not see.
+        """
+        count = len(self._shapes)
+        if not count:
+            self.mask_button.setText("Parts to ignore")
+        elif count == 1:
+            self.mask_button.setText("Parts to ignore  (1 marked)")
+        else:
+            self.mask_button.setText(f"Parts to ignore  ({count} marked)")
 
     def set_lenses(self, profiles: list[dict], current: str = "") -> None:
         """Offer the camera's lenses, keeping whatever was already chosen.
@@ -748,6 +597,14 @@ class StreamRowWidget(QFrame):
 
         Built on top of what the stream arrived with, so a field this form has
         never heard of survives a save rather than being reset to its default.
+
+        Four fields the form used to write are now only carried: `thermal`,
+        `classify`, `horizon_y` and `ignore_regions`. They are not named below,
+        which is exactly how they survive - `payload` starts from what was
+        loaded, so whatever the file said about them is still in this dictionary
+        and goes back out unchanged. Writing a default over a setting the form
+        stopped showing would be the same failure as deleting a stream, one
+        field along.
         """
         name, url, enabled, reader = self.values()
         payload = dict(self._base)
@@ -757,13 +614,10 @@ class StreamRowWidget(QFrame):
             enabled=enabled,
             reader=reader,
             detect=self.detect_field.isChecked(),
-            thermal=self.thermal_field.isChecked(),
             ptz_profile=self.chosen_lens(),
-            classify=self.classify(),
             sensitivity=self.sensitivity(),
-            horizon_y=self.horizon(),
-            ignore_regions=[
-                {"x": x, "y": y, "w": w, "h": h} for x, y, w, h in self.regions()
+            ignore_shapes=[
+                {"points": [list(point) for point in shape]} for shape in self.shapes()
             ],
         )
         return payload
@@ -1045,14 +899,6 @@ def _note(text: str) -> WrappedNote:
     return note
 
 
-def _region_box(what: str) -> QSpinBox:
-    box = QSpinBox()
-    box.setRange(0, 100000)
-    box.setPrefix(f"{what} ")
-    box.setToolTip(WHY_REGIONS)
-    return box
-
-
 class _ToolSignals(QObject):
     """A background tool talking back to the window it cannot touch directly."""
 
@@ -1187,40 +1033,26 @@ class SettingsTab(QWidget):
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
         streams_outer.setSpacing(SPACE_STEP)
-        # On the form rather than only in a tooltip. It used to explain the tick
-        # box beside each view; with the tick gone it has to explain the rule
-        # that replaced it, because "how do I stop using this camera" now has
-        # exactly one answer and it is not on the card.
+        # On the form rather than only in a tooltip, and it says what the list
+        # IS now rather than how to change it - because it cannot be changed
+        # from here any more. See `_build_streams_box` in this docstring's
+        # place below: the list is locked.
         self.streams_help = _note(
             "One card for each of the camera's views. Every view on this list is "
             "used: it is shown in the Live tab, it is recorded, and it is "
-            "watched if you ask for that below. To stop using one, remove it."
+            "watched if you ask for that below."
         )
         streams_outer.addWidget(self.streams_help)
         # What "Watch for movement" means, said once for both cards rather than
-        # printed on each of them. See the note where it used to live: with the
-        # views side by side, per-card help is the same paragraph twice, six
-        # inches apart, on the tab he called too busy.
+        # printed on each of them. With the views side by side, per-card help is
+        # the same paragraph twice, six inches apart, on the tab he called busy.
         self.detect_help = _note(DETECT_HELP)
         streams_outer.addWidget(self.detect_help)
-        # The other two paragraphs that used to be printed once per card, moved
-        # here for the same reason and by the same argument. `fcd32f2` moved the
-        # first of the three and left these; on screen they were the plainest
-        # duplication left in the console - two paragraphs, side by side, word
-        # for word identical, six inches apart. Everything they say is true of
-        # both heads of the gimbal, so this is where they belong.
-        #
-        # Shown only while at least one view is being watched, which is what
-        # `_show_stream_help` decides. Moving them here stopped them being
-        # printed twice; it did not stop them being printed at all, and with
-        # nothing watched these two paragraphs explain a control that is not on
-        # the screen - three paragraphs of preamble before the first box, on the
-        # tab whose complaint was that there is too much on it.
-        #
-        # The tick's own sentence above stays whatever happens: that tick is
-        # always visible, and it is the one he asked about by name.
-        self.classify_help = _note(CLASSIFY_HELP)
-        streams_outer.addWidget(self.classify_help)
+        # And what the one button under the tick is for, on the same terms:
+        # once, above both cards, and only while there is a card it applies to.
+        # `_show_stream_help` decides that - with nothing watched this paragraph
+        # explains a button that is not on the screen, which on a console nobody
+        # has set up yet is preamble before the first box.
         self.ignore_help = _note(REGIONS_HELP)
         streams_outer.addWidget(self.ignore_help)
         # Side by side, two across. "Make the vis and thermal in the settings
@@ -1233,9 +1065,20 @@ class SettingsTab(QWidget):
         for column in range(STREAM_COLUMNS):
             self._streams_layout.setColumnStretch(column, 1)
         streams_outer.addLayout(self._streams_layout)
-        self.add_stream_button = QPushButton("Add a stream")
-        self.add_stream_button.clicked.connect(lambda: self.add_stream_row())
-        streams_outer.addWidget(self.add_stream_button)
+        # **Add a stream** was here, and **Remove** was on every card. Both are
+        # gone, and the second is the one that matters.
+        #
+        # He asked for Add to go: this camera is one gimbal with two heads, the
+        # views are a fixed property of the hardware, and a button offering a
+        # third is a button offering a mistake. Remove had to go with it, and
+        # not for symmetry - for asymmetry. With Add gone, one stray click on
+        # Remove costs him a camera view permanently, and the only way back is
+        # hand-editing JSON on a machine with no terminal and no second
+        # computer. There is no undo on this form and there cannot be one.
+        #
+        # The list is locked, not fixed at two: `set_streams` is untouched, so a
+        # settings file with three views still draws three cards and still saves
+        # three. What has gone is this form's ability to invent or destroy one.
         layout.addWidget(streams_box)
 
         detection_box = QGroupBox("Movement detection")
@@ -1288,16 +1131,21 @@ class SettingsTab(QWidget):
         )
         extras.addWidget(self._alarm_sound)
 
-        self._detection_classify = QCheckBox("Allow VMD to try to say what it was")
-        self._detection_classify.setToolTip(
-            "The master switch for naming things. With this off, nothing is "
-            "ever named, whatever the individual views are set to. With it on, "
-            "each view decides for itself.\n\n"
-            "It needs an extra download to work, and at 700 m a person is only "
-            "about 13 dots across, so it is off to begin with. You are told "
-            "about the movement either way."
-        )
-        extras.addWidget(self._detection_classify)
+        # **Allow VMD to try to say what it was** was here, and it is gone,
+        # along with the chooser on each camera card that answered to it.
+        #
+        # His instruction: "I need movement notifications, but not accurate
+        # identification." Not off by default - off. A control that is merely
+        # unticked is a control somebody ticks one afternoon to see what it
+        # does, and what it does at 700 m is put a confident wrong noun on an
+        # event he was being told about anyway. `classify_enabled` in
+        # `vmd/detect/config.py` now returns False whatever the file says, so
+        # this is not a form that hides a running feature: nothing runs it.
+        #
+        # `detection.classify` and `StreamSettings.classify` stay in the model,
+        # so every settings file in the field still loads, and are carried
+        # across a save untouched like every other field this form has stopped
+        # showing.
 
         # **Must travel at least (dots)** was here, and it is gone.
         #
@@ -1462,17 +1310,44 @@ class SettingsTab(QWidget):
         radio_form.addRow("", self.link_help)
         layout.addWidget(radio_box)
 
-        # "The camera - is it relevant anymore?" It is, and more than most of
-        # this page: it is the only way to find out whether the camera answers
-        # at all on a machine with no terminal and no second computer. What was
-        # wrong was the title, which was `The camera` sitting one screen below a
-        # box called `Camera` - so it read as a second place to configure the
-        # same thing rather than as the place to test it.
-        self.tools_box = tools_box = QGroupBox("Check the camera")
+        # "The camera - is it relevant anymore?" - and then, plainly: get rid of
+        # it. Refused, and the reasons were put to him and accepted.
+        #
+        # It is the only diagnostic on a machine with no terminal and no second
+        # computer: **Test the camera** and **Find the camera's address** are the
+        # difference between "the picture is black" and knowing why, and *Which
+        # lens is behind which picture?* is the only cure for the fault he
+        # reported himself - "only the vis is zooming".
+        #
+        # What is true in his complaint is that it was the biggest thing on the
+        # page, always open, five buttons and a black rectangle, sitting under a
+        # form he came here to type four numbers into. So it is shut by default
+        # and it is the last thing on the page: he will not see it again unless
+        # he goes looking for it, and it is there on the day he needs it.
+        self.tools_button = QPushButton("Check the camera")
+        self.tools_button.setCheckable(True)
+        self.tools_button.setToolTip(
+            "The tools for finding out whether the camera is answering, and "
+            "what it says when it does.\n\n"
+            "Nothing in here changes a setting. You do not need any of it "
+            "unless something is wrong."
+        )
+        layout.addWidget(self.tools_button)
+
+        # A frame rather than a group box, and with no title: the button above
+        # it is the title, and a panel headed "Check the camera" under a button
+        # saying "Check the camera" is one name printed twice.
+        self.tools_box = tools_box = QFrame()
+        tools_box.setFrameShape(QFrame.Shape.StyledPanel)
         tools_outer = QVBoxLayout(tools_box)
         tools_outer.setSpacing(SPACE_SNUG)
-        tools_buttons = QHBoxLayout()
-        tools_buttons.setSpacing(SPACE_SNUG)
+        # Two across, not five along. Five of these on one line is about 1500 px
+        # of buttons in a column that stops at 980, and Qt clips a button at
+        # BOTH ends rather than eliding one - which is how the longest of them
+        # came out reading "urn the picture down to what the link can carr".
+        tools_buttons = QGridLayout()
+        tools_buttons.setHorizontalSpacing(SPACE_SNUG)
+        tools_buttons.setVerticalSpacing(SPACE_SNUG)
         self.test_button = QPushButton("Test the camera")
         self.test_button.clicked.connect(self.test_camera)
         # "path" here was the RTSP path - the `/ch2` on the end of the address.
@@ -1492,15 +1367,18 @@ class SettingsTab(QWidget):
         self.lens_button.clicked.connect(self.ask_about_lenses)
         self.report_button = QPushButton("Save a report")
         self.report_button.clicked.connect(lambda: self.save_report())
-        for button in (
-            self.test_button,
-            self.find_button,
-            self.fit_button,
-            self.lens_button,
-            self.report_button,
+        for index, button in enumerate(
+            (
+                self.test_button,
+                self.find_button,
+                self.lens_button,
+                self.fit_button,
+                self.report_button,
+            )
         ):
-            tools_buttons.addWidget(button)
-        tools_buttons.addStretch(1)
+            tools_buttons.addWidget(button, index // 2, index % 2)
+        for column in range(2):
+            tools_buttons.setColumnStretch(column, 1)
         tools_outer.addLayout(tools_buttons)
 
         self._output = QPlainTextEdit()
@@ -1515,6 +1393,8 @@ class SettingsTab(QWidget):
         )
         tools_outer.addWidget(self._output)
         layout.addWidget(tools_box)
+        tools_box.setVisible(False)
+        self.tools_button.toggled.connect(tools_box.setVisible)
 
         # The one row on this page the page exists for: what went wrong, and
         # the button that writes the file. Together, and at the end, because
@@ -1673,14 +1553,6 @@ class SettingsTab(QWidget):
     def alarm_sound(self, value: bool) -> None:
         self._alarm_sound.setChecked(bool(value))
 
-    @property
-    def detection_classify(self) -> bool:
-        return self._detection_classify.isChecked()
-
-    @detection_classify.setter
-    def detection_classify(self, value: bool) -> None:
-        self._detection_classify.setChecked(bool(value))
-
     def say_the_lowest_picture(self, settings: Settings) -> None:
         """Put the floor the camera is never asked to go below into words.
 
@@ -1805,8 +1677,14 @@ class SettingsTab(QWidget):
         reader: str = "auto",
         stream: StreamSettings | None = None,
     ) -> StreamRowWidget:
+        """Draw a card for one view. Called by `set_streams` and by nothing else.
+
+        There is no button that reaches this any more - see the note where
+        **Add a stream** used to be - but the method stays public and unchanged,
+        because it is how the settings file's own list becomes cards and how
+        every test builds one.
+        """
         row = StreamRowWidget(name, url, enabled, reader, stream=stream)
-        row.remove_button.clicked.connect(lambda: self.remove_stream_row(row))
         row.on_problem = self._set_message
         row.on_pick = self.open_picker
         row.on_refold = self._refold
@@ -1818,6 +1696,11 @@ class SettingsTab(QWidget):
         return row
 
     def remove_stream_row(self, row: StreamRowWidget) -> None:
+        """Take a card off the form. Reached only from `set_streams`.
+
+        Which is the whole of why it is still here: replacing the list means
+        clearing it first. Nothing the operator can press arrives here.
+        """
         if row not in self._rows:
             return
         self._rows.remove(row)
@@ -1870,18 +1753,46 @@ class SettingsTab(QWidget):
         """
         self._show_stream_help()
         self._lay_the_cards_out()
+        # And then upwards, by hand, because Qt will not do it for us.
+        #
+        # `_lay_the_cards_out` fixes the grid. It does not fix what the layouts
+        # ABOVE the grid remember, and they are the ones the scroll area asks
+        # how tall this page is. Every one of them caches the height it worked
+        # out for a width, a fold opening inside a card reaches them only along
+        # a chain of parent WIDGETS, and the grid is a layout inside a layout -
+        # so it is not on that chain and neither is anything above it.
+        #
+        # The visible failure is not subtle once it is measured: the page keeps
+        # the height it had, the Streams box is handed less than its own
+        # minimum, and every control on the card is drawn a few pixels short of
+        # its own label - **Parts to ignore** in 24 px of the 26 it needs, "How
+        # touchy:" in 8 of 16.
+        #
+        # `invalidate` on its own is not enough. It schedules the recalculation
+        # and a layout goes on answering out of its cache until something
+        # activates it, which is the same lesson the grid taught above. So each
+        # layout from the card up to the page is invalidated and then activated.
+        for row in self._rows:
+            widget = row
+            while widget is not None:
+                layout = widget.layout()
+                if layout is not None:
+                    layout.invalidate()
+                    layout.activate()
+                if widget is self._page:
+                    break
+                widget = widget.parentWidget()
 
     def _show_stream_help(self) -> None:
         """Only explain the controls that are actually on the screen.
 
-        Two of the three paragraphs above the cards are about settings that are
-        folded away until a view is being watched, which on a console nobody has
-        set up yet is always. Explaining a control he cannot see is the same
-        cost as explaining one twice - it is text between him and the box he
-        came here to type in.
+        The paragraph about parts to ignore is about a button that is folded
+        away until a view is being watched, which on a console nobody has set
+        up yet is always. Explaining a control he cannot see is the same cost as
+        explaining one twice - it is text between him and the box he came here
+        to type in.
         """
         watched = any(row.detect_field.isChecked() for row in self._rows)
-        self.classify_help.setVisible(watched)
         self.ignore_help.setVisible(watched)
 
     def stream_rows(self) -> list[StreamRowWidget]:
@@ -1941,7 +1852,6 @@ class SettingsTab(QWidget):
         self.link_auto = settings.bitrate.mode == "auto"
         self.detection_enabled = settings.detection.enabled
         self.alarm_sound = settings.detection.alarm_sound
-        self.detection_classify = settings.detection.classify
         # How far a thing must travel before it counts is not on this form any
         # more; `self._loaded` above is what carries it across a save.
         self.say_the_lowest_picture(settings)
@@ -2075,14 +1985,15 @@ class SettingsTab(QWidget):
             streams=[row.stream_values() for row in self._rows],
         )
         payload["detection"] = dict(payload.get("detection", {}))
-        # Three of the four. `min_travel_px` is not on this form and is not
-        # written here either, which is exactly how it survives: `payload` starts
-        # from the settings that were loaded, so whatever the file said about it
-        # is still in this dictionary and goes back out unchanged.
+        # Two of the four. `min_travel_px` and `classify` are not on this form
+        # and are not written here either, which is exactly how they survive:
+        # `payload` starts from the settings that were loaded, so whatever the
+        # file said about them is still in this dictionary and goes back out
+        # unchanged. Nothing reads `classify` any more in any case; see
+        # `vmd/detect/config.py`.
         payload["detection"].update(
             enabled=self.detection_enabled,
             alarm_sound=self.alarm_sound,
-            classify=self.detection_classify,
         )
         radio_host = self.radio_host.strip()
         payload["radio"] = dict(payload.get("radio", {}))
@@ -2116,12 +2027,12 @@ class SettingsTab(QWidget):
         seen: set[str] = set()
         for name, url, _used, _reader in self.streams():
             if not url:
-                # There is no tick to talk about any more: a card on the list is
-                # a view in use, so the two ways out of this are the address and
-                # the Remove button.
+                # A card on the list is a view in use, and there is no longer a
+                # Remove button to point him at - so there is exactly one way
+                # out of this, and it is the one named.
                 return (
-                    f'"{name or "A view"}" has no address. Type one in, or '
-                    f"remove it."
+                    f'"{name or "A view"}" has no address. Type the address of '
+                    f"that view into the box under its name."
                 )
             if url and not name:
                 return "A stream has an address but no name."
@@ -2233,22 +2144,25 @@ class SettingsTab(QWidget):
         self._start(self.report_button, "Writing the report", work)
 
     def open_picker(self, row: StreamRowWidget):
-        """Show one frame from this view, to draw the sky line and patches on.
+        """Show one frame from this view, to draw the parts to ignore on.
 
-        The two settings under this button are native-frame pixel coordinates.
-        Typed blind they are guesses, and a wrong sky line deletes real movement
-        without saying so - so the picture is the control and the boxes are what
-        is left when there is no picture to be had.
+        Everything under this button used to be numbers: a sky line in dots
+        from the top of the frame, and a list of rectangles printed as `120 x 80
+        dots, at 30 across and 40 down`. Not one of those is a quantity anybody
+        can see, estimate or check, and a sky line set too low deletes real
+        movement without ever saying it did. He asked for all of it to go, and
+        he was right - the picture is the control.
 
-        Nothing is applied unless the operator presses the dialog's own button,
-        and nothing here can leave the form worse than it found it: a camera
-        that cannot be reached ends in a sentence in the dialog, with every box
-        in this form exactly as it was.
+        The frame is fetched before the dialog is built, because the dialog
+        takes a picture rather than a way of getting one. When it cannot be had
+        the dialog is opened anyway, carrying the reason: the areas already
+        drawn are still his to delete, and a camera that is unreachable this
+        afternoon must not also take away the ability to undo a mistake.
         """
         # Imported here for the same reason the camera tools are: opening the
         # console must not pay for the camera stack, and this module has to stay
         # importable on a machine with nothing installed.
-        from vmd.desktop.picker import PickerDialog
+        from vmd.desktop.mask import MaskDialog
 
         name = row.values()[0]
         if not name:
@@ -2261,30 +2175,18 @@ class SettingsTab(QWidget):
             return None
 
         tools = self._camera_tools(settings)
-        dialog = PickerDialog(
-            stream=name,
-            horizon=row.horizon(),
-            regions=row.regions(),
-            grab=lambda: tools.grab_frame(settings, name),
-            parent=self,
-        )
-        dialog.accepted.connect(lambda: self._apply_picked(row, dialog))
-        # open(), never exec(): exec() runs its own event loop on the window
-        # thread, and everything this console has learned about freezing says
-        # not to.
-        dialog.open()
+        frame, problem = b"", ""
+        try:
+            frame = tools.grab_frame(settings, name)
+        except Exception as exc:  # noqa: BLE001 - any failure is one sentence
+            logger.info("no picture from %s: %s", name, exc)
+            problem = str(exc)
+
+        dialog = MaskDialog(frame, row.shapes(), problem=problem, parent=self)
+        if dialog.exec():
+            row.set_shapes(dialog.shapes())
+            self._refold()
         return dialog
-
-    @staticmethod
-    def _apply_picked(row: StreamRowWidget, dialog) -> None:
-        """Put what was drawn into the boxes, which stay the settings.
-
-        The sky line is switched on by drawing one: an operator who has just put
-        a line on a picture has said what they want, and leaving the tick box
-        off would file it away as "typed but not meant".
-        """
-        row.set_horizon(dialog.horizon())
-        row.set_regions(dialog.regions())
 
     def _start(self, button: QPushButton, heading: str, work) -> None:
         """Run one camera tool off the UI thread and print what it says.
@@ -2458,9 +2360,14 @@ def _adopted(settings: Settings) -> str:
 
     So it is adopted, like every other line on the list. What is not acceptable
     is doing that silently, because somebody may have meant it: hence this
-    sentence, which names the view, says what happens at the next Save, and
-    points at the control that still expresses "I do not want this view", which
-    is Remove.
+    sentence, which names the view and says what happens at the next Save.
+
+    It used to end by pointing at **Remove**, and that button is gone - the list
+    is locked, because with **Add a stream** gone a stray click on Remove costs
+    a camera view permanently. A sentence naming a button that is not on the
+    screen sends him looking for it, which is worse than saying nothing. So it
+    says what is true instead: the view is in use, and that is now the only
+    state a view on this list can be in.
     """
     off = [
         stream.name or "a view with no name"
@@ -2472,12 +2379,10 @@ def _adopted(settings: Settings) -> str:
     named = " and ".join(f'"{name}"' for name in off)
     was = "was" if len(off) == 1 else "were"
     it = "it" if len(off) == 1 else "they"
-    its = "its" if len(off) == 1 else "their"
     return (
         f"{named} {was} switched off in the settings file. There is no longer a "
         f"switch for that - every view on this list is a view in use - so {it} "
-        f"will be used again from the next Save. Remove {its} card if that is "
-        f"not what you want."
+        f"will be used again from the next Save."
     )
 
 
