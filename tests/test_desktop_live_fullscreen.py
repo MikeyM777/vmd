@@ -238,7 +238,7 @@ def settings_with(*names: str) -> Settings:
     )
 
 
-def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None):
+def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None, chime=None):
     """A Live tab on its own, with fakes for everything it reaches out to."""
     ptz = ptz if ptz is not None else FakePtz()
     panes: dict = {}
@@ -252,6 +252,7 @@ def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None):
         make_pane=make_pane,
         local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
         zoom=zoom,
+        chime=chime,
         executor=lambda work: work(),
     )
     qtbot.addWidget(tab)
@@ -649,6 +650,51 @@ def test_the_zoom_bars_are_under_the_pictures_in_fullscreen_too(
         assert bar is not None and bar.isVisible()
 
 
+class Moved:
+    """A movement event, in the shape the alarm path reads."""
+
+    stream = "thermal"
+    started = 1_760_000_000.0
+    ended = started + 4.0
+    label = ""
+    confidence = 0.0
+
+
+def test_an_arriving_alarm_makes_a_sound(qtbot) -> None:
+    """`DESIGN.md` has promised this since it was written and nothing in the
+    program did it. The strip is red, wide and silent, so movement at 03:40
+    while he is turned away was announced to an empty chair and cleared by the
+    next thing that moved.
+
+    The wiring rather than the widget: the strip going up and the room being
+    told have to be the same event.
+    """
+    from vmd.desktop.chime import Chime
+
+    sounds: list[int] = []
+    chime = Chime(player=lambda: sounds.append(1), clock=lambda: 1000.0)
+    tab, _ptz, _panes = live_tab(qtbot, "thermal", chime=chime)
+
+    tab._raise_alarm(Moved())
+    assert tab.alarm_visible(), "the strip did not go up, so this proves nothing"
+    assert len(sounds) == 1
+
+
+def test_a_sound_device_that_dies_does_not_cost_him_the_alarm(qtbot) -> None:
+    """The strip, the outline and the movement list all matter more than the
+    noise. Somebody unplugging a USB headset must not reach the alarm path."""
+    from vmd.desktop.chime import Chime
+
+    def angry() -> None:
+        raise OSError("the sound device is gone")
+
+    tab, _ptz, _panes = live_tab(
+        qtbot, "thermal", chime=Chime(player=angry, clock=lambda: 1000.0)
+    )
+    tab._raise_alarm(Moved())  # must not raise
+    assert tab.alarm_visible()
+
+
 def test_show_me_leaves_fullscreen_instead_of_stranding_him_on_playback(
     qtbot, tmp_path: Path
 ) -> None:
@@ -665,13 +711,6 @@ def test_show_me_leaves_fullscreen_instead_of_stranding_him_on_playback(
     window.fullscreen.enter()
     settle()
     assert window.fullscreen.active()
-
-    class Moved:
-        stream = "thermal"
-        started = 1_760_000_000.0
-        ended = started + 4.0
-        label = ""
-        confidence = 0.0
 
     window.show_footage(Moved())
     settle()

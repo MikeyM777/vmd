@@ -57,6 +57,7 @@ from vmd.desktop.style import (
     WEIGHT_VALUE,
 )
 from vmd.desktop.video import VideoPane
+from vmd.desktop.chime import Chime
 from vmd.desktop.watch import Watched
 from vmd.desktop.zoombar import ZoomBar
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands, ZoomHandle
@@ -539,6 +540,7 @@ class LiveTab(QWidget):
         storage=None,
         radio=None,
         zoom=None,
+        chime=None,
         clock: Callable[[], float] | None = None,
         executor: Callable[[Callable[[], None]], None] | None = None,
         parent: QWidget | None = None,
@@ -642,6 +644,10 @@ class LiveTab(QWidget):
         # The movement the strip is announcing, kept so that `Show me` has
         # something to ask about. Cleared by `acknowledge`, with the strip.
         self._alarm_event = None
+        # The sound the strip makes. Built here rather than handed in because
+        # every caller would build the same one, and it holds nothing that
+        # cannot be made twice - see `vmd/desktop/chime.py`.
+        self._chime = chime if chime is not None else Chime()
         # The events behind the rows of the movement list, in the order they are
         # drawn, so a double-clicked row can be turned back into the movement it
         # is showing. The table holds strings; this holds what they were made of.
@@ -1160,6 +1166,15 @@ class LiveTab(QWidget):
         self._alarm_event = event
         self._alarm.setVisible(True)
         self._outline(event.stream)
+        # And out loud, because he is not always looking at the screen. The
+        # strip is red and wide and was completely silent, so an intrusion at
+        # 03:40 while he is turned away was announced to an empty chair and
+        # cleared by the next thing that moved. See `vmd/desktop/chime.py` for
+        # why it holds back rather than sounding forty times on a windy night.
+        try:
+            self._chime.alarm()
+        except Exception:  # noqa: BLE001 - the strip matters more than the noise
+            logger.exception("the alarm sound failed")
 
     def show_the_footage(self) -> None:
         """Ask to be shown the movement the strip is announcing.
