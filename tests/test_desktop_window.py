@@ -173,13 +173,18 @@ class AngryRadio:
         raise OSError("the radio refused the connection")
 
 
-def write_settings(tmp_path: Path) -> Path:
+def write_settings(tmp_path: Path, playback: bool = False, title: str = "") -> Path:
     path = tmp_path / "settings.json"
     settings = Settings()
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
         StreamSettings(name="thermal", url="rtsp://camera/thermal", enabled=True)
     ]
+    # Off in the product and therefore off here. Every test about Playback says
+    # so for itself, which is the point: a tab that is only on the window
+    # because a test helper put it there is a tab nobody is testing.
+    settings.show_playback = playback
+    settings.title = title
     save_settings(settings, path)
     return path
 
@@ -192,8 +197,10 @@ def build(
     make_pane=None,
     events_path=None,
     ptz=None,
+    playback: bool = False,
+    title: str = "",
 ):
-    path = write_settings(tmp_path)
+    path = write_settings(tmp_path, playback=playback, title=title)
     services = services if services is not None else FakeServices()
     window = ConsoleWindow(
         settings_path=path,
@@ -211,10 +218,111 @@ def build(
 # --------------------------------------------------------------- the window
 
 
-def test_the_window_has_the_four_tabs(qtbot, tmp_path: Path) -> None:
+def test_the_window_has_three_tabs_because_playback_is_off(
+    qtbot, tmp_path: Path
+) -> None:
+    """Playback is not on the bar unless it has been asked for.
+
+    It is not hidden, disabled or empty - it is not built at all, so there is no
+    video pane and no open segment database behind a tab nobody can reach. See
+    `Settings.show_playback`.
+    """
     window, _ = build(qtbot, tmp_path)
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["Live", "Settings", "Logs"]
+    assert window.playback is None
+
+
+def test_playback_is_second_on_the_bar_when_it_is_asked_for(
+    qtbot, tmp_path: Path
+) -> None:
+    """Where it always was, so that turning it on puts it back rather than
+    somewhere new."""
+    window, _ = build(qtbot, tmp_path, playback=True)
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert titles == ["Live", "Playback", "Settings", "Logs"]
+    assert window.playback is not None
+
+
+def test_the_playback_tab_appears_and_goes_on_a_save(qtbot, tmp_path: Path) -> None:
+    """The switch acts on the console that is open, not on the next one.
+
+    He is on an offline machine with no terminal: "turn it on and restart the
+    program" is an instruction nobody can check they have carried out.
+    """
+    window, _ = build(qtbot, tmp_path)
+    settings = load_settings(window._settings_path)
+
+    settings.show_playback = True
+    window.settings_saved(settings)
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["Live", "Playback", "Settings", "Logs"]
+
+    settings.show_playback = False
+    window.settings_saved(settings)
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["Live", "Settings", "Logs"]
+    assert window.playback is None
+    window.close()
+
+
+def test_a_save_that_says_nothing_new_leaves_the_playback_tab_alone(
+    qtbot, tmp_path: Path
+) -> None:
+    """A password corrected on the Settings tab must not tear down a tab he has
+    a day's footage open on."""
+    window, _ = build(qtbot, tmp_path, playback=True)
+    was = window.playback
+    settings = load_settings(window._settings_path)
+    window.settings_saved(settings)
+    assert window.playback is was
+    window.close()
+
+
+def test_the_name_of_the_place_is_on_the_window_and_over_the_pictures(
+    qtbot, tmp_path: Path
+) -> None:
+    """Two of these run side by side on one desktop, one camera each.
+
+    Hebrew, because that is what it will be: the operator names a street. The
+    window title carries the application's name in front of it, because that is
+    what the shortcut and every instruction call this program.
+    """
+    window, _ = build(qtbot, tmp_path, title="ירושלים")
+    assert window.windowTitle() == "VMD - ירושלים"
+    assert window.live.title_text() == "ירושלים"
+    assert window.live.title_visible()
+    window.close()
+
+
+def test_a_console_with_no_name_says_nothing_at_all(qtbot, tmp_path: Path) -> None:
+    """One camera on one machine needs no label, and an empty box above the
+    pictures is furniture."""
+    window, _ = build(qtbot, tmp_path)
+    assert window.windowTitle() == "VMD"
+    assert not window.live.title_visible()
+    window.close()
+
+
+def test_the_name_survives_fullscreen(qtbot, tmp_path: Path) -> None:
+    """The mode this console spends its day in is the one where knowing which
+    camera you are steering matters most: everything else is gone."""
+    window, _ = build(qtbot, tmp_path, title="השיטה")
+    window.fullscreen.enter()
+    assert window.live.title_visible(), "the name went with the chrome"
+    assert not window.live.side_visible(), "this was not fullscreen at all"
+    window.fullscreen.leave()
+    window.close()
+
+
+def test_a_saved_name_reaches_the_window_that_is_open(qtbot, tmp_path: Path) -> None:
+    window, _ = build(qtbot, tmp_path)
+    settings = load_settings(window._settings_path)
+    settings.title = "  ירושלים  "
+    window.settings_saved(settings)
+    assert window.windowTitle() == "VMD - ירושלים", "the spaces were kept"
+    assert window.live.title_text() == "ירושלים"
+    window.close()
 
 
 def test_the_heartbeat_restarts_what_died(qtbot, tmp_path: Path) -> None:
@@ -246,7 +354,7 @@ def test_a_tab_that_will_not_build_does_not_take_the_window_with_it(
     def explode(name: str):
         raise RuntimeError("libVLC is not installed")
 
-    window, _ = build(qtbot, tmp_path, make_pane=explode)
+    window, _ = build(qtbot, tmp_path, make_pane=explode, playback=True)
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert titles == ["Live", "Playback", "Settings", "Logs"]
 
@@ -541,7 +649,7 @@ def test_live_and_playback_read_the_same_movement(qtbot, tmp_path: Path) -> None
     store.add("thermal", start + 3600, start + 3604, (1, 2, 3, 4), 40.0)
     store.close()
 
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     assert beating(window, lambda: len(window.live.recent_rows()) == 1), (
         "the movement never reached the Live tab"
     )
@@ -570,7 +678,7 @@ def test_an_event_store_that_will_not_open_costs_detection_not_the_console(
     events_path.parent.mkdir(parents=True, exist_ok=True)
     events_path.write_bytes(b"this is not a database")
 
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert titles == ["Live", "Playback", "Settings", "Logs"]
     for index in range(4):
@@ -1963,7 +2071,7 @@ def alarmed(window, events_path: Path, when: float) -> None:
 
 def test_show_me_takes_him_to_the_footage(qtbot, tmp_path: Path) -> None:
     start, events_path = a_day_with(tmp_path, recorded=True)
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     alarmed(window, events_path, start + 3660)
 
     window.live._show_me.click()
@@ -1983,7 +2091,7 @@ def test_show_me_says_it_when_the_footage_is_gone(qtbot, tmp_path: Path) -> None
     tab is where he can go looking - and told plainly that there is nothing
     there, rather than left in front of an empty bar."""
     start, events_path = a_day_with(tmp_path, recorded=False)
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     alarmed(window, events_path, start + 3660)
 
     window.live._show_me.click()
@@ -1999,7 +2107,7 @@ def test_the_movement_line_takes_him_to_it_too(qtbot, tmp_path: Path) -> None:
     """The table it used to be double-clicked in is gone from the column - he
     asked for it - and the way to the footage is not."""
     start, events_path = a_day_with(tmp_path, recorded=True)
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     alarmed(window, events_path, start + 3660)
 
     window.live._show_newest()
@@ -2024,7 +2132,7 @@ def test_show_me_does_not_leave_the_head_slewing(qtbot, tmp_path: Path) -> None:
     """
     start, events_path = a_day_with(tmp_path, recorded=True)
     ptz = SteeringPtz()
-    window, _ = build(qtbot, tmp_path, events_path=events_path, ptz=ptz)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, ptz=ptz, playback=True)
     alarmed(window, events_path, start + 3660)
 
     window.live.key_down("right", fine=False)
@@ -2044,7 +2152,7 @@ def test_show_me_costs_nothing_when_the_playback_tab_could_not_be_built(
     """Three tabs beat no window, and that rule does not stop applying because
     the operator pressed a button."""
     start, events_path = a_day_with(tmp_path, recorded=True)
-    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    window, _ = build(qtbot, tmp_path, events_path=events_path, playback=True)
     alarmed(window, events_path, start + 3660)
     window.playback = QLabel("The Playback tab could not be opened")
 
@@ -2052,6 +2160,31 @@ def test_show_me_costs_nothing_when_the_playback_tab_could_not_be_built(
         window.live._show_me.click()
 
     assert caplog.records, "nothing was said about a console that could not go"
+    window.close()
+
+
+def test_with_playback_off_there_is_no_button_offering_to_go_there(
+    qtbot, tmp_path: Path
+) -> None:
+    """A button that does nothing is worse than no button, and this one is on
+    the alarm strip - the one place on this console nobody has time to work
+    anything out.
+
+    The alarm itself is untouched: it still goes up, still names the camera, and
+    the movement is still in the record.
+    """
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+
+    assert window.live.alarm_visible(), "the alarm went with the tab"
+    assert not window.live._show_me.isVisibleTo(window.live)
+
+    # And the two ways in are dead ends rather than crashes, whichever way they
+    # are reached - a stray call, a shortcut, a test.
+    window.live.show_the_footage()
+    window.live._show_newest()
+    assert window.tabs.currentWidget() is window.live
     window.close()
 
 

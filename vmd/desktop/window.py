@@ -827,11 +827,10 @@ class ConsoleWindow(QMainWindow):
             tab.show_footage.connect(self.show_footage)
             return tab
 
-        def build_playback() -> QWidget:
-            self._index = SegmentIndex(index_path)
-            return PlaybackTab(
-                index=self._index, pane=make_pane("playback"), events=self.events
-            )
+        # Kept, because the Playback tab is built and destroyed while the
+        # console runs rather than only at startup. See `show_playback_tab`.
+        self._index_path = index_path
+        self._make_pane = make_pane
 
         def build_settings() -> QWidget:
             tab = SettingsTab(settings_path=self._settings_path)
@@ -839,7 +838,11 @@ class ConsoleWindow(QMainWindow):
             return tab
 
         self.live = self._tab("Live", build_live)
-        self.playback = self._tab("Playback", build_playback)
+        # None until it is asked for, and off unless the settings say otherwise.
+        # See `Settings.show_playback`: looking back through footage is no
+        # longer part of what this console is for, and the tab that does it is
+        # not on the screen by default.
+        self.playback: QWidget | None = None
         self.settings_tab = self._tab("Settings", build_settings)
         self.logs = self._tab("Logs", lambda: LogsTab(self._buffer))
 
@@ -853,9 +856,17 @@ class ConsoleWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.live, "Live")
-        self.tabs.addTab(self.playback, "Playback")
         self.tabs.addTab(self.settings_tab, "Settings")
         self.tabs.addTab(self.logs, "Logs")
+        # After the three that are always there, so that turning it on puts it
+        # back in its old place - second, between Live and Settings - rather
+        # than on the end where nobody has ever looked for it.
+        self.show_playback_tab(settings.show_playback)
+        # And the name of the place, on the window and above the pictures. Done
+        # here rather than in `build_live`, because it is also the window's
+        # title and there are two consoles side by side on one desktop: which
+        # of them the taskbar button belongs to is the same question.
+        self.set_title(settings.title)
 
         # The band above the tabs rather than a sentence in a footer, and above
         # rather than inside any one tab, because it is true of the machine and
@@ -1065,6 +1076,96 @@ class ConsoleWindow(QMainWindow):
             label.setMargin(16)
             return label
 
+    def _build_playback(self) -> QWidget:
+        self._index = SegmentIndex(self._index_path)
+        return PlaybackTab(
+            index=self._index, pane=self._make_pane("playback"), events=self.events
+        )
+
+    def show_playback_tab(self, wanted: bool) -> None:
+        """Put the Playback tab on the window, or take it off.
+
+        Built and destroyed rather than hidden, and that is the safe direction
+        rather than the tidy one. Hiding it would mean keeping a libVLC video
+        pane alive for a tab nobody can reach - a player, its decoder threads,
+        and an open segment database - on a console that is expected to run for
+        months without being restarted. Rebuilding costs the fraction of a
+        second nobody is waiting through, because the only way here is a press
+        of Save.
+
+        Nothing about the footage moves either way. The recorder is a separate
+        process, it is not told, and the files are where they were.
+
+        Called with what is already true on every save, so the tab itself is
+        left alone unless the answer has changed: one torn down and rebuilt
+        because somebody corrected a password would drop whatever the operator
+        had open on it. The Live tab is told either way, because the first call
+        of all is the one that has nothing to build and still has to say that
+        there is nowhere to go.
+        """
+        wanted = bool(wanted)
+        changed = wanted != (self.playback is not None)
+        if changed and wanted:
+            self.playback = self._tab("Playback", self._build_playback)
+            # Second, where it has always been. `insertTab` past the end is a
+            # plain append, so this is right even for a window built with fewer
+            # tabs than usual.
+            self.tabs.insertTab(1, self.playback, "Playback")
+        elif changed:
+            going = self.playback
+            self.playback = None
+            index = self.tabs.indexOf(going)
+            if index >= 0:
+                self.tabs.removeTab(index)
+            try:
+                # Parented to nothing first: `removeTab` alone leaves the widget
+                # a top-level window, which on the way out of a tab bar means a
+                # bare Playback tab flashing up as its own window.
+                going.setParent(None)
+                going.deleteLater()
+            except Exception:  # noqa: BLE001 - the tab is off the bar either way
+                logger.exception("the Playback tab would not let go")
+            self._close_index()
+        # The two controls on the Live tab that go to Playback, told there is
+        # somewhere to go or told there is not.
+        tell = getattr(self.live, "set_playback", None)
+        if tell is not None:
+            try:
+                tell(wanted)
+            except Exception:  # noqa: BLE001 - a button beats the window
+                logger.exception("the Live tab would not take the Playback switch")
+
+    def _close_index(self) -> None:
+        """Let go of the segment database, if one is open."""
+        index, self._index = self._index, None
+        if index is None:
+            return
+        try:
+            index.close()
+        except Exception:  # noqa: BLE001 - closing a file may not stop anything
+            logger.exception("the segment index would not close")
+
+    def set_title(self, name: str) -> None:
+        """The name of the place this console watches: window and Live tab.
+
+        On the window because there are two of these running side by side on one
+        desktop, and the taskbar, Alt-Tab and the title bar are how Windows
+        tells them apart. "VMD" twice is no answer; "VMD - ירושלים" is.
+
+        The application's own name stays in front of it. It is what the
+        installer, the shortcut and every instruction in the guide call this
+        program, and a window that calls itself only "ירושלים" has quietly
+        renamed the thing somebody was told to look for.
+        """
+        name = (name or "").strip()
+        self.setWindowTitle(f"VMD - {name}" if name else "VMD")
+        tell = getattr(self.live, "set_title", None)
+        if tell is not None:
+            try:
+                tell(name)
+            except Exception:  # noqa: BLE001 - a caption is not the console
+                logger.exception("the Live tab would not take the name")
+
     def heartbeat(self) -> None:
         """Restart whatever died, read every pane, refresh what is on screen.
 
@@ -1160,8 +1261,8 @@ class ConsoleWindow(QMainWindow):
         show = getattr(self.playback, "show_event", None)
         if show is None:
             logger.warning(
-                "there is nowhere to show that movement: the Playback tab could not "
-                "be opened"
+                "there is nowhere to show that movement: the Playback tab is "
+                "switched off, or it could not be opened"
             )
             return
         # Out of fullscreen first, and this is a trap rather than a nicety.
@@ -1240,6 +1341,16 @@ class ConsoleWindow(QMainWindow):
         halfway through a restart is a wall pointed at a port nothing is
         listening on.
         """
+        # First, and not on the worker: neither of these touches a child
+        # process, and both are things the operator has just watched himself
+        # ask for. A name that appeared three seconds after Save, once go2rtc
+        # had finished restarting, would read as the console having ignored him.
+        try:
+            self.set_title(getattr(settings, "title", ""))
+            self.show_playback_tab(getattr(settings, "show_playback", False))
+        except Exception:  # noqa: BLE001 - the rest of the save must still run
+            logger.exception("the window would not take the saved name or tabs")
+
         for what, target in (("the camera", self._ptz), ("the radio", self._radio)):
             apply = getattr(target, "apply", None)
             if apply is None:
@@ -1607,11 +1718,7 @@ class ConsoleWindow(QMainWindow):
                 close_radio()
             except Exception:  # noqa: BLE001 - closing must not fail a close
                 logger.exception("the radio reader would not close")
-        if self._index is not None:
-            try:
-                self._index.close()
-            except Exception:  # noqa: BLE001 - closing must not fail a close
-                logger.exception("the segment index would not close")
+        self._close_index()
         if self.events is not None:
             try:
                 self.events.close()

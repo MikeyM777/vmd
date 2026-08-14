@@ -193,6 +193,16 @@ def console(qtbot, tmp_path: Path) -> ConsoleWindow:
         StreamSettings(name="thermal", url="rtsp://camera/thermal", enabled=True),
         StreamSettings(name="visible", url="rtsp://camera/visible", enabled=True),
     ]
+    # Every tab this window can have, because this file is what measures them
+    # all at every screen size. Playback is off in the product now - see
+    # `Settings.show_playback` - and a tab that is off is a tab whose layout
+    # nothing checks, which is not the state to leave a thing in that can be
+    # switched back on from the Settings tab at any time.
+    settings.show_playback = True
+    # And the worst case of the name above the pictures: it shares the one row
+    # fullscreen keeps with the view buttons and the way out of fullscreen, so
+    # a long one is the thing that would squeeze them.
+    settings.title = "רחוב ירושלים - השער הצפוני"
     save_settings(settings, path)
     window = ConsoleWindow(
         settings_path=path,

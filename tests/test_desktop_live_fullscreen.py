@@ -260,11 +260,18 @@ def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None, chime=
     return tab, ptz, panes
 
 
-def console(qtbot, tmp_path: Path, zoom=None, pane=FakeVideoPane) -> ConsoleWindow:
-    """The real window, on the two streams this camera actually has."""
+def console(
+    qtbot, tmp_path: Path, zoom=None, pane=FakeVideoPane, playback: bool = False
+) -> ConsoleWindow:
+    """The real window, on the two streams this camera actually has.
+
+    Playback off, as it is in the product - see `Settings.show_playback`. The
+    one test here that is about going to Playback asks for it.
+    """
     path = tmp_path / "settings.json"
     settings = settings_with("thermal", "visible")
     settings.storage.root = tmp_path / "recordings"
+    settings.show_playback = playback
     save_settings(settings, path)
     window = ConsoleWindow(
         settings_path=path,
@@ -731,7 +738,7 @@ def test_show_me_leaves_fullscreen_instead_of_stranding_him_on_playback(
     up, the button that means "show me the recording" put him somewhere with no
     visible way out.
     """
-    window = console(qtbot, tmp_path)
+    window = console(qtbot, tmp_path, playback=True)
     window.fullscreen.enter()
     settle()
     assert window.fullscreen.active()

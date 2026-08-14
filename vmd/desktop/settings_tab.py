@@ -50,6 +50,7 @@ from vmd.desktop.live import WrappedNote
 from vmd.desktop.style import (
     FORM_MAX_WIDTH,
     PALETTE,
+    SIZE_BODY,
     SIZE_SMALL,
     SPACE_GROUP,
     SPACE_ROOM,
@@ -118,6 +119,26 @@ SECONDS_IN_A_DAY = 86400.0
 # not happen is worse than no line at all.
 SWAP_INVITATION = "The zoom sliders move the wrong pictures:"
 SWAP_DONE = "Swapped. Press Save, then try the sliders:"
+
+# What the Playback switch says about itself, and what it asks on the way in.
+#
+# The help is written for somebody who has never seen the tab, because after
+# this change most people using this console never will. The question is
+# written for somebody who has just ticked a box by accident: it says what will
+# appear, and it says the one thing worth knowing - that none of this is about
+# whether the recording is happening.
+PLAYBACK_HELP = (
+    "Playback is where recorded footage is watched back: a day, a timeline, and "
+    "the places on it where something moved. It is off, because this console is "
+    "for watching the camera now. Recording carries on either way - it is a "
+    "separate program and this does not reach it."
+)
+PLAYBACK_SURE = (
+    "Are you sure? The Playback tab appears on the console straight away, with "
+    "everything on it: choosing a day, the timeline, the marks where something "
+    "moved, and saving a piece of footage to a file. You can switch it off again "
+    "here at any time."
+)
 
 # The file `storage_problem` writes and removes to find out whether footage can
 # actually be written to the chosen folder. A name nothing else uses, and one
@@ -1163,11 +1184,26 @@ class SettingsTab(QWidget):
 
         camera_box = QGroupBox("Camera")
         camera_form = _form(camera_box)
+        # First, above the address, because it is the only field on this tab
+        # that answers "which of the two consoles am I looking at" - and on a
+        # desktop with one of these on each screen that is the question asked
+        # first and most often. See `Settings.title`.
+        self._title = QLineEdit()
+        self._title.setPlaceholderText("ירושלים")
+        self._title.setToolTip(
+            "What this camera watches, in your own words - a street, a gate, a "
+            "direction.\n\n"
+            "It is written above the pictures on the Live tab and on the window "
+            "itself, so that with two of these open on one desk you can see at a "
+            "glance which is which. Hebrew is fine.\n\n"
+            "Leave it empty and nothing is written."
+        )
         self._host = QLineEdit()
         self._username = QLineEdit()
         # Shown, never masked: this machine is offline and physically controlled,
         # and the failure this form actually suffers is a typo nobody can see.
         self._password = QLineEdit()
+        camera_form.addRow("Name", self._title)
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
@@ -1362,6 +1398,69 @@ class SettingsTab(QWidget):
         self._detection_enabled.toggled.connect(self._detection_extras.setVisible)
         self._detection_extras.setVisible(self._detection_enabled.isChecked())
         layout.addWidget(detection_box)
+
+        # --- playback --------------------------------------------------------
+        #
+        # "The playback widget is no longer relevant, but I do want it to still
+        # be accessible. Make it off by default and through the settings it will
+        # be possible to turn on this widget and everything it includes, I want
+        # it to have an 'Are you sure' pane when you turn it on."
+        #
+        # So this is a door with a hand on it, not a preference. Off is the
+        # normal state of the console and needs no explanation; on is the
+        # unusual one, and the question is asked on the way in only.
+        #
+        # A pane and not a modal, for the reason `_budget_warning` gives about
+        # the other irreversible thing on this form: a dialog over a console
+        # arrives on top of the one screen this operator has and can be
+        # dismissed by a stray keypress from somebody steering a camera. This
+        # one appears under the tick, stays until it is answered, and its two
+        # buttons say what they do rather than "OK" and "Cancel".
+        playback_box = QGroupBox("Playback")
+        playback_outer = QVBoxLayout(playback_box)
+        playback_outer.setSpacing(SPACE_SNUG)
+        playback_outer.addWidget(_note(PLAYBACK_HELP))
+        self._show_playback = QCheckBox("Show the Playback tab")
+        self._show_playback.setToolTip(
+            "Puts the Playback tab back on the console, with everything on it: "
+            "the day to look at, the timeline, the marks where something moved, "
+            "and saving a piece of footage to a file.\n\n"
+            "Recording does not depend on this. It is a separate program, it "
+            "runs whatever this says, and the footage is on the disk either way."
+        )
+        # `clicked` and not `toggled`: `toggled` also fires when the form fills
+        # itself from the file, and asking "are you sure" while the tab is
+        # loading is a question about something nobody did.
+        self._show_playback.clicked.connect(self._playback_clicked)
+        playback_outer.addWidget(self._show_playback)
+
+        self._ask_playback = QFrame()
+        self._ask_playback.setStyleSheet(
+            f"QFrame {{ background: {PALETTE['surface']}; "
+            f"border: 1px solid {PALETTE['warn']}; }}"
+        )
+        ask = QVBoxLayout(self._ask_playback)
+        ask.setContentsMargins(SPACE_ROOM, SPACE_ROOM, SPACE_ROOM, SPACE_ROOM)
+        ask.setSpacing(SPACE_SNUG)
+        sure = _note(PLAYBACK_SURE)
+        sure.setStyleSheet(
+            f"color: {PALETTE['ink']}; font-size: {SIZE_BODY}px; border: 0;"
+        )
+        ask.addWidget(sure)
+        ask_row = QHBoxLayout()
+        ask_row.setContentsMargins(0, 0, 0, 0)
+        ask_row.setSpacing(SPACE_SNUG)
+        self.playback_yes = QPushButton("Yes, show it")
+        self.playback_yes.clicked.connect(self._playback_yes)
+        self.playback_no = QPushButton("No, leave it off")
+        self.playback_no.clicked.connect(self._playback_no)
+        ask_row.addWidget(self.playback_yes)
+        ask_row.addWidget(self.playback_no)
+        ask_row.addStretch(1)
+        ask.addLayout(ask_row)
+        self._ask_playback.setVisible(False)
+        playback_outer.addWidget(self._ask_playback)
+        layout.addWidget(playback_box)
 
         # --- storage ---------------------------------------------------------
         #
@@ -1749,6 +1848,53 @@ class SettingsTab(QWidget):
     @link_auto.setter
     def link_auto(self, value: bool) -> None:
         self.link_auto_field.setChecked(bool(value))
+
+    @property
+    def camera_title(self) -> str:
+        return self._title.text()
+
+    @camera_title.setter
+    def camera_title(self, value: str) -> None:
+        self._title.setText(str(value))
+
+    @property
+    def show_playback(self) -> bool:
+        return self._show_playback.isChecked()
+
+    @show_playback.setter
+    def show_playback(self, value: bool) -> None:
+        """Set from the file, which is never a thing to ask about.
+
+        The question belongs to the tick and not to the state: putting the form
+        into the state the file is already in is not somebody turning it on.
+        """
+        self._show_playback.setChecked(bool(value))
+        self._ask_playback.setVisible(False)
+
+    def asking_about_playback(self) -> bool:
+        """Whether the "Are you sure" pane is up. For the tests and the window."""
+        return self._ask_playback.isVisibleTo(self)
+
+    def _playback_clicked(self, checked: bool) -> None:
+        """He clicked the tick himself. On the way in, ask first.
+
+        The tick is put straight back down and the pane raised, so that the box
+        never shows "on" for something that has not been agreed to - if he walks
+        away here, or presses Save, nothing has been turned on.
+        """
+        if not checked:
+            self._ask_playback.setVisible(False)
+            return
+        self._show_playback.setChecked(False)
+        self._ask_playback.setVisible(True)
+
+    def _playback_yes(self) -> None:
+        self._show_playback.setChecked(True)
+        self._ask_playback.setVisible(False)
+
+    def _playback_no(self) -> None:
+        self._show_playback.setChecked(False)
+        self._ask_playback.setVisible(False)
 
     @property
     def detection_enabled(self) -> bool:
@@ -2196,6 +2342,8 @@ class SettingsTab(QWidget):
                 f"press Save to replace the file. ({exc})"
             )
         self._loaded = settings
+        self.camera_title = settings.title
+        self.show_playback = settings.show_playback
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
         self.camera_password = settings.camera.password
@@ -2381,6 +2529,10 @@ class SettingsTab(QWidget):
             return None
 
         payload = self._loaded.model_dump()
+        # Trimmed here rather than in the box, so that what he typed stays on
+        # the screen exactly as he typed it while he is still typing it.
+        payload["title"] = self.camera_title.strip()
+        payload["show_playback"] = self.show_playback
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(
             host=self.camera_host.strip(),

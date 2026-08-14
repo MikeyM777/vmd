@@ -2910,3 +2910,126 @@ def test_a_number_that_will_not_parse_is_refused_by_the_name_on_the_form(
         assert "_" not in said, said
         assert "parse" not in said.lower() and "input should be" not in said.lower(), said
         assert typed in said, said
+
+
+# ------------------------------------------------------- the Playback switch
+#
+# "Make it off by default and through the settings it will be possible to turn
+# on this widget and everything it includes, I want it to have an 'Are you sure'
+# pane when you turn it on."
+
+
+def test_the_playback_switch_starts_off_and_asks_nothing(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.show_playback is False
+    assert tab.asking_about_playback() is False
+
+
+def test_turning_playback_on_asks_first_and_does_not_tick_the_box(
+    qtbot, tmp_path: Path
+) -> None:
+    """The tick goes straight back down while the question is up.
+
+    So a man who walks away from the question, or presses Save without answering
+    it, has turned nothing on. A box left showing "on" for something that has
+    not been agreed to is a promise the console has not kept.
+    """
+    tab, _ = build(qtbot, tmp_path)
+    tab._show_playback.click()
+
+    assert tab.asking_about_playback() is True
+    assert tab.show_playback is False
+
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).show_playback is False
+
+
+def test_answering_yes_turns_it_on_and_saving_writes_it(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab._show_playback.click()
+    tab.playback_yes.click()
+
+    assert tab.show_playback is True
+    assert tab.asking_about_playback() is False
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).show_playback is True
+
+
+def test_answering_no_leaves_it_off_and_takes_the_question_away(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab._show_playback.click()
+    tab.playback_no.click()
+
+    assert tab.show_playback is False
+    assert tab.asking_about_playback() is False
+
+
+def test_turning_playback_off_again_asks_nothing(qtbot, tmp_path: Path) -> None:
+    """The question is about the way in. Switching it off costs nothing and
+    destroys nothing, so asking would be furniture."""
+    settings = Settings()
+    settings.show_playback = True
+    settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://10.0.0.2/t")]
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.show_playback is True
+
+    tab._show_playback.click()
+    assert tab.show_playback is False
+    assert tab.asking_about_playback() is False
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).show_playback is False
+
+
+def test_a_file_with_playback_on_does_not_ask_while_the_form_fills(
+    qtbot, tmp_path: Path
+) -> None:
+    """`toggled` fires when the form fills itself from the file, and a question
+    about something nobody did is how a console teaches people to click past
+    questions."""
+    settings = Settings()
+    settings.show_playback = True
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.show_playback is True
+    assert tab.asking_about_playback() is False
+
+
+# ------------------------------------------------------ the name of the place
+
+
+def test_the_name_is_saved_as_it_was_typed_without_the_spaces(
+    qtbot, tmp_path: Path
+) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.camera_title = "  ירושלים  "
+
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).title == "ירושלים"
+
+
+def test_the_name_comes_back_onto_the_form(qtbot, tmp_path: Path) -> None:
+    settings = Settings()
+    settings.title = "השיטה"
+    settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://10.0.0.2/t")]
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.camera_title == "השיטה"
+
+
+def test_a_save_that_touches_nothing_else_keeps_the_name(qtbot, tmp_path: Path) -> None:
+    """Every field this form does not show survives a save because `payload`
+    starts from the file. The name is shown, so it has to survive on its own
+    account - and the way it would not is somebody correcting a password."""
+    settings = Settings()
+    settings.title = "ירושלים"
+    settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://10.0.0.2/t")]
+    tab, _ = build(qtbot, tmp_path, settings)
+    tab.camera_password = "changed"
+
+    assert tab.save() is True
+    written = load_settings(tab.settings_path)
+    assert written.title == "ירושלים"
+    assert written.camera.password == "changed"

@@ -481,6 +481,39 @@ class Settings(Model):
     # showing everything, which is the state that cannot hide anything.
     wall_view: str = ""
 
+    # What this console is called on the screen: the name of the place its
+    # camera watches, in the operator's own words. "ירושלים". "השיטה".
+    #
+    # There are two of these consoles now, one per camera, on one desktop with
+    # two screens - and they are the same program, drawn the same way, showing
+    # two treelines that look alike at three in the morning. Which window is
+    # which was answerable only by recognising the picture, and that is not an
+    # answer under pressure: an operator who steers the wrong camera loses the
+    # perimeter he was watching and does not know he has.
+    #
+    # A free string and not a list to choose from: a street name is local
+    # knowledge, it is Hebrew, and nothing in this program has any business
+    # having an opinion about it. Empty is the ordinary state of a console with
+    # only one camera, and draws nothing at all - see `vmd/desktop/live.py`.
+    title: str = ""
+
+    # Whether the Playback tab exists.
+    #
+    # Off, and this is a change of mind rather than a default nobody thought
+    # about: looking back through recorded footage is no longer part of what
+    # this console is for, so the tab that does it is not on the screen. The
+    # recording itself is untouched and always has been - it is a separate
+    # process, the footage is still on the disk, and this switch does not reach
+    # it. What goes away is the window onto it.
+    #
+    # It is kept rather than deleted because the day somebody needs a clip of
+    # what happened is a day nobody plans for, and the console is on an offline
+    # machine where "we will put it back" means a USB stick and an afternoon.
+    # See `vmd/desktop/settings_tab.py`: turning it back on asks first, because
+    # a tab appearing out of nowhere on a console somebody has learned is a
+    # bigger surprise than the tick that caused it looks.
+    show_playback: bool = False
+
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)

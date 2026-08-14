@@ -725,6 +725,32 @@ class LiveTab(QWidget):
         # Above the pictures rather than over them: nothing at all goes over a
         # picture on this tab, for the reason written further down this file.
         self._fullscreen = False
+        # Whether there is anywhere to send him when he asks to see footage.
+        # True until the window says otherwise: this tab is built before the
+        # window knows what the settings say, and a Live tab driven on its own
+        # by a test has no window at all.
+        self._playback = True
+        # The name of what this console watches, above the pictures.
+        #
+        # In this row and not in the status band, and that is the whole point of
+        # putting it here: this row is the only chrome fullscreen keeps, so the
+        # name is still on the screen in the mode the console spends its day in.
+        # In the row rather than over a picture, for the rule this file states
+        # twice already - nothing goes over the pictures.
+        #
+        # It is Hebrew, so it is laid out right to left. Qt does that per widget
+        # from the text itself; saying so explicitly means a name with a digit
+        # or a Latin word in it ("שער 4") still reads the way it was typed.
+        self._title = QLabel("")
+        self._title.setTextFormat(Qt.TextFormat.PlainText)
+        self._title.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._title.setStyleSheet(
+            f"color: {PALETTE['ink']}; font-size: {SIZE_BAND}px; "
+            f"font-weight: {WEIGHT_VALUE}; padding-right: {SPACE_ROOM}px;"
+        )
+        # Nothing at all until there is a name. One camera on one machine needs
+        # no label, and an empty box above the pictures is furniture.
+        self._title.setVisible(False)
         self._fullscreen_button = QPushButton(FULLSCREEN_WORDS)
         # Refuses focus, exactly as the view buttons do and for the same reason:
         # this tab is what steers the camera, and a button that took the
@@ -740,6 +766,7 @@ class LiveTab(QWidget):
         chooser_row = QHBoxLayout()
         chooser_row.setContentsMargins(0, 0, 0, 0)
         chooser_row.setSpacing(SPACE_SNUG)
+        chooser_row.addWidget(self._title)
         chooser_row.addWidget(self.views, 1)
         chooser_row.addWidget(self._fullscreen_button)
         pictures.addLayout(chooser_row)
@@ -1054,9 +1081,50 @@ class LiveTab(QWidget):
         click that does nothing is worse than one that cannot be made - so the
         line says so and this is harmless when there is nothing.
         """
-        if not self._shown:
+        if not self._shown or not self._playback:
             return
         self.show_footage.emit(self._shown[0])
+
+    def set_title(self, name: str) -> None:
+        """The name of the place this console watches, above the pictures.
+
+        Trimmed, because a name typed with a trailing space is the same name and
+        an empty box is not a name at all. Whitespace-only is empty.
+        """
+        name = (name or "").strip()
+        self._title.setText(name)
+        self._title.setVisible(bool(name))
+
+    def title_text(self) -> str:
+        """What the name row is saying. For the window and the tests."""
+        return self._title.text()
+
+    def title_visible(self) -> bool:
+        """`isVisibleTo`, so this is the row's own state and not a question
+        about whether anybody has shown the window it is in."""
+        return self._title.isVisibleTo(self)
+
+    def set_playback(self, on: bool) -> None:
+        """Whether there is a Playback tab to send him to.
+
+        Two controls on this tab go there: **Show me** on the alarm strip, and
+        the movement line in the side column. With Playback switched off in the
+        settings there is nowhere for either of them to arrive, and a button
+        that does nothing during an alarm is worse than no button - he presses
+        it, nothing happens, and he spends the next seconds pressing it again
+        instead of looking at the picture.
+
+        So the button goes and the line stops being clickable. Neither the alarm
+        nor the record goes anywhere: the strip still shouts, the line still
+        says what has moved and when, and the footage is still on the disk.
+        """
+        self._playback = bool(on)
+        self._show_me.setVisible(self._playback)
+        self._movement_line.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if self._playback
+            else Qt.CursorShape.ArrowCursor
+        )
 
     def set_watching(self, state: str) -> None:
         """Whether anything is watching for movement: ok, muted or a fault.
@@ -1194,7 +1262,7 @@ class LiveTab(QWidget):
         the pointer - and it is exactly the case that has to be harmless,
         because it is the one a shortcut or a stray call would reach.
         """
-        if self._alarm_event is None:
+        if self._alarm_event is None or not self._playback:
             return
         self.show_footage.emit(self._alarm_event)
 
@@ -1282,6 +1350,10 @@ class LiveTab(QWidget):
         # restart a stream must still have turned the sound off, because the
         # reason somebody turns it off is that they are trying to sleep.
         self._chime.set_enabled(bool(settings.detection.alarm_sound))
+        # And the name of the place, for the same reason in a different key: it
+        # says which of the two consoles this is, and a save that failed to
+        # restart a stream must not leave that question open.
+        self.set_title(settings.title)
         for pane in self._panes.values():
             pane.stop()
             # Stopped is not finished. A libVLC pane holds a player, its decoder
