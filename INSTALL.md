@@ -6,8 +6,8 @@ this sort of thing before, the short version in [README.md](README.md) is enough
 Every step says what to click, what you should see, and what to do if you see
 something else instead.
 
-**If the laptop this has to run on has no internet**, do not start here. Go to
-[Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet)
+**If the machine this has to run on has no internet**, do not start here. Go to
+[Installing on a machine with no internet](#installing-on-a-machine-with-no-internet)
 and read it first: you install on a connected machine, prepare a copy, and
 carry it over. The steps below are the first half of that.
 
@@ -23,8 +23,8 @@ carry it over. The steps below are the first half of that.
   reuses — see [What ended up on your computer](#what-ended-up-on-your-computer),
   which says exactly where it is and how to empty it.
 - **An internet connection**, for the installation only. The finished system is
-  entirely offline: the laptop it runs on has no wifi and no internet, nothing it
-  records is uploaded or shared anywhere, and nothing outside that one laptop can
+  entirely offline: the machine it runs on has no wifi and no internet, nothing it
+  records is uploaded or shared anywhere, and nothing outside that one machine can
   see the video.
 - **The Windows password of an administrator account.** Windows asks for
   permission once. If you normally use this computer and can install programs on
@@ -267,7 +267,7 @@ Optional, but it takes thirty seconds and tells you for certain.
 
    > The three words after `run` mean "do not go to the internet for this".
    > They are how the console starts too, and they are the difference between a
-   > command that works on the offline laptop and one that hangs there.
+   > command that works on the offline machine and one that hangs there.
 
 5. Type this and press **Enter**:
 
@@ -306,7 +306,7 @@ Optional, but it takes thirty seconds and tells you for certain.
 
 ## Part 5 — It starts by itself now
 
-This laptop is meant to be on all the time, recording all the time. Windows
+This machine is meant to be on all the time, recording all the time. Windows
 restarts anyway: an update, a power cut, somebody pressing the wrong thing. Step
 11 of the installer set that up so a restart costs nothing.
 
@@ -323,7 +323,7 @@ file, a VLC that will not load — the disk keeps filling anyway. The console,
 when it does open, notices the recorder is already running and uses that one
 rather than starting a second.
 
-Also set, because a laptop that goes to sleep records nothing:
+Also set, because a machine that goes to sleep records nothing:
 
 - it never sleeps, never hibernates, and never spins its disks down
 - **closing the lid does nothing**
@@ -379,7 +379,7 @@ double-click **`autostart.log`**. One line per event, most recent at the bottom.
 `no settings.json yet` there means the camera details have not been entered.
 
 **What is still missing, and it matters.** All of that happens when somebody
-*signs in* to Windows. After a power cut the laptop comes back on and stops at
+*signs in* to Windows. After a power cut the machine comes back on and stops at
 the sign-in screen, recording nothing, until a person types the password.
 
 To close that gap, Windows can sign itself in:
@@ -389,12 +389,12 @@ To close that gap, Windows can sign itself in:
 3. It explains what it costs, then asks you to type `YES` in capitals, then asks
    for the Windows password of this account.
 
-**What it costs, plainly:** anyone who opens the laptop gets a signed-in desktop
+**What it costs, plainly:** anyone who can reach the machine gets a signed-in desktop
 with no password, and the password is written into the Windows registry in clear
 text, where any administrator of the machine can read it. In exchange, a power
 cut costs nothing at all.
 
-For this deployment — one laptop, no network of any kind, physically inside the
+For this deployment — one machine, no network of any kind, physically inside the
 perimeter it is watching, doing nothing but recording — that is usually the
 right trade. It is still your decision, so nothing switches it on for you.
 
@@ -438,11 +438,11 @@ trying to describe what you saw.
 | `is missing its plugins folder` | libVLC is there but the parts it plays video with are not. It would open a black picture and never say why | Install VLC again from https://www.videolan.org/vlc/, taking the **64-bit** Windows installer |
 | A video panel says `No video here:` | The console could not find a VLC it can use | The rest of that sentence says which of the three it is and where it looked. Same fixes as the rows above; everything except the picture keeps working meanwhile |
 | You are tempted to add VLC to `PATH` | It will not help | Since Python 3.8, Windows does not search `PATH` for a library's own dependencies, and VLC's installer does not put itself there either. The console finds VLC through the registry and the ordinary folders, and adds the folder it chose to the search path itself |
-| `Still running from this folder: …` | The recorder or the console was running while the installer wanted to rebuild the environment | Restart the laptop and run `install.bat` again before anything else has started. If you do not, step 9 may stop with `Access is denied` |
+| `Still running from this folder: …` | The recorder or the console was running while the installer wanted to rebuild the environment | Restart the machine and run `install.bat` again before anything else has started. If you do not, step 9 may stop with `Access is denied` |
 | The console takes fifteen seconds to appear, once | VLC is rebuilding its own index of parts | Nothing to do. Later starts take about five seconds. To fix it for good, run `install.bat` again — step 3 rebuilds that index while it has permission to |
 | `uv sync failed` | The big download was interrupted | Check your internet and run `install.bat` again. It continues from where it stopped |
-| `No Python at '…\python.exe'` | The folder was copied from another machine without being prepared | Do not copy the folder by hand. See [Installing on a laptop with no internet](#installing-on-a-laptop-with-no-internet) |
-| `uv is not installed, so nothing can run yet` | There is no `uv.exe` in `C:\VMD\bin\` and none on this account's PATH | Sign out of Windows and back in, which is when Windows picks up a new PATH. If it persists, run `install.bat` again — on the offline laptop, `offline-install.bat` |
+| `No Python at '…\python.exe'` | The folder was copied from another machine without being prepared | Do not copy the folder by hand. See [Installing on a machine with no internet](#installing-on-a-machine-with-no-internet) |
+| `uv is not installed, so nothing can run yet` | There is no `uv.exe` in `C:\VMD\bin\` and none on this account's PATH | Sign out of Windows and back in, which is when Windows picks up a new PATH. If it persists, run `install.bat` again — on the offline machine, `offline-install.bat` |
 | Antivirus blocks or deletes something | Some antivirus tools dislike newly downloaded `.exe` files | Allow the `C:\VMD` folder in your antivirus, then run `install.bat` again |
 | `Access is denied` | The folder is protected | Move the whole `VMD` folder to `C:\VMD` and try again. Avoid `C:\Program Files` |
 | The console window does not open at the end | Only the last step failed; everything else is installed | Double-click `VMD.exe` in `C:\VMD` yourself |
@@ -463,7 +463,7 @@ done. If you are stuck, that is the first thing to try.
 
 | Thing | Where | What it does |
 |---|---|---|
-| **uv** | Installed by Windows, system-wide, **and** copied to `C:\VMD\bin\uv.exe` | Manages Python and the libraries. The copy in `bin\` is the one that travels to the offline laptop |
+| **uv** | Installed by Windows, system-wide, **and** copied to `C:\VMD\bin\uv.exe` | Manages Python and the libraries. The copy in `bin\` is the one that travels to the offline machine |
 | **VLC** | Installed by Windows, system-wide | Draws the live picture inside the console window |
 | **ffmpeg** | `C:\VMD\bin\ffmpeg.exe` | Records the video to disk |
 | **go2rtc** | `C:\VMD\bin\go2rtc.exe` | Takes the camera's video once and passes it to the console |
@@ -516,7 +516,7 @@ Open PowerShell in `C:\VMD` (Part 4, steps 1–3), then:
 | Find out what camera is on the network | see below — it needs the camera password, so it is two lines |
 
 > On a machine that has internet you can leave out `--offline --frozen
-> --no-sync`. On the laptop that does not, leaving them out is how you get a
+> --no-sync`. On the machine that does not, leaving them out is how you get a
 > command that hangs with no way out.
 
 ### Asking the camera what it is
@@ -543,7 +543,7 @@ The file is
 It is plain text, it is never cleared, and `%APPDATA%` is the one folder Windows
 copies between machines when an account is managed by a company or a domain. A
 password typed straight into the command would sit in that file in the clear,
-forever, on a laptop whose entire point is that nothing leaves it. What you type
+forever, on a machine whose entire point is that nothing leaves it. What you type
 at the `Camera password` prompt is *not* written there — only commands are.
 
 Close the window when you are done, or type `Remove-Variable pw`. Either way the
@@ -557,7 +557,7 @@ There is **no file to edit**. Everything goes in the console:
 2. Click the **Settings** tab at the top.
 3. Fill in the camera's **Address** (its IP address on the network), **Username**
    and **Password**. The password is shown as you type it and is never hidden
-   behind dots. That is on purpose: this laptop is offline and does nothing else,
+   behind dots. That is on purpose: this machine is offline and does nothing else,
    and a password you cannot read back is far more trouble than one you can.
 4. Under **Streams**, press **Add a stream** for each camera view and put in its
    name and its RTSP address. The two views sit side by side as cards. There is
@@ -612,7 +612,7 @@ looks after, off per camera view until you switch it on. What none of it has met
 is your camera and your radio — see [docs/FIRST-MORNING.md](docs/FIRST-MORNING.md)
 for the list of things only the real hardware can answer.
 
-**Nothing here goes anywhere.** The video stays on this laptop's disk. There is no
+**Nothing here goes anywhere.** The video stays on this machine's disk. There is no
 account, no upload, no cloud, and no wifi on the machine at all. Nothing this
 program runs reaches the network except the camera and the radio on the other end
 of the radio link.
@@ -640,7 +640,7 @@ prepare the copy, and carry it over.
 by hand does not work, and it fails in a way that looks like a bug rather than a
 mistake: the copy carries `.venv`, but `.venv` only contains a note saying where
 Python is, and Python was in `C:\Users\<your name>\AppData\...` on the machine
-you copied *from*. On the offline laptop that folder does not exist, and every
+you copied *from*. On the offline machine that folder does not exist, and every
 launcher stops with `No Python at '…\python.exe'`. `uv` does not travel by hand
 either, and nothing starts without it. The two scripts below exist so that none
 of that can happen.
@@ -656,11 +656,11 @@ of that can happen.
 4. **Double-click `offline-kit.bat`.**
 
    It fetches the VLC installer — the one thing that cannot live inside the
-   folder — then checks, item by item, that everything else the other laptop
+   folder — then checks, item by item, that everything else the other machine
    needs is actually inside it:
 
    ```
-   [2/3] Checking that everything the other laptop needs is inside this folder
+   [2/3] Checking that everything the other machine needs is inside this folder
          the Python environment (.venv)
          uv, in bin\uv.exe
          ffmpeg, in bin\ffmpeg.exe
@@ -685,7 +685,7 @@ of that can happen.
 
    - your **recordings** and the index of them
    - **`settings.json`** and **`go2rtc.json`** — both hold the camera's address
-     and password. Those are typed on the laptop that will use them, in the
+     and password. Those are typed on the machine that will use them, in the
      Settings tab, like everything else
    - **frame grabs and saved camera web pages** left in the folder from
      commissioning — the next still saved there is of the perimeter this system
@@ -696,7 +696,7 @@ of that can happen.
    To see exactly what would travel before it does, without copying anything,
    there is `offline-kit.bat -ListOnly`.
 
-### Stage 2 — on the laptop with no internet
+### Stage 2 — on the machine with no internet
 
 1. Plug in the USB drive.
 
@@ -717,7 +717,7 @@ of that can happen.
 
    Everything it printed is saved to `C:\VMD\bin\logs\offline-install.log`. That
    is the file to copy onto the USB drive and send if anything looked wrong —
-   this laptop has no other way to tell anyone what it saw.
+   this machine has no other way to tell anyone what it saw.
 
 6. **Double-click `cameras.bat`, once for each camera.** This machine watches
    two streets with two cameras, and each gets its own console: its own
@@ -757,4 +757,4 @@ first time you do it, not on the day the camera goes up.
 ## macOS and Linux
 
 There is no double-click installer for these; the system is built for the
-Windows laptop. The commands are in [README.md](README.md#macos).
+Windows machine. The commands are in [README.md](README.md#macos).
