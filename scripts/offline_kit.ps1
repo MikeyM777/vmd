@@ -300,9 +300,10 @@ if ($code -ge 8) {
 
 Write-Ok "Copied to $To"
 Write-Host ""
-Write-Host "  On the laptop with no internet:" -ForegroundColor White
-Write-Host "    1. Copy the VMD folder from the USB drive to C:\VMD" -ForegroundColor Gray
+Write-Host "  On the computer with no internet:" -ForegroundColor White
+Write-Host "    1. Copy the VMD folder to C:\VMD" -ForegroundColor Gray
 Write-Host "    2. Open it and double-click offline-install.bat" -ForegroundColor Gray
 Write-Host "       (not install.bat - that one needs an internet connection)" -ForegroundColor Gray
+Write-Host "    3. Double-click cameras.bat, once for each camera" -ForegroundColor Gray
 Write-Host ""
 exit 0

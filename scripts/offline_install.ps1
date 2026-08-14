@@ -422,11 +422,22 @@ Write-Step "Starting the console"
 Write-Summary
 Write-LogHint
 Write-Host ""
-Write-Host "  Now type the camera's address, username, password and stream" -ForegroundColor Gray
-Write-Host "  addresses into the Settings tab, and press Save." -ForegroundColor Gray
+Write-Host "  Next, and this machine has two cameras:" -ForegroundColor White
 Write-Host ""
-Write-Host "  Recording does not start until that is done, because until then" -ForegroundColor Gray
+Write-Host "    1. Double-click cameras.bat, once for each camera. It asks for" -ForegroundColor Gray
+Write-Host "       the camera's address, what it watches, and which screen it" -ForegroundColor Gray
+Write-Host "       belongs on, and puts a shortcut on the desktop for it." -ForegroundColor Gray
+Write-Host ""
+Write-Host "    2. Open each camera's shortcut and type that camera's username," -ForegroundColor Gray
+Write-Host "       password and stream addresses into the Settings tab. Save." -ForegroundColor Gray
+Write-Host ""
+Write-Host "    3. Run autostart-on.bat once, when both cameras are set up." -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Recording does not start until step 2 is done, because until then" -ForegroundColor Gray
 Write-Host "  there is no camera to record." -ForegroundColor Gray
+Write-Host ""
+Write-Host "  With only one camera, skip step 1: the Settings tab in the console" -ForegroundColor Gray
+Write-Host "  that opens next is all there is to fill in." -ForegroundColor Gray
 Write-Host ""
 
 # Closed before the console starts. The console is a long-running program with a

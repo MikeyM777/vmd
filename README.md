@@ -4,12 +4,22 @@ A video motion detection console for a single multi-spectral PTZ camera watching
 distant perimeter. It shows live video, records continuously, raises an alarm when
 something moves, and lets an operator look back through what was recorded.
 
-The deployment it is built for: one FLIR-class thermal + visible PTZ head roughly
-700 m from the area of interest, reaching the laptop over a Ubiquiti point-to-point
-link more than 15 km long. **The laptop has no internet and no wifi: the system is
-entirely offline, nothing is published anywhere, and nothing but this one laptop
-ever sees the video.** That is a requirement of the deployment, not a preference,
-and it is why nothing here downloads anything at runtime.
+The deployment it is built for: FLIR-class thermal + visible PTZ heads roughly
+700 m from the area of interest, reaching the machine over a Ubiquiti
+point-to-point link more than 15 km long. **That machine has no internet and no
+wifi: the system is entirely offline, nothing is published anywhere, and nothing
+but that one machine ever sees the video.** That is a requirement of the
+deployment, not a preference, and it is why nothing here downloads anything at
+runtime.
+
+**Two cameras now, on one desktop with a screen each.** They are separate
+installations of the same thing — a camera, a stream, a recorder, a detector, a
+disk budget — so the console is run twice, each copy pointed at its own settings
+file under `cameras\`, rather than taught to hold two cameras at once. Each one
+carries the name of what it watches, in Hebrew, above its pictures and on its
+window. `cameras.bat` sets them up; see `scripts/cameras.ps1` for why it is
+built this way. The earlier single-camera layout — one `settings.json` beside
+`VMD.exe` — is untouched and still works.
 
 The link was designed against at "about 5 Mb/s", and that figure is still in code
 comments written before anyone had read the radio. What the radio actually

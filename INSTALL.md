@@ -619,9 +619,20 @@ of the radio link.
 
 ---
 
-## Installing on a laptop with no internet
+## Installing on a machine with no internet
 
-The console is meant to run on a laptop with no network of any kind. You cannot
+> **The short way is one file at each end.** On the computer that has internet,
+> double-click **`OfflineSetup.bat`**: it does everything in Stage 1 below and
+> ends with a single zip file on your desktop. On the offline computer, unzip
+> it, copy the `VMD` folder to `C:\VMD`, and double-click
+> **`offline-install.bat`**.
+>
+> **`docs/OFFLINE-SETUP.md`** is that written out in full, including how to do
+> every step by hand if either file does not work. Read that one first. The
+> rest of this section is the same ground in more detail, and is what
+> `OfflineSetup.bat` is doing while you wait.
+
+The console is meant to run on a machine with no network of any kind. You cannot
 install directly on such a machine, so you build it on one that has internet,
 prepare the copy, and carry it over.
 
@@ -708,10 +719,21 @@ of that can happen.
    is the file to copy onto the USB drive and send if anything looked wrong —
    this laptop has no other way to tell anyone what it saw.
 
-6. Fill in the camera details in the **Settings** tab and press **Save**, as
-   described above. Recording starts as soon as you do.
+6. **Double-click `cameras.bat`, once for each camera.** This machine watches
+   two streets with two cameras, and each gets its own console: its own
+   settings, its own recordings, its own window on its own screen. It asks
+   three questions — the camera's address, what it watches (in Hebrew), and
+   which screen it belongs on — and puts a shortcut on the desktop named after
+   what that camera watches.
 
-7. Restart the laptop once and check that the console comes back on its own.
+   Skip this for a single camera. The plain `settings.json` beside `VMD.exe`
+   works exactly as it always has.
+
+7. Fill in the camera details in the **Settings** tab and press **Save**, as
+   described above — once per camera, on that camera's own console. Recording
+   starts as soon as you do.
+
+8. Restart the machine once and check that the console comes back on its own.
    That is the whole point of the exercise, and it is worth seeing it happen
    before you walk away from the machine. Read
    [Part 5 — It starts by itself](#part-5--it-starts-by-itself) about signing in
