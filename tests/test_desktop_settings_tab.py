@@ -3033,3 +3033,36 @@ def test_a_save_that_touches_nothing_else_keeps_the_name(qtbot, tmp_path: Path) 
     written = load_settings(tab.settings_path)
     assert written.title == "ירושלים"
     assert written.camera.password == "changed"
+
+
+# ------------------------------------------------------ which screen it opens on
+
+
+def test_the_screen_starts_at_wherever_it_was_left(qtbot, tmp_path: Path) -> None:
+    """A machine with one monitor, or a window somebody has dragged where he
+    wants it, must stay where it was put."""
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.screen is None
+
+
+def test_the_chosen_screen_is_saved_and_comes_back(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.screen = 2
+
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).screen == 2
+
+    again, _ = build(qtbot, tmp_path)
+    assert again.screen == 2
+
+
+def test_a_screen_this_machine_does_not_have_reads_as_wherever_it_was_left(
+    qtbot, tmp_path: Path
+) -> None:
+    """The form says what the console will actually do with it - which is to
+    warn and leave the window where it was."""
+    settings = Settings()
+    settings.screen = 9
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.screen is None

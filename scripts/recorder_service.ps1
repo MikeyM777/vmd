@@ -48,6 +48,15 @@
 #  who owns the recording directory.
 # =============================================================================
 
+param(
+    # Which console's settings to record for. There is one camera folder per
+    # camera now - cameras¨\settings.json, cameras©\settings.json - and
+    # one of these tasks per camera. Empty means the single-camera layout, which
+    # is settings.json beside VMD.exe and is what every existing installation
+    # has.
+    [string]$Settings
+)
+
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
 
@@ -84,7 +93,7 @@ try {
     }
 } catch { }
 
-Note "autostart: recorder wrapper starting in $root"
+Note "autostart: recorder wrapper starting in $root for $(if ($Settings) { $Settings } else { 'settings.json' })"
 
 $python = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) {
@@ -97,14 +106,23 @@ if (-not (Test-Path $python)) {
 # the Settings tab once. Before that there is nothing to record and no error to
 # report: say so and stop. A pre-flight, not a claim - the recorder decides
 # everything that matters about whether it should run.
-$settings = Join-Path $root 'settings.json'
+$settings = if ($Settings) { $Settings } else { Join-Path $root 'settings.json' }
 if (-not (Test-Path $settings)) {
-    Note "autostart: no settings.json yet, so there is no camera to record. Nothing started."
+    Note "autostart: no settings file at $settings, so there is no camera to record. Nothing started."
     exit 0
 }
 
-$outLog = Join-Path $logDir 'recorder.out.log'
-$errLog = Join-Path $logDir 'recorder.err.log'
+# One log per camera, because two recorders writing one file interleave their
+# lines and the result answers nothing about either of them. The name is the
+# camera's folder - 250, 251 - and the plain names are kept for the
+# single-camera layout so that nothing anybody has been told to look at moves.
+$label = ''
+$parent = Split-Path -Parent $settings
+if ($parent -and (Split-Path -Leaf (Split-Path -Parent $parent)) -eq 'cameras') {
+    $label = '.' + (Split-Path -Leaf $parent)
+}
+$outLog = Join-Path $logDir "recorder$label.out.log"
+$errLog = Join-Path $logDir "recorder$label.err.log"
 
 # -u because Python block-buffers stdout when it is a pipe or a file, and a
 # recorder that says one line a minute would otherwise fill eight kilobytes

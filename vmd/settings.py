@@ -497,6 +497,36 @@ class Settings(Model):
     # only one camera, and draws nothing at all - see `vmd/desktop/live.py`.
     title: str = ""
 
+    # Which monitor this console opens on, counting from 1, or None for
+    # wherever it was left.
+    #
+    # The desktop this runs on has a screen for each camera. Which window lands
+    # on which screen cannot be left to whichever console Windows happens to
+    # open first: after a power cut both come back at once, and an operator who
+    # finds two consoles stacked on one monitor at 04:00 has to sort them out
+    # before he can watch anything.
+    #
+    # None is the honest default and it is not "screen 1": a console with one
+    # monitor, or one somebody has dragged where he wants it, is remembered by
+    # `window.json` and must stay where it was put. A number here overrules that
+    # memory, because it is an installation's decision and the memory is a
+    # window's. `--screen` on the command line overrules both.
+    #
+    # A screen that is not there costs a line in the log and nothing else - a
+    # monitor that did not wake up must not put the console off the end of the
+    # desktop. See `vmd/desktop/app.py:place_on_screen`.
+    screen: int | None = None
+
+    @field_validator("screen")
+    @classmethod
+    def _screens_are_counted_from_one(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError(
+                "screen counts from 1 - screen 1 is the first monitor - or null "
+                "for wherever the window was last left"
+            )
+        return value
+
     # Whether the Playback tab exists.
     #
     # Off, and this is a change of mind rather than a default nobody thought

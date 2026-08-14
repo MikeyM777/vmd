@@ -16,6 +16,17 @@
 #                   recording service and writes recorder.pid.
 #    VMD Console    runs VMD.exe, 45 seconds later.
 #
+#  Two per camera, once there is more than one camera. This machine watches two
+#  streets with two cameras, and each has its own console pointed at its own
+#  settings file under cameras\ - so the tasks are named after the camera:
+#
+#    VMD Recorder 250, VMD Console 250, VMD Recorder 251, VMD Console 251
+#
+#  A folder with no cameras\ in it - which is every installation before today,
+#  and every single-camera one after it - gets exactly the two tasks it always
+#  got, with the names it always had. Nothing anybody has been told to look for
+#  in Task Scheduler moves.
+#
 #  Two tasks rather than one because the recording is the product and the
 #  console is the window onto it. A console that fails to open - a broken VLC,
 #  a bad settings file, a Qt that will not start - must not be able to stop the
@@ -81,6 +92,41 @@ $RECORDER_TASK = 'VMD Recorder'
 $CONSOLE_TASK  = 'VMD Console'
 $WINLOGON      = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
+# What has to start, one entry per console: the settings file it is pointed at,
+# and the suffix its two tasks carry. Read off the disk rather than kept
+# anywhere, because a list kept anywhere is a second thing that can be wrong -
+# the same rule scripts\cameras.ps1 states.
+#
+# The single-camera layout is not a special case bolted on: it is one entry with
+# an empty suffix, which is how the task names stay exactly what they were.
+function Get-Consoles {
+    $camerasDir = Join-Path $root 'cameras'
+    $found = @()
+    if (Test-Path $camerasDir) {
+        $found = @(
+            Get-ChildItem -Path $camerasDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName 'settings.json') } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Suffix   = " $($_.Name)"
+                        Settings = (Join-Path $_.FullName 'settings.json')
+                    }
+                }
+        )
+    }
+    if ($found.Count -gt 0) { return $found }
+    return @([pscustomobject]@{ Suffix = ''; Settings = (Join-Path $root 'settings.json') })
+}
+
+# Every task this script has ever created, so that switching it off takes away
+# the ones a previous layout left behind. Asked of Windows by name pattern
+# rather than worked out from what is on the disk: a camera folder deleted by
+# hand would otherwise leave a task running for ever with nothing to find.
+function Get-OurTasks {
+    Get-ScheduledTask -ErrorAction SilentlyContinue |
+        Where-Object { $_.TaskName -like 'VMD Recorder*' -or $_.TaskName -like 'VMD Console*' }
+}
+
 if (-not ($Install -or $Remove -or $Status -or $EnableAutoLogon -or $DisableAutoLogon)) {
     $Status = $true
 }
@@ -96,14 +142,34 @@ function Show-Status {
     Write-Host ""
     Write-Host "  Starting by itself after a restart" -ForegroundColor White
     Write-Host ""
-    foreach ($name in @($RECORDER_TASK, $CONSOLE_TASK)) {
-        $task = Get-Task $name
-        if ($task) {
-            $state = $task.State
-            Write-Host ("    {0,-18} on   ({1})" -f $name, $state) -ForegroundColor Green
-        } else {
-            Write-Host ("    {0,-18} off" -f $name) -ForegroundColor Yellow
+    foreach ($console in Get-Consoles) {
+        foreach ($base in @($RECORDER_TASK, $CONSOLE_TASK)) {
+            $name = "$base$($console.Suffix)"
+            $task = Get-Task $name
+            if ($task) {
+                $state = $task.State
+                Write-Host ("    {0,-22} on   ({1})" -f $name, $state) -ForegroundColor Green
+            } else {
+                Write-Host ("    {0,-22} off" -f $name) -ForegroundColor Yellow
+            }
         }
+    }
+    # Anything left over from a layout that has changed - a camera folder that
+    # was renamed, or a second camera that has been taken away. Named, because a
+    # scheduled task nobody knows about is a console that opens by itself every
+    # morning for a reason nobody can find.
+    $expected = @()
+    foreach ($console in Get-Consoles) {
+        $expected += "$RECORDER_TASK$($console.Suffix)"
+        $expected += "$CONSOLE_TASK$($console.Suffix)"
+    }
+    $strays = @(Get-OurTasks | Where-Object { $expected -notcontains $_.TaskName })
+    foreach ($stray in $strays) {
+        Write-Host ("    {0,-22} on, for a camera that is not set up here" -f $stray.TaskName) -ForegroundColor Yellow
+    }
+    if ($strays.Count -gt 0) {
+        Write-Host ""
+        Write-Info "Run autostart-off.bat then autostart-on.bat to tidy those up."
     }
     $auto = (Get-ItemProperty -Path $WINLOGON -Name 'AutoAdminLogon' -ErrorAction SilentlyContinue).AutoAdminLogon
     if ($auto -eq '1') {
@@ -179,34 +245,65 @@ function Install-Tasks {
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -MultipleInstances IgnoreNew
 
-    # --- the recorder ---------------------------------------------------------
-    $recorderAction = New-ScheduledTaskAction `
-        -Execute 'powershell.exe' `
-        -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $recorderScript) `
-        -WorkingDirectory $root
-    $recorderTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+    # Anything from a previous layout goes first. Registering the new set on top
+    # of the old one would leave a "VMD Console" opening a console for a camera
+    # that is now "VMD Console 250" - two windows for one camera, one of them
+    # pointed at a settings file nobody uses.
+    $consoles = @(Get-Consoles)
+    $keeping = @()
+    foreach ($console in $consoles) {
+        $keeping += "$RECORDER_TASK$($console.Suffix)"
+        $keeping += "$CONSOLE_TASK$($console.Suffix)"
+    }
+    foreach ($stray in @(Get-OurTasks | Where-Object { $keeping -notcontains $_.TaskName })) {
+        Unregister-ScheduledTask -TaskName $stray.TaskName -Confirm:$false
+        Write-Info "Removed `"$($stray.TaskName)`", left over from an earlier setup."
+    }
 
-    Register-ScheduledTask -TaskName $RECORDER_TASK -Force `
-        -Description 'Starts VMD recording when this user signs in. Recording is the product; it must not wait for the console.' `
-        -Action $recorderAction -Trigger $recorderTrigger `
-        -Principal $principal -Settings $settings | Out-Null
-    Write-Ok "`"$RECORDER_TASK`" created - recording starts at sign-in."
+    foreach ($console in $consoles) {
+        $suffix = $console.Suffix
+        $forWhat = if ($suffix) { " for camera$suffix" } else { "" }
 
-    # --- the console ----------------------------------------------------------
-    if (Test-Path $exe) {
-        $consoleAction = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $root
-        $consoleTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-        # 45 seconds after sign-in, so the recorder has written recorder.pid and
-        # the console adopts it instead of starting a second one.
-        $consoleTrigger.Delay = 'PT45S'
-        Register-ScheduledTask -TaskName $CONSOLE_TASK -Force `
-            -Description 'Opens the VMD console 45 seconds after sign-in, once the recorder has claimed recorder.pid.' `
-            -Action $consoleAction -Trigger $consoleTrigger `
+        # --- the recorder -----------------------------------------------------
+        # The settings file is passed even in the single-camera case, where it is
+        # the same path the script would have worked out for itself. One code
+        # path, and the task's own arguments say which camera it belongs to -
+        # which is what somebody looking at Task Scheduler needs to read.
+        $recorderAction = New-ScheduledTaskAction `
+            -Execute 'powershell.exe' `
+            -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $recorderScript, $console.Settings) `
+            -WorkingDirectory $root
+        $recorderTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+
+        Register-ScheduledTask -TaskName "$RECORDER_TASK$suffix" -Force `
+            -Description "Starts VMD recording$forWhat when this user signs in. Recording is the product; it must not wait for the console." `
+            -Action $recorderAction -Trigger $recorderTrigger `
             -Principal $principal -Settings $settings | Out-Null
-        Write-Ok "`"$CONSOLE_TASK`" created - the console opens 45 seconds later."
-    } else {
-        Write-Warn "VMD.exe is not built yet, so only the recorder task was created."
-        Write-Info "Run install.bat again once VMD.exe exists to add the console task."
+        Write-Ok "`"$RECORDER_TASK$suffix`" created - recording starts at sign-in."
+
+        # --- the console ------------------------------------------------------
+        if (Test-Path $exe) {
+            $consoleAction = New-ScheduledTaskAction -Execute $exe `
+                -Argument ('--settings "{0}"' -f $console.Settings) `
+                -WorkingDirectory $root
+            $consoleTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+            # 45 seconds after sign-in, so the recorder has written recorder.pid
+            # and the console adopts it instead of starting a second one.
+            $consoleTrigger.Delay = 'PT45S'
+            Register-ScheduledTask -TaskName "$CONSOLE_TASK$suffix" -Force `
+                -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid." `
+                -Action $consoleAction -Trigger $consoleTrigger `
+                -Principal $principal -Settings $settings | Out-Null
+            Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later."
+        } else {
+            Write-Warn "VMD.exe is not built yet, so only the recorder task was created."
+            Write-Info "Run install.bat again once VMD.exe exists to add the console task."
+        }
+    }
+    if ($consoles.Count -gt 1) {
+        Write-Host ""
+        Write-Info "$($consoles.Count) consoles will open after a restart, one per camera."
+        Write-Info "Which monitor each opens on is set in its own Settings tab."
     }
 
     $power = Set-NeverSleep
@@ -229,13 +326,16 @@ function Install-Tasks {
 #  Remove
 # -----------------------------------------------------------------------------
 function Remove-Tasks {
-    foreach ($name in @($RECORDER_TASK, $CONSOLE_TASK)) {
-        if (Get-Task $name) {
-            Unregister-ScheduledTask -TaskName $name -Confirm:$false
-            Write-Ok "`"$name`" removed."
-        } else {
-            Write-Info "`"$name`" was not there."
-        }
+    # Every task this script has ever made, whatever camera it was for. Asked of
+    # Windows rather than worked out from the cameras that are set up now: off
+    # has to mean off, including for a camera folder somebody has deleted.
+    $ours = @(Get-OurTasks)
+    if ($ours.Count -eq 0) {
+        Write-Info "Nothing was starting by itself, so there was nothing to take away."
+    }
+    foreach ($task in $ours) {
+        Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
+        Write-Ok "`"$($task.TaskName)`" removed."
     }
     Write-Info "The power settings were left as they are - change them in Windows"
     Write-Info "Settings under System, Power, if you want this laptop to sleep again."

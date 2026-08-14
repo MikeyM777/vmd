@@ -512,6 +512,57 @@ def test_parse_args_can_be_told_where_and_to_start_nothing() -> None:
     assert args.no_services is True
 
 
+def test_parse_args_takes_the_screen_to_open_on() -> None:
+    """One console per monitor, said by the shortcut rather than by dragging."""
+    assert parse_args([]).screen is None
+    assert parse_args(["--screen", "2"]).screen == 2
+
+
+class Placed:
+    """A window that only remembers where it was told to go."""
+
+    def __init__(self) -> None:
+        self.where = None
+
+    def setGeometry(self, rect) -> None:  # noqa: N802 - Qt naming
+        self.where = rect
+
+
+def test_a_console_told_which_screen_opens_on_that_one() -> None:
+    from vmd.desktop.app import place_on_screen
+
+    window = Placed()
+    screens = ["the left one", "the right one"]
+    assert place_on_screen(window, 2, screens) is True
+    assert window.where == "the right one"
+
+
+def test_a_console_told_nothing_is_left_where_it_was(caplog) -> None:
+    """No `--screen` means the remembered geometry is the whole answer."""
+    from vmd.desktop.app import place_on_screen
+
+    window = Placed()
+    with caplog.at_level("WARNING", logger="vmd.desktop"):
+        assert place_on_screen(window, None, ["one", "two"]) is False
+    assert window.where is None
+    assert caplog.records == [], "nothing happened, so there is nothing to warn about"
+
+
+def test_a_screen_that_is_not_there_costs_a_line_in_the_log_and_nothing_else(
+    caplog,
+) -> None:
+    """A monitor that did not wake up must not put the console off the end of
+    the desktop, where nobody can find it."""
+    from vmd.desktop.app import place_on_screen
+
+    window = Placed()
+    with caplog.at_level("WARNING", logger="vmd.desktop"):
+        assert place_on_screen(window, 2, ["the only one"]) is False
+    assert window.where is None
+    assert caplog.records, "it went somewhere odd and said nothing"
+    assert place_on_screen(window, 0, ["the only one"]) is False
+
+
 def test_the_wiring_is_built_without_a_display(tmp_path: Path) -> None:
     path = write_settings(tmp_path)
     wiring = build_wiring(load_settings(path), path, with_services=False)

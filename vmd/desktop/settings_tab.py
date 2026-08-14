@@ -25,6 +25,7 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1203,7 +1204,28 @@ class SettingsTab(QWidget):
         # Shown, never masked: this machine is offline and physically controlled,
         # and the failure this form actually suffers is a typo nobody can see.
         self._password = QLineEdit()
+        # Which monitor this console belongs on. Beside the name because the two
+        # answer the same question from opposite ends - which console is this,
+        # and where does it live - and because this desktop has one screen per
+        # camera and they have to be told apart before either can be used.
+        #
+        # The list is built from the monitors that are actually attached, so it
+        # cannot offer a screen 3 on a machine with two. A console started
+        # without a display - a test - gets the two this deployment has.
+        self._screen = QComboBox()
+        self._screen.addItem("Wherever it was last left", None)
+        for number in range(1, max(2, len(QGuiApplication.screens())) + 1):
+            self._screen.addItem(f"Screen {number}", number)
+        self._screen.setToolTip(
+            "Which monitor this console opens on.\n\n"
+            "There is a screen for each camera on this desk. After a restart "
+            "both consoles come back at once, and without this they can land on "
+            "top of each other on one screen.\n\n"
+            "\"Wherever it was last left\" remembers where you dragged it, which "
+            "is right for a machine with one screen."
+        )
         camera_form.addRow("Name", self._title)
+        camera_form.addRow("Show on", self._screen)
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
@@ -1858,6 +1880,21 @@ class SettingsTab(QWidget):
         self._title.setText(str(value))
 
     @property
+    def screen(self) -> int | None:
+        return self._screen.currentData()
+
+    @screen.setter
+    def screen(self, value: int | None) -> None:
+        """The saved monitor, or the first entry when it is not on the list.
+
+        A settings file naming screen 3 on a machine with two monitors falls
+        back to "wherever it was last left", which is what the console does with
+        it anyway - so the form says the same thing the program will do.
+        """
+        index = self._screen.findData(value)
+        self._screen.setCurrentIndex(index if index >= 0 else 0)
+
+    @property
     def show_playback(self) -> bool:
         return self._show_playback.isChecked()
 
@@ -2343,6 +2380,7 @@ class SettingsTab(QWidget):
             )
         self._loaded = settings
         self.camera_title = settings.title
+        self.screen = settings.screen
         self.show_playback = settings.show_playback
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
@@ -2532,6 +2570,7 @@ class SettingsTab(QWidget):
         # Trimmed here rather than in the box, so that what he typed stays on
         # the screen exactly as he typed it while he is still typing it.
         payload["title"] = self.camera_title.strip()
+        payload["screen"] = self.screen
         payload["show_playback"] = self.show_playback
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(

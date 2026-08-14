@@ -37,6 +37,19 @@ recordings/
 settings.json
 smoke_record.*
 
+# One folder per camera, made by cameras.bat on the machine this is installed
+# on: a settings.json with that camera's address and password in it, its
+# recordings, its segment index, and the window it remembers. All of it belongs
+# to one installation and none of it belongs in the history. The launcher
+# written beside it - "Camera 250.bat" - is generated from the same script, so
+# it is not committed either.
+#
+# The space in the pattern matters. Git on Windows matches these without regard
+# to case, so "Camera*.bat" also matched cameras.bat - the one file here that
+# has to be committed, because it is how the operator sets a camera up.
+cameras/
+Camera *.bat
+
 # What a run leaves behind beside the settings. *.db above already covers
 # events.db and segments.db; these are the rest of the same set - the ports
 # go2rtc took, the config written for it, the state the detector publishes, and

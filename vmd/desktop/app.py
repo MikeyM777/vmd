@@ -45,7 +45,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="do not start go2rtc or the recorder",
     )
+    parser.add_argument(
+        "--screen",
+        type=int,
+        default=None,
+        metavar="N",
+        help="open on screen N, counting from 1 (for one console per monitor)",
+    )
     return parser.parse_args(argv)
+
+
+def place_on_screen(window, number: int | None, screens: list) -> bool:
+    """Open this console on the monitor its shortcut named. Says whether it did.
+
+    There are two of these running on one desktop now, one camera each, on two
+    monitors - and which window lands on which monitor cannot be left to
+    whichever Windows opens first. The shortcut for each camera says which
+    screen it belongs on, and this puts it there.
+
+    It beats the remembered geometry deliberately: `_restore_geometry` has
+    already run by the time this is called, so a window dragged somewhere odd
+    yesterday still comes back where the installation says it belongs. Without
+    `--screen` nothing here happens at all and the memory is the whole answer.
+
+    A number naming a screen that is not there is a warning and nothing else. A
+    monitor that did not wake up must not cost the operator the console - and a
+    window placed off the end of the desktop is a console nobody can find.
+    """
+    if number is None:
+        return False
+    if not 1 <= number <= len(screens):
+        logger.warning(
+            "this console was told to open on screen %s, but this machine has "
+            "%s; opening where it was left instead",
+            number,
+            len(screens),
+        )
+        return False
+    window.setGeometry(screens[number - 1])
+    return True
 
 
 class BrokenPane(QLabel):
@@ -213,6 +251,18 @@ def main(argv: list[str] | None = None) -> int:
         make_pane=pane_factory(),
         events_path=wiring.events_path,
         log_buffer=log_buffer,
+    )
+    # After the window is built, because building it is what restores the
+    # remembered geometry, and before it is shown, so it never appears on one
+    # monitor and jumps to another.
+    # The command line first, then the settings file, then neither - which
+    # leaves the remembered window as the whole answer. The command line wins so
+    # that a console can be put on the other screen once without editing
+    # anything, which is what somebody standing at the machine will want.
+    place_on_screen(
+        window,
+        args.screen if args.screen is not None else settings.screen,
+        [screen.availableGeometry() for screen in app.screens()],
     )
     window.show()
     return app.exec()
