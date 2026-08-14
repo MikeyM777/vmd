@@ -19,7 +19,7 @@ The window opens in about 15 seconds cold. That is libVLC rebuilding its plugin
 index and it is normal. It is not hung. It opens where you left it last time,
 on a screen that still exists — if you moved it, that is where it comes back.
 
-**This laptop has no wifi and no internet, and nothing on it leaves it.** That
+**This machine has no wifi and no internet, and nothing on it leaves it.** That
 is a requirement of the deployment, not a preference: no part of this program
 downloads anything, uploads anything, or expects a network beyond the radio link
 to the camera. If anything on this list asks you to go and fetch something, it

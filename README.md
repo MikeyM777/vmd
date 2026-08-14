@@ -1,7 +1,7 @@
 # VMD
 
-A video motion detection console for a single multi-spectral PTZ camera watching a
-distant perimeter. It shows live video, records continuously, raises an alarm when
+A video motion detection console for a multi-spectral PTZ camera watching a
+distant perimeter, run once per camera. It shows live video, records continuously, raises an alarm when
 something moves, and lets an operator look back through what was recorded.
 
 The deployment it is built for: FLIR-class thermal + visible PTZ heads roughly
@@ -49,10 +49,13 @@ the console is only the window onto it.
   ffmpeg is given `-map 0:v:0 -c:v copy -an`: this camera offers `pcm_mulaw`
   audio, MP4 cannot store it, and until that was fixed ffmpeg died before the
   first frame while the console reported "recording".
-- **The console** — a desktop application (Qt, four tabs: Live, Playback,
-  Settings, Logs). Live video rendered by libVLC, camera steering from the arrow
-  keys and from drags on the picture itself, a zoom bar per lens, a fullscreen
-  mode, playback with a transport and clip export, settings and logs. It starts
+- **The console** — a desktop application (Qt, three tabs: Live, Settings, Logs,
+  and a fourth - Playback - that is off until it is asked for). Live video
+  rendered by libVLC, camera steering from the arrow keys and from drags on the
+  picture itself, a zoom bar per lens, a fullscreen mode, the name of what this
+  camera watches above the pictures, settings and logs. Playback - a day, a
+  timeline, the marks where something moved, and clip export - is built only when
+  `show_playback` says so, and switching it on in Settings asks first. It starts
   the streaming server, the recorder and the detector as child processes,
   adopts ones already running, and restarts them if they stop; closing the
   window does not stop recording.
@@ -89,9 +92,11 @@ day this meets the hardware.
 | `vmd/storage/` | Recording, the segment index, retention |
 | `vmd/streaming/` | go2rtc: pulling the camera once and re-serving it locally |
 | `tests/` | Test suite (`uv run pytest`) |
-| `scripts/` | Installers: `install.ps1`, the offline pair, and the autostart tasks |
+| `scripts/` | Installers: `install.ps1`, the offline pair, `cameras.ps1`, and the autostart tasks |
 | `mockup/` | Early visual explorations, kept for reference |
 | `spike/` | Experiments and field tools. Throwaway by intent, kept for their findings |
+| `docs/OFFLINE-SETUP.md` | Getting it onto the offline machine, step by step, including by hand |
+| `docs/guide/` | The operator's user guide: the Hebrew and English PDFs and what builds them |
 | `docs/FIRST-MORNING.md` | The field checklist for the day this meets the real camera |
 | `docs/review/` | Four reviews written on 2026-08-11, kept as a backlog and an audit trail |
 | `docs/superpowers/` | Design specs and implementation plans, dated. Not kept in step with the code |
@@ -200,7 +205,7 @@ uv run --offline --frozen --no-sync pytest
 
 All three should succeed. `--offline --frozen --no-sync` is how the launchers
 run too: a plain `uv run` re-checks the lock and syncs, and a sync on the
-deployment laptop is a hang with no way out. On a connected machine you can drop
+deployment machine is a hang with no way out. On a connected machine you can drop
 them.
 
 If `ffmpeg` is not found, the recorder cannot record — fix that before anything
@@ -217,7 +222,8 @@ window onto it — a console that fails to open must not be able to stop the dis
 filling. The recorder writes `recorder.pid`, which is what makes the console
 adopt it rather than start a second one.
 
-It also stops the laptop sleeping, hibernating, or suspending on lid close.
+It also stops the machine sleeping, hibernating, or spinning its disks down -
+and, on a machine that has a lid, stops closing the lid suspending it.
 
 After a restart that means recording resumes within a second or two of the
 sign-in and the window appears 45 seconds later. That gap is worth telling an
@@ -266,7 +272,7 @@ uv run python -m vmd.detect_main  # detection service
 uv run pytest                     # test suite
 ```
 
-On the deployment laptop those are `uv run --offline --frozen --no-sync …`, for
+On the deployment machine those are `uv run --offline --frozen --no-sync …`, for
 the reason given under [Check it worked](#check-it-worked); the launchers do it
 for you.
 
@@ -279,7 +285,7 @@ picture down by itself when the link gets busy. Press **Save**. Nobody hand-edit
 a configuration file: the console writes `settings.json` beside the program so the
 values survive a restart, and the recording and detection services read that same
 file.
-Passwords are shown as typed rather than masked — deliberately: the laptop is
+Passwords are shown as typed rather than masked — deliberately: the machine is
 offline and single-purpose, and a password that cannot be read back is the harder
 failure to recover from when the camera refuses the connection.
 
