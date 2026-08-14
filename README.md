@@ -279,7 +279,8 @@ for you.
 Everything the operator configures is in the console's **Settings** tab: the
 camera's IP address, username and password, the camera views and their RTSP
 addresses, whether each is watched for movement, the storage folder and budget
-(there is a **Scan this PC** button that reads the drive and proposes both), the
+(there is a **Look at this drive and suggest a size** button that reads the
+drive and proposes both), the
 radio's address and credentials, and whether the console is allowed to turn the
 picture down by itself when the link gets busy. Press **Save**. Nobody hand-edits
 a configuration file: the console writes `settings.json` beside the program so the

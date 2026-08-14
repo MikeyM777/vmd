@@ -18,6 +18,14 @@ clips/
 *.jpeg
 *.png
 *.bmp
+
+# The one exception, and it is safe for the reason the rule exists. The user
+# guide's screenshots are of the console drawn against made-up settings on a
+# machine with no camera attached, by scripts\guide_shots.py - the pictures in
+# them are painted by that script with QPainter and are deliberately drawn so
+# that nobody could mistake them for footage. Nothing in this folder has ever
+# been near the perimeter, and the guide is useless without them.
+!docs/guide/images/*.png
 footage/
 .superpowers/
 yolo11n.pt

@@ -566,7 +566,8 @@ There is **no file to edit**. Everything goes in the console:
    you ask for that. To stop using a view, press **Remove** on its card. If you
    do not know the addresses, the camera prober in the table above finds them
    for you.
-5. Under **Storage**, set the folder, then press **Scan this PC**. It looks at
+5. Under **Storage**, set the folder, then press **Look at this drive and
+   suggest a size**. It looks at
    the drive that folder is on — how big it is, how much is free, how much VMD
    is already using — and fills in a budget and an age rule that fit, with a
    report you can read line by line. Both are suggestions and both stay yours to

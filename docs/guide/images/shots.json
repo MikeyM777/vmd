@@ -1,0 +1,608 @@
+{
+  "shots": [
+    {
+      "slug": "live-tab",
+      "file": "live-tab.png",
+      "width": 1600,
+      "height": 1000,
+      "title": "The Live tab: the whole window",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the band across the very top, which says whether the system as a whole is well: whether it is recording, whether pictures are arriving, whether anything is watching them, and how the radio link is"
+        },
+        {
+          "n": 2,
+          "what": "the row of tabs that chooses which page is shown; the page you are on is the one with the amber bar under its name"
+        },
+        {
+          "n": 3,
+          "what": "the name of what this camera watches, written in Hebrew above the pictures"
+        },
+        {
+          "n": 4,
+          "what": "the buttons that choose which picture fills the wall: all of them side by side, or one of them on its own"
+        },
+        {
+          "n": 5,
+          "what": "the button that puts the pictures on the whole screen"
+        },
+        {
+          "n": 6,
+          "what": "the plate above each picture, giving the name of that camera view and what it is doing right now"
+        },
+        {
+          "n": 7,
+          "what": "one of the two live pictures; dragging near its edge steers the camera, and so do the arrow keys"
+        },
+        {
+          "n": 8,
+          "what": "the zoom bar belonging to that picture; there is one for each lens"
+        },
+        {
+          "n": 9,
+          "what": "the Link panel, which says in one word how the radio link between the camera and this laptop is doing"
+        },
+        {
+          "n": 10,
+          "what": "the Storage panel: how much of the allowed space the recordings have used, and how long before the oldest starts being deleted"
+        },
+        {
+          "n": 11,
+          "what": "the Movement line, which counts what has moved today and says when the last one was"
+        }
+      ]
+    },
+    {
+      "slug": "live-side-column",
+      "file": "live-side-column.png",
+      "width": 591,
+      "height": 616,
+      "title": "The column of readings beside the pictures",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "what the camera head is doing right now: idle, or the speed it is being driven at"
+        },
+        {
+          "n": 2,
+          "what": "the keys that steer the camera, written out"
+        },
+        {
+          "n": 3,
+          "what": "the one word for the state of the radio link: GOOD, FAIR, BUSY, FULL, WEAK or NO LINK"
+        },
+        {
+          "n": 4,
+          "what": "the two bars under it: how strong the signal is, and how much of the link is being used, each with the point where it stops being healthy marked on the track"
+        },
+        {
+          "n": 5,
+          "what": "how much space the recordings have used out of what they are allowed, and how long there is before the oldest is deleted"
+        },
+        {
+          "n": 6,
+          "what": "the movements counted today; pressing this line opens the footage of the newest one, when the Playback tab is switched on"
+        }
+      ]
+    },
+    {
+      "slug": "view-chooser",
+      "file": "view-chooser.png",
+      "width": 1242,
+      "height": 210,
+      "title": "Choosing which picture is shown",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the name of what this camera watches, in Hebrew"
+        },
+        {
+          "n": 2,
+          "what": "the button that shows every camera view side by side; it is the one that is on here, marked by the amber bar beneath it"
+        },
+        {
+          "n": 3,
+          "what": "a button that gives one camera view the whole wall on its own; there is one for each view the camera has"
+        },
+        {
+          "n": 4,
+          "what": "the button into fullscreen, where only the pictures are left"
+        }
+      ]
+    },
+    {
+      "slug": "zoom-bar",
+      "file": "zoom-bar.png",
+      "width": 622,
+      "height": 139,
+      "title": "The zoom bar under a picture",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the minus button, which zooms this lens out to a wider view"
+        },
+        {
+          "n": 2,
+          "what": "the handle, which sits where the camera says the lens actually is; dragging it sends the lens somewhere"
+        },
+        {
+          "n": 3,
+          "what": "the plus button, which zooms this lens in closer"
+        },
+        {
+          "n": 4,
+          "what": "the reading: the word zoom and how far in the lens is, as the camera itself reported it and never as a guess"
+        },
+        {
+          "n": 5,
+          "what": "the bottom of the picture this bar belongs to; the bar sits inside that picture's own frame, and the other picture has one of its own"
+        }
+      ]
+    },
+    {
+      "slug": "status-band-healthy",
+      "file": "status-band-healthy.png",
+      "width": 1600,
+      "height": 90,
+      "title": "The status band with nothing wrong",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the recording dot: a red circle that pulses while footage is reaching the disk, and a still red bar when it is not"
+        },
+        {
+          "n": 2,
+          "what": "each part of the system in turn - recording, pictures, movement watching, the radio link - named on its own while there is nothing wrong with it, and spelled out in full the moment there is"
+        },
+        {
+          "n": 3,
+          "what": "the radio link between the camera and this laptop; the figures behind it are in the Link panel on the Live tab"
+        }
+      ]
+    },
+    {
+      "slug": "status-band-trouble",
+      "file": "status-band-trouble.png",
+      "width": 1600,
+      "height": 90,
+      "title": "The status band with something wrong",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the recording dot: a red circle that pulses while footage is reaching the disk, and a still red bar when it is not"
+        },
+        {
+          "n": 2,
+          "what": "each part of the system in turn - recording, pictures, movement watching, the radio link - named on its own while there is nothing wrong with it, and spelled out in full the moment there is"
+        },
+        {
+          "n": 3,
+          "what": "the radio link between the camera and this laptop; the figures behind it are in the Link panel on the Live tab"
+        }
+      ]
+    },
+    {
+      "slug": "live-alarm",
+      "file": "live-alarm.png",
+      "width": 1600,
+      "height": 1000,
+      "title": "The Live tab with an alarm up",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the red strip that appears under the pictures when something has moved, saying which camera saw it and at what time"
+        },
+        {
+          "n": 2,
+          "what": "the red outline drawn round the picture the movement was seen on"
+        },
+        {
+          "n": 3,
+          "what": "the button that clears the strip and the red outline once the movement has been seen"
+        },
+        {
+          "n": 4,
+          "what": "the same movement counted in the column beside the pictures, where it stays after the strip has been cleared"
+        }
+      ]
+    },
+    {
+      "slug": "alarm-strip",
+      "file": "alarm-strip.png",
+      "width": 1240,
+      "height": 201,
+      "title": "The alarm strip, close up",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the filled bar drawn beside the words, so that the alarm is not carried by the colour alone"
+        },
+        {
+          "n": 2,
+          "what": "which camera view the movement was seen on, and the time it happened"
+        },
+        {
+          "n": 3,
+          "what": "the button that takes the strip down again"
+        }
+      ]
+    },
+    {
+      "slug": "fullscreen",
+      "file": "fullscreen.png",
+      "width": 1600,
+      "height": 1000,
+      "title": "Fullscreen: only the pictures",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the name of what this camera watches, still on the screen in fullscreen: it is what says which of the two consoles this is"
+        },
+        {
+          "n": 2,
+          "what": "the way back out, which names its own key; Esc and F11 do the same"
+        },
+        {
+          "n": 3,
+          "what": "the view buttons, which are kept in fullscreen"
+        },
+        {
+          "n": 4,
+          "what": "the zoom bars, which are kept in fullscreen too"
+        }
+      ]
+    },
+    {
+      "slug": "settings-camera",
+      "file": "settings-camera.png",
+      "width": 1228,
+      "height": 254,
+      "title": "Settings: the camera itself",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the name of what this camera watches, in your own words; it is written above the pictures and on the window itself"
+        },
+        {
+          "n": 2,
+          "what": "which monitor this console opens on, so that the two consoles do not land on top of each other after a restart"
+        },
+        {
+          "n": 3,
+          "what": "the camera's address on the network"
+        },
+        {
+          "n": 4,
+          "what": "the username the camera expects"
+        },
+        {
+          "n": 5,
+          "what": "the camera's password, shown as it was typed and never hidden behind dots, so that a mistyped one can be seen and corrected"
+        }
+      ]
+    },
+    {
+      "slug": "settings-streams",
+      "file": "settings-streams.png",
+      "width": 1228,
+      "height": 462,
+      "title": "Settings: the camera's views",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the name of one camera view; it is the name this view goes by everywhere else in the console"
+        },
+        {
+          "n": 2,
+          "what": "the address the camera serves that view on"
+        },
+        {
+          "n": 3,
+          "what": "the tick that watches this view for movement; it is ticked here, so this view is being watched"
+        },
+        {
+          "n": 4,
+          "what": "the same tick on the other view, unticked: no view is watched for movement until it is asked for"
+        },
+        {
+          "n": 5,
+          "what": "the button that shows a picture from this view so that parts of it can be drawn round and ignored"
+        },
+        {
+          "n": 6,
+          "what": "a fold holding the one setting that makes a view more or less touchy; it is shut until it is needed"
+        },
+        {
+          "n": 7,
+          "what": "the button for when the zoom bar under one picture moves the other picture; it exchanges the two lenses"
+        }
+      ]
+    },
+    {
+      "slug": "settings-detection",
+      "file": "settings-detection.png",
+      "width": 1228,
+      "height": 247,
+      "title": "Settings: movement detection and the alarm sound",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the master switch: with it off nothing is watched for movement whatever the camera views say, and recording carries on either way"
+        },
+        {
+          "n": 2,
+          "what": "the switch for the sound an alarm makes as well as the red strip; it never sounds more than once every twelve seconds, and it can be turned off if somebody sleeps in the room"
+        }
+      ]
+    },
+    {
+      "slug": "settings-playback",
+      "file": "settings-playback.png",
+      "width": 1228,
+      "height": 317,
+      "title": "Settings: switching the Playback tab on, and the question it asks",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the tick that adds the Playback tab to the console; the tab is off normally, and this tick stays down until the question below it has been answered"
+        },
+        {
+          "n": 2,
+          "what": "the \"Are you sure\" pane the tick raises, which says what switching the tab on brings back with it"
+        },
+        {
+          "n": 3,
+          "what": "the button that agrees, which is what actually switches the tab on"
+        },
+        {
+          "n": 4,
+          "what": "the button that leaves it off and takes the question away"
+        }
+      ]
+    },
+    {
+      "slug": "settings-storage",
+      "file": "settings-storage.png",
+      "width": 1228,
+      "height": 375,
+      "title": "Settings: where the recordings go and how much room they may take",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the folder the recordings are written to"
+        },
+        {
+          "n": 2,
+          "what": "the button that looks at the drive and fills in a size and an age rule to match it; it changes the two boxes below and nothing else, and nothing is written until Save"
+        },
+        {
+          "n": 3,
+          "what": "how much of the drive the recordings are allowed to fill; the slider stops at the size of the drive"
+        },
+        {
+          "n": 4,
+          "what": "the same size as a number, which can be typed instead of dragged"
+        },
+        {
+          "n": 5,
+          "what": "what that size means in days of footage"
+        },
+        {
+          "n": 6,
+          "what": "the age rule: anything older than this many days is deleted whether there is room for it or not; empty means nothing is deleted because of its age"
+        },
+        {
+          "n": 7,
+          "what": "the line saying which of the two rules is the one actually deleting footage today"
+        }
+      ]
+    },
+    {
+      "slug": "settings-radio",
+      "file": "settings-radio.png",
+      "width": 1228,
+      "height": 302,
+      "title": "Settings: the radio link",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the radio's address; without it the Link panel on the Live tab has nothing to read"
+        },
+        {
+          "n": 2,
+          "what": "the radio's username"
+        },
+        {
+          "n": 3,
+          "what": "the radio's password, shown as typed like every other password here"
+        },
+        {
+          "n": 4,
+          "what": "the switch that lets the console ask the camera for a smaller picture by itself while the link is busy, and for a better one again once it has been quiet"
+        }
+      ]
+    },
+    {
+      "slug": "settings-camera-tools",
+      "file": "settings-camera-tools.png",
+      "width": 1228,
+      "height": 412,
+      "title": "Settings: the tools for checking the camera",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the fold holding the camera tools; it is shut until it is pressed, and nothing inside it changes a setting"
+        },
+        {
+          "n": 2,
+          "what": "the button that asks whether the camera is answering at all"
+        },
+        {
+          "n": 3,
+          "what": "the button that hunts for the camera's address when nobody knows it"
+        },
+        {
+          "n": 4,
+          "what": "the button that asks which lens is behind which picture"
+        },
+        {
+          "n": 5,
+          "what": "the button that asks the camera for a smaller picture, once, when the link cannot carry the one it is sending"
+        },
+        {
+          "n": 6,
+          "what": "the button that writes everything it found into a file that can be sent to somebody"
+        },
+        {
+          "n": 7,
+          "what": "the box the answers appear in"
+        }
+      ]
+    },
+    {
+      "slug": "settings-save",
+      "file": "settings-save.png",
+      "width": 1244,
+      "height": 67,
+      "title": "Settings: saving, and what it says when it will not",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the line that appears when a setting was refused, saying which one and why; nothing at all was saved while this is showing"
+        },
+        {
+          "n": 2,
+          "what": "the button that writes these settings to the file; nothing typed on this page takes effect until it is pressed, and Ctrl+S does the same"
+        }
+      ]
+    },
+    {
+      "slug": "logs-tab",
+      "file": "logs-tab.png",
+      "width": 1600,
+      "height": 1000,
+      "title": "The Logs tab",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the button showing every line; it is the one that is on, marked by the amber bar under it"
+        },
+        {
+          "n": 2,
+          "what": "the button that hides everything except the warnings and the errors"
+        },
+        {
+          "n": 3,
+          "what": "the button that copies the lines being shown, so that they can be pasted somewhere and sent to somebody"
+        },
+        {
+          "n": 4,
+          "what": "a line in red, which is an error; this one is the camera refusing the username and password that are in Settings"
+        },
+        {
+          "n": 5,
+          "what": "the four columns: when the line was written, how serious it is, which part of the system said it, and what it said"
+        },
+        {
+          "n": 6,
+          "what": "the tick that keeps the table on the newest line as lines arrive; untick it to stay where you have scrolled to while you read"
+        }
+      ]
+    },
+    {
+      "slug": "playback-tab",
+      "file": "playback-tab.png",
+      "width": 1600,
+      "height": 1000,
+      "title": "The Playback tab, once it has been switched on",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the day being looked at; the buttons either side of it step one day back and one day forward"
+        },
+        {
+          "n": 2,
+          "what": "which camera view is being looked back through"
+        },
+        {
+          "n": 3,
+          "what": "the clock: the moment the picture below it is showing"
+        },
+        {
+          "n": 4,
+          "what": "how much of the day the bar at the bottom covers: the whole of it, an hour, or ten minutes"
+        },
+        {
+          "n": 5,
+          "what": "the bar for the day: the filled green parts are what was recorded, and the gaps are the times nothing was"
+        },
+        {
+          "n": 6,
+          "what": "the marks on the bar where something moved; pressing one plays the footage of it"
+        },
+        {
+          "n": 7,
+          "what": "play and pause"
+        },
+        {
+          "n": 8,
+          "what": "how fast the footage is played back"
+        },
+        {
+          "n": 9,
+          "what": "the start of a piece of footage to keep; Mark end beside it is the other end of it"
+        },
+        {
+          "n": 10,
+          "what": "the button that writes the marked piece to a folder you choose"
+        }
+      ]
+    },
+    {
+      "slug": "mask-dialog",
+      "file": "mask-dialog.png",
+      "width": 1180,
+      "height": 800,
+      "title": "Marking the parts of a picture to ignore",
+      "callouts": [
+        {
+          "n": 1,
+          "what": "the instruction: drag around anything that should be ignored, and click a marked area to take it off again"
+        },
+        {
+          "n": 2,
+          "what": "an area already marked out, shaded in red over the picture; movement inside it is never reported"
+        },
+        {
+          "n": 3,
+          "what": "a second marked area, this one dragged as a box rather than drawn round"
+        },
+        {
+          "n": 4,
+          "what": "the tool that draws round a shape freehand; it is the one that is on, marked by the amber bar beneath it"
+        },
+        {
+          "n": 5,
+          "what": "the tool that drags a rectangle instead"
+        },
+        {
+          "n": 6,
+          "what": "the button that takes off the area drawn last"
+        },
+        {
+          "n": 7,
+          "what": "the button that takes off every marked area at once"
+        },
+        {
+          "n": 8,
+          "what": "the button that leaves the marked areas exactly as they were"
+        },
+        {
+          "n": 9,
+          "what": "the button that keeps what was drawn; Save on the Settings tab is what writes it to the file"
+        }
+      ]
+    }
+  ]
+}
