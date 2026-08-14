@@ -1889,7 +1889,12 @@ class SettingsTab(QWidget):
 
         A settings file naming screen 3 on a machine with two monitors falls
         back to "wherever it was last left", which is what the console does with
-        it anyway - so the form says the same thing the program will do.
+        it anyway - so the form says the same thing the program will do. A save
+        from that form then writes the fallback back, and the file stops naming
+        a monitor that is not there. That is a value quietly changed, which this
+        form does not do lightly; it is right here because the alternative is a
+        form showing one thing while the file says another, on the one setting
+        whose whole job is to be obeyed without anybody watching.
         """
         index = self._screen.findData(value)
         self._screen.setCurrentIndex(index if index >= 0 else 0)
