@@ -259,3 +259,104 @@ def test_a_settings_file_naming_the_old_video_fields_still_loads(tmp_path) -> No
     settings = load_settings(path)
     assert settings.title == "ירושלים"
     assert settings.live_delay_ms == 120, "the delay is the new field's default"
+
+
+# ---------------------------------------------- how many cameras share one radio
+#
+# "The FLIR sends 2.5 Mbps and multiply it by 2 because there are 2 cameras."
+# There is one radio and there are two consoles on it. Each holds a ceiling
+# meaning "how much of the link the video may use", so two consoles each
+# spending the whole link is twice the link - and each then sees the radio full
+# and turns its own camera down, for ever, on a link that was never the problem.
+
+
+def _camera(root, label: str, radio_host: str) -> "Path":
+    import json
+    from pathlib import Path
+
+    folder = Path(root) / "cameras" / label
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "settings.json"
+    path.write_text(
+        json.dumps({"radio": {"host": radio_host}}), encoding="utf-8"
+    )
+    return path
+
+
+def test_one_camera_beside_the_program_is_alone_on_its_link(tmp_path) -> None:
+    """Every installation before today, and every single-camera one after it."""
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    settings = Settings()
+    settings.radio.host = "192.168.1.20"
+    assert consoles_on_this_radio(tmp_path / "settings.json", settings) == 1
+
+
+def test_two_cameras_on_one_radio_are_counted(tmp_path) -> None:
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    mine = _camera(tmp_path, "250", "192.168.1.20")
+    _camera(tmp_path, "251", "192.168.1.20")
+
+    settings = Settings()
+    settings.radio.host = "192.168.1.20"
+    assert consoles_on_this_radio(mine, settings) == 2
+
+
+def test_a_camera_on_a_different_radio_is_not_counted(tmp_path) -> None:
+    """Two radios is two links, and dividing one by the other's cameras would
+    hold a picture down for a reason that is not there."""
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    mine = _camera(tmp_path, "250", "192.168.1.20")
+    _camera(tmp_path, "251", "10.0.0.5")
+
+    settings = Settings()
+    settings.radio.host = "192.168.1.20"
+    assert consoles_on_this_radio(mine, settings) == 1
+
+
+def test_a_neighbour_whose_settings_will_not_parse_is_skipped(tmp_path) -> None:
+    """Miscounting downward costs picture quality; miscounting upward costs the
+    link. Neither is worth taking on the strength of somebody else's broken
+    file, so it is skipped rather than guessed at."""
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    mine = _camera(tmp_path, "250", "192.168.1.20")
+    (tmp_path / "cameras" / "252").mkdir(parents=True)
+    (tmp_path / "cameras" / "252" / "settings.json").write_text("{ not json", encoding="utf-8")
+
+    settings = Settings()
+    settings.radio.host = "192.168.1.20"
+    assert consoles_on_this_radio(mine, settings) == 1
+
+
+def test_a_console_with_no_radio_is_never_divided(tmp_path) -> None:
+    """No radio means no airtime reading and no loop. Dividing a ceiling by the
+    number of folders next door would take a picture away for nothing."""
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    mine = _camera(tmp_path, "250", "")
+    _camera(tmp_path, "251", "")
+    assert consoles_on_this_radio(mine, Settings()) == 1
+
+
+def test_a_settings_file_outside_a_cameras_folder_counts_nobody(tmp_path) -> None:
+    """A folder of backups beside a settings file must not divide the link by
+    six. Only the layout cameras.bat makes counts."""
+    import json
+
+    from vmd.settings import Settings, consoles_on_this_radio
+
+    folder = tmp_path / "somewhere" / "250"
+    folder.mkdir(parents=True)
+    path = folder / "settings.json"
+    path.write_text(json.dumps({"radio": {"host": "192.168.1.20"}}), encoding="utf-8")
+    (tmp_path / "somewhere" / "251").mkdir()
+    (tmp_path / "somewhere" / "251" / "settings.json").write_text(
+        json.dumps({"radio": {"host": "192.168.1.20"}}), encoding="utf-8"
+    )
+
+    settings = Settings()
+    settings.radio.host = "192.168.1.20"
+    assert consoles_on_this_radio(path, settings) == 1

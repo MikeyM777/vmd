@@ -551,6 +551,25 @@ def _airtime_lines(link: dict, airtime: float) -> list[tuple[str, str]]:
     if meaning:
         lines.append((meaning, colour))
 
+    # Whose airtime this is, when it is not one camera's.
+    #
+    # "The VMD shows FULL on the ubiquiti capacity while on the airOS it's far
+    # from reality. The FLIR sends 2.5 Mbps and multiply it by 2 because there
+    # are 2 cameras." The figure was right and the sentence around it was not:
+    # airtime is a property of the medium, so it already counts every camera on
+    # the radio, and a panel that says "the link is full" beside one camera's
+    # picture reads as an accusation against that camera. Said before the split
+    # below, because it is what the split is a split OF.
+    cameras = link.get("cameras")
+    if isinstance(cameras, int) and cameras > 1:
+        lines.append(
+            (
+                f"That is the whole radio link, with all {cameras} cameras on it - "
+                f"not this camera alone.",
+                PALETTE["muted"],
+            )
+        )
+
     coming, going = _number(link.get("rx_airtime_percent")), _number(
         link.get("tx_airtime_percent")
     )

@@ -475,8 +475,13 @@ class _LinkInWordsHeCanUse:
     status band are the two things that read it, and both are the desktop's.
     """
 
-    def __init__(self, radio) -> None:
+    def __init__(self, radio, cameras: int = 1) -> None:
         self._radio = radio
+        # How many cameras are on this radio. Put into the reading rather than
+        # asked for by the panel, because the panel is handed a dict and is pure
+        # - see `link_summary` - and this is a fact about the installation that
+        # the radio itself has no way of knowing.
+        self._cameras = max(1, int(cameras))
         # The last paragraph put in the log. This is asked on the two-second
         # heartbeat, and a console that wrote the same fourteen lines thirty
         # times a minute would push everything that explains the fault out of
@@ -488,6 +493,8 @@ class _LinkInWordsHeCanUse:
         if not isinstance(link, dict):
             return link
         shorter, detail = shortened(link)
+        if self._cameras > 1 and isinstance(shorter, dict):
+            shorter = {**shorter, "cameras": self._cameras}
         if detail and detail != self._logged:
             self._logged = detail
             logger.warning("the radio: %s", detail)
@@ -839,8 +846,12 @@ class LiveTab(QWidget):
         # own column; what they read is injected, because one touches the
         # filesystem and the other the radio, and neither may happen on this
         # thread.
+        # Held as well as handed over, because how many cameras share the radio
+        # can change while this console is open - it is a second camera being
+        # set up next door - and `apply` is where a save arrives.
+        self._link_reading = _LinkInWordsHeCanUse(radio) if radio is not None else None
         self._link_panel = (
-            LinkPanel(_LinkInWordsHeCanUse(radio)) if radio is not None else None
+            LinkPanel(self._link_reading) if self._link_reading is not None else None
         )
         if self._link_panel is not None:
             self._side_layout.addWidget(self._link_panel)
@@ -1084,6 +1095,21 @@ class LiveTab(QWidget):
         if not self._shown or not self._playback:
             return
         self.show_footage.emit(self._shown[0])
+
+    def set_cameras_on_the_link(self, cameras: int) -> None:
+        """How many cameras share this radio, for the sentence under the bar.
+
+        The airtime the panel draws is a property of the medium, so it counts
+        every camera on the radio. Saying "the link is full" beside one camera's
+        picture reads as an accusation against that camera, and it was not one.
+        """
+        self._cameras_on_the_link = max(1, int(cameras))
+        self._tell_the_link_who_is_on_it()
+
+    def _tell_the_link_who_is_on_it(self) -> None:
+        if self._link_reading is None:
+            return
+        self._link_reading._cameras = getattr(self, "_cameras_on_the_link", 1)
 
     def set_title(self, name: str) -> None:
         """The name of the place this console watches, above the pictures.
@@ -1354,6 +1380,10 @@ class LiveTab(QWidget):
         # says which of the two consoles this is, and a save that failed to
         # restart a stream must not leave that question open.
         self.set_title(settings.title)
+        # And how many cameras the airtime figure covers. Handed in rather than
+        # worked out here: the tab does not know where the settings file is, and
+        # that is what says which console this is. See `set_cameras_on_the_link`.
+        self._tell_the_link_who_is_on_it()
         for pane in self._panes.values():
             pane.stop()
             # Stopped is not finished. A libVLC pane holds a player, its decoder

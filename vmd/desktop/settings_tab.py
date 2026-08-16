@@ -3056,7 +3056,12 @@ class SettingsTab(QWidget):
         from vmd.ptz.service import PtzService
         from vmd.streaming.diagnose import diagnose, find_paths
 
-        return CameraTools(ptz=PtzService(settings), find_paths=find_paths, diagnose=diagnose)
+        return CameraTools(
+            ptz=PtzService(settings),
+            find_paths=find_paths,
+            diagnose=diagnose,
+            settings_path=self.settings_path,
+        )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Let a running tool finish before the widget it reports to disappears."""
@@ -3093,7 +3098,14 @@ class CameraTools:
     them be tested without a camera.
     """
 
-    def __init__(self, ptz, find_paths, diagnose, grab_frame=None) -> None:
+    def __init__(
+        self, ptz, find_paths, diagnose, grab_frame=None, settings_path=None
+    ) -> None:
+        # Which console this is, so that "fit the camera to the link" can
+        # divide the link by the number of cameras on it. Optional, because
+        # every test here builds these tools without one and a share of one
+        # is what this has always assumed.
+        self.settings_path = settings_path
         self._ptz = ptz
         self._find_paths = find_paths
         self._diagnose = diagnose
@@ -3127,10 +3139,43 @@ class CameraTools:
         return self._ptz.zoom_profiles()
 
     def fit_to_link(self, settings: Settings) -> list[str]:
-        result = self._ptz.fit_encoders_to_link(settings.bitrate.ceiling_kbps)
+        """Cap this camera to its share of the link, and say what landed.
+
+        The share and not the whole ceiling, and it is the same division the
+        automatic loop makes - `BitrateLoop.my_ceiling`. Two answers to "how
+        much may this camera use" is what puts twice the link on the link: the
+        button would hand the camera the lot, the loop would find the radio full
+        and turn it back down, and the operator would watch the picture he had
+        just asked for being taken away again by something he cannot see.
+        """
+        ceiling = settings.bitrate.ceiling_kbps
+        sharing = self.cameras_on_the_link(settings)
+        if sharing > 1:
+            ceiling = max(settings.bitrate.floor_kbps, ceiling // sharing)
+        result = self._ptz.fit_encoders_to_link(ceiling)
         if not result.get("ok"):
             return [result.get("error", "the camera refused")]
-        return list(result.get("changed", []))
+        said = list(result.get("changed", []))
+        if sharing > 1:
+            said.insert(
+                0,
+                f"{sharing} cameras share this radio link, so this one was given "
+                f"{ceiling} kb/s - its share of the {settings.bitrate.ceiling_kbps} "
+                f"kb/s the link is allowed.",
+            )
+        return said
+
+    def cameras_on_the_link(self, settings: Settings) -> int:
+        """How many consoles are on this radio. One when nothing says otherwise."""
+        if self.settings_path is None:
+            return 1
+        from vmd.settings import consoles_on_this_radio
+
+        try:
+            return max(1, consoles_on_this_radio(self.settings_path, settings))
+        except Exception:  # noqa: BLE001 - a share is not the button
+            logger.exception("could not work out how many cameras share the link")
+            return 1
 
     def write_report(self, settings: Settings, path, extra: list[str]) -> Path:
         """Everything about this installation, in one file that can be sent on.

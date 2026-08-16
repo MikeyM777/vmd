@@ -29,7 +29,7 @@ from vmd.detect_main import STATUS_FILENAME, detected_streams
 from vmd.ptz.autobitrate import BitrateLoop
 from vmd.record_main import ALREADY_RECORDING_EXIT
 from vmd.record_main import STATUS_FILENAME as RECORDER_STATUS_FILENAME
-from vmd.settings import Settings
+from vmd.settings import Settings, consoles_on_this_radio
 from vmd.streaming.endpoint import is_live, read_endpoint
 from vmd.streaming.go2rtc import Go2rtcService
 from vmd.supervisor import Managed, Supervisor
@@ -1482,6 +1482,13 @@ class ConsoleServices:
                 settings=settings,
                 apply=lambda kbps: ptz.fit_encoders_to_link(kbps),
                 clock=clock,
+                # There is one radio and there are two consoles on it. The
+                # ceiling is a whole-link figure and this is what divides it -
+                # see `vmd/settings.py:consoles_on_this_radio`. Bound to the
+                # settings path because that is what says which camera folder
+                # this console is, and the answer is read off the disk beside
+                # it rather than agreed between processes that cannot talk.
+                share=lambda current: consoles_on_this_radio(self.settings_path, current),
                 # The same worker seam the disk and the children's reports use.
                 # An ONVIF write takes seconds over this link and must not run
                 # on the thread that draws the window - and must not run on the

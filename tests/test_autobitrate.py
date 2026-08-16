@@ -486,3 +486,113 @@ def test_the_thresholds_themselves_are_a_hold(airtime: float) -> None:
     feed(control, clock, link(airtime), max(BUSY_FOR_SECONDS, CALM_FOR_SECONDS) + BEAT)
 
     assert camera.asked == []
+
+
+# ------------------------------------------------- two cameras on one radio link
+#
+# "The FLIR sends 2.5 Mbps and multiply it by 2 because there are 2 cameras."
+# The ceiling on the Settings tab is how much of the LINK the video may use, and
+# there are two consoles holding it now. Each reads the same airtime - airtime
+# is a property of the medium, so it already counts the other camera - so two
+# consoles each spending the whole ceiling is twice the link, and both of them
+# then find it full and turn their own camera down for ever.
+
+
+def sharing(clock: Clock, camera: Camera, cameras: int, **kwargs) -> BitrateLoop:
+    return BitrateLoop(
+        settings=settings(**kwargs),
+        apply=camera,
+        clock=clock,
+        executor=lambda work: work(),
+        share=lambda _settings: cameras,
+    )
+
+
+def test_one_camera_may_use_the_whole_ceiling() -> None:
+    """Which is what this loop has always assumed, and is still true of a
+    single-camera installation."""
+    control = sharing(Clock(), Camera(), cameras=1, ceiling=5000)
+    assert control.my_ceiling() == 5000
+
+
+def test_two_cameras_get_half_the_ceiling_each() -> None:
+    control = sharing(Clock(), Camera(), cameras=2, ceiling=5000)
+    assert control.my_ceiling() == 2500
+
+
+def test_a_share_is_never_taken_below_the_floor() -> None:
+    """A ceiling divided until it is under the floor is two instructions that
+    cannot both be obeyed, and the floor is the one that means "less than this
+    is not worth showing"."""
+    control = sharing(Clock(), Camera(), cameras=10, floor=1000, ceiling=5000)
+    assert control.my_ceiling() == 1000
+
+
+def test_the_loop_starts_at_its_share_and_not_at_the_whole_link() -> None:
+    """The seed is what the loop believes the camera is already set to. Seeded
+    at the whole ceiling, the very first thing a second console would do on a
+    quiet link is try to raise past its share."""
+    control = sharing(Clock(), Camera(), cameras=2, ceiling=5000)
+    assert control.state().target_kbps == 2500
+
+
+def test_a_quiet_link_never_raises_a_shared_camera_past_its_share() -> None:
+    """The one that costs the link if it regresses: a quiet link is exactly when
+    both consoles decide there is room, and both spending the whole ceiling is
+    what fills it."""
+    clock, camera = Clock(), Camera()
+    control = sharing(clock, camera, cameras=2, ceiling=5000, floor=1000)
+    # Down to the floor first, the only way this loop moves: a busy link. From
+    # there it has the whole of a quiet day to climb back through its share.
+    for _ in range(20):
+        feed(control, clock, link(BUSY), BUSY_FOR_SECONDS + BEAT)
+    assert control.state().target_kbps == 1000, "it never came down to start with"
+
+    for _ in range(40):
+        feed(control, clock, link(CALM), CALM_FOR_SECONDS + BEAT)
+
+    assert control.state().target_kbps is not None
+    assert control.state().target_kbps <= 2500, (
+        f"a shared camera climbed to {control.state().target_kbps} kb/s of a "
+        f"5000 kb/s link that two cameras are on"
+    )
+
+
+def test_a_second_camera_appearing_is_noticed_at_the_next_save() -> None:
+    """A console is not restarted because somebody set the other camera up next
+    door, so the share is read again rather than held from start-up."""
+    clock, camera = Clock(), Camera()
+    cameras = [1]
+    control = BitrateLoop(
+        settings=settings(ceiling=5000),
+        apply=camera,
+        clock=clock,
+        executor=lambda work: work(),
+        share=lambda _settings: cameras[0],
+    )
+    assert control.my_ceiling() == 5000
+
+    cameras[0] = 2
+    control.apply_settings(settings(ceiling=5000))
+    assert control.my_ceiling() == 2500
+    assert control.state().target_kbps == 2500, "it is still aiming at the whole link"
+
+
+def test_a_share_that_cannot_be_worked_out_costs_nothing(caplog) -> None:
+    """Reading the folder next door is a filesystem call on a machine whose disk
+    is one of the things this console exists to report on. It must not be able
+    to stop the loop."""
+
+    def angry(_settings):
+        raise OSError("the drive went away")
+
+    control = BitrateLoop(
+        settings=settings(ceiling=5000),
+        apply=Camera(),
+        clock=Clock(),
+        executor=lambda work: work(),
+        share=angry,
+    )
+    with caplog.at_level("ERROR"):
+        assert control.my_ceiling() == 5000
+    assert caplog.records, "it fell back to the whole link and said nothing"

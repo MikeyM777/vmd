@@ -55,7 +55,7 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
-from vmd.settings import Settings, load_settings, save_settings
+from vmd.settings import Settings, consoles_on_this_radio, load_settings, save_settings
 from vmd.storage.index import SegmentIndex
 
 logger = logging.getLogger(__name__)
@@ -827,6 +827,12 @@ class ConsoleWindow(QMainWindow):
                 # button press off the radio link. The parameter exists so a
                 # test can put something else in its place.
             )
+            # Before `apply`, which is what passes it on: the panel is built
+            # by the constructor above and the sentence under its bar is about
+            # the whole radio, not this camera.
+            tab.set_cameras_on_the_link(
+                consoles_on_this_radio(self._settings_path, settings)
+            )
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
@@ -1362,6 +1368,13 @@ class ConsoleWindow(QMainWindow):
         # because rebuilding the wall is what reads it. A pane is built with its
         # delay and cannot be told afterwards - it is a libVLC instance option -
         # so the order here is the whole of why the setting takes effect at all.
+        tell = getattr(self.live, "set_cameras_on_the_link", None)
+        if tell is not None:
+            try:
+                tell(consoles_on_this_radio(self._settings_path, settings))
+            except Exception:  # noqa: BLE001 - a sentence is not the save
+                logger.exception("could not say how many cameras share the link")
+
         if self._panes is not None:
             try:
                 self._panes.delay_ms = int(settings.live_delay_ms)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -19,6 +20,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsError(Exception):
@@ -638,6 +642,87 @@ def save_settings(settings: Settings, path: str | Path) -> None:
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
+
+
+def consoles_on_this_radio(settings_path: str | Path, settings: Settings) -> int:
+    """How many consoles are sharing one radio link, this one included.
+
+    "The vmd shows FULL on the ubiquiti capacity while on the airOS it's far
+    from reality. The FLIR sends 2.5 Mbps and multiply it by 2 because there are
+    2 cameras."
+
+    That multiplication is the whole of this function, and it is a fault that
+    arrived with the second camera rather than a mistake anybody made. There is
+    one radio and there are two consoles on it now. Each one reads the same
+    airtime figure - which covers BOTH cameras, because airtime is a property of
+    the medium and not of a stream - and each one holds a bitrate ceiling
+    meaning "how much of the link the video may use". Two consoles each spending
+    the whole link is twice the link.
+
+    So the ceiling is a whole-link figure and this is what it is divided by.
+    `vmd/ptz/autobitrate.py` reads it, and so does the button on the Settings
+    tab, because the two must not disagree about what the camera is allowed.
+
+    It is answered by reading the disk rather than by any kind of message
+    between the consoles. They are separate processes started by separate
+    shortcuts, and the thing they genuinely share is the folder they were set up
+    in: `cameras\\250\\settings.json` and `cameras\\251\\settings.json` beside
+    each other, each naming the radio it goes through. A file that will not
+    parse is skipped rather than counted, because miscounting downward costs
+    picture quality and miscounting upward costs the link.
+
+    One, for every layout that is not this one: a single camera with its
+    settings beside VMD.exe, a console with no radio configured, or a folder
+    this cannot make sense of. One is what this console has always assumed and
+    is the answer that changes nothing.
+    """
+    radio = settings.radio
+    host = radio.host.strip().casefold()
+    if not host:
+        return 1
+
+    folder = Path(settings_path).resolve().parent
+    cameras = folder.parent
+    # The layout `cameras.bat` makes, and nothing else. A settings file
+    # somewhere else is not part of a set and must not start counting its
+    # neighbours - a folder of backups would otherwise divide the link by six.
+    if cameras.name.casefold() != "cameras" or not cameras.is_dir():
+        return 1
+
+    found = 0
+    try:
+        candidates = sorted(cameras.iterdir())
+    except OSError:
+        # A folder that is named right and cannot be read. Worth a line: it is
+        # the difference between "one camera" and "this console cannot tell",
+        # and the answer it falls back to lets one console spend the whole link.
+        logger.warning("could not read %s to see how many cameras share the radio", cameras)
+        return 1
+
+    for entry in candidates:
+        path = entry / "settings.json"
+        try:
+            if not path.is_file():
+                continue
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # Not validated as a whole Settings: this is one field out of
+            # somebody else's file, and a neighbour with a bad ignore area must
+            # not stop this console working out its share of the link.
+            logger.warning("could not read %s while counting cameras on the radio", path)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        theirs = raw.get("radio")
+        if not isinstance(theirs, dict):
+            continue
+        if str(theirs.get("host") or "").strip().casefold() == host:
+            found += 1
+
+    # Never zero, and never less than one even if this console's own file is the
+    # one that could not be read: a share of the link divided by nothing is a
+    # division by zero in the one loop that is allowed to change the picture.
+    return max(1, found)
 
 
 def detect_free_bytes(path: str | Path) -> int | None:

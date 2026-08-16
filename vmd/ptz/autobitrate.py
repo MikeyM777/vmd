@@ -159,7 +159,14 @@ class BitrateLoop:
         apply: Callable[[int], dict],
         clock: Callable[[], float] = time.monotonic,
         executor: Callable[[Callable[[], None]], None] | None = None,
+        share: Callable[[Settings], int] | None = None,
     ) -> None:
+        # How many consoles are on this radio, asked of the settings rather than
+        # assumed to be one. See `my_ceiling` for what it is for and
+        # `vmd/settings.py:consoles_on_this_radio` for how it is answered. A
+        # loop built without one is alone on its link, which is what this class
+        # assumed for its whole life and is still true of a single camera.
+        self._share = share or (lambda _settings: 1)
         self._apply = apply
         self._clock = clock
         self._executor = executor or _daemon_thread
@@ -175,8 +182,8 @@ class BitrateLoop:
         # ceiling because that is what the operator's ceiling means and what the
         # "Fit the camera to the link" button does by hand: the loop only ever
         # tracks what it has commanded, never what it has guessed.
-        self._target = settings.bitrate.ceiling_kbps
         self._settings = settings
+        self._target = self.my_ceiling()
         self._running = False
         self._reason = "the link has not been read yet"
         # The last thing said about not running, so that a console sitting in
@@ -186,12 +193,40 @@ class BitrateLoop:
 
     # ------------------------------------------------------------------ settings
 
+    def my_ceiling(self) -> int:
+        """The most this camera may use, which is the link's ceiling divided.
+
+        "The FLIR sends 2.5 Mbps and multiply it by 2 because there are 2
+        cameras." The ceiling on the Settings tab is how much of the LINK the
+        video may use, and there are two consoles on that link now. Each of them
+        reads the same airtime - airtime is a property of the medium, not of a
+        stream, so it already counts the other camera - and each of them holds
+        this same figure. Two consoles each spending the whole link is twice the
+        link, and both of them then see it full and turn their own camera down,
+        for ever, on a link that was never the problem.
+
+        Never below the floor. A ceiling divided until it is under the floor is
+        two instructions that cannot both be obeyed, and the floor is the one
+        that means "less than this is not worth showing".
+
+        Read every time rather than held: `apply_settings` is where a second
+        camera being set up arrives, and this console will not be restarted for
+        it.
+        """
+        bitrate = self._settings.bitrate
+        try:
+            sharing = max(1, int(self._share(self._settings)))
+        except Exception:  # noqa: BLE001 - a share is not worth the loop
+            logger.exception("could not work out how many cameras share the link")
+            sharing = 1
+        return max(bitrate.floor_kbps, bitrate.ceiling_kbps // sharing)
+
     def apply_settings(self, settings: Settings) -> None:
         """Take a saved change. Switching the loop on or off is one of these."""
         with self._lock:
             self._settings = settings
             bitrate = settings.bitrate
-            self._target = max(bitrate.floor_kbps, min(bitrate.ceiling_kbps, self._target))
+            self._target = max(bitrate.floor_kbps, min(self.my_ceiling(), self._target))
             # The window the loop was reasoning over described a different set
             # of instructions. Keeping it would have the first decision after a
             # save made on evidence gathered under the old ones.
@@ -320,7 +355,7 @@ class BitrateLoop:
         fell = _fell_by(window)
         if fell is not None and fell >= SIGNAL_FALLING_DB:
             return None
-        wanted = min(bitrate.ceiling_kbps, int(self._target * UP_FACTOR))
+        wanted = min(self.my_ceiling(), int(self._target * UP_FACTOR))
         if wanted <= self._target:
             return None
         if not self._allowed(now, MIN_SECONDS_BETWEEN_UP):
