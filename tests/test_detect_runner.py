@@ -1622,3 +1622,149 @@ def test_the_names_a_working_classifier_produces_are_counted(tmp_path):
     finally:
         detector.close()
         store.close()
+
+
+# --------------------------------------------------------------------------
+# Falling behind the camera
+# --------------------------------------------------------------------------
+#
+# "After a couple of seconds it beeped." `read()` hands over the OLDEST frame in
+# the queue, so a detector that cannot process every frame does not settle at a
+# slower rate - it falls further behind every second, for as long as the process
+# runs. On a machine nobody restarts for months the alarm is minutes late by the
+# end of the week, and nothing on the screen ever said so.
+
+
+class Grabbing(FakeCapture):
+    """A capture that counts the frames thrown away as well as the ones read.
+
+    `grab_seconds` is what one grab costs. Small means the frame came out of a
+    queue that was already full; a whole frame interval means it came off the
+    wire, which is what "caught up" looks like from in here.
+    """
+
+    def __init__(self, frames=100, grab_seconds=0.0, clock=None):
+        super().__init__(frames=frames)
+        self.grabs = 0
+        self.grab_seconds = grab_seconds
+        self._clock = clock
+
+    def grab(self):
+        self.grabs += 1
+        if self._clock is not None:
+            self._clock.now += self.grab_seconds
+        return True
+
+
+class Stepping:
+    """A clock the test moves by hand, callable like the real one."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def behind(tmp_path, seconds: float, **kwargs):
+    """A detector that has just spent `seconds` looking at one frame."""
+    clock = Stepping()
+    capture = Grabbing(clock=clock, **kwargs)
+    control, _store = build(tmp_path, captures=[capture], monotonic=clock, clock=clock)
+    control.step()  # opens it and reads one frame
+    control._stream_fps = 25.0
+    clock.now += seconds
+    return control, capture, clock
+
+
+def test_a_detector_that_kept_up_throws_nothing_away(tmp_path) -> None:
+    """One frame interval behind is not behind: that is the frame it is for."""
+    control, capture, _clock = behind(tmp_path, 1 / 25.0)
+    before = capture.grabs
+    control.step()
+    assert capture.grabs == before, "it skipped a frame it had not fallen behind on"
+    assert control.skipped == 0
+
+
+def test_a_detector_that_fell_behind_throws_the_stale_frames_away(tmp_path) -> None:
+    """Half a second at 25 fps is twelve frames of perimeter that a later frame
+    already describes better."""
+    control, capture, _clock = behind(tmp_path, 0.5)
+    control.step()
+    assert capture.grabs >= 10, f"only {capture.grabs} frames were skipped"
+    assert control.skipped == capture.grabs
+
+
+def test_it_stops_skipping_the_moment_the_queue_is_empty(tmp_path) -> None:
+    """The measurement, not the estimate: a grab that took about a frame
+    interval was waiting for the wire, so there is no queue left to empty. It is
+    what makes this safe on a link that has just come back, where the clock
+    would say to skip thousands."""
+    control, capture, _clock = behind(tmp_path, 10.0, grab_seconds=1 / 25.0)
+    control.step()
+    assert capture.grabs == 1, f"it went on skipping {capture.grabs} times"
+
+
+def test_it_never_skips_more_than_the_cap_even_if_it_could(tmp_path) -> None:
+    """A grab blocks when there is nothing buffered, so an unbounded skip on a
+    stream that has been away is a loop waiting in real time - which is worse
+    than the fault it is fixing."""
+    from vmd.detect.runner import MAX_FRAMES_TO_SKIP
+
+    control, capture, _clock = behind(tmp_path, 3600.0)
+    control.step()
+    assert capture.grabs == MAX_FRAMES_TO_SKIP
+
+
+def test_a_file_is_never_skipped_through(tmp_path) -> None:
+    """Skipping frames in a file throws away footage nobody can get back, and
+    every test in this suite reads one."""
+    clock = Stepping()
+    capture = Grabbing(clock=clock)
+    control, _store = build(tmp_path, 
+        captures=[capture], monotonic=clock, clock=clock, url="C:/footage/a.mp4"
+    )
+    control.step()
+    control._stream_fps = 25.0
+    clock.now += 5.0
+    control.step()
+    assert capture.grabs == 0
+    assert control.skipped == 0
+
+
+def test_a_stream_that_will_not_say_its_frame_rate_is_left_alone(tmp_path) -> None:
+    """Both unknowns default to doing nothing at all, which is what this loop
+    did for its whole life before today."""
+    clock = Stepping()
+    capture = Grabbing(clock=clock)
+    control, _store = build(tmp_path, captures=[capture], monotonic=clock, clock=clock)
+    control.step()
+    assert control._stream_fps is None, "the fake said a frame rate after all"
+    clock.now += 5.0
+    control.step()
+    assert capture.grabs == 0
+
+
+def test_a_capture_with_no_grab_at_all_still_reads(tmp_path) -> None:
+    """Every fake in this file predates `grab`, and a detector that raised
+    because a capture could not be asked to skip would be a detector that
+    stopped."""
+    clock = Stepping()
+    control, _store = build(tmp_path, 
+        captures=[FakeCapture(frames=10)], monotonic=clock, clock=clock
+    )
+    control.step()
+    control._stream_fps = 25.0
+    clock.now += 5.0
+    assert control.step() is True
+    assert control.skipped == 0
+
+
+def test_what_was_skipped_is_published_where_it_can_be_read(tmp_path) -> None:
+    """A number climbing steadily here is the one honest sign that this machine
+    is too slow for the picture it has been given."""
+    control, _capture, _clock = behind(tmp_path, 0.5)
+    control.step()
+    state = control.state()
+    assert state["skipped"] == control.skipped > 0
+    assert state["stream_fps"] == 25.0

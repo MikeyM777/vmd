@@ -154,20 +154,127 @@ def without_credentials(text: str) -> str:
     return _CREDENTIALS.sub(r"\1:****@", text)
 
 
+# What OpenCV's FFmpeg backend is told before it opens an RTSP stream.
+#
+# "After a couple of seconds it beeped." Part of that is here: FFmpeg buffers a
+# stream on the way in, and every one of those buffered frames is a frame the
+# detector will look at some seconds after the thing it shows has finished
+# happening. The console's own picture had the same fault in a different library
+# and it is fixed there - see `vmd/desktop/video.py:vlc_options` - and this is
+# the same fix on the path that decides when the room is told.
+#
+#   rtsp_transport tcp   what go2rtc serves and what VLC negotiates anyway.
+#                        Named rather than left to FFmpeg's UDP-first probe,
+#                        which costs a second before it gives up.
+#   fflags nobuffer      do not fill a buffer before handing over the first
+#                        frame. This is the one that matters.
+#   flags low_delay      do not hold frames back waiting for reordering.
+#   reorder_queue_size 0 the RTSP demuxer's own version of the same thing.
+#   max_delay 500000     half a second, in microseconds, rather than FFmpeg's
+#                        default of ten times that.
+LOW_LATENCY_CAPTURE = (
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0|max_delay;500000"
+)
+
+# How far behind the live picture the detector may fall before it starts
+# throwing frames away, and the most it will throw away at once.
+#
+# A stream that has fallen behind never catches up on its own: `read()` hands
+# over the OLDEST buffered frame, not the newest, so a detector that cannot keep
+# up with 25 fps of 4K does not drop to a slower rate - it drops further behind,
+# every second, for as long as it runs. The beep is then late by however long it
+# has been running, which is the worst shape a fault can have on a system nobody
+# restarts for months.
+MAX_FRAMES_TO_SKIP = 120
+
+
 def open_capture_cv2(url: str):
     """Open a stream with OpenCV. Returns None if it did not open.
 
     Imported lazily so that importing this module - which the console does, to
     read state - does not pull OpenCV into a process that only wants a
     dataclass.
+
+    Tried twice for a live stream: once asking FFmpeg not to buffer, and if that
+    does not open, once without asking. `fflags nobuffer` is the right setting
+    for a detector and it is not free - it can leave a stricter demuxer without
+    the parameter sets it wanted before the first keyframe - and a detector that
+    will not open at all is very much worse than one that is a second late.
     """
+    import os
+
     import cv2
+
+    live = url.lower().startswith(("rtsp://", "rtsps://"))
+    if live:
+        # An environment variable rather than an argument, because that is the
+        # only seam OpenCV offers into the FFmpeg backend. Set immediately
+        # before the open and left set: this process opens nothing else.
+        was = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = LOW_LATENCY_CAPTURE
+        try:
+            capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        finally:
+            if was is None:
+                os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+            else:
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = was
+        if capture.isOpened():
+            _ask_for_the_shortest_queue(capture)
+            return capture
+        capture.release()
+        logger.warning(
+            "%s would not open without buffering; opening it the ordinary way, "
+            "which costs about a second of delay before an alarm",
+            without_credentials(url),
+        )
 
     capture = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if not capture.isOpened():
         capture.release()
         return None
+    if live:
+        _ask_for_the_shortest_queue(capture)
     return capture
+
+
+def _ask_for_the_shortest_queue(capture) -> None:
+    """Ask the backend to keep one frame rather than a queue of them.
+
+    Honoured by some backends and quietly ignored by others, FFmpeg among them
+    on most builds - which is why `_catch_up` exists and does not depend on
+    this. It costs one call and removes the buffer outright where it works.
+    """
+    try:
+        import cv2
+
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:  # noqa: BLE001 - a hint that was refused is not a failure
+        logger.debug("this capture would not be asked for a shorter queue", exc_info=True)
+
+
+def reported_fps(capture) -> float | None:
+    """What the stream says its frame rate is, if it says anything believable.
+
+    Asked of the capture rather than measured, because this is needed for a
+    different question than `StreamDetector.fps` answers. That one is how fast
+    this detector is PROCESSING, which is what the confirmation rule counts in;
+    this is how fast frames are ARRIVING, which is what says how many of them
+    piled up while the last one was being looked at.
+    """
+    try:
+        import cv2
+
+        value = float(capture.get(cv2.CAP_PROP_FPS))
+    except Exception:  # noqa: BLE001 - a capture that will not say is not a fault
+        return None
+    # A file says 25 and a camera usually does too; a stream that has not worked
+    # it out yet says 0, and some say 90000 - the RTP clock rate wearing a frame
+    # rate's clothes. Anything outside what a camera can actually produce is not
+    # an answer.
+    if not 1.0 <= value <= 240.0:
+        return None
+    return value
 
 
 class StreamDetector:
@@ -322,6 +429,20 @@ class StreamDetector:
         self.unrecorded = 0
         self.errors = 0
         self.reopens = 0
+        # Frames thrown away without being looked at, because they had already
+        # been overtaken. Counted rather than done quietly: it is the difference
+        # between a detector keeping up with the camera and one watching a
+        # perimeter as it was some seconds ago, and it is the number that says
+        # which. See `_catch_up`.
+        self.skipped = 0
+        # What the stream says its frame rate is, read once when it opens. Not
+        # `self.fps`, which is how fast this detector is processing - see
+        # `reported_fps` for why the two are different questions.
+        self._stream_fps: float | None = None
+        # Whether this is a live source at all. A file is not: skipping frames
+        # in a file throws away footage nobody can get back, and every test in
+        # this suite reads one.
+        self._live = str(url).lower().startswith(("rtsp://", "rtsps://"))
         self.reason = "the stream has not been opened yet"
         self._frame_index = 0
         # When the last frame arrived, so that something outside this thread can
@@ -434,6 +555,16 @@ class StreamDetector:
             "unrecorded": self.unrecorded,
             "errors": self.errors,
             "reopens": self.reopens,
+            # Frames overtaken before they were looked at. Published because it
+            # is the difference between a detector watching the perimeter now
+            # and one watching it as it was some seconds ago, and because a
+            # number climbing steadily here is the one honest sign that this
+            # machine is too slow for the picture it has been given.
+            "skipped": self.skipped,
+            # What the stream says it delivers, beside "fps" below, which is
+            # what this detector manages. The gap between the two is how hard
+            # it is working - see `_catch_up`.
+            "stream_fps": self._stream_fps,
             "reason": self.reason,
             # How much moved, and what each rejection rule threw away. Every one
             # of those rules deletes real detections when it is set wrongly and
@@ -504,6 +635,11 @@ class StreamDetector:
         if self._capture is None and not self._try_open():
             return False
 
+        # Before the read, because the read is what hands over the oldest frame
+        # in the queue. Everything this throws away is a picture of a moment
+        # that has already been overtaken by a later one.
+        self._catch_up()
+
         try:
             ok, frame = self._capture.read()
         except Exception as exc:  # noqa: BLE001 - a broken capture is a reopen, not a crash
@@ -548,6 +684,68 @@ class StreamDetector:
             self._record(detection, now, frame)
         return True
 
+    def _catch_up(self) -> int:
+        """Throw away the frames that arrived while the last one was being read.
+
+        This is the fault behind "after a couple of seconds it beeped", and its
+        shape is worse than its size. `read()` hands over the OLDEST frame in
+        the queue, so a detector that cannot process 25 frames a second of 4K
+        does not settle at a slower rate - it falls further behind every second,
+        for as long as the process runs. On a machine nobody restarts for
+        months that is an alarm that is minutes late by the end of the week, and
+        nothing on the screen would ever have said so.
+
+        Every frame skipped here is a picture of a moment a later frame already
+        describes better. Nothing is lost that the detector could have used: the
+        confirmation rule counts frames it has SEEN - three of the last five -
+        so skipping lowers the rate it sees at and does not break the rule.
+        `SLOW_STREAM_FPS` in `vmd/detect_main.py` is where a rate too low to
+        confirm anything is already noticed and said out loud.
+
+        Two things stop it. How far behind the clock says it is, which is the
+        estimate, and how long a `grab` takes, which is the measurement: a grab
+        that took about a frame interval was waiting for the wire rather than
+        emptying a queue, so the queue is empty and this has done its job. The
+        second is what makes this safe on a stream that is not behind at all -
+        one grab, one measurement, stop - and on a link that has just come back,
+        where the estimate would otherwise say to skip thousands.
+
+        Only for a live stream, and only when the stream said its frame rate.
+        Both unknowns default to doing nothing at all, which is what this loop
+        did for its whole life before today.
+        """
+        if not self._live or self._capture is None:
+            return 0
+        if self._stream_fps is None or self._last_frame_at is None:
+            return 0
+        grab = getattr(self._capture, "grab", None)
+        if grab is None:
+            return 0
+
+        interval = 1.0 / self._stream_fps
+        # Minus one: the frame this loop is about to read is the one it wants.
+        behind = int((self._monotonic() - self._last_frame_at) / interval) - 1
+        if behind <= 0:
+            return 0
+
+        skipped = 0
+        for _ in range(min(behind, MAX_FRAMES_TO_SKIP)):
+            started = self._monotonic()
+            try:
+                if not grab():
+                    break
+            except Exception:  # noqa: BLE001 - a broken grab is the read's problem
+                break
+            skipped += 1
+            if self._monotonic() - started > interval * 0.5:
+                # That one came off the wire rather than out of a queue, so
+                # there is no queue left to empty.
+                break
+
+        if skipped:
+            self.skipped += skipped
+        return skipped
+
     def close(self) -> None:
         self._release()
 
@@ -574,6 +772,11 @@ class StreamDetector:
             self._try_the_other_address()
             return False
         self._capture = capture
+        # Asked once, here, rather than on every frame: it is a property of the
+        # stream that was just opened, and asking a capture anything costs a
+        # call into FFmpeg. A stream that will not say leaves `_catch_up` doing
+        # nothing, which is what this loop did before it existed.
+        self._stream_fps = reported_fps(capture)
         # `_failed_opens` is deliberately not cleared here. Opening is not the
         # same as delivering, and clearing it on an open meant a server that
         # accepted every connection and served no frames was reopened for ever
