@@ -14,9 +14,9 @@ does not exist. A silent alarm is that, in the one place it matters most.
 
 Four rules, and each of them is a way this could be made worse than silence:
 
-* **Nothing is downloaded, ever.** The sound is Windows' own, from
-  `C:\\Windows\\Media`, with the system beep behind it. This laptop has no
-  network and a console that wanted a sound file from somewhere would be a
+* **Nothing is downloaded, ever.** The sound ships inside the program folder,
+  with Windows' own sounds and then the system beep behind it. This machine has
+  no network and a console that wanted a sound file from somewhere would be a
   console that does not work.
 * **It never blocks.** `SND_ASYNC`, always. A sound played synchronously on the
   thread that draws the window is a window that stops repainting for the length
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +51,36 @@ logger = logging.getLogger(__name__)
 # is told.
 QUIET_SECONDS = 12.0
 
-# Windows' own sounds, in the order they are tried. All three ship with the OS,
-# so this is a local file read and never a download.
+# The sound this console makes, and what it falls back to.
 #
-# Chosen for what they sound like rather than for what they are called: this has
-# to carry across a room and be recognisable at 03:40 without being the noise a
-# machine makes when it is about to do something drastic.
+# "Please also change the sound of the detection to something more alerting."
+#
+# The first entry is ours and it is the one that plays. Everything after it is a
+# Windows sound, kept only for a machine where the file did not travel - a
+# hand-copied folder, a stripped image - because a wrong-sounding alarm is worth
+# having and a silent one is not.
+#
+# The reason it is ours rather than Windows' is not that Windows' are bad. It is
+# that this operator has heard every one of them ten thousand times from things
+# that did not matter, and a perimeter alarm that sounds like an email arriving
+# is one he will stop hearing without ever deciding to. `Windows Proximity
+# Notification.wav`, which this used to play, is a soft two-note chime designed
+# to be unobtrusive - which is the whole job, backwards.
+#
+# What replaced it is two tones alternating: what every siren does and what
+# nothing on a Windows desktop does. `scripts/make_alarm_sound.py` writes it and
+# says why every choice in it is what it is - it is a text file with the recipe,
+# so nothing in this safety system is a binary of unknown origin.
+OURS = str(Path(__file__).resolve().parent / "alarm.wav")
+
 CANDIDATES = (
-    r"C:\Windows\Media\Windows Proximity Notification.wav",
-    r"C:\Windows\Media\Windows Notify System Generic.wav",
+    OURS,
+    # Chosen for what they sound like rather than for what they are called. The
+    # exclamation is first of these now: if we are down to Windows' own sounds,
+    # the loudest is the one that is doing the job.
     r"C:\Windows\Media\Windows Exclamation.wav",
+    r"C:\Windows\Media\Windows Notify System Generic.wav",
+    r"C:\Windows\Media\Windows Proximity Notification.wav",
 )
 
 
@@ -149,6 +170,22 @@ def _windows_player():
     import os
 
     sound = next((path for path in CANDIDATES if os.path.exists(path)), None)
+    if sound is None:
+        logger.warning(
+            "no alarm sound file was found, not even Windows' own; movement will "
+            "be announced by the system beep"
+        )
+    elif sound != OURS:
+        # Worth a line. It is the difference between the alarm somebody chose
+        # and a Windows notification standing in for it, and the two sound
+        # nothing alike - so an operator reporting "the alarm sounds wrong" has
+        # something to point at.
+        logger.warning(
+            "%s is missing, so the alarm will use %s instead. Reinstall VMD, or "
+            "run scripts/make_alarm_sound.py on a machine that has the project.",
+            OURS,
+            sound,
+        )
 
     def play() -> None:
         if sound is not None:

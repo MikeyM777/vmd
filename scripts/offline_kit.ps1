@@ -134,6 +134,13 @@ $checks = @(
     @{ Path = (Join-Path $binDir 'go2rtc.exe');             What = 'go2rtc, in bin\go2rtc.exe';              Fix = 'run install.bat' }
     @{ Path = (Join-Path $root 'yolo11n.pt');               What = "the detector's weights (yolo11n.pt)";    Fix = 'run install.bat' }
     @{ Path = (Join-Path $root 'VMD.exe');                  What = 'VMD.exe';                                Fix = 'run install.bat' }
+    # The one sound the console plays. Checked here because the exclusion list
+    # below strips *.wav from the project root - stray recordings from
+    # commissioning - and a rule that ever grew to cover subfolders would take
+    # this with it silently. What the operator would get is an alarm that still
+    # works and sounds like a Windows notification, which is the failure this
+    # sound was replaced to avoid.
+    @{ Path = (Join-Path $root 'vmd\desktop\alarm.wav');    What = 'the alarm sound (vmd\desktop\alarm.wav)'; Fix = 'run scripts\make_alarm_sound.py' }
     @{ Path = $vlcInstaller;                                What = 'the VLC installer';                      Fix = 'see step 1 above' }
 )
 

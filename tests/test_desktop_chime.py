@@ -181,4 +181,96 @@ def test_nothing_is_fetched_from_anywhere() -> None:
             reached.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             reached.add(node.module.split(".")[0])
-    assert reached <= {"logging", "time", "winsound", "os", "__future__"}, reached
+    assert reached <= {"logging", "time", "winsound", "os", "pathlib", "__future__"}, reached
+
+
+# --------------------------------------------------------- the sound it makes
+#
+# "Please also change the sound of the detection to something more alerting."
+#
+# It was `Windows Proximity Notification.wav` - a soft chime designed to be
+# unobtrusive, which is the job backwards, and a sound this operator has heard
+# ten thousand times from things that did not matter.
+
+
+def test_the_alarm_sound_ships_with_the_program() -> None:
+    """It has to travel to a machine with no internet, and the console cannot
+    ask for it from anywhere. A missing file here is a silent alarm."""
+    from pathlib import Path
+
+    from vmd.desktop.chime import OURS
+
+    assert Path(OURS).is_file(), f"{OURS} is not in the program folder"
+
+
+def test_the_alarm_sound_is_something_winsound_can_play() -> None:
+    """16-bit mono PCM at a rate every Windows machine plays without resampling.
+    A file that is technically a WAV and practically unplayable would fail on
+    the deployment machine and nowhere else."""
+    import wave
+
+    from vmd.desktop.chime import OURS
+
+    with wave.open(OURS, "rb") as sound:
+        assert sound.getnchannels() == 1
+        assert sound.getsampwidth() == 2
+        assert sound.getframerate() == 44100
+        seconds = sound.getnframes() / sound.getframerate()
+
+    # Long enough to catch somebody turned away, and well short of the quiet
+    # period so that two alarms can never overlap.
+    assert 0.5 <= seconds <= 3.0, f"{seconds:.2f} seconds"
+    from vmd.desktop.chime import QUIET_SECONDS
+
+    assert seconds < QUIET_SECONDS
+
+
+def test_the_sound_that_ships_is_the_one_that_is_tried_first() -> None:
+    """Windows' own sounds are behind it and stay behind it. They are there for
+    a machine the file did not reach, because a wrong-sounding alarm is worth
+    having and a silent one is not."""
+    from vmd.desktop.chime import CANDIDATES, OURS
+
+    assert CANDIDATES[0] == OURS
+    assert len(CANDIDATES) > 1, "nothing to fall back to if the file is missing"
+
+
+def test_the_sound_actually_changes_rather_than_holding_one_note() -> None:
+    """The ear stops reporting a sound that does not change, which is why every
+    siren alternates. A file that is one steady tone would pass every check
+    above and be ignored at 03:40."""
+    import array
+    import wave
+
+    from vmd.desktop.chime import OURS
+
+    with wave.open(OURS, "rb") as sound:
+        rate = sound.getframerate()
+        samples = array.array("h")
+        samples.frombytes(sound.readframes(sound.getnframes()))
+
+    # Zero crossings counted by hand rather than with `audioop`, which is gone
+    # in Python 3.13 and would make this test the reason an upgrade fails.
+    #
+    # A steady tone crosses zero the same number of times in every tenth of a
+    # second; an alternating one does not. Quiet stretches are skipped, because
+    # the ramps at the ends of each tone cross zero rarely and would read as a
+    # third pitch that is not there.
+    step = rate // 10
+    rates = []
+    for start in range(0, len(samples) - step, step):
+        chunk = samples[start : start + step]
+        if max(abs(value) for value in chunk) < 8000:
+            continue
+        crossings = sum(
+            1
+            for first, second in zip(chunk, chunk[1:])
+            if (first < 0) != (second < 0)
+        )
+        if crossings > 0:
+            rates.append(crossings)
+
+    assert len(set(rates)) > 1, "every part of this sound is the same pitch"
+    assert max(rates) > min(rates) * 1.2, (
+        f"the two tones are too close to tell apart: {min(rates)} against {max(rates)}"
+    )

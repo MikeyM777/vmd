@@ -10,6 +10,12 @@ clips/
 *.ts
 *.wav
 
+# The one sound that is part of the program rather than something a recording
+# left behind: what the console plays when something moves. It has to travel
+# with the folder to the offline machine, and `scripts/make_alarm_sound.py`
+# writes it and says why every choice in it is what it is.
+!vmd/desktop/alarm.wav
+
 # Frame grabs. Diagnosing a camera means saving a still, and the next still
 # saved in this folder will be of the perimeter this system watches rather than
 # an ffmpeg test pattern. There is no rule that makes that safe to publish, so
