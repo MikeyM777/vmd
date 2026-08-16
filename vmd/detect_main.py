@@ -226,6 +226,11 @@ class DetectionService:
             # worth naming, so this process starts on a machine with no torch
             # and no weights. Off for the thermal by default.
             classifier=classifier_for(stream, self.settings.detection),
+            # Where the picture of what moved is written. The recordings root,
+            # so it is inside what retention already looks after on a filling
+            # disk - and so the console can work the path out from the event
+            # rather than being told it. See `vmd/detect/stills.py`.
+            stills_root=self.root,
             # The camera itself, when the local streaming server is what we
             # chose. Whether that server is the right one to read from was
             # decided once, from a port answering - which proves something is

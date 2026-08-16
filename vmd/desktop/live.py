@@ -21,7 +21,7 @@ import time
 from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -135,6 +135,15 @@ RECENT_LIMIT = 20
 # every two seconds when the recordings folder is unreachable, and it is the
 # right way round - a console frozen at that moment shows nothing at all.
 EVENTS_POLL_SECONDS = 0.0
+
+# How big the picture of what moved is drawn in the alarm strip.
+#
+# 16:9 at 256 px wide. Wide enough to see a person-sized mark at 700 m - which
+# is about thirteen pixels in the frame, so about three here - and short enough
+# that the strip stays a strip: it sits under the pictures and may never push
+# them up the screen, which is DESIGN.md's rule about the alarm.
+ALARM_PICTURE_W = 256
+ALARM_PICTURE_H = 144
 
 # How many restarts of one stream are reported in full before the console
 # starts saying it once in a while instead. The same shape as the supervisor's
@@ -732,6 +741,9 @@ class LiveTab(QWidget):
         # Above the pictures rather than over them: nothing at all goes over a
         # picture on this tab, for the reason written further down this file.
         self._fullscreen = False
+        # Where the pictures of what moved live, or None until a settings file
+        # has said. A tab driven directly by a test has none and shows none.
+        self._recordings_root = None
         # Whether there is anywhere to send him when he asks to see footage.
         # True until the window says otherwise: this tab is built before the
         # window knows what the settings say, and a Live tab driven on its own
@@ -1017,6 +1029,31 @@ class LiveTab(QWidget):
             f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE};"
         )
         row.addWidget(glyph)
+        # The picture of what moved, with the box already on it.
+        #
+        # "After a couple of seconds it beeped and no box was on the screen."
+        # The box is not on the live picture and cannot be: the live pictures
+        # are drawn by libVLC into a native window handle and nothing is ever
+        # put over one of them - the rule this file states twice already, and
+        # the failure it prevents is a black rectangle with a frame counter
+        # counting beside it.
+        #
+        # It is also the better answer. A box on the live picture would be drawn
+        # where the thing was when the detector saw it, on a picture that has
+        # moved on since - so it would be beside the thing rather than on it,
+        # and furthest out exactly when something is moving fast. This is the
+        # frame the detector confirmed on, so the box is on the thing by
+        # construction. See `vmd/detect/stills.py`.
+        #
+        # In the strip and not in the side column, because the side column is
+        # gone in fullscreen and fullscreen is how this console is watched.
+        self._alarm_picture = QLabel()
+        self._alarm_picture.setFixedSize(ALARM_PICTURE_W, ALARM_PICTURE_H)
+        self._alarm_picture.setScaledContents(False)
+        self._alarm_picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._alarm_picture.setStyleSheet(f"background: {PALETTE['well']}; border: 0;")
+        self._alarm_picture.setVisible(False)
+        row.addWidget(self._alarm_picture)
         # A WrappedNote rather than a plain word-wrapped label: this is the one
         # sentence on the tab that must never be drawn through the line under
         # it, and a word-wrapped QLabel claims it can live in one line.
@@ -1268,6 +1305,7 @@ class LiveTab(QWidget):
         clock = datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S")
         self._alarm_label.setText(f"Movement on {event.stream} at {clock}")
         self._alarm_event = event
+        self._show_what_moved(event)
         self._alarm.setVisible(True)
         self._outline(event.stream)
         # And out loud, because he is not always looking at the screen. The
@@ -1292,10 +1330,50 @@ class LiveTab(QWidget):
             return
         self.show_footage.emit(self._alarm_event)
 
+    def _show_what_moved(self, event) -> None:
+        """Put the picture of this movement in the strip, if there is one.
+
+        Nothing at all when there is not, and that is an ordinary state rather
+        than a fault: detection may have been off when the row was written, the
+        disk may have been full, or this may be a settings file whose recordings
+        folder has been moved since. The strip works without it and always has.
+
+        Loaded here rather than kept: it is about a hundred kilobytes, it is
+        read once per alarm - which the chime already limits to one every twelve
+        seconds - and holding pixmaps for events nobody is looking at is how a
+        console that runs for months grows.
+        """
+        self._alarm_picture.clear()
+        self._alarm_picture.setVisible(False)
+        if self._recordings_root is None:
+            return
+        try:
+            from vmd.detect.stills import still_for
+
+            path = still_for(self._recordings_root, event.stream, event.started)
+            if not path.is_file():
+                return
+            picture = QPixmap(str(path))
+            if picture.isNull():
+                return
+            self._alarm_picture.setPixmap(
+                picture.scaled(
+                    ALARM_PICTURE_W,
+                    ALARM_PICTURE_H,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self._alarm_picture.setVisible(True)
+        except Exception:  # noqa: BLE001 - a picture may never cost the alarm
+            logger.exception("the picture of what moved could not be shown")
+
     def acknowledge(self) -> None:
         """The operator has seen it. Clear the strip and the outline."""
         self._alarm.setVisible(False)
         self._alarm_label.setText("")
+        self._alarm_picture.clear()
+        self._alarm_picture.setVisible(False)
         self._alarm_event = None
         self._outline(None)
 
@@ -1380,6 +1458,10 @@ class LiveTab(QWidget):
         # says which of the two consoles this is, and a save that failed to
         # restart a stream must not leave that question open.
         self.set_title(settings.title)
+        # Where the pictures of movement are. Held rather than looked up when an
+        # alarm arrives: an alarm is the worst moment this console has and is
+        # not when to start reading the settings file.
+        self._recordings_root = settings.storage.root
         # And how many cameras the airtime figure covers. Handed in rather than
         # worked out here: the tab does not know where the settings file is, and
         # that is what says which console this is. See `set_cameras_on_the_link`.

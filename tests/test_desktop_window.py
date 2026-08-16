@@ -2614,3 +2614,86 @@ def test_the_words_do_not_ask_him_to_know_what_a_streaming_server_is(
     for jargon in ("go2rtc", "rtsp", "fallback", "source", "endpoint", "url"):
         assert jargon not in doubled.lower(), doubled
     window.close()
+
+
+# ------------------------------------------------- the picture of what moved
+#
+# "After a couple of seconds it beeped and no box was on the screen."
+#
+# The box is on a still of the frame the detector confirmed on, shown in the
+# alarm strip - in the strip and not in the side column, because the side column
+# is gone in fullscreen and fullscreen is how this console is watched.
+
+
+def a_still(tmp_path: Path, stream: str, started: float) -> Path:
+    """The picture the detector would have written for this event."""
+    import numpy as np
+
+    from vmd.detect.stills import save
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[120:] = 90
+    path = save(frame, (100, 100, 30, 60), tmp_path / "recordings", stream, started)
+    assert path is not None
+    return path
+
+
+def test_the_alarm_strip_shows_the_picture_of_what_moved(qtbot, tmp_path: Path) -> None:
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    when = start + 3660
+    a_still(tmp_path, "thermal", when)
+
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, when)
+
+    picture = window.live._alarm_picture
+    assert picture.isVisibleTo(window.live), "the strip is up with no picture on it"
+    assert picture.pixmap() is not None and not picture.pixmap().isNull()
+    window.close()
+
+
+def test_an_alarm_with_no_picture_still_raises_the_strip(qtbot, tmp_path: Path) -> None:
+    """Detection may have been off when the row was written, or the disk full.
+    The strip has always worked without a picture and still has to."""
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, start + 3660)
+
+    assert window.live.alarm_visible()
+    assert not window.live._alarm_picture.isVisibleTo(window.live)
+    window.close()
+
+
+def test_the_picture_goes_when_it_is_acknowledged(qtbot, tmp_path: Path) -> None:
+    """A picture of a night that has been dealt with, left on the screen, is the
+    console saying something is happening when nothing is."""
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    when = start + 3660
+    a_still(tmp_path, "thermal", when)
+
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, when)
+    assert window.live._alarm_picture.isVisibleTo(window.live)
+
+    window.live.acknowledge()
+    assert not window.live._alarm_picture.isVisibleTo(window.live)
+    assert not window.live.alarm_visible()
+    window.close()
+
+
+def test_the_picture_is_there_in_fullscreen_too(qtbot, tmp_path: Path) -> None:
+    """The side column is gone in fullscreen and fullscreen is how this console
+    is watched. A picture only visible with the numbers beside it would be a
+    picture nobody sees."""
+    start, events_path = a_day_with(tmp_path, recorded=True)
+    when = start + 3660
+    a_still(tmp_path, "thermal", when)
+
+    window, _ = build(qtbot, tmp_path, events_path=events_path)
+    alarmed(window, events_path, when)
+    window.fullscreen.enter()
+
+    assert window.live._alarm_picture.isVisibleTo(window.live)
+    assert not window.live.side_visible(), "this was not fullscreen at all"
+    window.fullscreen.leave()
+    window.close()

@@ -299,6 +299,11 @@ class StreamDetector:
         ignore_shapes: Sequence[Sequence[Sequence[int]]] = (),
         shape_sizes: Sequence[Sequence[int]] = (),
         classifier=None,
+        # Where to write the picture of what moved, with the box drawn on it,
+        # or None to write none. The recordings root: see `vmd/detect/stills.py`
+        # for why the path is worked out from the event rather than recorded in
+        # it, and why the box is on a still rather than on the live picture.
+        stills_root=None,
         clock: Callable[[], float] = time.time,
         # Deliberately a second clock. `clock` stamps events, so it has to be
         # the wall clock the operator reads. The reopen schedule is a duration
@@ -420,6 +425,11 @@ class StreamDetector:
         # (height, width) the ignore mask was last painted at, or None while
         # nothing has been painted. Not a boolean: the frame can change size.
         self._mask_size: tuple[int, int] | None = None
+
+        self._stills_root = stills_root
+        # Where the last picture of movement was written, so the console has
+        # something to show without going and looking for it.
+        self.last_still: str = ""
 
         self.frames = 0
         self.events = 0
@@ -1312,7 +1322,29 @@ class StreamDetector:
             self.events += 1
         else:
             self.unrecorded += 1
+
+        # After the row, never before it. The event is the product and this is a
+        # picture of it: a full disk that costs the still must not also cost the
+        # thing the whole system exists to record. `save` never raises.
+        self._save_the_picture(frame, box, started)
+
         self._announce(box, track.travelled, label, confidence, problem)
+
+    def _save_the_picture(self, frame, box, started: float) -> None:
+        """Write the frame this track was confirmed on, with the box on it.
+
+        The frame it was confirmed on and not a fresh one: the box is in this
+        frame's coordinates, so drawn on this frame it is on the thing by
+        construction. On a later frame it would be beside it, and furthest out
+        exactly when something is moving fast.
+        """
+        if self._stills_root is None or frame is None:
+            return
+        from vmd.detect.stills import save
+
+        path = save(frame, (box.x, box.y, box.w, box.h), self._stills_root, self.stream, started)
+        if path is not None:
+            self.last_still = str(path)
 
     def _announce(
         self, box, travelled: float, label: str, confidence: float, problem: str = ""
