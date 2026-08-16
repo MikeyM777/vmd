@@ -139,8 +139,13 @@ SWAP_DONE = "Swapped. Press Save, then try the sliders:"
 # late packet with, and the picture hitches on every keyframe on a link that is
 # doing anything else - which on this one is another camera. A setting whose
 # lowest position is unusable is a setting that teaches people not to touch it.
+# Fastest is deliberately last in usefulness and first in the list: it is the
+# only step that also takes libVLC's clock allowance away, which is most of the
+# delay and is the one thing here that can stop a picture rather than merely
+# shorten it. See `vmd/desktop/video.py:vlc_options`. Its name says try me, and
+# the step below it is where the console starts.
 LIVE_DELAY_CHOICES: list[tuple[str, int]] = [
-    ("Fastest - least delay", 50),
+    ("Fastest - try this, go back one step if the picture stops", 50),
     ("Fast (recommended)", 120),
     ("Steady", 300),
     ("Steadiest - most delay", 600),

@@ -322,6 +322,9 @@ class LinkStatus:
     rx_mbps: float | None = None
     tx_capacity_mbps: float | None = None
     rx_capacity_mbps: float | None = None
+    # What the radio said about airtime, exactly as it said it, when what it
+    # said was not a percentage. Empty on every healthy reading. See `_percent`.
+    airtime_said: str = ""
     uptime_s: int | None = None
     device: str = ""
 
@@ -341,6 +344,7 @@ class LinkStatus:
             "rx_mbps": self.rx_mbps,
             "tx_capacity_mbps": self.tx_capacity_mbps,
             "rx_capacity_mbps": self.rx_capacity_mbps,
+            "airtime_said": self.airtime_said,
             "uptime_s": self.uptime_s,
             "device": self.device,
         }
@@ -383,9 +387,64 @@ def _mbps(kbps) -> float | None:
     return None if number is None else number / 1000.0
 
 
-def _percent(value) -> float | None:
-    """A figure the radio already reports as a percentage, left on that scale."""
-    return _number(value)
+# The most a share of one medium's time can be. Not a tolerance and not a
+# rounding allowance: airtime is a share of a second, and a second cannot be
+# more than a second.
+MOST_A_PERCENTAGE_CAN_BE = 100.0
+
+
+def _percent(value, what: str = "") -> float | None:
+    """A figure the radio reports as a percentage - refused unless it is one.
+
+    "The info shown in the link airtime used is bullshit. There is no way the
+    entire link (or 175% of it) is in use, and definitely not 123% going out."
+
+    He is right, and 175 is the proof rather than the complaint: airtime is the
+    share of the medium's TIME that is spent, and a second cannot be more than a
+    second. Whatever `polling.use` means on his firmware, it is not the thing
+    this file has been calling it - so it is refused here rather than carried
+    forward and drawn as a bar with FULL written over it.
+
+    Refusing it is not a cosmetic decision. That figure is what
+    `vmd/ptz/autobitrate.py` acts on: a link reported as 175% full is a link the
+    console turns the camera down for, every thirty seconds, until it reaches
+    the floor - which is a picture visibly degraded by a measurement that was
+    never a measurement. A reading nobody can believe has to become "not known",
+    because "not known" stops things happening and a wrong number does not.
+
+    Said in the log with the field named, because the only way to find out what
+    these fields really are on this firmware is to see them.
+    """
+    number = _number(value)
+    if number is None:
+        return None
+    if not 0.0 <= number <= MOST_A_PERCENTAGE_CAN_BE:
+        logger.warning(
+            "the radio reported %s as %g, which is not a percentage - airtime is "
+            "a share of the medium's time and cannot exceed 100%%. It is being "
+            "ignored rather than acted on. Send the output of "
+            "spike/probe_radio.py so this field can be identified.",
+            what or "a percentage",
+            number,
+        )
+        return None
+    return number
+
+
+def _said(polling: dict) -> str:
+    """What the radio said about airtime, when what it said was not believable.
+
+    Empty on every healthy reading. It exists so the panel can say why a line
+    went missing and the operator can hold it up against the airOS screen in
+    front of him: a number nobody can explain is still evidence, and a number
+    quietly dropped is not.
+    """
+    parts = []
+    for field, key in (("use", "use"), ("tx_use", "tx_use"), ("rx_use", "rx_use")):
+        number = _number(polling.get(key))
+        if number is not None and not 0.0 <= number <= MOST_A_PERCENTAGE_CAN_BE:
+            parts.append(f"{field}={number:g}")
+    return ", ".join(parts)
 
 
 def _station(wireless: dict) -> tuple[dict, bool]:
@@ -524,9 +583,10 @@ def parse_status(payload: dict) -> LinkStatus:
         # out of - not bits per second. His link was at 88% while the panel,
         # comparing throughput against an airMAX capacity estimate, reported it
         # as 13% used and looking healthy.
-        airtime_percent=_percent(polling.get("use")),
-        rx_airtime_percent=_percent(polling.get("rx_use")),
-        tx_airtime_percent=_percent(polling.get("tx_use")),
+        airtime_percent=_percent(polling.get("use"), "polling.use"),
+        rx_airtime_percent=_percent(polling.get("rx_use"), "polling.rx_use"),
+        tx_airtime_percent=_percent(polling.get("tx_use"), "polling.tx_use"),
+        airtime_said=_said(polling),
         # kbps, confirmed on the device rather than assumed. See `_capacity`.
         tx_mbps=_mbps(throughput.get("tx")),
         rx_mbps=_mbps(throughput.get("rx")),

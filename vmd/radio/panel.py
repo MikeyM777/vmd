@@ -138,6 +138,16 @@ FULL_FRACTION = 0.9
 # on it already is not getting through cleanly. Deliberately one band
 # pessimistic, which is this panel's rule everywhere: calling a working link
 # busy costs a phone call, calling a full link healthy costs the picture.
+# How far past its own capacity estimate a link may measure before the reading
+# is thrown out rather than believed.
+#
+# Not 100. airMAX's capacity is worked out from the modulation rate and the
+# link genuinely beats it - that is why the airtime reading is preferred over
+# this one wherever the radio gives both. 150% is a link doing better than the
+# estimate; 5000% is one of the two figures being in kb/s while the other is in
+# Mb/s, which is the failure this guards.
+MOST_A_SHARE_CAN_BE = 150.0
+
 AIRTIME_BUSY_PERCENT = 60.0
 AIRTIME_FULL_PERCENT = 80.0
 
@@ -415,7 +425,7 @@ def _link_use(link: dict) -> tuple[float | None, float, float]:
     the number instead of being constants at the point of use.
     """
     airtime = _number(link.get("airtime_percent"))
-    if airtime is not None:
+    if airtime is not None and 0.0 <= airtime <= 100.0:
         return airtime, AIRTIME_BUSY_PERCENT, AIRTIME_FULL_PERCENT
 
     busiest = None
@@ -426,6 +436,22 @@ def _link_use(link: dict) -> tuple[float | None, float, float]:
             continue
         share = rate / capacity * 100.0
         busiest = share if busiest is None else max(busiest, share)
+    # The same rule as the airtime one, applied to the reading that replaces it.
+    #
+    # This one is a ratio of two numbers the radio reports separately, so a unit
+    # that is wrong on one of them - kb/s read as Mb/s, or the other way round -
+    # is a thousandfold error that arrives looking exactly like a busy link.
+    # There is one legitimate reason to be over 100 here, which is that airMAX's
+    # capacity figure is an estimate and the link can beat it; there is no
+    # legitimate reason to be over MOST_A_SHARE_CAN_BE.
+    if busiest is not None and not 0.0 <= busiest <= MOST_A_SHARE_CAN_BE:
+        logger.warning(
+            "the link's throughput works out at %.0f%% of the capacity the radio "
+            "reports, which is not a share of anything - one of the two figures "
+            "is in the wrong unit. It is being ignored rather than acted on.",
+            busiest,
+        )
+        busiest = None
     return busiest, BUSY_FRACTION * 100.0, FULL_FRACTION * 100.0
 
 

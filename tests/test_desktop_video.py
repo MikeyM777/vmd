@@ -174,15 +174,35 @@ def test_the_delay_reaches_both_of_libvlcs_caching_options() -> None:
     assert "--live-caching=120" in options
 
 
-def test_the_clock_allowance_is_off_because_it_is_most_of_the_delay() -> None:
-    """libVLC defaults `clock-jitter` to five seconds of tolerance for a source
-    whose clock wanders, and buys that tolerance with buffer. This source is a
-    server on 127.0.0.1 carrying one camera's own clock over one hop."""
-    from vmd.desktop.video import vlc_options
+def test_the_clock_allowance_is_only_taken_away_at_the_fastest_step() -> None:
+    """"The VMD is totally stuck while the FLIR GUI is working perfectly."
 
-    options = vlc_options()
-    assert "--clock-jitter=0" in options
-    assert "--clock-synchro=0" in options
+    These two options are the only ones here that change what libVLC does with a
+    frame rather than how many it keeps, and they are the two that can stop a
+    picture outright: with no allowance at all, a stream whose timestamps wander
+    has every frame arrive at a time libVLC thinks is wrong and discards them.
+
+    Worth having, and most of the delay - but a picture 300 ms behind beats a
+    picture that is not there, so they belong at the step whose name says it is
+    the extreme one and not at the one the console starts on.
+    """
+    from vmd.desktop.video import DEFAULT_DELAY_MS, TIGHT_CLOCK_AT_OR_BELOW_MS, vlc_options
+
+    ordinary = vlc_options(DEFAULT_DELAY_MS)
+    assert "--clock-jitter=0" not in ordinary
+    assert "--clock-synchro=0" not in ordinary
+
+    fastest = vlc_options(TIGHT_CLOCK_AT_OR_BELOW_MS)
+    assert "--clock-jitter=0" in fastest
+    assert "--clock-synchro=0" in fastest
+
+
+def test_the_step_the_console_starts_on_is_one_of_the_safe_ones() -> None:
+    """The default has to be a setting that simply works. Everything clever is
+    one step away and is asked for by name."""
+    from vmd.desktop.video import DEFAULT_DELAY_MS, TIGHT_CLOCK_AT_OR_BELOW_MS
+
+    assert DEFAULT_DELAY_MS > TIGHT_CLOCK_AT_OR_BELOW_MS
 
 
 def test_a_negative_delay_is_not_passed_to_libvlc() -> None:

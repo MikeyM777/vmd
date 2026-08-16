@@ -170,6 +170,14 @@ class FakeVideoPane:
 # console does. If they ever disagree, this one is the wrong one.
 DEFAULT_DELAY_MS = 120
 
+# At or below this delay, libVLC is also told to keep no clock allowance at all.
+#
+# Kept as a threshold on the one number the operator sets, rather than as a
+# second switch, because it is the same question asked once: how far is he
+# willing to go for a picture that is not behind. The steps above this are the
+# ones that must simply work.
+TIGHT_CLOCK_AT_OR_BELOW_MS = 50
+
 
 def vlc_options(delay_ms: int = DEFAULT_DELAY_MS) -> list[str]:
     """What libVLC is started with, and every line of it is about delay.
@@ -178,16 +186,20 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS) -> list[str]:
     It was, and there were four causes, of which the caching figure everybody
     reaches for first was the smallest.
 
-    `--clock-jitter` is the big one. libVLC defaults it to 5000 - five seconds
-    of tolerance for a source whose clock wanders - and pays for that tolerance
-    in buffer. It is meant for a network stream from the far side of the world.
-    This source is a streaming server on 127.0.0.1 re-serving a camera over a
-    point-to-point radio link, and its clock does not wander: it is the camera's
-    own, arriving over one hop. Zero disables the allowance.
+    `--clock-jitter` is the big one, and it is the one that is no longer set for
+    everybody. libVLC defaults it to 5000 - five seconds of tolerance for a
+    source whose clock wanders - and pays for that tolerance in buffer. Taking
+    the allowance away is most of the delay this console had against the
+    camera's own web page, and it is also the only thing here that can stop a
+    picture outright: with no allowance at all, a stream whose timestamps wander
+    has every frame arrive at a time libVLC thinks is wrong, and it discards
+    them. So it is set only at the fastest step - see TIGHT_CLOCK_AT_OR_BELOW_MS
+    - because a picture 300 ms behind beats a picture that is not there.
 
     `--clock-synchro=0` stops libVLC trying to lock its output clock to the
-    sender's. Locking is right for a film with a soundtrack, where drift is
-    audible; there is no audio here at all - `--no-audio` sees to that - and the
+    sender's, and travels with it for the same reason. Locking is right for a
+    film with a soundtrack, where drift is audible; there is no audio here at
+    all - `--no-audio` sees to that - and the
     only thing the lock can do to a live picture is hold frames back until the
     clock agrees they are due.
 
@@ -211,19 +223,35 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS) -> list[str]:
     be measured on the machine rather than argued about here.
     """
     delay = max(0, int(delay_ms))
-    return [
+    options = [
         # The source is on this machine, so this absorbs the desktop and nothing
         # else; the link's jitter was already absorbed by go2rtc.
         f"--network-caching={delay}",
         f"--live-caching={delay}",
-        # See the docstring: these two are most of the difference.
-        "--clock-jitter=0",
-        "--clock-synchro=0",
         "--rtsp-tcp",  # what both VLC and go2rtc negotiate anyway
         "--no-audio",  # never listened to: one less decode, one less failure
         "--no-video-title-show",
         "--avcodec-hw=any",  # hardware decode where the machine offers it
     ]
+    if delay <= TIGHT_CLOCK_AT_OR_BELOW_MS:
+        # Only at the fastest setting, and this is a retreat from shipping them
+        # to everybody.
+        #
+        # "The VMD is totally stuck while the FLIR GUI is working perfectly."
+        # These two are the only options here that change what libVLC does with
+        # a frame rather than how many it keeps, and they are the two that can
+        # stop a picture outright: with no clock allowance at all, a stream
+        # whose timestamps wander - which a camera re-encoding on the fly can
+        # certainly produce - has every frame arrive at a time libVLC thinks is
+        # wrong, and it discards them.
+        #
+        # They are worth having, and they are most of the delay this console had
+        # against the camera's own web page. But a picture that is 300 ms behind
+        # beats a picture that is not there, so they belong at the setting whose
+        # name says it is the extreme one and not at the one the console starts
+        # on. See LIVE_DELAY_CHOICES in `vmd/desktop/settings_tab.py`.
+        options.extend(["--clock-jitter=0", "--clock-synchro=0"])
+    return options
 
 
 # Kept as a name because tools and tests read it. It is the default set, and
