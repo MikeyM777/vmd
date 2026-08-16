@@ -761,8 +761,15 @@ class ConsoleWindow(QMainWindow):
         events_path: str | Path | None = None,
         log_buffer: LogBuffer | None = None,
         parent: QWidget | None = None,
+        panes=None,
     ) -> None:
         super().__init__(parent)
+        # What `make_pane` reads when it builds a video pane, or None for a
+        # window built without one - a test, or anything driving this directly.
+        # The only thing on it is how far behind the camera the live picture
+        # runs, and this window's part in that is one line in `settings_saved`:
+        # write the saved figure in before the Live tab rebuilds its panes.
+        self._panes = panes
         self.setWindowTitle("VMD")
         self.resize(1440, 900)
 
@@ -1350,6 +1357,16 @@ class ConsoleWindow(QMainWindow):
             self.show_playback_tab(getattr(settings, "show_playback", False))
         except Exception:  # noqa: BLE001 - the rest of the save must still run
             logger.exception("the window would not take the saved name or tabs")
+
+        # Before the children are restarted and long before the wall is rebuilt,
+        # because rebuilding the wall is what reads it. A pane is built with its
+        # delay and cannot be told afterwards - it is a libVLC instance option -
+        # so the order here is the whole of why the setting takes effect at all.
+        if self._panes is not None:
+            try:
+                self._panes.delay_ms = int(settings.live_delay_ms)
+            except Exception:  # noqa: BLE001 - a delay is not the save
+                logger.exception("the saved picture delay could not be applied")
 
         for what, target in (("the camera", self._ptz), ("the radio", self._radio)):
             apply = getattr(target, "apply", None)

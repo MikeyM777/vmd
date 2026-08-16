@@ -623,6 +623,98 @@ def test_a_pane_that_can_be_built_is_used(qtbot) -> None:
     assert isinstance(pane, FakeVideoPane)
 
 
+# --------------------------------------------------- how far behind it runs
+#
+# The delay is a libVLC instance option, so it is decided when a pane is built
+# and can never be changed afterwards. Everything below is about one thing:
+# that a save reaches the panes the save itself is about to rebuild.
+
+
+class DelayedPane(FakeVideoPane):
+    """A pane that remembers what delay it was built with."""
+
+    def __init__(self, delay_ms: int = -1) -> None:
+        super().__init__()
+        self.delay_ms = delay_ms
+
+
+def test_a_pane_is_built_with_the_delay_it_was_given() -> None:
+    from vmd.desktop.app import PaneOptions
+
+    options = PaneOptions(300)
+    pane = pane_factory(DelayedPane, options=options)("thermal")
+    assert pane.delay_ms == 300
+
+
+def test_the_next_pane_is_built_with_the_delay_that_was_saved() -> None:
+    """The wall is rebuilt on every save. A factory holding the delay by value
+    would build every pane for the rest of the day with the one the console
+    started with, and the setting would look like it did nothing."""
+    from vmd.desktop.app import PaneOptions
+
+    options = PaneOptions(300)
+    make_pane = pane_factory(DelayedPane, options=options)
+    assert make_pane("thermal").delay_ms == 300
+
+    options.delay_ms = 50
+    assert make_pane("thermal").delay_ms == 50
+
+
+def test_a_pane_that_cannot_be_told_a_delay_is_not_told_one() -> None:
+    """Every fake in this suite takes nothing, and so did every pane before the
+    delay was a setting."""
+    pane = pane_factory(FakeVideoPane, options=None)("thermal")
+    assert isinstance(pane, FakeVideoPane)
+
+
+def test_a_saved_delay_reaches_the_panes_before_they_are_rebuilt(
+    qtbot, tmp_path: Path
+) -> None:
+    """The ordering is the whole of why this setting takes effect at all: the
+    window writes the figure in, and the Live tab's `apply` - later in the same
+    save - is what reads it by building new panes."""
+    from vmd.desktop.app import PaneOptions
+
+    panes = PaneOptions(300)
+    path = write_settings(tmp_path)
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=pane_factory(DelayedPane, options=panes),
+        events_path=None,
+        panes=panes,
+    )
+    qtbot.addWidget(window)
+
+    settings = load_settings(path)
+    settings.live_delay_ms = 50
+    window.settings_saved(settings)
+
+    # Written in straight away, on the thread the save arrived on. The children
+    # restart on a worker and the wall is rebuilt when they are done, so this
+    # figure has to be in place before any of that starts rather than after.
+    assert panes.delay_ms == 50
+    assert save_applied(window), "the save never reached the running console"
+    assert window.live._panes["thermal"].delay_ms == 50, (
+        "the wall was rebuilt with the delay the console started with"
+    )
+    window.close()
+
+
+def test_a_window_built_without_pane_options_still_saves(qtbot, tmp_path: Path) -> None:
+    """Every tab in this console is written to survive being driven directly,
+    and a save that raised because nothing was holding a delay would take the
+    camera address down with it."""
+    window, _ = build(qtbot, tmp_path)
+    settings = load_settings(window._settings_path)
+    settings.live_delay_ms = 50
+    window.settings_saved(settings)
+    window.close()
+
+
 # ------------------------------------------------------------- detection
 #
 # Live and Playback read the same events.db, the status line says whether

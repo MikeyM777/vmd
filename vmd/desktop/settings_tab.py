@@ -128,6 +128,24 @@ SWAP_DONE = "Swapped. Press Save, then try the sliders:"
 # written for somebody who has just ticked a box by accident: it says what will
 # appear, and it says the one thing worth knowing - that none of this is about
 # whether the recording is happening.
+# How far behind the camera the live picture may run, offered as four steps.
+#
+# The words are the trade and not the quantity: an operator can tell whether a
+# picture is behind and whether it stutters, and cannot tell 120 ms from 300 ms
+# by looking. The figures behind them are milliseconds of libVLC buffer - see
+# `vmd/desktop/video.py:vlc_options`, where the rest of the delay was found.
+#
+# 50 rather than 0 at the bottom. Zero leaves libVLC nothing at all to cover a
+# late packet with, and the picture hitches on every keyframe on a link that is
+# doing anything else - which on this one is another camera. A setting whose
+# lowest position is unusable is a setting that teaches people not to touch it.
+LIVE_DELAY_CHOICES: list[tuple[str, int]] = [
+    ("Fastest - least delay", 50),
+    ("Fast (recommended)", 120),
+    ("Steady", 300),
+    ("Steadiest - most delay", 600),
+]
+
 PLAYBACK_HELP = (
     "Playback is where recorded footage is watched back: a day, a timeline, and "
     "the places on it where something moved. It is off, because this console is "
@@ -1224,8 +1242,32 @@ class SettingsTab(QWidget):
             "\"Wherever it was last left\" remembers where you dragged it, which "
             "is right for a machine with one screen."
         )
+        # How far behind the camera the live picture runs.
+        #
+        # "Compared to the FLIR browser GUI our VMD is much later. It's
+        # unacceptable." Four steps and not a number of milliseconds, because
+        # milliseconds are not a thing anybody can judge by looking at a screen
+        # - what he can judge is whether the picture is behind and whether it
+        # stutters, which is exactly the trade these four words name.
+        #
+        # On this card because it is a fact about this camera's picture, and
+        # because the person who will change it is the person setting the camera
+        # up and watching the delay while he does.
+        self._delay = QComboBox()
+        for words, milliseconds in LIVE_DELAY_CHOICES:
+            self._delay.addItem(words, milliseconds)
+        self._delay.setToolTip(
+            "How far behind the camera the live picture runs.\n\n"
+            "Less delay is better for steering the camera: you see where it is "
+            "pointing sooner. More delay is smoother on a link that stutters, "
+            "because there is something in hand to cover a gap.\n\n"
+            "Start at Fastest. Move it up one step only if the picture keeps "
+            "hitching.\n\n"
+            "It has no effect at all on what is recorded."
+        )
         camera_form.addRow("Name", self._title)
         camera_form.addRow("Show on", self._screen)
+        camera_form.addRow("Live picture", self._delay)
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
@@ -1900,6 +1942,29 @@ class SettingsTab(QWidget):
         self._screen.setCurrentIndex(index if index >= 0 else 0)
 
     @property
+    def live_delay_ms(self) -> int:
+        return int(self._delay.currentData())
+
+    @live_delay_ms.setter
+    def live_delay_ms(self, value: int) -> None:
+        """The saved delay, or the nearest step to it.
+
+        Nearest and not exact, because the file can hold any number between 0
+        and 2000 - it is a plain integer and this form is four of them - and a
+        settings file written by hand, or by an older console, must still put
+        the box somewhere honest rather than silently at the top of the list.
+        """
+        wanted = int(value)
+        index = self._delay.findData(wanted)
+        if index < 0:
+            nearest = min(
+                range(self._delay.count()),
+                key=lambda i: abs(int(self._delay.itemData(i)) - wanted),
+            )
+            index = nearest
+        self._delay.setCurrentIndex(index)
+
+    @property
     def show_playback(self) -> bool:
         return self._show_playback.isChecked()
 
@@ -2386,6 +2451,7 @@ class SettingsTab(QWidget):
         self._loaded = settings
         self.camera_title = settings.title
         self.screen = settings.screen
+        self.live_delay_ms = settings.live_delay_ms
         self.show_playback = settings.show_playback
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
@@ -2576,6 +2642,7 @@ class SettingsTab(QWidget):
         # the screen exactly as he typed it while he is still typing it.
         payload["title"] = self.camera_title.strip()
         payload["screen"] = self.screen
+        payload["live_delay_ms"] = self.live_delay_ms
         payload["show_playback"] = self.show_playback
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(
@@ -3013,7 +3080,7 @@ def _report_header(settings: Settings) -> list[str]:
         # way the switch is set.
         f"link follows  : "
         f"{'automatically' if settings.bitrate.mode == 'auto' else 'left as set by hand'}",
-        f"video         : {settings.video_mode}, {settings.video_buffer_ms} ms buffer",
+        f"live picture  : {settings.live_delay_ms} ms behind the camera",
     ]
 
 

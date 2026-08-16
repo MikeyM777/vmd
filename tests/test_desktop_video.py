@@ -153,3 +153,51 @@ def test_a_seek_never_goes_before_the_first_frame() -> None:
     pane.show("file:///a.mp4", at_seconds=5.0)
     pane.seek_seconds(-20.0)
     assert pane.position_seconds() == 0.0
+
+
+# ------------------------------------------------------- how far behind it runs
+#
+# "When I open the VMD app compared to the FLIR browser GUI our VMD is much
+# later than the FLIR GUI. It's unacceptable." What follows is every claim
+# `vlc_options` makes, written down so that a future edit that reaches for the
+# caching figure alone has to notice the other three.
+
+
+def test_the_delay_reaches_both_of_libvlcs_caching_options() -> None:
+    """The RTSP module reads the LIVE figure for a stream it calls live, and the
+    network one for everything else. Setting only one is how a console ends up
+    applying a number to the path that is not asking about it."""
+    from vmd.desktop.video import vlc_options
+
+    options = vlc_options(120)
+    assert "--network-caching=120" in options
+    assert "--live-caching=120" in options
+
+
+def test_the_clock_allowance_is_off_because_it_is_most_of_the_delay() -> None:
+    """libVLC defaults `clock-jitter` to five seconds of tolerance for a source
+    whose clock wanders, and buys that tolerance with buffer. This source is a
+    server on 127.0.0.1 carrying one camera's own clock over one hop."""
+    from vmd.desktop.video import vlc_options
+
+    options = vlc_options()
+    assert "--clock-jitter=0" in options
+    assert "--clock-synchro=0" in options
+
+
+def test_a_negative_delay_is_not_passed_to_libvlc() -> None:
+    """The model refuses one, so this is about a pane built directly - a spike
+    tool, a test. libVLC's own range starts at 0 and it is not this file's job
+    to find out what it does with less."""
+    from vmd.desktop.video import vlc_options
+
+    assert "--network-caching=0" in vlc_options(-1)
+
+
+def test_the_default_delay_is_the_one_the_settings_model_has() -> None:
+    """Two defaults for one idea is two answers within a month, and the operator
+    would be holding both. A pane built directly behaves like the console."""
+    from vmd.desktop.video import DEFAULT_DELAY_MS
+    from vmd.settings import Settings
+
+    assert Settings().live_delay_ms == DEFAULT_DELAY_MS

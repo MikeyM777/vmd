@@ -164,15 +164,71 @@ class FakeVideoPane:
         self._state = "failed"
 
 
-VLC_OPTIONS = [
-    # The source is on this machine, so this absorbs the laptop and nothing
-    # else; the link's jitter was already absorbed by go2rtc.
-    "--network-caching=300",
-    "--rtsp-tcp",  # what both VLC and go2rtc negotiate anyway
-    "--no-audio",  # never listened to: one less decode, one less failure
-    "--no-video-title-show",
-    "--avcodec-hw=any",  # hardware decode where the laptop offers it
-]
+# How far behind the camera the picture runs when nothing says otherwise. The
+# same number as `Settings.live_delay_ms`, repeated here rather than imported so
+# that a pane built directly - by a test, by a spike tool - behaves like the
+# console does. If they ever disagree, this one is the wrong one.
+DEFAULT_DELAY_MS = 120
+
+
+def vlc_options(delay_ms: int = DEFAULT_DELAY_MS) -> list[str]:
+    """What libVLC is started with, and every line of it is about delay.
+
+    "Compared to the FLIR browser GUI our VMD is much later. It's unacceptable."
+    It was, and there were four causes, of which the caching figure everybody
+    reaches for first was the smallest.
+
+    `--clock-jitter` is the big one. libVLC defaults it to 5000 - five seconds
+    of tolerance for a source whose clock wanders - and pays for that tolerance
+    in buffer. It is meant for a network stream from the far side of the world.
+    This source is a streaming server on 127.0.0.1 re-serving a camera over a
+    point-to-point radio link, and its clock does not wander: it is the camera's
+    own, arriving over one hop. Zero disables the allowance.
+
+    `--clock-synchro=0` stops libVLC trying to lock its output clock to the
+    sender's. Locking is right for a film with a soundtrack, where drift is
+    audible; there is no audio here at all - `--no-audio` sees to that - and the
+    only thing the lock can do to a live picture is hold frames back until the
+    clock agrees they are due.
+
+    `--live-caching` is the one that was missing. The RTSP access module reads
+    the LIVE caching figure, not the network one, for a stream it considers
+    live, so `--network-caching=300` on its own was being applied to a path that
+    was not asking about it. Both are set to the same figure, so that whichever
+    one this build consults gets the answer the operator chose.
+
+    `--drop-late-frames` and `--skip-frames` are libVLC's defaults already and
+    are not repeated. They matter to the outcome and they are not this file's to
+    claim: a frame that arrives late is dropped rather than pushing everything
+    behind it further back, which is what stops a delay that has happened once
+    from becoming permanent.
+
+    Hardware decoding stays. It buffers a frame or two - about 40-80 ms at
+    25 fps - and that is a real part of the remaining delay, but this console
+    draws two 4K pictures beside each other on a machine that also records and
+    detects, and taking it away trades a measurable delay for a dropped-frame
+    problem that is worse. `spike/probe_delay.py` turns it off so the trade can
+    be measured on the machine rather than argued about here.
+    """
+    delay = max(0, int(delay_ms))
+    return [
+        # The source is on this machine, so this absorbs the desktop and nothing
+        # else; the link's jitter was already absorbed by go2rtc.
+        f"--network-caching={delay}",
+        f"--live-caching={delay}",
+        # See the docstring: these two are most of the difference.
+        "--clock-jitter=0",
+        "--clock-synchro=0",
+        "--rtsp-tcp",  # what both VLC and go2rtc negotiate anyway
+        "--no-audio",  # never listened to: one less decode, one less failure
+        "--no-video-title-show",
+        "--avcodec-hw=any",  # hardware decode where the machine offers it
+    ]
+
+
+# Kept as a name because tools and tests read it. It is the default set, and
+# `VlcVideoPane` builds its own when it is told a different delay.
+VLC_OPTIONS = vlc_options()
 
 
 def _import_vlc() -> Any:
@@ -215,7 +271,9 @@ def load_vlc(
 class VlcVideoPane(QWidget):
     """A widget libVLC draws into."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, delay_ms: int = DEFAULT_DELAY_MS
+    ) -> None:
         super().__init__(parent)
         vlc = load_vlc()
 
@@ -226,7 +284,10 @@ class VlcVideoPane(QWidget):
         # but a fresh show() will bring it back. VLC reaches Ended about ten
         # seconds after an RTSP source stops answering.
         self._gave_up = frozenset({vlc.State.Error, vlc.State.Ended})
-        self._instance = vlc.Instance(VLC_OPTIONS)
+        # Per pane, because the delay is a setting and a saved change rebuilds
+        # the panes. An instance built once at import would hold whatever the
+        # first console of the morning was started with.
+        self._instance = vlc.Instance(vlc_options(delay_ms))
         self._player = self._instance.media_player_new()
         self._url: str | None = None
         self._last_frame_at = 0.0

@@ -436,33 +436,52 @@ class BitrateSettings(Model):
 
 
 class Settings(Model):
-    # How the live picture reaches the browser.
+    # How far behind the camera the live picture is allowed to run, in
+    # milliseconds. It is the size of the buffer libVLC fills before it starts
+    # drawing, and it is the largest single thing this console can do about
+    # delay.
     #
-    #   webrtc - lowest delay, smallest tolerance for a link that stutters
-    #   mp4    - buffers, so it survives a burst at the cost of a second or two
-    #   auto   - webrtc, falling back to mp4 when it cannot deliver
+    # "When I open the VMD app compared to the FLIR browser GUI our VMD is much
+    # later than the FLIR GUI. It's unacceptable." He is right, and the reason
+    # was not this number - it was that nothing read it. `video_buffer_ms` was a
+    # field on this model, validated, printed in the report, and read by
+    # absolutely nothing: it was written for the WebRTC jitter buffer of a
+    # browser console that no longer exists. libVLC was being handed a hardcoded
+    # 300 ms and three options that had never been chosen for a live picture.
+    # See `vmd/desktop/video.py:vlc_options`, where the rest of the delay was.
     #
-    # It is a setting rather than a decision because the right answer depends on
-    # a link nobody can measure from here: on a clean link webrtc is plainly
-    # better, and on a link that saturates when the camera pans, mp4 is.
-    video_mode: Literal["auto", "webrtc", "mp4"] = "auto"
+    # 120 ms because a picture of a fence line 700 m away is watched to steer a
+    # camera at it, and steering through a delay is the thing an operator cannot
+    # do. It is a real trade and not a free win: below about 50 ms libVLC has
+    # nothing left to absorb a burst with, and the picture hitches on every
+    # keyframe. The Settings tab offers four steps rather than a number, because
+    # "how many milliseconds" is not a question anybody can answer by looking at
+    # a screen, and "steadier, but further behind" is.
+    #
+    # `video_mode` was deleted from beside this, for the same reason and with
+    # less to say for itself: webrtc / mp4 / auto was how the picture reached a
+    # BROWSER. Every pane in this console plays RTSP from the local streaming
+    # server, so the field named a choice that nothing had been able to make for
+    # months. Old settings files carrying either name still load - pydantic
+    # ignores what the model does not declare - and both simply stop being read.
+    live_delay_ms: int = 120
 
-    # How much jitter the live picture absorbs before it stutters, in
-    # milliseconds.
-    #
-    # WebRTC defaults to as little as it can get away with, which is right for a
-    # conversation and wrong for this: a keyframe every second arrives as a
-    # burst, and with nothing to absorb it the picture hitches once a second on
-    # a link under pressure. Half a second of buffer costs half a second of
-    # delay and removes the hitch - which is the trade VLC makes by default, and
-    # why VLC looks smooth here while this did not.
-    video_buffer_ms: int = 500
-
-    @field_validator("video_buffer_ms")
+    @field_validator("live_delay_ms")
     @classmethod
-    def _buffer_sane(cls, value: int) -> int:
-        if not 0 <= value <= 5000:
-            raise ValueError("video_buffer_ms must be between 0 and 5000")
+    def _delay_sane(cls, value: int) -> int:
+        """A ceiling of two seconds, and the reason is what this field is for.
+
+        It was 5000 when nothing read it, which cost nothing. Now that libVLC is
+        handed it, five seconds is a live picture five seconds behind the world
+        - and an operator steering a camera through that will drive it past what
+        he is aiming at, every time, and never work out why.
+        """
+        if not 0 <= value <= 2000:
+            raise ValueError(
+                "live_delay_ms must be between 0 and 2000 - it is how far behind "
+                "the camera the live picture runs, and past about two seconds the "
+                "picture can no longer be steered by"
+            )
         return value
 
     # Which of the camera's views the Live tab is showing: the name of one

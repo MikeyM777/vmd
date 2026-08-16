@@ -222,3 +222,40 @@ def test_a_stream_with_no_name_is_refused():
         StreamSettings(name="", url="rtsp://10.0.0.2/ch1")
     with pytest.raises(ValidationError):
         StreamSettings(name="   ", url="rtsp://10.0.0.2/ch1")
+
+
+def test_a_delay_nobody_could_steer_through_is_refused() -> None:
+    """It was 5000 when nothing read it, which cost nothing. Now libVLC is
+    handed it, and a picture five seconds behind the world is a camera that gets
+    driven past whatever it is being aimed at, every time."""
+    import pytest
+    from pydantic import ValidationError
+
+    from vmd.settings import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(live_delay_ms=2001)
+    with pytest.raises(ValidationError):
+        Settings(live_delay_ms=-1)
+    assert Settings(live_delay_ms=0).live_delay_ms == 0
+    assert Settings(live_delay_ms=2000).live_delay_ms == 2000
+
+
+def test_a_settings_file_naming_the_old_video_fields_still_loads(tmp_path) -> None:
+    """`video_mode` and `video_buffer_ms` were written for a browser console
+    that no longer exists, and every settings file in the field has both. They
+    are gone from the model; a file that has them must still open, because the
+    only tool for fixing that file is inside the console it would have stopped
+    from starting."""
+    import json
+
+    from vmd.settings import load_settings
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"video_mode": "mp4", "video_buffer_ms": 500, "title": "ירושלים"}),
+        encoding="utf-8",
+    )
+    settings = load_settings(path)
+    assert settings.title == "ירושלים"
+    assert settings.live_delay_ms == 120, "the delay is the new field's default"

@@ -10,6 +10,7 @@ wait for someone to open a window to find out about.
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import sys
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from vmd.desktop.logs import LogBuffer, attach
 from vmd.desktop.services import ConsoleServices, DetectorProcess, RecorderProcess
 from vmd.desktop.style import stylesheet
-from vmd.desktop.video import PaneState, VideoPane, VlcVideoPane
+from vmd.desktop.video import DEFAULT_DELAY_MS, PaneState, VideoPane, VlcVideoPane
 from vmd.desktop.window import ConsoleWindow
 from vmd.ptz.service import PtzService
 from vmd.radio.service import RadioService
@@ -118,18 +119,60 @@ class BrokenPane(QLabel):
         return "stopped"
 
 
-def pane_factory(build: Callable[[], VideoPane] | None = None) -> Callable[[str], VideoPane]:
+class PaneOptions:
+    """The one thing about a video pane that the operator can change while the
+    console is open: how far behind the camera the picture runs.
+
+    An object rather than a number, because `make_pane(name)` is built once when
+    the window is and called again every time a save rebuilds the wall. Held by
+    value, the delay a pane was built with would be the delay the console
+    started with, for ever - and an operator who moved the setting, pressed
+    Save, watched the pictures visibly restart and saw no change would
+    reasonably conclude the setting does nothing. It did not do nothing before;
+    it did not exist. Doing nothing quietly would be worse.
+    """
+
+    def __init__(self, delay_ms: int = DEFAULT_DELAY_MS) -> None:
+        self.delay_ms = int(delay_ms)
+
+
+def pane_factory(
+    build: Callable[..., VideoPane] | None = None,
+    options: PaneOptions | None = None,
+) -> Callable[[str], VideoPane]:
     """A `make_pane(name)` for the window, which never raises."""
     build = build or VlcVideoPane
+    options = options if options is not None else PaneOptions()
+
+    # Asked once, of the signature, rather than by trying it and catching
+    # TypeError: a TypeError raised from inside a real pane's constructor would
+    # be indistinguishable from one raised by the call itself, and the fallback
+    # would quietly build a second pane on top of a half-built first.
+    takes_delay = _accepts_delay(build)
 
     def make_pane(name: str) -> VideoPane:
         try:
-            return build()
+            return build(delay_ms=options.delay_ms) if takes_delay else build()
         except Exception as exc:  # noqa: BLE001 - a console with no video still helps
             logger.exception("the video pane for %s could not be built", name)
             return BrokenPane(f"{name}: {exc}")
 
     return make_pane
+
+
+def _accepts_delay(build: Callable[..., VideoPane]) -> bool:
+    """Whether this pane can be told how far behind to run.
+
+    Fakes in the tests take nothing, and so did every pane before the delay
+    became a setting. A pane that cannot be told simply is not told.
+    """
+    try:
+        return "delay_ms" in inspect.signature(build).parameters
+    except (TypeError, ValueError):
+        # Builtins and C-implemented callables have no signature to read. Not
+        # something this console ever passes, but a pane is not worth an
+        # exception on the way to drawing one.
+        return False
 
 
 @dataclass
@@ -242,15 +285,20 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv)
     app.setStyleSheet(stylesheet())
 
+    # Shared with the window, which writes the saved delay into it before the
+    # Live tab rebuilds its panes. One object, so the two cannot disagree.
+    panes = PaneOptions(settings.live_delay_ms)
+
     window = ConsoleWindow(
         settings_path=wiring.settings_path,
         services=wiring.services,
         ptz=wiring.ptz,
         radio=wiring.radio,
         index_path=wiring.index_path,
-        make_pane=pane_factory(),
+        make_pane=pane_factory(options=panes),
         events_path=wiring.events_path,
         log_buffer=log_buffer,
+        panes=panes,
     )
     # After the window is built, because building it is what restores the
     # remembered geometry, and before it is shown, so it never appears on one

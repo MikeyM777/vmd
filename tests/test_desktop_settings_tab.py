@@ -325,7 +325,6 @@ def test_settings_this_form_does_not_show_are_not_lost(qtbot, tmp_path: Path) ->
         )
     )
     settings.bitrate.ceiling_kbps = 4200
-    settings.video_mode = "mp4"
     settings.target_distance_m = 1200.0
     settings.storage.segment_seconds = 120
 
@@ -334,7 +333,6 @@ def test_settings_this_form_does_not_show_are_not_lost(qtbot, tmp_path: Path) ->
 
     stored = load_settings(path)
     assert stored.bitrate.ceiling_kbps == 4200
-    assert stored.video_mode == "mp4"
     assert stored.target_distance_m == 1200.0
     assert stored.storage.segment_seconds == 120
 
@@ -1056,7 +1054,7 @@ def test_a_settings_file_written_before_detection_existed_is_not_damaged(
     path.write_text(
         json.dumps(
             {
-                "video_mode": "mp4",
+                "target_distance_m": 1200.0,
                 "camera": {
                     "host": "10.0.0.2",
                     "username": "admin",
@@ -1083,7 +1081,7 @@ def test_a_settings_file_written_before_detection_existed_is_not_damaged(
     stored = load_settings(path)
     assert stored.camera.host == "10.0.0.2"
     assert stored.camera.password == "p@ss/word"
-    assert stored.video_mode == "mp4"
+    assert stored.target_distance_m == 1200.0
     assert stored.bitrate.ceiling_kbps == 4200
     stream = stored.camera.streams[0]
     assert (stream.name, stream.url, stream.enabled, stream.reader) == (
@@ -3066,3 +3064,50 @@ def test_a_screen_this_machine_does_not_have_reads_as_wherever_it_was_left(
     settings.screen = 9
     tab, _ = build(qtbot, tmp_path, settings)
     assert tab.screen is None
+
+
+# --------------------------------------------- how far behind the picture runs
+
+
+def test_the_delay_starts_at_the_recommended_step(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.live_delay_ms == 120
+
+
+def test_a_chosen_delay_is_saved_and_comes_back(qtbot, tmp_path: Path) -> None:
+    tab, _ = build(qtbot, tmp_path)
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.live_delay_ms = 50
+
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).live_delay_ms == 50
+
+    again, _ = build(qtbot, tmp_path)
+    assert again.live_delay_ms == 50
+
+
+def test_a_delay_that_is_not_one_of_the_steps_lands_on_the_nearest(
+    qtbot, tmp_path: Path
+) -> None:
+    """The file holds a plain integer and this form is four of them. A file
+    written by hand must put the box somewhere honest rather than silently at
+    the top of the list, which would read as "fastest" for a console running at
+    half a second behind."""
+    settings = Settings()
+    settings.live_delay_ms = 400
+    tab, _ = build(qtbot, tmp_path, settings)
+    assert tab.live_delay_ms == 300
+
+
+def test_the_delay_the_operator_can_ask_for_is_one_he_can_steer_through(
+    qtbot, tmp_path: Path
+) -> None:
+    """Every step on this list is a delay somebody could be asked to steer a
+    camera through. The model's own ceiling is 2 s and this form does not go
+    near it."""
+    from vmd.desktop.settings_tab import LIVE_DELAY_CHOICES
+
+    offered = [ms for _words, ms in LIVE_DELAY_CHOICES]
+    assert offered == sorted(offered), "the list reads fastest-first"
+    assert max(offered) <= 600
+    assert min(offered) >= 50, "zero leaves nothing to cover a late packet with"
