@@ -325,6 +325,14 @@ class LinkStatus:
     # What the radio said about airtime, exactly as it said it, when what it
     # said was not a percentage. Empty on every healthy reading. See `_percent`.
     airtime_said: str = ""
+    # Every radio associated to this one: what it is called, how strong it is,
+    # and how much it is sending. One entry on a point-to-point link and one per
+    # camera on the access point this installation actually has.
+    stations: list = field(default_factory=list)
+    # How wide the channel is, in MHz, and what this radio is - `ap-ptmp` on the
+    # one in the field, which is what says there is more than one station on it.
+    channel_mhz: float | None = None
+    mode: str = ""
     uptime_s: int | None = None
     device: str = ""
 
@@ -345,6 +353,9 @@ class LinkStatus:
             "tx_capacity_mbps": self.tx_capacity_mbps,
             "rx_capacity_mbps": self.rx_capacity_mbps,
             "airtime_said": self.airtime_said,
+            "stations": list(self.stations),
+            "channel_mhz": self.channel_mhz,
+            "mode": self.mode,
             "uptime_s": self.uptime_s,
             "device": self.device,
         }
@@ -431,6 +442,21 @@ def _percent(value, what: str = "") -> float | None:
     return number
 
 
+def _busier(polling: dict) -> float | None:
+    """How full the busier direction is, as a percentage of its own portion.
+
+    Both directions, or whichever one the radio gave. Never `polling.use`: see
+    the note where this is called, and `_percent`, which is what refused the 120
+    that field reported while these two said 90 and 30.
+    """
+    ways = [
+        _percent(polling.get("rx_use"), "polling.rx_use"),
+        _percent(polling.get("tx_use"), "polling.tx_use"),
+    ]
+    known = [value for value in ways if value is not None]
+    return max(known) if known else None
+
+
 def _said(polling: dict) -> str:
     """What the radio said about airtime, when what it said was not believable.
 
@@ -447,20 +473,102 @@ def _said(polling: dict) -> str:
     return ", ".join(parts)
 
 
-def _station(wireless: dict) -> tuple[dict, bool]:
-    """The one station entry that matters, and whether the list was there.
+def _stations(wireless: dict) -> tuple[list[dict], bool]:
+    """Every radio associated to this one, and whether the list was there at all.
 
-    On a point-to-point link `wireless.sta` holds exactly one entry - the radio
-    at the other end - and on this firmware it is where the signal lives. The
-    second half of the answer is what tells an EMPTY list apart from a firmware
-    that has no such list at all: the first is the link being down, and the
-    second is only a shape this file has not met.
+    It used to take the first and ignore the rest, because this was written
+    against a point-to-POINT link where there is only ever one. The radio in the
+    field is not that:
+
+        "mode": "ap-ptmp", "count": 2,
+        "sta": [ ... "hostname": "S1" ..., ... "hostname": "S2" ... ]
+
+    One access point with a station at each camera. Reading only `sta[0]` meant
+    the whole Link panel - the signal, the quality, the word at the top of it -
+    described one of the two cameras and said nothing at all about the other,
+    with no hint that there was another. On a system where each camera is a
+    perimeter that is not a display problem.
+
+    The empty-list case is still told apart from a firmware with no such list:
+    the first is a link with nothing on the far end, and the second is a shape
+    this file has not met.
     """
     stations = wireless.get("sta")
     if not isinstance(stations, list):
-        return {}, False
-    first = stations[0] if stations else None
-    return (first if isinstance(first, dict) else {}), True
+        return [], False
+    return [entry for entry in stations if isinstance(entry, dict)], True
+
+
+def _station(wireless: dict) -> tuple[dict, bool]:
+    """The station the headline figures are taken from: the weakest one.
+
+    The weakest and not the first, and this is the whole of the decision. With
+    two cameras on one access point, one figure has to stand for both - and the
+    one worth standing there is the one closest to failing. A panel that reports
+    the healthier of two links is a panel that says GOOD on the morning the
+    other camera stops.
+
+    Every station is reported individually as well - see `LinkStatus.stations` -
+    so this is which one the single word at the top is about, not which one the
+    operator gets to see.
+    """
+    stations, had_list = _stations(wireless)
+    if not stations:
+        return {}, had_list
+
+    def signal_of(entry: dict) -> float:
+        value = _number(entry.get("signal"))
+        if value is None:
+            value = _number(_above_noise(entry, None))
+        # A station that will not say is not evidence of a good link, so it does
+        # not win the comparison by being unmeasurable.
+        return value if value is not None else 0.0
+
+    return min(stations, key=signal_of), had_list
+
+
+def _each_station(wireless: dict) -> list[dict]:
+    """What each associated radio is called, how strong it is, and - the reason
+    this exists - how much it is actually sending.
+
+    `sta[i].remote.tx_throughput` is the far end's own report of what it is
+    transmitting, in kb/s, which on this installation is that camera's video
+    leaving that camera's mast. It is the one figure that says which camera is
+    starving, and on the radio that was read the two stations were sending
+    0.7 Mb/s and 4.0 Mb/s - a difference nothing on the console could show.
+    """
+    found = []
+    for entry in _stations(wireless)[0]:
+        remote = entry.get("remote")
+        remote = remote if isinstance(remote, dict) else {}
+        found.append(
+            {
+                "name": str(remote.get("hostname") or entry.get("lastip") or entry.get("mac") or ""),
+                "address": str(remote.get("hostname") and entry.get("lastip") or entry.get("lastip") or ""),
+                "signal_dbm": _number(entry.get("signal")),
+                # What that station sends and receives, from its own report.
+                # Named from the CAMERA's point of view, which is the way round
+                # anybody standing at this console thinks about it: "sending" is
+                # video coming this way.
+                "sending_mbps": _mbps(remote.get("tx_throughput")),
+                "receiving_mbps": _mbps(remote.get("rx_throughput")),
+                # How much of the medium's time this one station's traffic costs
+                # in each direction, from the airMAX block. Percentages, and on
+                # the radio that was read they were 86 and 70 for rx - the
+                # station spending the most airtime was the one sending least.
+                "airtime_in": _percent(_usage(entry, "rx"), "sta.airmax.rx.usage"),
+                "airtime_out": _percent(_usage(entry, "tx"), "sta.airmax.tx.usage"),
+            }
+        )
+    return found
+
+
+def _usage(station: dict, way: str):
+    airmax = station.get("airmax")
+    if not isinstance(airmax, dict):
+        return None
+    block = airmax.get(way)
+    return block.get("usage") if isinstance(block, dict) else None
 
 
 def _above_noise(source: dict, noise: int | None) -> int | None:
@@ -583,10 +691,35 @@ def parse_status(payload: dict) -> LinkStatus:
         # out of - not bits per second. His link was at 88% while the panel,
         # comparing throughput against an airMAX capacity estimate, reported it
         # as 13% used and looking healthy.
-        airtime_percent=_percent(polling.get("use"), "polling.use"),
+        # The busier of the two directions, and NOT `polling.use`.
+        #
+        # The radio in the field settled this. It reported:
+        #
+        #     "rx_use": 90, "tx_use": 30, "use": 120
+        #
+        # so `use` is the two added together, and adding them is what produced
+        # "175% of the link in use" on his screen. They cannot be added: on an
+        # airMAX frame - `flex_mode: 1` on this radio - the medium is split into
+        # a downlink portion and an uplink portion, and each figure is how full
+        # its OWN portion is. Two portions that are 90% and 30% full are not a
+        # medium that is 120% full.
+        #
+        # The busier of the two is the honest answer to "how much room is left",
+        # because the link runs out when either portion does - and it is the
+        # direction carrying the video that matters here. On that reading his
+        # link was 90% full on the way in, carrying 5.2 Mb/s, which is a link
+        # with nothing left rather than one that is 120% of itself.
+        airtime_percent=_busier(polling),
         rx_airtime_percent=_percent(polling.get("rx_use"), "polling.rx_use"),
         tx_airtime_percent=_percent(polling.get("tx_use"), "polling.tx_use"),
         airtime_said=_said(polling),
+        stations=_each_station(wireless),
+        # How wide the channel is, in MHz. Not a diagnosis and not acted on -
+        # it is simply the largest single fact about what this link can carry,
+        # and it was nowhere on the console. The radio that was read said 10,
+        # which is a quarter of the width most of these are set up at.
+        channel_mhz=_number(wireless.get("chanbw")),
+        mode=str(wireless.get("mode") or ""),
         # kbps, confirmed on the device rather than assumed. See `_capacity`.
         tx_mbps=_mbps(throughput.get("tx")),
         rx_mbps=_mbps(throughput.get("rx")),

@@ -489,15 +489,82 @@ def test_the_link_quality_comes_from_the_linkscores_on_this_firmware() -> None:
     assert parse_status({"wireless": {"essid": "x"}}).quality_percent is None
 
 
-def test_the_airtime_is_read_because_it_is_what_fills_a_wireless_link() -> None:
-    """`polling.use` is 88 on his radio: 88% of the airtime is spent. Nothing
-    read it, so the panel said "3.1 Mb/s of 24 Mb/s (13%)" about a link with no
-    room left in it at all."""
+def test_the_airtime_is_the_busier_direction_and_never_the_two_added_up() -> None:
+    """A second radio settled what `polling.use` is, and it is not airtime.
+
+        "rx_use": 90, "tx_use": 30, "use": 120
+
+    So `use` is the two added together - and on this radio 73 + 15 = 88, which
+    is where the old figure came from. They cannot be added: an airMAX frame is
+    split into an uplink portion and a downlink portion, and each figure is how
+    full its OWN portion is. Two portions 90% and 30% full are not a medium
+    120% full, and drawing that put "175% of the link in use" in front of an
+    operator - and had the console turn his camera down for it.
+
+    The busier of the two is the honest answer to how much room is left, because
+    the link runs out when either portion does.
+    """
     status = parse_status(REAL_STATUS)
-    assert status.airtime_percent == 88.0
+    assert status.airtime_percent == 73.0
     assert status.rx_airtime_percent == 73.0
     assert status.tx_airtime_percent == 15.0
     assert parse_status(STATUS).airtime_percent is None
+
+
+def test_a_percentage_that_is_not_one_is_refused_and_kept_for_the_record() -> None:
+    """"There is no way the entire link (or 175% of it) is in use." A share of
+    the medium's time cannot exceed 100%, and a figure nobody can believe has to
+    become "not known" - because not known stops things happening and a wrong
+    number does not. What the radio said is kept, so the field can be
+    identified rather than argued about."""
+    payload = {
+        "wireless": {
+            "essid": "link",
+            "polling": {"use": 120, "rx_use": 90, "tx_use": 30},
+            "sta": [{"signal": -60}],
+        }
+    }
+    status = parse_status(payload)
+    assert status.airtime_percent == 90.0, "the busier direction, not the sum"
+    assert "use=120" in status.airtime_said
+
+
+def test_every_station_on_an_access_point_is_read_and_not_just_the_first() -> None:
+    """The radio in the field is `ap-ptmp` with a station at each camera.
+    Reading only sta[0] meant the whole panel described one of the two cameras
+    and said nothing at all about the other - with no hint there was another."""
+    payload = {
+        "wireless": {
+            "essid": "link",
+            "mode": "ap-ptmp",
+            "count": 2,
+            "polling": {"rx_use": 90, "tx_use": 30},
+            "sta": [
+                {
+                    "signal": -62,
+                    "lastip": "192.168.1.21",
+                    "airmax": {"rx": {"usage": 86}, "tx": {"usage": 5}},
+                    "remote": {"hostname": "S1", "tx_throughput": 697},
+                },
+                {
+                    "signal": -60,
+                    "lastip": "192.168.1.22",
+                    "airmax": {"rx": {"usage": 70}, "tx": {"usage": 16}},
+                    "remote": {"hostname": "S2", "tx_throughput": 4001},
+                },
+            ],
+        }
+    }
+    status = parse_status(payload)
+    assert [station["name"] for station in status.stations] == ["S1", "S2"]
+    assert status.stations[0]["sending_mbps"] == pytest.approx(0.697)
+    assert status.stations[1]["sending_mbps"] == pytest.approx(4.001)
+    assert status.stations[0]["airtime_in"] == 86.0
+    # The weakest is what the one headline figure is taken from: a panel that
+    # reports the healthier of two links says GOOD on the morning the other
+    # camera stops.
+    assert status.signal_dbm == -62
+    assert status.mode == "ap-ptmp"
 
 
 def test_the_throughput_is_kbps_on_the_firmware_that_was_measured() -> None:
@@ -546,7 +613,7 @@ def test_every_new_field_is_unknown_rather_than_zero_when_it_is_absent() -> None
     assert status.quality_percent is None
     # And an airtime of nought really is nought: a link nobody is using is not
     # a link nobody could read.
-    quiet = parse_status({"wireless": {"essid": "x", "polling": {"use": 0}}})
+    quiet = parse_status({"wireless": {"essid": "x", "polling": {"rx_use": 0, "tx_use": 0}}})
     assert quiet.airtime_percent == 0.0
 
 
@@ -892,7 +959,7 @@ def test_the_right_password_gets_in_on_that_same_firmware(real_radio: str) -> No
     device = AirOsRadio(real_radio, USER, PASSWORD)
     status = device.status()
     assert status.signal_dbm == -66
-    assert status.airtime_percent == 88.0
+    assert status.airtime_percent == 73.0, "the busier direction, not rx + tx"
     assert device.login_method == "session"
 
 

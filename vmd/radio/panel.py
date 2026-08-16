@@ -148,6 +148,15 @@ FULL_FRACTION = 0.9
 # Mb/s, which is the failure this guards.
 MOST_A_SHARE_CAN_BE = 150.0
 
+# How much worse one station's airtime-per-megabit has to be than another's
+# before the panel names it.
+#
+# Three. Two links within a factor of three are two links doing the same job on
+# a path with different weather on it; the radio that was read had one station
+# at 86% airtime for 0.7 Mb/s against another at 70% for 4.0 Mb/s, which is a
+# factor of seven and is a fault at one end rather than a busy link.
+EFFICIENCY_GAP = 3.0
+
 AIRTIME_BUSY_PERCENT = 60.0
 AIRTIME_FULL_PERCENT = 80.0
 
@@ -231,6 +240,7 @@ def link_lines(link: dict) -> list[tuple[str, str]]:
 
     lines += _signal_lines(link)
     lines += _traffic_lines(link)
+    lines += _station_lines(link)
     lines += _detail_lines(link)
     if stale:
         # Every figure goes grey, not only the ones that were green.
@@ -531,6 +541,85 @@ def _signal_lines(link: dict) -> list[tuple[str, str]]:
             )
         )
     return lines
+
+
+def _station_lines(link: dict) -> list[tuple[str, str]]:
+    """One line per camera on this radio: how strong, and how much it is sending.
+
+    Nothing at all on a point-to-point link, which has one far end and has
+    already had it described a few lines above. This is for the access point
+    this installation actually has, with a station at each camera - where "the
+    link" is four things at once and one number cannot describe them.
+
+    The figure that earns this its space is what each station is SENDING. On the
+    radio that was read, one was sending 0.7 Mb/s and the other 4.0 Mb/s while
+    spending 86% and 70% of the airtime doing it - so one camera was using more
+    of the link to deliver a sixth as much, and the console could not say so.
+    That is a picture that stutters at one camera and not the other, which is
+    exactly what was reported from the field, and it was invisible here.
+    """
+    stations = link.get("stations")
+    if not isinstance(stations, list) or len(stations) < 2:
+        return []
+
+    lines: list[tuple[str, str]] = [("Each camera on this radio:", PALETTE["muted"])]
+    for station in stations:
+        if not isinstance(station, dict):
+            continue
+        name = str(station.get("name") or "a camera")
+        parts = []
+        signal = _number(station.get("signal_dbm"))
+        if signal is not None:
+            parts.append(f"{signal:.0f} dBm")
+        sending = _number(station.get("sending_mbps"))
+        if sending is not None:
+            parts.append(f"sending {sending:.1f} Mb/s")
+        airtime = _number(station.get("airtime_in"))
+        if airtime is not None:
+            parts.append(f"for {airtime:.0f}% of the airtime")
+        colour = PALETTE["ink"]
+        # The one that is spending most of the medium to deliver least is the
+        # one to look at, and it is not obvious from the numbers side by side.
+        if airtime is not None and airtime >= AIRTIME_BUSY_PERCENT:
+            colour = PALETTE["warn"] if airtime < AIRTIME_FULL_PERCENT else PALETTE["alarm"]
+        lines.append((f"  {name}: " + ", ".join(parts) if parts else f"  {name}", colour))
+
+    worst = _least_efficient(stations)
+    if worst:
+        lines.append(
+            (
+                f"{worst} is using the most of the link to deliver the least. That is a "
+                f"radio problem at that end - aim, channel width or interference - and it "
+                f"is what makes the bigger picture on that camera stutter first.",
+                PALETTE["warn"],
+            )
+        )
+    return lines
+
+
+def _least_efficient(stations: list) -> str:
+    """Which station spends the most airtime per megabit, when one plainly does.
+
+    Only when the difference is large enough to act on: two links within a
+    factor of `EFFICIENCY_GAP` of each other are two links doing the same job,
+    and naming one of them would be noise on a panel that is read at 03:40.
+    """
+    scored = []
+    for station in stations:
+        if not isinstance(station, dict):
+            continue
+        airtime = _number(station.get("airtime_in"))
+        sending = _number(station.get("sending_mbps"))
+        if airtime is None or sending is None or sending <= 0 or airtime <= 0:
+            continue
+        scored.append((airtime / sending, str(station.get("name") or "one camera")))
+    if len(scored) < 2:
+        return ""
+    scored.sort()
+    best, worst = scored[0][0], scored[-1][0]
+    if best <= 0 or worst / best < EFFICIENCY_GAP:
+        return ""
+    return scored[-1][1]
 
 
 def _traffic_lines(link: dict) -> list[tuple[str, str]]:

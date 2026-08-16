@@ -277,7 +277,11 @@ def test_it_reports_the_airtime_because_that_is_the_reading_that_mattered(capsys
     airtime = next(
         line for line in out.splitlines() if line.strip().startswith("airtime_percent")
     )
-    assert "88" in airtime and "polling.use" in airtime, airtime
+    # 73, not 88. 88 was `polling.use`, which a radio in the field proved is
+    # rx_use and tx_use added together - and adding them put "175% of the link
+    # in use" on the console. The busier direction is the reading.
+    assert "73" in airtime, airtime
+    assert "rx_use" in airtime, airtime
 
 
 def test_it_reports_the_far_end_and_the_link_quality(capsys) -> None:

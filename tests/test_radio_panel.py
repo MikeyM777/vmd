@@ -208,11 +208,24 @@ def test_throughput_without_a_capacity_is_still_shown_and_says_which_is_missing(
 # of, so it leads.
 
 
-def test_the_airtime_is_shown_and_his_link_reads_as_full() -> None:
+def test_the_airtime_is_shown_and_a_busy_link_is_coloured() -> None:
+    """73%, not 88. 88 was `polling.use`, which a second radio proved is rx_use
+    and tx_use added together - and the two cannot be added, because each is how
+    full its own half of the airMAX frame is."""
     lines = link_lines(his_link())
     said = texts(lines)
-    assert "88" in said and "airtime" in said
-    assert coloured(lines, PALETTE["alarm"]), "88% of the airtime is not a black figure"
+    assert "73" in said and "airtime" in said
+    assert coloured(lines, PALETTE["warn"]), "73% of the airtime is not a black figure"
+
+
+def test_a_link_whose_busier_direction_is_full_says_so() -> None:
+    """The radio in the field: 90% on the way in, which is the direction the
+    video travels."""
+    lines = link_lines(
+        his_link(airtime_percent=90.0, rx_airtime_percent=90.0, tx_airtime_percent=30.0)
+    )
+    assert coloured(lines, PALETTE["alarm"])
+    assert "full" in texts(lines)
 
 
 def test_the_airtime_is_the_first_thing_said_about_the_traffic() -> None:
@@ -257,7 +270,10 @@ def test_the_airtime_is_split_by_direction_because_the_video_is_one_way() -> Non
 
 
 def test_a_full_link_says_that_is_what_a_stuttering_picture_is() -> None:
-    said = texts(link_lines(his_link()))
+    said = texts(
+        link_lines(his_link(airtime_percent=90.0, rx_airtime_percent=90.0,
+                            tx_airtime_percent=30.0))
+    )
     assert "stutter" in said or "full" in said
 
 
@@ -286,11 +302,11 @@ def test_the_capacity_is_presented_as_an_estimate_and_never_as_a_percentage_used
 
 
 def test_the_airtime_says_what_the_link_is_really_carrying() -> None:
-    """The arithmetic that settles the 4K argument: 10.9 Mb/s costs 88% of the
-    airtime, so the whole link is about 12 Mb/s - not the 194 the estimate
-    claims, and not room for a second stream."""
+    """The arithmetic that settles the 4K argument: 10.9 Mb/s costs 73% of the
+    airtime, so the whole link is about 15 Mb/s - not the 194 the estimate
+    claims, and not room for three more streams."""
     said = texts(link_lines(his_link()))
-    assert "12" in said, said
+    assert "15 mb/s is the whole of this link" in said, said
 
 
 # ------------------------------------------------------------------ the far end

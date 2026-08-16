@@ -205,7 +205,16 @@ LOOKED_FOR: dict[str, tuple[str, ...]] = {
         "wireless.ccq (which is a 0-1000 scale, and these are not)",
     ),
     "ccq": ("wireless.ccq",),
-    "airtime_percent": ("wireless.polling.use",),
+    # The busier direction, and deliberately NOT polling.use. A radio in the
+    # field reported rx_use 90, tx_use 30 and use 120: `use` is the two added
+    # together, and adding them is what put "175% of the link in use" on the
+    # console. On an airMAX frame the medium is split into an uplink portion and
+    # a downlink one and each figure is how full its own portion is.
+    "airtime_percent": (
+        "wireless.polling.rx_use",
+        "wireless.polling.tx_use",
+        "(the busier of the two - never wireless.polling.use, which is their sum)",
+    ),
     "rx_airtime_percent": ("wireless.polling.rx_use",),
     "tx_airtime_percent": ("wireless.polling.tx_use",),
     "tx_mbps": ("wireless.throughput.tx",),

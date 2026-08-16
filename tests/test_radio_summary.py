@@ -47,10 +47,25 @@ from vmd.radio.panel import (
 # ------------------------------------------------------------------- the word
 
 
-def test_his_own_link_is_one_word_and_that_word_is_full() -> None:
-    """The reading that started all of this: -66 dBm, 88% of the airtime spent,
-    10.7 Mb/s of video on it. Fourteen sentences said so. One word has to."""
+def test_his_own_link_is_one_word_and_that_word_is_busy() -> None:
+    """The reading that started all of this: -66 dBm, 10.7 Mb/s of video on it,
+    and 73% of the airtime spent in the direction carrying it. Fourteen
+    sentences said so. One word has to.
+
+    73 and not 88: 88 was `polling.use`, which a second radio proved is rx_use
+    and tx_use added together. Adding them is what later put "175% of the link
+    in use" on his screen, and had the console turn his camera down for it.
+    """
     summary = link_summary(his_link())
+    assert summary["headline"] == HEADLINE_BUSY
+    assert summary["state"] == "warn"
+
+
+def test_a_link_full_in_the_direction_the_video_travels_is_one_word_too() -> None:
+    """The radio in the field: 90% in, 30% out, and the video is coming in."""
+    summary = link_summary(
+        his_link(airtime_percent=90.0, rx_airtime_percent=90.0, tx_airtime_percent=30.0)
+    )
     assert summary["headline"] == HEADLINE_FULL
     assert summary["state"] == "alarm"
 
@@ -132,9 +147,9 @@ def test_a_signal_off_either_end_of_the_scale_stays_on_the_bar(signal: float) ->
 
 def test_the_in_use_bar_is_the_airtime_when_the_radio_reports_one() -> None:
     summary = link_summary(his_link())
-    assert summary["use"] == pytest.approx(88.0)
-    assert summary["use_caption"] == "88%"
-    assert summary["use_state"] == "alarm"
+    assert summary["use"] == pytest.approx(73.0)
+    assert summary["use_caption"] == "73%"
+    assert summary["use_state"] == "warn"
 
 
 def test_the_in_use_bar_falls_back_to_the_busiest_direction_of_the_capacity() -> None:
@@ -241,10 +256,10 @@ def test_the_panel_leads_with_the_word_and_the_bars(qtbot) -> None:
     panel = LinkPanel(FakeRadioService(his_link()))
     qtbot.addWidget(panel)
     panel.refresh()
-    assert panel.summary()["headline"] == HEADLINE_FULL
+    assert panel.summary()["headline"] == HEADLINE_BUSY
     signal, use = panel.meters()
     assert signal.reading()[1] == "-66 dBm"
-    assert use.reading()[1] == "88%"
+    assert use.reading()[1] == "73%"
 
 
 def test_the_bars_are_coloured_by_what_they_mean(qtbot) -> None:
@@ -253,7 +268,7 @@ def test_the_bars_are_coloured_by_what_they_mean(qtbot) -> None:
     panel.refresh()
     signal, use = panel.meters()
     assert signal.reading()[2] == state_colour("warn"), "-66 dBm is workable, not healthy"
-    assert use.reading()[2] == state_colour("alarm"), "88% of the airtime is not black"
+    assert use.reading()[2] == state_colour("warn"), "73% of the airtime is not black"
 
 
 def test_the_sentences_are_shut_by_default_and_still_exist(qtbot) -> None:
@@ -315,7 +330,15 @@ def test_the_panel_does_not_say_the_same_thing_three_times_when_opened(qtbot) ->
     """
     from PySide6.QtWidgets import QApplication
 
-    panel = LinkPanel(FakeRadioService(his_link()))
+    # A link that is FULL, because that is the state whose note and whose
+    # sentence say the same thing - and saying it twice is what he complained
+    # about. His own link reads BUSY now that the airtime is the busier
+    # direction rather than the two added up.
+    panel = LinkPanel(
+        FakeRadioService(
+            his_link(airtime_percent=90.0, rx_airtime_percent=90.0, tx_airtime_percent=30.0)
+        )
+    )
     qtbot.addWidget(panel)
     panel.resize(340, 900)
     panel.show()
