@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -135,6 +135,22 @@ RECENT_LIMIT = 20
 # every two seconds when the recordings folder is unreachable, and it is the
 # right way round - a console frozen at that moment shows nothing at all.
 EVENTS_POLL_SECONDS = 0.0
+
+# How often the movement list is read, in milliseconds.
+#
+# It used to be read on the window's two-second heartbeat and nothing else, so
+# up to two whole seconds passed between the detector writing a row and the room
+# hearing about it - on top of everything the camera, the link and the detector
+# had already spent. That was the largest fixable part of "after a couple of
+# seconds it beeped", and the only one that costs nothing at all to remove:
+# there is no trade here, no setting, and nothing to tune.
+#
+# A quarter of a second. Below what anybody perceives as a delay, and it cannot
+# turn into noise however fast it reads - the chime holds itself to one sound
+# every twelve seconds whatever arrives. `Watched` allows one reading at a time,
+# so a database on a drive that has gone cannot queue a worker per tick behind
+# a call that is blocked.
+MOVEMENT_POLL_MS = 250
 
 # How big the picture of what moved is drawn in the alarm strip.
 #
@@ -913,6 +929,19 @@ class LiveTab(QWidget):
         self._side.setFrameShape(QFrame.Shape.NoFrame)
         self._side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._side)
+
+        # The movement list, on its own timer rather than on the window's
+        # heartbeat. See MOVEMENT_POLL_MS. Its own, and not a shorter heartbeat,
+        # because the heartbeat also restarts child processes and asks the
+        # camera things - none of which is wanted four times a second.
+        #
+        # Started whatever the tab is doing and never stopped while it lives: a
+        # console left on the Settings tab must still make a sound when
+        # something moves, and this timer is what makes it.
+        self._movement_timer = QTimer(self)
+        self._movement_timer.timeout.connect(self._refresh_events)
+        if self._events_watch is not None:
+            self._movement_timer.start(MOVEMENT_POLL_MS)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Give the column a share of the tab rather than a number.
@@ -2220,6 +2249,7 @@ class LiveTab(QWidget):
         owes the camera a stop, and letting the thread go before delivering it
         would leave the head slewing with nobody watching.
         """
+        self._movement_timer.stop()
         self.stop_steering()
         self._commands.close()
 

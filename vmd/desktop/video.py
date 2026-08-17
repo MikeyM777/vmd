@@ -215,12 +215,15 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS) -> list[str]:
     behind it further back, which is what stops a delay that has happened once
     from becoming permanent.
 
-    Hardware decoding stays. It buffers a frame or two - about 40-80 ms at
-    25 fps - and that is a real part of the remaining delay, but this console
-    draws two 4K pictures beside each other on a machine that also records and
-    detects, and taking it away trades a measurable delay for a dropped-frame
-    problem that is worse. `spike/probe_delay.py` turns it off so the trade can
-    be measured on the machine rather than argued about here.
+    Hardware decoding stays, and it is the weakest of these decisions. It
+    buffers a frame or two - about 40-80 ms at 25 fps - which is a real part of
+    the remaining delay. It was kept because this console draws two pictures
+    beside each other on a machine that also records and detects; at the FHD
+    these cameras actually send, rather than the 4K assumed when this was
+    written, software decoding is well within a desktop's reach and the trade is
+    worth reopening. `spike/probe_delay.py` runs a pane with it off, side by
+    side with one that has it on, so that is measured on the machine rather than
+    argued about here.
     """
     delay = max(0, int(delay_ms))
     options = [

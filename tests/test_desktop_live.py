@@ -1650,3 +1650,52 @@ def test_pressing_the_movement_line_with_nothing_behind_it_asks_for_nothing(
     tab.show_footage.connect(asked.append)
     tab._show_newest()
     assert asked == []
+
+# ------------------------------------------------ how soon the room is told
+#
+# The movement list used to be read on the window's two-second heartbeat and
+# nothing else, so up to two whole seconds passed between the detector writing a
+# row and the sound being made - on top of everything the camera, the link and
+# the detector had already spent. It was the largest fixable part of "after a
+# couple of seconds it beeped", and the only part that costs nothing to remove.
+
+
+def test_the_movement_list_is_read_on_its_own_timer_and_not_the_heartbeat(qtbot) -> None:
+    from vmd.desktop.live import MOVEMENT_POLL_MS
+
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([]))
+    assert tab._movement_timer.isActive()
+    assert tab._movement_timer.interval() == MOVEMENT_POLL_MS
+    # A quarter of a second at most, which is below what anybody perceives. The
+    # heartbeat this replaces is two seconds.
+    assert MOVEMENT_POLL_MS <= 500
+
+
+def test_the_timer_really_reads_the_movement_list(qtbot) -> None:
+    """The connection, not just the interval: a timer wired to nothing keeps
+    perfect time and tells nobody anything."""
+    events = FakeEvents()
+    tab, _ptz, _panes = build(qtbot, "thermal", events=events)
+    tab.refresh()  # the first read only learns what was already there
+
+    events.events.append(movement(1, stream="thermal"))
+    tab._movement_timer.timeout.emit()
+
+    assert tab.announced(), "the timer fired and nothing was read"
+
+
+def test_a_tab_with_no_movement_list_does_not_run_a_timer_for_nothing(qtbot) -> None:
+    """A console with no events database is an ordinary state - detection off,
+    or a folder that has gone - and four wake-ups a second for a question
+    nobody can answer is a machine that runs for months doing it."""
+    tab, _ptz, _panes = build(qtbot, "thermal", events=None)
+    assert not tab._movement_timer.isActive()
+
+
+def test_closing_the_tab_stops_the_timer(qtbot) -> None:
+    """It outlives the window otherwise, reading a database the console has
+    closed on the way out."""
+    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([]))
+    assert tab._movement_timer.isActive()
+    tab.shutdown()
+    assert not tab._movement_timer.isActive()

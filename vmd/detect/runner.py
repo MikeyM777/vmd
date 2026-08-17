@@ -697,13 +697,21 @@ class StreamDetector:
     def _catch_up(self) -> int:
         """Throw away the frames that arrived while the last one was being read.
 
-        This is the fault behind "after a couple of seconds it beeped", and its
-        shape is worse than its size. `read()` hands over the OLDEST frame in
-        the queue, so a detector that cannot process 25 frames a second of 4K
-        does not settle at a slower rate - it falls further behind every second,
-        for as long as the process runs. On a machine nobody restarts for
-        months that is an alarm that is minutes late by the end of the week, and
-        nothing on the screen would ever have said so.
+        This is one of the faults behind "after a couple of seconds it beeped",
+        and its shape is worse than its size. `read()` hands over the OLDEST
+        frame in the queue, so a detector that cannot keep up does not settle at
+        a slower rate - it falls further behind every second, for as long as the
+        process runs. On a machine nobody restarts for months that is an alarm
+        minutes late by the end of the week, and nothing on the screen would
+        ever have said so.
+
+        How close to the edge this runs was measured rather than guessed.
+        Motion detection costs about 20 ms a frame at the FHD these cameras
+        send, which is 50 frames a second against the 25 arriving - so one
+        stream has room, and so do the four a desktop running two consoles has.
+        It is the case where that stops being true that this exists for: a
+        slower machine, a busier one, or a camera turned up to 4K, where the
+        same measurement is 78 ms and 12.8 frames a second against 25.
 
         Every frame skipped here is a picture of a moment a later frame already
         describes better. Nothing is lost that the detector could have used: the

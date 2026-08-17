@@ -53,10 +53,10 @@ logger = logging.getLogger(__name__)
 # alarms he missed were about.
 KEEP_PER_STREAM = 50
 
-# The longest edge a still is saved at. The camera is 4K and nothing here needs
-# to be: this is looked at in a strip a few hundred pixels wide, and a 4K JPEG
-# would cost a megabyte and about a tenth of a second to encode on the thread
-# that is meant to be watching the perimeter.
+# The longest edge a still is saved at. The camera sends FHD and nothing here
+# needs to: this is looked at in a column a few hundred pixels wide, and a
+# full-size JPEG costs several times the bytes and the encoding time on the
+# thread that is meant to be watching the perimeter.
 LONGEST_EDGE = 960
 
 # JPEG quality. High enough that a person at 700 m - about thirteen pixels - is
