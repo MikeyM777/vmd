@@ -639,7 +639,7 @@ def test_the_alarm_strip_can_still_appear_while_the_camera_is_not_answering(
         elapsed = time.monotonic() - started
     finally:
         ptz.released.set()
-    assert tab.alarm_visible(), "movement went unannounced while the camera hung"
+    assert tab.announced(), "movement went unannounced while the camera hung"
     assert elapsed < 0.5, f"the heartbeat blocked for {elapsed:.2f} s"
 
 
@@ -924,16 +924,15 @@ def test_a_new_event_raises_the_alarm_naming_the_stream_and_the_time(qtbot) -> N
     events = FakeEvents()
     tab, _, _ = build(qtbot, "thermal", "visible", events=events)
     tab.refresh()  # nothing has moved yet
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
     events.events.append(movement(1, stream="thermal", started=1_770_000_123.0))
     tab.refresh()
 
-    assert tab.alarm_visible() is True
+    assert tab.announced() is True
     assert "thermal" in tab.alarm_text()
     assert clock_text(1_770_000_123.0) in tab.alarm_text()
-    assert PALETTE["alarm"] in tab.alarm_style()
-
+    
 
 def test_acknowledging_clears_the_alarm(qtbot) -> None:
     events = FakeEvents()
@@ -941,15 +940,15 @@ def test_acknowledging_clears_the_alarm(qtbot) -> None:
     tab.refresh()
     events.events.append(movement(1))
     tab.refresh()
-    assert tab.alarm_visible() is True
+    assert tab.announced() is True
 
     tab.acknowledge()
 
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
     # And it stays cleared: the same event must not raise it again on the next
     # tick, two seconds later, forever.
     tab.refresh()
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
 
 def test_the_alarm_outlines_the_pane_the_movement_was_seen_on(qtbot) -> None:
@@ -979,7 +978,7 @@ def test_movement_the_console_missed_does_not_raise_a_stale_alarm(qtbot) -> None
     # skip it, or the alarm arrives two seconds late instead of never.
     tab.refresh()
 
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
     assert len(tab.recent_rows()) == 2
 
 
@@ -1037,14 +1036,14 @@ def test_movement_after_the_clock_was_set_back_still_raises_the_alarm(qtbot) -> 
     events = FakeEvents([movement(1, stream="thermal", started=1_770_000_600.0)])
     tab, _, _ = build(qtbot, "thermal", events=events)
     tab.refresh()  # what was already there, established rather than alarmed about
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
     # The clock is corrected backwards by a minute; the next confirmed movement
     # carries an earlier timestamp than the one before it.
     events.events.append(movement(2, stream="thermal", started=1_770_000_540.0))
     tab.refresh()
 
-    assert tab.alarm_visible() is True, "movement was recorded and nothing said so"
+    assert tab.announced() is True, "movement was recorded and nothing said so"
     assert "thermal" in tab.alarm_text()
 
 
@@ -1055,12 +1054,12 @@ def test_a_movement_database_that_started_again_still_raises_the_alarm(qtbot) ->
     events = FakeEvents([movement(5000, started=1_770_000_600.0)])
     tab, _, _ = build(qtbot, "thermal", events=events)
     tab.refresh()
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
     events.events = [movement(1, started=1_770_000_900.0)]
     tab.refresh()
 
-    assert tab.alarm_visible() is True
+    assert tab.announced() is True
 
 
 def test_retention_taking_the_newest_event_does_not_invent_an_alarm(qtbot) -> None:
@@ -1075,7 +1074,7 @@ def test_retention_taking_the_newest_event_does_not_invent_an_alarm(qtbot) -> No
     events.events = [e for e in events.events if e.id != 2]
     tab.refresh()
 
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
 
 def test_the_list_is_not_rebuilt_when_nothing_has_moved(qtbot) -> None:
@@ -1116,7 +1115,7 @@ def test_an_event_store_that_cannot_be_read_does_not_stop_the_pictures(qtbot) ->
     panes["thermal"].pretend_failed()
     tab.refresh()
     assert panes["thermal"].restarts == 1
-    assert tab.alarm_visible() is False
+    assert tab.announced() is False
 
 
 def test_a_console_with_no_event_reader_still_shows_the_pictures(qtbot, caplog) -> None:
@@ -1583,57 +1582,31 @@ def moved(tab, event) -> None:
     tab.refresh()
 
 
-def test_the_alarm_strip_offers_to_show_the_footage(qtbot) -> None:
-    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
-    moved(tab, movement(2, started=1_770_000_100.0))
-    assert tab.alarm_visible()
+def test_the_outline_takes_itself_off_after_half_a_minute(qtbot) -> None:
+    """Nothing dismisses it any more - the button that did went with the strip.
 
-    asked: list = []
-    tab.show_footage.connect(asked.append)
-    tab._show_me.click()
-
-    assert [event.id for event in asked] == [2], "Show me asked for nothing"
-
-
-def test_the_two_buttons_on_the_alarm_strip_are_both_plain_words(qtbot) -> None:
-    """**Show me** and **Acknowledge**, side by side: one of them is how a man
-    speaks and the other is how a form does.
-
-    They are read together, in the second after being woken by a red strip, and
-    they are the two things he actually means - go and look, or I have seen it.
-    Pressing it still does not mean he has looked: the button that goes to the
-    footage is the other one, and that has not changed.
+    So it has to come off on its own, or a gust at 03:40 leaves one picture
+    outlined in red until somebody restarts the console, and the outline stops
+    meaning "just now" and starts meaning nothing at all.
     """
-    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
+    from vmd.desktop.live import OUTLINE_SECONDS
+
+    now = [1000.0]
+    tab, _ptz, _panes = build(
+        qtbot, "thermal", events=FakeEvents([movement(1)]), clock=lambda: now[0]
+    )
     moved(tab, movement(2, started=1_770_000_100.0))
-
-    assert tab._show_me.text() == "Show me"
-    assert tab.acknowledge_button.text() == "Seen it"
-
-    # And it is still the button that clears the strip.
-    assert tab.alarm_visible()
-    tab.acknowledge_button.click()
-    assert not tab.alarm_visible()
-    assert tab.outlined_stream() is None
-
-
-def test_show_me_does_not_take_the_alarm_down(qtbot) -> None:
-    """Acknowledge is the only thing that clears the strip, and it still is.
-
-    Going to look at the footage is not the same as having dealt with it - and
-    a movement whose footage is gone would otherwise take its own notice down
-    on the way to showing him nothing.
-    """
-    tab, _ptz, _panes = build(qtbot, "thermal", events=FakeEvents([movement(1)]))
-    moved(tab, movement(2, started=1_770_000_100.0))
-
-    tab._show_me.click()
-
-    assert tab.alarm_visible(), "Show me acknowledged the alarm"
+    assert tab.announced()
     assert tab.outlined_stream() == "thermal"
-    tab.acknowledge()
-    assert not tab.alarm_visible()
+
+    now[0] += OUTLINE_SECONDS - 1.0
+    tab.refresh()
+    assert tab.outlined_stream() == "thermal", "it came off while it still meant now"
+
+    now[0] += 2.0
+    tab.refresh()
     assert tab.outlined_stream() is None
+    assert not tab.announced()
 
 
 def test_show_me_asks_for_nothing_when_there_is_no_alarm(qtbot) -> None:

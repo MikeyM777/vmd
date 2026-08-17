@@ -683,7 +683,7 @@ def test_an_arriving_alarm_makes_a_sound(qtbot) -> None:
     tab, _ptz, _panes = live_tab(qtbot, "thermal", chime=chime)
 
     tab._raise_alarm(Moved())
-    assert tab.alarm_visible(), "the strip did not go up, so this proves nothing"
+    assert tab.announced(), "nothing was announced, so this proves nothing"
     assert len(sounds) == 1
 
 
@@ -701,7 +701,7 @@ def test_switching_the_sound_off_in_settings_silences_the_alarm(qtbot) -> None:
     quiet.detection.alarm_sound = False
     tab.apply(quiet)
     tab._raise_alarm(Moved())
-    assert tab.alarm_visible(), "the strip must still go up"
+    assert tab.announced(), "the movement must still be announced"
     assert sounds == [], "it made a noise with the sound switched off"
 
     loud = settings_with("thermal")
@@ -723,7 +723,7 @@ def test_a_sound_device_that_dies_does_not_cost_him_the_alarm(qtbot) -> None:
         qtbot, "thermal", chime=Chime(player=angry, clock=lambda: 1000.0)
     )
     tab._raise_alarm(Moved())  # must not raise
-    assert tab.alarm_visible()
+    assert tab.announced()
 
 
 def test_show_me_leaves_fullscreen_instead_of_stranding_him_on_playback(

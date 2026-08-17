@@ -142,8 +142,22 @@ EVENTS_POLL_SECONDS = 0.0
 # is about thirteen pixels in the frame, so about three here - and short enough
 # that the strip stays a strip: it sits under the pictures and may never push
 # them up the screen, which is DESIGN.md's rule about the alarm.
+# How long the red outline stays round the picture something moved on.
+#
+# Half a minute. Long enough that a man who looked up at the sound still sees
+# which picture it was; short enough that it is gone before the next thing
+# moves, so the outline always means "just now" and never "at some point
+# tonight". It replaces the Seen it button, which is what used to take it off.
+OUTLINE_SECONDS = 30.0
+
 ALARM_PICTURE_W = 256
 ALARM_PICTURE_H = 144
+
+# And in the side column, where it lives now that the strip is gone. Taller,
+# because the column has the room a strip did not and because a person at 700 m
+# is thirteen pixels in the frame. The width is whatever the column gives it.
+MOVEMENT_PICTURE_W = 300
+MOVEMENT_PICTURE_H = 170
 
 # How many restarts of one stream are reported in full before the console
 # starts saying it once in a while instead. The same shape as the supervisor's
@@ -744,6 +758,8 @@ class LiveTab(QWidget):
         # Where the pictures of what moved live, or None until a settings file
         # has said. A tab driven directly by a test has none and shows none.
         self._recordings_root = None
+        # When the outline round a picture comes off, or None when none is on.
+        self._outline_until: float | None = None
         # Whether there is anywhere to send him when he asks to see footage.
         # True until the window says otherwise: this tab is built before the
         # window knows what the settings say, and a Live tab driven on its own
@@ -1007,11 +1023,27 @@ class LiveTab(QWidget):
     # ------------------------------------------------------------ what moved
 
     def _build_alarm_strip(self) -> QWidget:
-        """The strip across the top. Hidden until something moves.
+        """What movement looks like now: a sound, and a picture in the column.
 
-        Hidden rather than empty: a strip that is always there is furniture, and
-        furniture is not noticed. The operator is watching the pictures, not
-        this.
+        "Please remove the seen it red alarms, it's useless, just the sound."
+
+        The red strip is gone and so are both its buttons. It demanded an
+        acknowledgement for every gust through a treeline, it cleared itself the
+        moment the next thing moved - so the acknowledgement bought nothing -
+        and it sat under the pictures taking room from them. What it was for is
+        done better by the chime, which reaches him when he is turned away, and
+        by the picture of what moved in the side column, which is still there
+        when he looks back and does not have to be dismissed.
+
+        The widget itself stays and is never shown. Everything that reports on
+        this tab - the layout tests, the window, the fullscreen mode - asks it
+        questions, and a tab that answered them by raising AttributeError would
+        be a bigger change than the one that was asked for. `_raise_alarm` no
+        longer shows it, which is the whole of the removal.
+
+        What was NOT removed, and must not be: the record. Every movement is
+        still read, still counted, still written, and still drawn in the side
+        column. The alarm strip was the announcement; it was never the evidence.
         """
         self._alarm = QFrame()
         self._alarm.setStyleSheet(
@@ -1119,6 +1151,22 @@ class LiveTab(QWidget):
         )
         self._movement_line.clicked.connect(self._show_newest)
         layout.addWidget(self._movement_line)
+        # The picture of the last thing that moved, with the box on it.
+        #
+        # It was in the alarm strip and the alarm strip is gone. Here it needs
+        # no dismissing and takes nothing from the pictures: it sits in the
+        # column, it changes when something moves, and it is still showing the
+        # last one when he looks back an hour later. That is the half of the
+        # strip that was worth keeping.
+        #
+        # Wider than it was, because this column is wider than a strip is tall
+        # and because a person at 700 m is thirteen pixels in the frame.
+        self._movement_picture = QLabel()
+        self._movement_picture.setFixedHeight(MOVEMENT_PICTURE_H)
+        self._movement_picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._movement_picture.setStyleSheet(f"background: {PALETTE['well']}; border: 0;")
+        self._movement_picture.setVisible(False)
+        layout.addWidget(self._movement_picture)
         self._show_movement_or_not()
         return box
 
@@ -1302,11 +1350,16 @@ class LiveTab(QWidget):
         self._show_movement_or_not()
 
     def _raise_alarm(self, event) -> None:
+        """Something moved. Make the sound, and put it in the column.
+
+        No strip and no red band: see `_build_alarm_strip`. The outline round
+        the picture it happened on stays - it is on the picture rather than over
+        it, it costs no room, and it needs no dismissing.
+        """
         clock = datetime.datetime.fromtimestamp(event.started).strftime("%H:%M:%S")
         self._alarm_label.setText(f"Movement on {event.stream} at {clock}")
         self._alarm_event = event
         self._show_what_moved(event)
-        self._alarm.setVisible(True)
         self._outline(event.stream)
         # And out loud, because he is not always looking at the screen. The
         # strip is red and wide and was completely silent, so an intrusion at
@@ -1343,8 +1396,9 @@ class LiveTab(QWidget):
         seconds - and holding pixmaps for events nobody is looking at is how a
         console that runs for months grows.
         """
-        self._alarm_picture.clear()
-        self._alarm_picture.setVisible(False)
+        for label in self._picture_labels():
+            label.clear()
+            label.setVisible(False)
         if self._recordings_root is None:
             return
         try:
@@ -1365,8 +1419,49 @@ class LiveTab(QWidget):
                 )
             )
             self._alarm_picture.setVisible(True)
+            # Scaled again rather than reusing the one above: the column is a
+            # different shape from the strip was, and a pixmap squeezed to fit
+            # a box it was not made for is the one thing on this tab nobody
+            # could tell from a camera that has gone soft.
+            self._movement_picture.setPixmap(
+                picture.scaled(
+                    self._movement_picture.width() or MOVEMENT_PICTURE_W,
+                    MOVEMENT_PICTURE_H,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self._movement_picture.setVisible(True)
         except Exception:  # noqa: BLE001 - a picture may never cost the alarm
             logger.exception("the picture of what moved could not be shown")
+
+    def _take_the_outline_off_when_it_is_due(self) -> None:
+        """The half-minute the outline lasts, checked on the heartbeat.
+
+        Here rather than on a timer of its own: this tab already has one thing
+        that runs every beat, and a second timer is a second thing to stop when
+        the window closes and a second thing to forget.
+        """
+        if self._outline_until is None:
+            return
+        if self._clock() < self._outline_until:
+            return
+        self._outline_until = None
+        self._alarm_event = None
+        self._outline(None)
+
+    def _picture_labels(self) -> list:
+        """Both places a picture of movement is drawn. One of them is never
+        shown any more - see `_build_alarm_strip` - and clearing it costs
+        nothing and keeps the two from ever disagreeing."""
+        return [
+            label
+            for label in (
+                getattr(self, "_alarm_picture", None),
+                getattr(self, "_movement_picture", None),
+            )
+            if label is not None
+        ]
 
     def acknowledge(self) -> None:
         """The operator has seen it. Clear the strip and the outline."""
@@ -1379,6 +1474,13 @@ class LiveTab(QWidget):
 
     def _outline(self, stream: str | None) -> None:
         self._alarm_stream = stream
+        # When it comes off again. Nothing dismisses it any more - the button
+        # that did is gone with the strip - so it has to take itself down, or a
+        # gust at 03:40 leaves one picture outlined in red until somebody
+        # restarts the console and the outline stops meaning anything at all.
+        self._outline_until = (
+            None if stream is None else self._clock() + OUTLINE_SECONDS
+        )
         for name, frame in self._frames.items():
             frame.setStyleSheet(
                 f"QFrame#videoFrame {{ border: 3px solid {PALETTE['alarm']}; "
@@ -1389,6 +1491,17 @@ class LiveTab(QWidget):
             )
 
     # -- what the tests and the window read ---------------------------------
+
+    def announced(self) -> bool:
+        """Whether this tab has announced a movement that is still current.
+
+        The question `alarm_visible` used to answer. There is no strip to be
+        visible any more - see `_build_alarm_strip` - so the honest form of the
+        question is whether there is a movement being reported at all: the
+        sound has been made, the picture is in the column, and the picture it
+        happened on is outlined.
+        """
+        return self._alarm_event is not None
 
     def alarm_visible(self) -> bool:
         # isVisibleTo, not isVisible: a widget inside a window nobody has shown
@@ -1867,6 +1980,7 @@ class LiveTab(QWidget):
         """Read every pane's state. Restart only what has actually failed.
 
         Late is a report, not a trigger. The pane is left exactly as it is."""
+        self._take_the_outline_off_when_it_is_due()
         for name, pane in self._panes.items():
             # A view the operator has switched away from is stopped on purpose.
             # Reading its state here would report it as stopped, which is true,

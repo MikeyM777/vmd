@@ -220,20 +220,17 @@ def console(qtbot, tmp_path: Path) -> ConsoleWindow:
 def in_the_worst_state(window: ConsoleWindow) -> None:
     """Put every tab into the state that carries the longest sentences."""
     live = window.live
-    live._alarm_label.setText("Movement on thermal at 03:41:08")
-    live._alarm.setVisible(True)
-    # And the picture of what moved, which is the tallest thing the strip ever
-    # carries. Without it these measurements are of a strip in a state the
-    # operator only sees when detection found nothing to photograph - and the
-    # strip is under the pictures, so what it costs comes out of them.
+    # The picture of what moved, in the side column where it lives now that the
+    # red strip is gone. It is the tallest thing that column ever carries, and
+    # the column is what has to fit on a 720p panel.
     from PySide6.QtGui import QPixmap
 
-    from vmd.desktop.live import ALARM_PICTURE_H, ALARM_PICTURE_W
+    from vmd.desktop.live import MOVEMENT_PICTURE_H, MOVEMENT_PICTURE_W
 
-    shot = QPixmap(ALARM_PICTURE_W, ALARM_PICTURE_H)
+    shot = QPixmap(MOVEMENT_PICTURE_W, MOVEMENT_PICTURE_H)
     shot.fill()
-    live._alarm_picture.setPixmap(shot)
-    live._alarm_picture.setVisible(True)
+    live._movement_picture.setPixmap(shot)
+    live._movement_picture.setVisible(True)
 
     # The stream line, which is the longest sentence on the Live tab and the
     # reason this file measures it at all.

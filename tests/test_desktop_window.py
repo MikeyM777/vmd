@@ -2209,7 +2209,7 @@ def alarmed(window, events_path: Path, when: float) -> None:
         "the movement list was never read at all"
     )
     something_moves(events_path, when)
-    assert beating(window, window.live.alarm_visible), "the movement raised no alarm"
+    assert beating(window, window.live.announced), "the movement raised no alarm"
 
 
 def test_show_me_takes_him_to_the_footage(qtbot, tmp_path: Path) -> None:
@@ -2320,7 +2320,7 @@ def test_with_playback_off_there_is_no_button_offering_to_go_there(
     window, _ = build(qtbot, tmp_path, events_path=events_path)
     alarmed(window, events_path, start + 3660)
 
-    assert window.live.alarm_visible(), "the alarm went with the tab"
+    assert window.live.announced(), "the alarm went with the tab"
     assert not window.live._show_me.isVisibleTo(window.live)
 
     # And the two ways in are dead ends rather than crashes, whichever way they
@@ -2638,7 +2638,13 @@ def a_still(tmp_path: Path, stream: str, started: float) -> Path:
     return path
 
 
-def test_the_alarm_strip_shows_the_picture_of_what_moved(qtbot, tmp_path: Path) -> None:
+def test_the_column_shows_the_picture_of_what_moved(qtbot, tmp_path: Path) -> None:
+    """"Please remove the seen it red alarms, it's useless, just the sound."
+
+    The strip is gone and this is the half of it that was worth keeping: it
+    needs no dismissing, it takes nothing from the pictures, and it is still
+    showing the last thing that moved when he looks back an hour later.
+    """
     start, events_path = a_day_with(tmp_path, recorded=True)
     when = start + 3660
     a_still(tmp_path, "thermal", when)
@@ -2646,9 +2652,10 @@ def test_the_alarm_strip_shows_the_picture_of_what_moved(qtbot, tmp_path: Path) 
     window, _ = build(qtbot, tmp_path, events_path=events_path)
     alarmed(window, events_path, when)
 
-    picture = window.live._alarm_picture
-    assert picture.isVisibleTo(window.live), "the strip is up with no picture on it"
+    picture = window.live._movement_picture
+    assert picture.isVisibleTo(window.live), "nothing was drawn in the column"
     assert picture.pixmap() is not None and not picture.pixmap().isNull()
+    assert not window.live._alarm.isVisibleTo(window.live), "the red strip came back"
     window.close()
 
 
@@ -2659,32 +2666,46 @@ def test_an_alarm_with_no_picture_still_raises_the_strip(qtbot, tmp_path: Path) 
     window, _ = build(qtbot, tmp_path, events_path=events_path)
     alarmed(window, events_path, start + 3660)
 
-    assert window.live.alarm_visible()
+    assert window.live.announced()
     assert not window.live._alarm_picture.isVisibleTo(window.live)
     window.close()
 
 
-def test_the_picture_goes_when_it_is_acknowledged(qtbot, tmp_path: Path) -> None:
-    """A picture of a night that has been dealt with, left on the screen, is the
-    console saying something is happening when nothing is."""
+def test_the_picture_of_the_last_movement_stays_until_the_next_one(
+    qtbot, tmp_path: Path
+) -> None:
+    """The opposite of the strip's rule, and deliberately.
+
+    The strip had to be dismissed and cleared itself the moment anything else
+    moved, so the one thing he wanted to look at was the one thing that had
+    gone. This is a record of the last movement and stays a record of it.
+    """
     start, events_path = a_day_with(tmp_path, recorded=True)
     when = start + 3660
     a_still(tmp_path, "thermal", when)
 
     window, _ = build(qtbot, tmp_path, events_path=events_path)
     alarmed(window, events_path, when)
-    assert window.live._alarm_picture.isVisibleTo(window.live)
+    assert window.live._movement_picture.isVisibleTo(window.live)
 
-    window.live.acknowledge()
-    assert not window.live._alarm_picture.isVisibleTo(window.live)
-    assert not window.live.alarm_visible()
+    # The outline comes off on its own; the picture does not go with it.
+    window.live._outline(None)
+    window.heartbeat()
+    assert window.live._movement_picture.isVisibleTo(window.live)
     window.close()
 
 
-def test_the_picture_is_there_in_fullscreen_too(qtbot, tmp_path: Path) -> None:
-    """The side column is gone in fullscreen and fullscreen is how this console
-    is watched. A picture only visible with the numbers beside it would be a
-    picture nobody sees."""
+def test_in_fullscreen_the_outline_is_what_says_which_camera_it_was(
+    qtbot, tmp_path: Path
+) -> None:
+    """Fullscreen is pictures and sound, which is what was asked for.
+
+    The column is gone there, so the picture of what moved is gone with it - and
+    the outline round the picture it happened on is the whole of what is left on
+    the screen. It is ON the picture rather than over it, it costs no room, and
+    it takes itself off. Without it, fullscreen would announce movement by sound
+    alone and never say which of the two cameras.
+    """
     start, events_path = a_day_with(tmp_path, recorded=True)
     when = start + 3660
     a_still(tmp_path, "thermal", when)
@@ -2693,7 +2714,8 @@ def test_the_picture_is_there_in_fullscreen_too(qtbot, tmp_path: Path) -> None:
     alarmed(window, events_path, when)
     window.fullscreen.enter()
 
-    assert window.live._alarm_picture.isVisibleTo(window.live)
     assert not window.live.side_visible(), "this was not fullscreen at all"
+    assert window.live.outlined_stream() == "thermal"
+    assert not window.live._alarm.isVisibleTo(window.live), "the red strip came back"
     window.fullscreen.leave()
     window.close()
