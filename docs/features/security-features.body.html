@@ -1,0 +1,1202 @@
+<style>
+/* The product's own palette and type scale - vmd/desktop/style.py - because
+   this page is about that product. Its rule travels with it: no state is ever
+   carried by colour alone, so every status carries a glyph as well. */
+:root {
+  --bg: #1B1D20;
+  --surface: #27292C;
+  --raised: #33353A;
+  --line: #45484D;
+  --line-strong: #656970;
+  --ink: #F4F5F7;
+  --muted: #B4B7BE;
+  --accent: #EEBB58;
+  --ok: #6ED889;
+  --warn: #FFBC56;
+  --alarm: #FF534B;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --display: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #F6F5F3;
+    --surface: #FFFFFF;
+    --raised: #EFEDE8;
+    --line: #DCD8D0;
+    --line-strong: #A9A49A;
+    --ink: #1B1D20;
+    --muted: #5F6167;
+    --accent: #8A6412;
+    --ok: #2E7D46;
+    --warn: #8A5A00;
+    --alarm: #B3241C;
+    --shadow: rgba(27, 29, 32, 0.10);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #F6F5F3; --surface: #FFFFFF; --raised: #EFEDE8; --line: #DCD8D0;
+  --line-strong: #A9A49A; --ink: #1B1D20; --muted: #5F6167; --accent: #8A6412;
+  --ok: #2E7D46; --warn: #8A5A00; --alarm: #B3241C; --shadow: rgba(27,29,32,0.10);
+}
+:root[data-theme="dark"] {
+  --bg: #1B1D20; --surface: #27292C; --raised: #33353A; --line: #45484D;
+  --line-strong: #656970; --ink: #F4F5F7; --muted: #B4B7BE; --accent: #EEBB58;
+  --ok: #6ED889; --warn: #FFBC56; --alarm: #FF534B; --shadow: rgba(0,0,0,0.35);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 40px) 96px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.top, .controls, .group, .foot { max-width: 1080px; margin-inline: auto; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+h1 {
+  font-size: clamp(28px, 4.2vw, 44px);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  margin: 0 0 14px;
+  max-width: 20ch;
+}
+.stand { font-size: 17px; color: var(--muted); max-width: 62ch; margin: 0 0 26px; }
+.note {
+  max-width: 68ch; color: var(--muted); font-size: 14px;
+  border-left: 2px solid var(--line); padding-left: 14px; margin: 22px 0 0;
+}
+.note strong { color: var(--ink); font-weight: 600; }
+
+.tally {
+  display: flex; flex-wrap: wrap; gap: 10px; margin: 0; padding: 0;
+}
+.tally-item {
+  display: flex; align-items: baseline; gap: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-bottom-width: 2px; padding: 9px 14px;
+}
+.tally-item dt {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; gap: 7px;
+}
+.tally-item dd {
+  margin: 0; font-family: var(--mono); font-size: 18px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tally-item.is-have { border-bottom-color: var(--ok); }
+.tally-item.is-partial { border-bottom-color: var(--warn); }
+.tally-item.is-missing { border-bottom-color: var(--line-strong); }
+.tally-item.is-never { border-bottom-color: var(--alarm); }
+.tally-item.is-pick { border-bottom-color: var(--accent); }
+.is-have .glyph { color: var(--ok); }
+.is-partial .glyph { color: var(--warn); }
+.is-missing .glyph { color: var(--line-strong); }
+.is-never .glyph { color: var(--alarm); }
+.is-pick .glyph { color: var(--accent); }
+
+.controls {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  padding: 14px 0 12px; margin-top: 34px;
+  background: var(--bg); border-bottom: 1px solid var(--line);
+}
+#find {
+  flex: 1 1 260px; min-width: 0;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); padding: 10px 12px;
+  font-family: var(--display); font-size: 14px;
+}
+#find::placeholder { color: var(--muted); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip, .button {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.03em;
+  background: var(--surface); color: var(--muted);
+  border: 1px solid var(--line); border-bottom-width: 2px;
+  padding: 8px 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover, .button:hover { color: var(--ink); }
+.chip.on { color: var(--ink); border-bottom-color: var(--accent); background: var(--raised); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.group { margin-top: 44px; }
+.group h2 {
+  font-size: 13px; font-family: var(--mono); letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600;
+  margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+}
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 150px;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  padding: 15px 16px;
+}
+.row.is-have { border-left-color: var(--ok); }
+.row.is-partial { border-left-color: var(--warn); }
+.row.is-never { border-left-color: var(--alarm); }
+.row:has(input:checked) { background: var(--raised); border-color: var(--accent); }
+.row h3 {
+  font-size: 16px; font-weight: 600; margin: 0 0 5px; line-height: 1.3;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+}
+.star { color: var(--accent); font-size: 13px; }
+.row p { margin: 0 0 5px; max-width: 68ch; }
+.what { color: var(--ink); }
+.why, .who { font-size: 13.5px; color: var(--muted); }
+.lead {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--line-strong); margin-right: 5px;
+}
+.tick { display: flex; align-items: flex-start; justify-content: center; padding-top: 2px; }
+.tick input { position: absolute; opacity: 0; width: 0; height: 0; }
+.tick label {
+  display: block; width: 22px; height: 22px; cursor: pointer;
+  border: 2px solid var(--line-strong); background: transparent;
+}
+.tick input:checked + label { background: var(--accent); border-color: var(--accent); }
+.tick input:checked + label::after {
+  content: ""; display: block; width: 6px; height: 12px; margin: 1px auto;
+  border: solid var(--bg); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
+}
+.tick input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+.meta { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.chip-flat, .inline-chip {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap;
+}
+.effort {
+  font-family: var(--mono); font-size: 11px; color: var(--line-strong);
+  letter-spacing: 0.04em;
+}
+.sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+.chosen { margin: 14px 0 18px; padding-left: 22px; }
+.chosen li { margin-bottom: 5px; }
+.chosen .in { color: var(--muted); font-size: 12.5px; margin-left: 9px; }
+.chosen .none { list-style: none; margin-left: -22px; color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.button.quiet { border-bottom-color: var(--line); }
+.said { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+
+.foot {
+  margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12.5px;
+}
+.foot p { margin: 0 0 6px; max-width: 72ch; }
+.foot code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+
+@media (max-width: 720px) {
+  .row { grid-template-columns: 30px minmax(0, 1fr); }
+  .meta { grid-column: 2; flex-direction: row; align-items: center; }
+  .controls { position: static; }
+}
+@media print {
+  .controls, .actions, .tick { display: none; }
+  body { background: #fff; color: #000; padding: 0; }
+  .row { break-inside: avoid; border-color: #999; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+<header class="top">
+<p class="eyebrow">VMD &middot; feature review</p>
+<h1>What the other systems do, and what VMD does</h1>
+<p class="stand">Everything the leading systems sell, measured against what this console already does. Tick what you want; the list you build is saved in this page and can be copied out at the bottom.</p>
+<dl class="tally">
+<div class="tally-item is-have"><dt><span class="glyph">●</span>In VMD</dt><dd>11</dd></div>
+<div class="tally-item is-partial"><dt><span class="glyph">◐</span>Partly</dt><dd>5</dd></div>
+<div class="tally-item is-missing"><dt><span class="glyph">○</span>Not yet</dt><dd>31</dd></div>
+<div class="tally-item is-never"><dt><span class="glyph">✕</span>Not for us</dt><dd>6</dd></div>
+<div class="tally-item is-pick"><dt><span class="glyph">★</span>My picks</dt><dd>13</dd></div>
+</dl>
+<p class="note">Judged for <strong>this</strong> site: two thermal and visible PTZ cameras on one radio link, an air-gapped desktop, one operator. A feature that is excellent in a shopping centre can be worthless here, and a few are impossible on a machine with no network. Those are marked <span class="inline-chip is-never"><span class="glyph">&#10005;</span> Not for us</span> and say why rather than being left out.</p>
+</header>
+<div class="controls" role="search">
+<input type="search" id="find" placeholder="Filter by word - tripwire, disk, zoom..." aria-label="Filter features">
+<div class="filters" role="group" aria-label="Show only">
+<button type="button" class="chip on" data-filter="all">Everything</button>
+<button type="button" class="chip" data-filter="pick">★ My picks</button>
+<button type="button" class="chip is-have" data-filter="have"><span class="glyph">●</span>In VMD</button>
+<button type="button" class="chip is-partial" data-filter="partial"><span class="glyph">◐</span>Partly</button>
+<button type="button" class="chip is-missing" data-filter="missing"><span class="glyph">○</span>Not yet</button>
+<button type="button" class="chip is-never" data-filter="never"><span class="glyph">✕</span>Not for us</button>
+</div>
+</div>
+<section class="group" id="gfindingthingsthatmatter">
+<h2>Finding things that matter</h2>
+<ul class="rows">
+<li class="row is-have" data-status="have" data-text="areas to ignore paint out the parts of the picture that are never news - a road, a treeline, a flag. everyone. frigate, milestone, blue iris, sightlogix. freehand, drawn on a still of what the camera sees, with no numbers anywhere. rescales itself if the stream resolution changes.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Areas to ignore" data-key="gfindingthingsthatmatter:Areas to ignore"><label for="gfindingthingsthatmatter:Areas to ignore"><span class="sr">Choose Areas to ignore</span></label>
+</div>
+<div class="body">
+<h3>Areas to ignore</h3>
+<p class="what">Paint out the parts of the picture that are never news - a road, a treeline, a flag.</p>
+<p class="why"><span class="lead">Here:</span> Freehand, drawn on a still of what the camera sees, with no numbers anywhere. Rescales itself if the stream resolution changes.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone. Frigate, Milestone, Blue Iris, SightLogix.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="areas to watch the opposite: alarm only inside a drawn area, and stay silent everywhere else. frigate (zones), axis perimeter defender, genetec, milestone. the single biggest false-alarm cut available. right now everything outside the ignore areas is watched, so an area of interest has to be built by painting out the whole rest of the world.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Areas to watch" data-key="gfindingthingsthatmatter:Areas to watch"><label for="gfindingthingsthatmatter:Areas to watch"><span class="sr">Choose Areas to watch</span></label>
+</div>
+<div class="body">
+<h3>Areas to watch<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">The opposite: alarm ONLY inside a drawn area, and stay silent everywhere else.</p>
+<p class="why"><span class="lead">Here:</span> The single biggest false-alarm cut available. Right now everything outside the ignore areas is watched, so an area of interest has to be built by painting out the whole rest of the world.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate (zones), Axis Perimeter Defender, Genetec, Milestone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="tripwire, with a direction a line across the picture. alarm when something crosses it, and only one way if you say so. axis, genetec, milestone, hanwha, most cameras themselves. this is what a perimeter is. &quot;someone crossed the fence line inward&quot; is a different fact from &quot;something moved&quot;, and it is the one worth waking up for.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Tripwire, with a direction" data-key="gfindingthingsthatmatter:Tripwire, with a direction"><label for="gfindingthingsthatmatter:Tripwire, with a direction"><span class="sr">Choose Tripwire, with a direction</span></label>
+</div>
+<div class="body">
+<h3>Tripwire, with a direction<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">A line across the picture. Alarm when something crosses it, and only one way if you say so.</p>
+<p class="why"><span class="lead">Here:</span> This is what a perimeter IS. &quot;Someone crossed the fence line inward&quot; is a different fact from &quot;something moved&quot;, and it is the one worth waking up for.</p>
+<p class="who"><span class="lead">Who has it:</span> Axis, Genetec, Milestone, Hanwha, most cameras themselves.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="must stay in the area for n seconds ignore anything that only clips the edge of a zone in passing. frigate calls it inertia; axis and genetec call it dwell. cheap on top of areas to watch, and kills the branch that swings across a corner of the frame.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Must stay in the area for N seconds" data-key="gfindingthingsthatmatter:Must stay in the area for N seconds"><label for="gfindingthingsthatmatter:Must stay in the area for N seconds"><span class="sr">Choose Must stay in the area for N seconds</span></label>
+</div>
+<div class="body">
+<h3>Must stay in the area for N seconds</h3>
+<p class="what">Ignore anything that only clips the edge of a zone in passing.</p>
+<p class="why"><span class="lead">Here:</span> Cheap on top of areas to watch, and kills the branch that swings across a corner of the frame.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate calls it inertia; Axis and Genetec call it dwell.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="loitering alarm when something stays put for longer than it should. axis, genetec, sightlogix, hanwha. somebody standing still at 700 m is exactly what movement detection is worst at: they stop moving and the track dies.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Loitering" data-key="gfindingthingsthatmatter:Loitering"><label for="gfindingthingsthatmatter:Loitering"><span class="sr">Choose Loitering</span></label>
+</div>
+<div class="body">
+<h3>Loitering<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Alarm when something stays put for longer than it should.</p>
+<p class="why"><span class="lead">Here:</span> Somebody standing still at 700 m is exactly what movement detection is worst at: they stop moving and the track dies.</p>
+<p class="who"><span class="lead">Who has it:</span> Axis, Genetec, SightLogix, Hanwha.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-partial" data-status="partial" data-text="speed and direction filters too fast is a vehicle, too slow is drift, and the wrong bearing is not your problem. sightlogix, axis, genetec. there is a travel rule (the wind rule) but no speed and no bearing. bearing would let the far side of the road be ignored without painting it out.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Speed and direction filters" data-key="gfindingthingsthatmatter:Speed and direction filters"><label for="gfindingthingsthatmatter:Speed and direction filters"><span class="sr">Choose Speed and direction filters</span></label>
+</div>
+<div class="body">
+<h3>Speed and direction filters</h3>
+<p class="what">Too fast is a vehicle, too slow is drift, and the wrong bearing is not your problem.</p>
+<p class="why"><span class="lead">Here:</span> There is a travel rule (the wind rule) but no speed and no bearing. Bearing would let the far side of the road be ignored without painting it out.</p>
+<p class="who"><span class="lead">Who has it:</span> SightLogix, Axis, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-partial"><span class="glyph">◐</span>Partly</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="size in metres, not pixels calibrate the view once, then say &quot;ignore anything smaller than a person at that range&quot;. sightlogix builds their whole product on this (georegistration). the size rule is in pixels and a share of frame height today, which means it changes meaning every time the camera zooms. a rabbit at 40 m and a man at 700 m are the same number of pixels.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Size in metres, not pixels" data-key="gfindingthingsthatmatter:Size in metres, not pixels"><label for="gfindingthingsthatmatter:Size in metres, not pixels"><span class="sr">Choose Size in metres, not pixels</span></label>
+</div>
+<div class="body">
+<h3>Size in metres, not pixels<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Calibrate the view once, then say &quot;ignore anything smaller than a person at that range&quot;.</p>
+<p class="why"><span class="lead">Here:</span> The size rule is in pixels and a share of frame height today, which means it changes meaning every time the camera zooms. A rabbit at 40 m and a man at 700 m are the same number of pixels.</p>
+<p class="who"><span class="lead">Who has it:</span> SightLogix builds their whole product on this (georegistration).</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a week or more</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="human-shaped filter a person is taller than wide. reject blobs that are not. sightlogix (aspect ratio filtering). very cheap, and it throws away a lot of what a treeline produces.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Human-shaped filter" data-key="gfindingthingsthatmatter:Human-shaped filter"><label for="gfindingthingsthatmatter:Human-shaped filter"><span class="sr">Choose Human-shaped filter</span></label>
+</div>
+<div class="body">
+<h3>Human-shaped filter</h3>
+<p class="what">A person is taller than wide. Reject blobs that are not.</p>
+<p class="why"><span class="lead">Here:</span> Very cheap, and it throws away a lot of what a treeline produces.</p>
+<p class="who"><span class="lead">Who has it:</span> SightLogix (aspect ratio filtering).</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="steady the picture before looking at it take the mast sway out of the frame so wind does not read as movement. sightlogix stabilise in the camera before analytics run. a pole at 700 m moves in wind, and every pixel moves with it. this is the difference between usable and unusable on a windy night.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Steady the picture before looking at it" data-key="gfindingthingsthatmatter:Steady the picture before looking at it"><label for="gfindingthingsthatmatter:Steady the picture before looking at it"><span class="sr">Choose Steady the picture before looking at it</span></label>
+</div>
+<div class="body">
+<h3>Steady the picture before looking at it</h3>
+<p class="what">Take the mast sway out of the frame so wind does not read as movement.</p>
+<p class="why"><span class="lead">Here:</span> A pole at 700 m moves in wind, and every pixel moves with it. This is the difference between usable and unusable on a windy night.</p>
+<p class="who"><span class="lead">Who has it:</span> SightLogix stabilise in the camera before analytics run.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a week or more</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="say what it was - person, vehicle, animal a model puts a noun on what moved. frigate, axis, sightlogix, genetec, milestone. you asked for this removed and the arithmetic agrees: at 700 m a person is about 13 pixels, and a model trained on photographs has nothing to say about that. the code is still there behind one switch if you change your mind.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Say what it was - person, vehicle, animal" data-key="gfindingthingsthatmatter:Say what it was - person, vehicle, animal"><label for="gfindingthingsthatmatter:Say what it was - person, vehicle, animal"><span class="sr">Choose Say what it was - person, vehicle, animal</span></label>
+</div>
+<div class="body">
+<h3>Say what it was - person, vehicle, animal</h3>
+<p class="what">A model puts a noun on what moved.</p>
+<p class="why"><span class="lead">Here:</span> You asked for this removed and the arithmetic agrees: at 700 m a person is about 13 pixels, and a model trained on photographs has nothing to say about that. The code is still there behind one switch if you change your mind.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate, Axis, SightLogix, Genetec, Milestone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="two levels: worth waking for, and worth logging some movement is an alarm, the rest is just a record. frigate (alerts vs detections). everything is equal now. a tripwire crossing and a bird are the same event with the same sound.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Two levels: worth waking for, and worth logging" data-key="gfindingthingsthatmatter:Two levels: worth waking for, and worth logging"><label for="gfindingthingsthatmatter:Two levels: worth waking for, and worth logging"><span class="sr">Choose Two levels: worth waking for, and worth logging</span></label>
+</div>
+<div class="body">
+<h3>Two levels: worth waking for, and worth logging<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Some movement is an alarm, the rest is just a record.</p>
+<p class="why"><span class="lead">Here:</span> Everything is equal now. A tripwire crossing and a bird are the same event with the same sound.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate (alerts vs detections).</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="different rules at different times of day arm at dusk, relax during working hours, tighten at night. blue iris (profiles and schedules), milestone, genetec. the perimeter is not the same problem at 14:00 and 03:00, and today one setting has to serve both.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Different rules at different times of day" data-key="gfindingthingsthatmatter:Different rules at different times of day"><label for="gfindingthingsthatmatter:Different rules at different times of day"><span class="sr">Choose Different rules at different times of day</span></label>
+</div>
+<div class="body">
+<h3>Different rules at different times of day</h3>
+<p class="what">Arm at dusk, relax during working hours, tighten at night.</p>
+<p class="why"><span class="lead">Here:</span> The perimeter is not the same problem at 14:00 and 03:00, and today one setting has to serve both.</p>
+<p class="who"><span class="lead">Who has it:</span> Blue Iris (profiles and schedules), Milestone, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="sound detection alarm on a gunshot, glass, a shout. frigate (600+ sounds), genetec. there is no audio anywhere in this system on purpose: the camera sends a format mp4 cannot hold, and it cost a day of recording once already.">
+<div class="tick">
+<input type="checkbox" id="gfindingthingsthatmatter:Sound detection" data-key="gfindingthingsthatmatter:Sound detection"><label for="gfindingthingsthatmatter:Sound detection"><span class="sr">Choose Sound detection</span></label>
+</div>
+<div class="body">
+<h3>Sound detection</h3>
+<p class="what">Alarm on a gunshot, glass, a shout.</p>
+<p class="why"><span class="lead">Here:</span> There is no audio anywhere in this system on purpose: the camera sends a format MP4 cannot hold, and it cost a day of recording once already.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate (600+ sounds), Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="gknowingthecameraisstilltellingthetruth">
+<h2>Knowing the camera is still telling the truth</h2>
+<ul class="rows">
+<li class="row is-partial" data-status="partial" data-pick="1" data-text="tamper alarm - covered, turned, sprayed, defocused alarm when the view changes, not when something moves in it. genetec, milestone, axis, hanwha. a flat or frozen picture is already noticed and reported as blindness, and a camera that has been moved suppresses its own frame. neither of them raises anything the operator hears. this is the attack a perimeter system has to survive.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Tamper alarm - covered, turned, sprayed, defocused" data-key="gknowingthecameraisstilltellingthetruth:Tamper alarm - covered, turned, sprayed, defocused"><label for="gknowingthecameraisstilltellingthetruth:Tamper alarm - covered, turned, sprayed, defocused"><span class="sr">Choose Tamper alarm - covered, turned, sprayed, defocused</span></label>
+</div>
+<div class="body">
+<h3>Tamper alarm - covered, turned, sprayed, defocused<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Alarm when the VIEW changes, not when something moves in it.</p>
+<p class="why"><span class="lead">Here:</span> A flat or frozen picture is already noticed and reported as blindness, and a camera that has been moved suppresses its own frame. Neither of them raises anything the operator hears. This is the attack a perimeter system has to survive.</p>
+<p class="who"><span class="lead">Who has it:</span> Genetec, Milestone, Axis, Hanwha.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-partial"><span class="glyph">◐</span>Partly</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="was it recording all night? a report of every gap in the recording, with the reason. milestone, genetec, nx witness. the segment index already knows. nothing asks it. &quot;yes, all of it&quot; is the question that gets asked the morning after something happened, and today the only answer is scrolling the logs tab.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Was it recording all night?" data-key="gknowingthecameraisstilltellingthetruth:Was it recording all night?"><label for="gknowingthecameraisstilltellingthetruth:Was it recording all night?"><span class="sr">Choose Was it recording all night?</span></label>
+</div>
+<div class="body">
+<h3>Was it recording all night?<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">A report of every gap in the recording, with the reason.</p>
+<p class="why"><span class="lead">Here:</span> The segment index already knows. Nothing asks it. &quot;Yes, all of it&quot; is the question that gets asked the morning after something happened, and today the only answer is scrolling the Logs tab.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec, Nx Witness.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-partial" data-status="partial" data-pick="1" data-text="show the rules that are throwing things away how many blobs each rejection rule discarded: too small, above the horizon, inside an ignore area. nobody shows this well. frigate&#x27;s debug view comes closest. these counters are already computed and published, and nothing displays them. a size rule set wrong deletes every real detection and says nothing - and on fhd the standard sensitivity may be doing exactly that.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Show the rules that are throwing things away" data-key="gknowingthecameraisstilltellingthetruth:Show the rules that are throwing things away"><label for="gknowingthecameraisstilltellingthetruth:Show the rules that are throwing things away"><span class="sr">Choose Show the rules that are throwing things away</span></label>
+</div>
+<div class="body">
+<h3>Show the rules that are throwing things away<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">How many blobs each rejection rule discarded: too small, above the horizon, inside an ignore area.</p>
+<p class="why"><span class="lead">Here:</span> These counters are already computed and published, and nothing displays them. A size rule set wrong deletes every real detection and says nothing - and on FHD the standard sensitivity may be doing exactly that.</p>
+<p class="who"><span class="lead">Who has it:</span> Nobody shows this well. Frigate&#x27;s debug view comes closest.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-partial"><span class="glyph">◐</span>Partly</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="health at a glance one page: every camera, recording, disk, link, up or down. milestone, genetec, nx witness all sell this hard. the status band across the top, plus the logs tab. smaller than theirs and it fits two cameras.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Health at a glance" data-key="gknowingthecameraisstilltellingthetruth:Health at a glance"><label for="gknowingthecameraisstilltellingthetruth:Health at a glance"><span class="sr">Choose Health at a glance</span></label>
+</div>
+<div class="body">
+<h3>Health at a glance</h3>
+<p class="what">One page: every camera, recording, disk, link, up or down.</p>
+<p class="why"><span class="lead">Here:</span> The status band across the top, plus the Logs tab. Smaller than theirs and it fits two cameras.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec, Nx Witness all sell this hard.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-partial" data-status="partial" data-text="disk failure warning, not just disk full smart attributes, write errors, a drive on its way out. milestone, genetec. free space and write failures are watched. the drive&#x27;s own opinion of itself is not asked for.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Disk failure warning, not just disk full" data-key="gknowingthecameraisstilltellingthetruth:Disk failure warning, not just disk full"><label for="gknowingthecameraisstilltellingthetruth:Disk failure warning, not just disk full"><span class="sr">Choose Disk failure warning, not just disk full</span></label>
+</div>
+<div class="body">
+<h3>Disk failure warning, not just disk full</h3>
+<p class="what">SMART attributes, write errors, a drive on its way out.</p>
+<p class="why"><span class="lead">Here:</span> Free space and write failures are watched. The drive&#x27;s own opinion of itself is not asked for.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-partial"><span class="glyph">◐</span>Partly</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="clock sanity warn when the machine&#x27;s time is wrong, because every recording is filed under it. milestone, genetec (ntp monitoring). this machine has no internet and its clock is set by hand. the code already survives the clock going backwards; nothing warns anybody that it did.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Clock sanity" data-key="gknowingthecameraisstilltellingthetruth:Clock sanity"><label for="gknowingthecameraisstilltellingthetruth:Clock sanity"><span class="sr">Choose Clock sanity</span></label>
+</div>
+<div class="body">
+<h3>Clock sanity</h3>
+<p class="what">Warn when the machine&#x27;s time is wrong, because every recording is filed under it.</p>
+<p class="why"><span class="lead">Here:</span> This machine has no internet and its clock is set by hand. The code already survives the clock going backwards; nothing warns anybody that it did.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec (NTP monitoring).</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="redundant recording / failover server a second machine takes over when the first dies. milestone, genetec, nx witness. one box, air-gapped. a second one is a procurement decision and not a feature.">
+<div class="tick">
+<input type="checkbox" id="gknowingthecameraisstilltellingthetruth:Redundant recording / failover server" data-key="gknowingthecameraisstilltellingthetruth:Redundant recording / failover server"><label for="gknowingthecameraisstilltellingthetruth:Redundant recording / failover server"><span class="sr">Choose Redundant recording / failover server</span></label>
+</div>
+<div class="body">
+<h3>Redundant recording / failover server</h3>
+<p class="what">A second machine takes over when the first dies.</p>
+<p class="why"><span class="lead">Here:</span> One box, air-gapped. A second one is a procurement decision and not a feature.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec, Nx Witness.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="gwhattheoperatordoeswhensomethinghappens">
+<h2>What the operator does when something happens</h2>
+<ul class="rows">
+<li class="row is-have" data-status="have" data-text="a sound make a noise in the room. everyone. two alternating tones, purpose-built so it is not mistaken for a windows notification, and it can be switched off.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:A sound" data-key="gwhattheoperatordoeswhensomethinghappens:A sound"><label for="gwhattheoperatordoeswhensomethinghappens:A sound"><span class="sr">Choose A sound</span></label>
+</div>
+<div class="body">
+<h3>A sound</h3>
+<p class="what">Make a noise in the room.</p>
+<p class="why"><span class="lead">Here:</span> Two alternating tones, purpose-built so it is not mistaken for a Windows notification, and it can be switched off.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="the picture of what moved, with the box on it a still of the exact frame the detection was confirmed on. frigate (snapshots), milestone, genetec. in the side column, needing no dismissing, and saved to disk so it can be sent to somebody.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:The picture of what moved, with the box on it" data-key="gwhattheoperatordoeswhensomethinghappens:The picture of what moved, with the box on it"><label for="gwhattheoperatordoeswhensomethinghappens:The picture of what moved, with the box on it"><span class="sr">Choose The picture of what moved, with the box on it</span></label>
+</div>
+<div class="body">
+<h3>The picture of what moved, with the box on it</h3>
+<p class="what">A still of the exact frame the detection was confirmed on.</p>
+<p class="why"><span class="lead">Here:</span> In the side column, needing no dismissing, and saved to disk so it can be sent to somebody.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate (snapshots), Milestone, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="an alarm list with a state on each one new, acknowledged, closed - with who and when. every serious vms. you had the red strip removed and were right to. what a list gives that the strip did not is history: the ten things that happened while nobody was in the room.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:An alarm list with a state on each one" data-key="gwhattheoperatordoeswhensomethinghappens:An alarm list with a state on each one"><label for="gwhattheoperatordoeswhensomethinghappens:An alarm list with a state on each one"><span class="sr">Choose An alarm list with a state on each one</span></label>
+</div>
+<div class="body">
+<h3>An alarm list with a state on each one</h3>
+<p class="what">New, acknowledged, closed - with who and when.</p>
+<p class="why"><span class="lead">Here:</span> You had the red strip removed and were right to. What a list gives that the strip did not is history: the ten things that happened while nobody was in the room.</p>
+<p class="who"><span class="lead">Who has it:</span> Every serious VMS.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="silence one camera for an hour time-limited, and it un-silences itself. genetec (shelving), most alarm systems. the honest answer to a windy night. today the only lever is switching detection off, which stays off.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:Silence one camera for an hour" data-key="gwhattheoperatordoeswhensomethinghappens:Silence one camera for an hour"><label for="gwhattheoperatordoeswhensomethinghappens:Silence one camera for an hour"><span class="sr">Choose Silence one camera for an hour</span></label>
+</div>
+<div class="body">
+<h3>Silence one camera for an hour<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Time-limited, and it un-silences itself.</p>
+<p class="why"><span class="lead">Here:</span> The honest answer to a windy night. Today the only lever is switching detection off, which stays off.</p>
+<p class="who"><span class="lead">Who has it:</span> Genetec (shelving), most alarm systems.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="escalate if nobody responds nobody acknowledged in n minutes - do something louder. genetec mission control, most alarm platforms. only worth it with somewhere to escalate to. on an air-gapped box that means a louder sound or a relay.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:Escalate if nobody responds" data-key="gwhattheoperatordoeswhensomethinghappens:Escalate if nobody responds"><label for="gwhattheoperatordoeswhensomethinghappens:Escalate if nobody responds"><span class="sr">Choose Escalate if nobody responds</span></label>
+</div>
+<div class="body">
+<h3>Escalate if nobody responds</h3>
+<p class="what">Nobody acknowledged in N minutes - do something louder.</p>
+<p class="why"><span class="lead">Here:</span> Only worth it with somewhere to escalate TO. On an air-gapped box that means a louder sound or a relay.</p>
+<p class="who"><span class="lead">Who has it:</span> Genetec Mission Control, most alarm platforms.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="a checklist on the alarm what to do about this, written down, at the moment it happens. genetec (action plans), milestone. the user guide covers this. on screen at 03:40 is better than in a pdf.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:A checklist on the alarm" data-key="gwhattheoperatordoeswhensomethinghappens:A checklist on the alarm"><label for="gwhattheoperatordoeswhensomethinghappens:A checklist on the alarm"><span class="sr">Choose A checklist on the alarm</span></label>
+</div>
+<div class="body">
+<h3>A checklist on the alarm</h3>
+<p class="what">What to do about this, written down, at the moment it happens.</p>
+<p class="why"><span class="lead">Here:</span> The user guide covers this. On screen at 03:40 is better than in a PDF.</p>
+<p class="who"><span class="lead">Who has it:</span> Genetec (action plans), Milestone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="mark a moment by hand bookmark something you noticed, so you can find it later. milestone, nx witness, genetec. the timeline only shows what the detector found. there is no way to mark something you saw with your own eyes.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:Mark a moment by hand" data-key="gwhattheoperatordoeswhensomethinghappens:Mark a moment by hand"><label for="gwhattheoperatordoeswhensomethinghappens:Mark a moment by hand"><span class="sr">Choose Mark a moment by hand</span></label>
+</div>
+<div class="body">
+<h3>Mark a moment by hand</h3>
+<p class="what">Bookmark something you noticed, so you can find it later.</p>
+<p class="why"><span class="lead">Here:</span> The timeline only shows what the detector found. There is no way to mark something you saw with your own eyes.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Nx Witness, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="notify a phone push, sms, email. everyone. impossible and deliberately so. this machine has no network of any kind, and that is a requirement of the site.">
+<div class="tick">
+<input type="checkbox" id="gwhattheoperatordoeswhensomethinghappens:Notify a phone" data-key="gwhattheoperatordoeswhensomethinghappens:Notify a phone"><label for="gwhattheoperatordoeswhensomethinghappens:Notify a phone"><span class="sr">Choose Notify a phone</span></label>
+</div>
+<div class="body">
+<h3>Notify a phone</h3>
+<p class="what">Push, SMS, email.</p>
+<p class="why"><span class="lead">Here:</span> Impossible and deliberately so. This machine has no network of any kind, and that is a requirement of the site.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="gdrivingthecamera">
+<h2>Driving the camera</h2>
+<ul class="rows">
+<li class="row is-have" data-status="have" data-text="steer by keys and by dragging the picture point the camera at something. everyone. arrow keys, shift for fine, drag near an edge to slew, and a zoom bar per lens on a shared gimbal.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Steer by keys and by dragging the picture" data-key="gdrivingthecamera:Steer by keys and by dragging the picture"><label for="gdrivingthecamera:Steer by keys and by dragging the picture"><span class="sr">Choose Steer by keys and by dragging the picture</span></label>
+</div>
+<div class="body">
+<h3>Steer by keys and by dragging the picture</h3>
+<p class="what">Point the camera at something.</p>
+<p class="why"><span class="lead">Here:</span> Arrow keys, Shift for fine, drag near an edge to slew, and a zoom bar per lens on a shared gimbal.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="saved positions store &quot;the gate&quot;, &quot;the north fence&quot;, jump back to them in one click. everyone, including the camera itself. there is a home and nothing else. nine tenths of the steering an operator does is going back to the same three places.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Saved positions" data-key="gdrivingthecamera:Saved positions"><label for="gdrivingthecamera:Saved positions"><span class="sr">Choose Saved positions</span></label>
+</div>
+<div class="body">
+<h3>Saved positions<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Store &quot;the gate&quot;, &quot;the north fence&quot;, jump back to them in one click.</p>
+<p class="why"><span class="lead">Here:</span> There is a Home and nothing else. Nine tenths of the steering an operator does is going back to the same three places.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone, including the camera itself.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="go back on its own after nobody has touched it for n minutes, return to the position that matters. everyone (autoguard / return to home). the failure this prevents: somebody looks at something at 02:00, walks away, and the perimeter is unwatched until morning with nothing on the screen saying so.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Go back on its own" data-key="gdrivingthecamera:Go back on its own"><label for="gdrivingthecamera:Go back on its own"><span class="sr">Choose Go back on its own</span></label>
+</div>
+<div class="body">
+<h3>Go back on its own<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">After nobody has touched it for N minutes, return to the position that matters.</p>
+<p class="why"><span class="lead">Here:</span> The failure this prevents: somebody looks at something at 02:00, walks away, and the perimeter is unwatched until morning with nothing on the screen saying so.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone (autoguard / return to home).</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="patrol between positions tour the saved views on a timer. everyone. worth having, worth thinking about: a camera on patrol is not watching the other 90% of its cycle, and movement detection is fighting a moving background the whole time.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Patrol between positions" data-key="gdrivingthecamera:Patrol between positions"><label for="gdrivingthecamera:Patrol between positions"><span class="sr">Choose Patrol between positions</span></label>
+</div>
+<div class="body">
+<h3>Patrol between positions</h3>
+<p class="what">Tour the saved views on a timer.</p>
+<p class="why"><span class="lead">Here:</span> Worth having, worth thinking about: a camera on patrol is not watching the other 90% of its cycle, and movement detection is fighting a moving background the whole time.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="follow what it found the camera tracks the moving thing by itself. axis (licensed extra), hanwha, genetec. impressive and hard. it also takes the camera off the perimeter to chase a rabbit, and there is no second camera covering while it does.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Follow what it found" data-key="gdrivingthecamera:Follow what it found"><label for="gdrivingthecamera:Follow what it found"><span class="sr">Choose Follow what it found</span></label>
+</div>
+<div class="body">
+<h3>Follow what it found</h3>
+<p class="what">The camera tracks the moving thing by itself.</p>
+<p class="why"><span class="lead">Here:</span> Impressive and hard. It also takes the camera off the perimeter to chase a rabbit, and there is no second camera covering while it does.</p>
+<p class="who"><span class="lead">Who has it:</span> Axis (licensed extra), Hanwha, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a week or more</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="point at what the other camera found one sensor detects, the other slews to it and zooms in. sightlogix, thermal radar, axis - the standard perimeter pattern. you have exactly the right hardware for this: thermal finds it, visible goes and looks. it is the most valuable hard thing on this list.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Point at what the other camera found" data-key="gdrivingthecamera:Point at what the other camera found"><label for="gdrivingthecamera:Point at what the other camera found"><span class="sr">Choose Point at what the other camera found</span></label>
+</div>
+<div class="body">
+<h3>Point at what the other camera found</h3>
+<p class="what">One sensor detects, the other slews to it and zooms in.</p>
+<p class="why"><span class="lead">Here:</span> You have exactly the right hardware for this: thermal finds it, visible goes and looks. It is the most valuable hard thing on this list.</p>
+<p class="who"><span class="lead">Who has it:</span> SightLogix, Thermal Radar, Axis - the standard perimeter pattern.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a week or more</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="zoom into the picture without moving the camera digital zoom on the live view. everyone. optical zoom moves the lens and takes the whole view with it. digital zoom lets one operator look closer while the recording keeps the wide view.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Zoom into the picture without moving the camera" data-key="gdrivingthecamera:Zoom into the picture without moving the camera"><label for="gdrivingthecamera:Zoom into the picture without moving the camera"><span class="sr">Choose Zoom into the picture without moving the camera</span></label>
+</div>
+<div class="body">
+<h3>Zoom into the picture without moving the camera</h3>
+<p class="what">Digital zoom on the live view.</p>
+<p class="why"><span class="lead">Here:</span> Optical zoom moves the lens and takes the whole view with it. Digital zoom lets one operator look closer while the recording keeps the wide view.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="brightness and contrast on the thermal stretch the picture so a warm thing stands out from a cold field. flir&#x27;s own tools, hanwha, genetec. a thermal picture at 03:00 in winter is a grey rectangle with a slightly less grey rectangle in it.">
+<div class="tick">
+<input type="checkbox" id="gdrivingthecamera:Brightness and contrast on the thermal" data-key="gdrivingthecamera:Brightness and contrast on the thermal"><label for="gdrivingthecamera:Brightness and contrast on the thermal"><span class="sr">Choose Brightness and contrast on the thermal</span></label>
+</div>
+<div class="body">
+<h3>Brightness and contrast on the thermal</h3>
+<p class="what">Stretch the picture so a warm thing stands out from a cold field.</p>
+<p class="why"><span class="lead">Here:</span> A thermal picture at 03:00 in winter is a grey rectangle with a slightly less grey rectangle in it.</p>
+<p class="who"><span class="lead">Who has it:</span> FLIR&#x27;s own tools, Hanwha, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="grecordingsandevidence">
+<h2>Recordings and evidence</h2>
+<ul class="rows">
+<li class="row is-have" data-status="have" data-text="record everything, all the time continuous recording rather than only on movement. all of them offer it; many home systems default to event-only. continuous, segmented, with an index and automatic deletion of the oldest. stronger than the event-only default, because it holds the ten seconds before anybody noticed.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Record everything, all the time" data-key="grecordingsandevidence:Record everything, all the time"><label for="grecordingsandevidence:Record everything, all the time"><span class="sr">Choose Record everything, all the time</span></label>
+</div>
+<div class="body">
+<h3>Record everything, all the time</h3>
+<p class="what">Continuous recording rather than only on movement.</p>
+<p class="why"><span class="lead">Here:</span> Continuous, segmented, with an index and automatic deletion of the oldest. Stronger than the event-only default, because it holds the ten seconds BEFORE anybody noticed.</p>
+<p class="who"><span class="lead">Who has it:</span> All of them offer it; many home systems default to event-only.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-pick="1" data-text="protect a recording from being deleted lock the night that matters so retention cannot reclaim it. milestone call it evidence lock and sell it as a tier upgrade. the most serious gap on this page. retention deletes the oldest footage to stay inside the budget, and it will happily delete the incident somebody is going to ask about next week. nothing can currently stop it.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Protect a recording from being deleted" data-key="grecordingsandevidence:Protect a recording from being deleted"><label for="grecordingsandevidence:Protect a recording from being deleted"><span class="sr">Choose Protect a recording from being deleted</span></label>
+</div>
+<div class="body">
+<h3>Protect a recording from being deleted<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">Lock the night that matters so retention cannot reclaim it.</p>
+<p class="why"><span class="lead">Here:</span> The most serious gap on this page. Retention deletes the oldest footage to stay inside the budget, and it will happily delete the incident somebody is going to ask about next week. Nothing can currently stop it.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone call it Evidence Lock and sell it as a tier upgrade.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="export a clip cut a piece out and save it to a file. everyone. marked on the timeline and saved out. on the playback tab, which is switched off by default now.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Export a clip" data-key="grecordingsandevidence:Export a clip"><label for="grecordingsandevidence:Export a clip"><span class="sr">Choose Export a clip</span></label>
+</div>
+<div class="body">
+<h3>Export a clip</h3>
+<p class="what">Cut a piece out and save it to a file.</p>
+<p class="why"><span class="lead">Here:</span> Marked on the timeline and saved out. On the Playback tab, which is switched off by default now.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="prove the clip was not edited a signature or hash so an export can be shown to somebody who has to trust it. milestone (signed exports), genetec. if footage from this system is ever going to matter to anybody outside the room, it needs to arrive with something that says it was not altered.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Prove the clip was not edited" data-key="grecordingsandevidence:Prove the clip was not edited"><label for="grecordingsandevidence:Prove the clip was not edited"><span class="sr">Choose Prove the clip was not edited</span></label>
+</div>
+<div class="body">
+<h3>Prove the clip was not edited</h3>
+<p class="what">A signature or hash so an export can be shown to somebody who has to trust it.</p>
+<p class="why"><span class="lead">Here:</span> If footage from this system is ever going to matter to anybody outside the room, it needs to arrive with something that says it was not altered.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone (signed exports), Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="search the recording for movement in one spot draw a box on the past and find every time something moved inside it. milestone smart search, nx witness, genetec. the one investigation tool that genuinely saves hours. it needs the playback tab to be on.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Search the recording for movement in one spot" data-key="grecordingsandevidence:Search the recording for movement in one spot"><label for="grecordingsandevidence:Search the recording for movement in one spot"><span class="sr">Choose Search the recording for movement in one spot</span></label>
+</div>
+<div class="body">
+<h3>Search the recording for movement in one spot</h3>
+<p class="what">Draw a box on the past and find every time something moved inside it.</p>
+<p class="why"><span class="lead">Here:</span> The one investigation tool that genuinely saves hours. It needs the Playback tab to be on.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone Smart Search, Nx Witness, Genetec.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a week or more</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="thumbnails while scrubbing see where you are on the timeline without waiting for video to load. frigate (previews), nx witness, milestone. playback is off by default now, so this is only worth it if it comes back into use.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Thumbnails while scrubbing" data-key="grecordingsandevidence:Thumbnails while scrubbing"><label for="grecordingsandevidence:Thumbnails while scrubbing"><span class="sr">Choose Thumbnails while scrubbing</span></label>
+</div>
+<div class="body">
+<h3>Thumbnails while scrubbing</h3>
+<p class="what">See where you are on the timeline without waiting for video to load.</p>
+<p class="why"><span class="lead">Here:</span> Playback is off by default now, so this is only worth it if it comes back into use.</p>
+<p class="who"><span class="lead">Who has it:</span> Frigate (previews), Nx Witness, Milestone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="both cameras in step play two recordings from the same moment side by side. milestone, genetec, nx witness. both-together on the playback tab, sharing one clock.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Both cameras in step" data-key="grecordingsandevidence:Both cameras in step"><label for="grecordingsandevidence:Both cameras in step"><span class="sr">Choose Both cameras in step</span></label>
+</div>
+<div class="body">
+<h3>Both cameras in step</h3>
+<p class="what">Play two recordings from the same moment side by side.</p>
+<p class="why"><span class="lead">Here:</span> Both-together on the Playback tab, sharing one clock.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec, Nx Witness.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="save a still from the live picture one button, one jpeg of what is on screen right now. everyone. stills are saved automatically when something moves. there is no way to grab one because you want one.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Save a still from the live picture" data-key="grecordingsandevidence:Save a still from the live picture"><label for="grecordingsandevidence:Save a still from the live picture"><span class="sr">Choose Save a still from the live picture</span></label>
+</div>
+<div class="body">
+<h3>Save a still from the live picture</h3>
+<p class="what">One button, one JPEG of what is on screen right now.</p>
+<p class="why"><span class="lead">Here:</span> Stills are saved automatically when something moves. There is no way to grab one because you want one.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="who did what, and when an audit trail of operator actions, separate from the technical log. milestone, genetec - usually for compliance reasons. the logs tab records what the system did. nothing records that somebody turned detection off at 21:40.">
+<div class="tick">
+<input type="checkbox" id="grecordingsandevidence:Who did what, and when" data-key="grecordingsandevidence:Who did what, and when"><label for="grecordingsandevidence:Who did what, and when"><span class="sr">Choose Who did what, and when</span></label>
+</div>
+<div class="body">
+<h3>Who did what, and when</h3>
+<p class="what">An audit trail of operator actions, separate from the technical log.</p>
+<p class="why"><span class="lead">Here:</span> The Logs tab records what the SYSTEM did. Nothing records that somebody turned detection off at 21:40.</p>
+<p class="who"><span class="lead">Who has it:</span> Milestone, Genetec - usually for compliance reasons.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="gthelinkthediskthemachine">
+<h2>The link, the disk, the machine</h2>
+<ul class="rows">
+<li class="row is-have" data-status="have" data-text="match the picture to what the radio can carry turn the camera&#x27;s bitrate down when the link is full, and back up when it is not. nobody does this. milestone and genetec monitor bandwidth; none of them drive the camera from it. this is vmd&#x27;s own, and it exists because this link is the binding constraint. it reads airtime rather than megabits, because airtime is what a wireless link runs out of.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Match the picture to what the radio can carry" data-key="gthelinkthediskthemachine:Match the picture to what the radio can carry"><label for="gthelinkthediskthemachine:Match the picture to what the radio can carry"><span class="sr">Choose Match the picture to what the radio can carry</span></label>
+</div>
+<div class="body">
+<h3>Match the picture to what the radio can carry</h3>
+<p class="what">Turn the camera&#x27;s bitrate down when the link is full, and back up when it is not.</p>
+<p class="why"><span class="lead">Here:</span> This is VMD&#x27;s own, and it exists because this link is the binding constraint. It reads airtime rather than megabits, because airtime is what a wireless link runs out of.</p>
+<p class="who"><span class="lead">Who has it:</span> Nobody does this. Milestone and Genetec monitor bandwidth; none of them drive the camera from it.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="show the radio link signal, airtime, throughput, and per-camera on a shared access point. nobody. a vms shows you the camera is offline, not why. one word, two bars, and every sentence behind a toggle. it found the fault that was freezing one of your pictures.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Show the radio link" data-key="gthelinkthediskthemachine:Show the radio link"><label for="gthelinkthediskthemachine:Show the radio link"><span class="sr">Choose Show the radio link</span></label>
+</div>
+<div class="body">
+<h3>Show the radio link</h3>
+<p class="what">Signal, airtime, throughput, and per-camera on a shared access point.</p>
+<p class="why"><span class="lead">Here:</span> One word, two bars, and every sentence behind a toggle. It found the fault that was freezing one of your pictures.</p>
+<p class="who"><span class="lead">Who has it:</span> Nobody. A VMS shows you the camera is offline, not why.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-have" data-status="have" data-text="run with no internet at all install, update and operate a machine that has never been on a network. most are cloud-connected by default. frigate and zoneminder can run offline; the enterprise ones assume a licence server. one folder, one zip, no runtime downloads, and three separate outbound-traffic bugs found and closed.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Run with no internet at all" data-key="gthelinkthediskthemachine:Run with no internet at all"><label for="gthelinkthediskthemachine:Run with no internet at all"><span class="sr">Choose Run with no internet at all</span></label>
+</div>
+<div class="body">
+<h3>Run with no internet at all</h3>
+<p class="what">Install, update and operate a machine that has never been on a network.</p>
+<p class="why"><span class="lead">Here:</span> One folder, one zip, no runtime downloads, and three separate outbound-traffic bugs found and closed.</p>
+<p class="who"><span class="lead">Who has it:</span> Most are cloud-connected by default. Frigate and ZoneMinder can run offline; the enterprise ones assume a licence server.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-have"><span class="glyph">●</span>In VMD</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="trigger a light or a siren close a relay when something crosses the line. everyone, through the camera&#x27;s own output or an i/o module. the most effective perimeter response there is, and it needs a contact closure - the camera&#x27;s own alarm output, or a usb relay. worth deciding before the next site visit.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Trigger a light or a siren" data-key="gthelinkthediskthemachine:Trigger a light or a siren"><label for="gthelinkthediskthemachine:Trigger a light or a siren"><span class="sr">Choose Trigger a light or a siren</span></label>
+</div>
+<div class="body">
+<h3>Trigger a light or a siren</h3>
+<p class="what">Close a relay when something crosses the line.</p>
+<p class="why"><span class="lead">Here:</span> The most effective perimeter response there is, and it needs a contact closure - the camera&#x27;s own alarm output, or a USB relay. Worth deciding before the next site visit.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone, through the camera&#x27;s own output or an I/O module.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">needs hardware</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="tell another system onvif events, or a message on a wire, so a control room knows. everyone. there is nothing else on this network, because there is no network.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Tell another system" data-key="gthelinkthediskthemachine:Tell another system"><label for="gthelinkthediskthemachine:Tell another system"><span class="sr">Choose Tell another system</span></label>
+</div>
+<div class="body">
+<h3>Tell another system</h3>
+<p class="what">ONVIF events, or a message on a wire, so a control room knows.</p>
+<p class="why"><span class="lead">Here:</span> There is nothing else on this network, because there is no network.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+<li class="row is-never" data-status="never" data-text="users, passwords, roles different people see and do different things. everyone. one machine, in a locked room, one operator. passwords are shown in plain text on purpose here, and that is the right call for this site rather than a shortcut.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Users, passwords, roles" data-key="gthelinkthediskthemachine:Users, passwords, roles"><label for="gthelinkthediskthemachine:Users, passwords, roles"><span class="sr">Choose Users, passwords, roles</span></label>
+</div>
+<div class="body">
+<h3>Users, passwords, roles</h3>
+<p class="what">Different people see and do different things.</p>
+<p class="why"><span class="lead">Here:</span> One machine, in a locked room, one operator. Passwords are shown in plain text on purpose here, and that is the right call for this site rather than a shortcut.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-never"><span class="glyph">✕</span>Not for us</span>
+</div>
+</li>
+<li class="row is-missing" data-status="missing" data-text="blackout regions in the recording privacy masks that are burnt into what is stored. everyone, usually for a legal reason. only matters if the camera can see somewhere it should not. worth knowing whether it can.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Blackout regions in the recording" data-key="gthelinkthediskthemachine:Blackout regions in the recording"><label for="gthelinkthediskthemachine:Blackout regions in the recording"><span class="sr">Choose Blackout regions in the recording</span></label>
+</div>
+<div class="body">
+<h3>Blackout regions in the recording</h3>
+<p class="what">Privacy masks that are burnt into what is stored.</p>
+<p class="why"><span class="lead">Here:</span> Only matters if the camera can see somewhere it should not. Worth knowing whether it can.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone, usually for a legal reason.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-missing"><span class="glyph">○</span>Not yet</span>
+<span class="effort">a few days</span>
+</div>
+</li>
+<li class="row is-partial" data-status="partial" data-pick="1" data-text="back up the settings one file, restorable, so a rebuild is minutes. everyone. it is all in settings.json and the areas you drew are in it. nothing copies it anywhere, so a disk failure takes the setup with it.">
+<div class="tick">
+<input type="checkbox" id="gthelinkthediskthemachine:Back up the settings" data-key="gthelinkthediskthemachine:Back up the settings"><label for="gthelinkthediskthemachine:Back up the settings"><span class="sr">Choose Back up the settings</span></label>
+</div>
+<div class="body">
+<h3>Back up the settings<span class="star" title="Worth doing first">★</span></h3>
+<p class="what">One file, restorable, so a rebuild is minutes.</p>
+<p class="why"><span class="lead">Here:</span> It is all in settings.json and the areas you drew are in it. Nothing copies it anywhere, so a disk failure takes the setup with it.</p>
+<p class="who"><span class="lead">Who has it:</span> Everyone.</p>
+</div>
+<div class="meta">
+<span class="chip-flat is-partial"><span class="glyph">◐</span>Partly</span>
+<span class="effort">a day or so</span>
+</div>
+</li>
+</ul>
+</section>
+<section class="group" id="picked">
+<h2>What you have chosen</h2>
+<p class="what">Ticks are kept in this page on this machine. Copy the list and send it back.</p>
+<ol id="chosen" class="chosen"><li class="none">Nothing ticked yet.</li></ol>
+<div class="actions">
+<button type="button" id="copy" class="button">Copy the list</button>
+<button type="button" id="clear" class="button quiet">Clear every tick</button>
+<span id="said" class="said" role="status" aria-live="polite"></span>
+</div>
+</section>
+<footer class="foot">
+<p>Sources: Milestone XProtect, Genetec Security Center, Network Optix Nx Witness, Axis Perimeter Defender, SightLogix, Frigate NVR, Blue Iris, ZoneMinder, Shinobi, Agent DVR, Thermal Radar. Read in August 2026.</p>
+<p>Built from <code>scripts/make_feature_page.py</code>, so the counts at the top cannot disagree with the rows underneath.</p>
+</footer>
+<script>
+(function () {
+  var KEY = 'vmd.features.v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('input[type=checkbox]'));
+  var chosen = document.getElementById('chosen');
+  var said = document.getElementById('said');
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; }
+  }
+  function save(state) {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ }
+  }
+
+  var state = load();
+  boxes.forEach(function (box) {
+    if (state[box.dataset.key]) { box.checked = true; }
+    box.addEventListener('change', function () {
+      state[box.dataset.key] = box.checked;
+      save(state);
+      draw();
+    });
+  });
+
+  function picked() {
+    return boxes.filter(function (b) { return b.checked; }).map(function (b) {
+      var row = b.closest('.row');
+      return {
+        group: row.closest('.group').querySelector('h2').textContent,
+        name: row.querySelector('h3').childNodes[0].textContent.trim()
+      };
+    });
+  }
+
+  function draw() {
+    var list = picked();
+    chosen.innerHTML = '';
+    if (!list.length) {
+      var none = document.createElement('li');
+      none.className = 'none';
+      none.textContent = 'Nothing ticked yet.';
+      chosen.appendChild(none);
+      return;
+    }
+    list.forEach(function (item) {
+      var li = document.createElement('li');
+      var strong = document.createElement('strong');
+      strong.textContent = item.name;
+      var small = document.createElement('span');
+      small.className = 'in';
+      small.textContent = item.group;
+      li.appendChild(strong);
+      li.appendChild(small);
+      chosen.appendChild(li);
+    });
+  }
+
+  document.getElementById('copy').addEventListener('click', function () {
+    var list = picked();
+    if (!list.length) { tell('Nothing ticked yet.'); return; }
+    var text = list.map(function (i) { return '- ' + i.name + '  (' + i.group + ')'; }).join('\n');
+    var done = function () { tell('Copied ' + list.length + '. Paste it back to me.'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+    } else { fallback(text, done); }
+  });
+
+  function fallback(text, done) {
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { tell('Could not copy. Select the list above by hand.'); }
+    document.body.removeChild(area);
+  }
+
+  document.getElementById('clear').addEventListener('click', function () {
+    boxes.forEach(function (b) { b.checked = false; });
+    state = {};
+    save(state);
+    draw();
+    tell('Cleared.');
+  });
+
+  var timer;
+  function tell(words) {
+    said.textContent = words;
+    clearTimeout(timer);
+    timer = setTimeout(function () { said.textContent = ''; }, 4000);
+  }
+
+  // --- filtering -----------------------------------------------------------
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.row'));
+  var groups = Array.prototype.slice.call(document.querySelectorAll('.group'));
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  var find = document.getElementById('find');
+  var only = 'all';
+
+  function apply() {
+    var words = find.value.trim().toLowerCase();
+    rows.forEach(function (row) {
+      var byWord = !words || row.dataset.text.indexOf(words) !== -1;
+      var byKind = only === 'all'
+        || (only === 'pick' ? row.dataset.pick === '1' : row.dataset.status === only);
+      row.hidden = !(byWord && byKind);
+    });
+    groups.forEach(function (group) {
+      if (group.id === 'picked') { return; }
+      var any = group.querySelector('.row:not([hidden])');
+      group.hidden = !any;
+    });
+  }
+
+  find.addEventListener('input', apply);
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chips.forEach(function (c) { c.classList.remove('on'); });
+      chip.classList.add('on');
+      only = chip.dataset.filter;
+      apply();
+    });
+  });
+
+  draw();
+})();
+</script>
