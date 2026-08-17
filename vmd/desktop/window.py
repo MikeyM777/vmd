@@ -1378,6 +1378,7 @@ class ConsoleWindow(QMainWindow):
         if self._panes is not None:
             try:
                 self._panes.delay_ms = int(settings.live_delay_ms)
+                self._panes.flip = bool(settings.flip_video)
             except Exception:  # noqa: BLE001 - a delay is not the save
                 logger.exception("the saved picture delay could not be applied")
 

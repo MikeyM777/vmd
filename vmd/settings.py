@@ -550,6 +550,19 @@ class Settings(Model):
             )
         return value
 
+    # Turn the live picture upside down.
+    #
+    # For testing, and asked for as such: a camera mounted inverted, or a bench
+    # rig, shows an upside-down picture and there is no reason to climb a mast
+    # to find out whether the rest of the console works.
+    #
+    # It turns the PICTURE and nothing else. What is recorded is untouched -
+    # the recorder never sees this - and so is what the detector reads, so the
+    # areas drawn on the ignore mask still mean what they meant. That is the
+    # right way round for a test switch: it can be left on by accident without
+    # quietly changing the evidence or where the system is looking.
+    flip_video: bool = False
+
     # Whether the Playback tab exists.
     #
     # Off, and this is a change of mind rather than a default nobody thought

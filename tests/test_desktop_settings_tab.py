@@ -3111,3 +3111,19 @@ def test_the_delay_the_operator_can_ask_for_is_one_he_can_steer_through(
     assert offered == sorted(offered), "the list reads fastest-first"
     assert max(offered) <= 600
     assert min(offered) >= 50, "zero leaves nothing to cover a late packet with"
+
+
+def test_the_flip_switch_is_off_and_saves_and_comes_back(qtbot, tmp_path: Path) -> None:
+    """Off, because it is a test switch. It turns the picture and nothing else:
+    what is recorded and what the detector reads are both untouched, so it can
+    be left on by accident without changing the evidence."""
+    tab, _ = build(qtbot, tmp_path)
+    assert tab.flip_video is False
+
+    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.flip_video = True
+    assert tab.save() is True
+    assert load_settings(tab.settings_path).flip_video is True
+
+    again, _ = build(qtbot, tmp_path)
+    assert again.flip_video is True

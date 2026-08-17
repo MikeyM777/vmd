@@ -132,8 +132,9 @@ class PaneOptions:
     it did not exist. Doing nothing quietly would be worse.
     """
 
-    def __init__(self, delay_ms: int = DEFAULT_DELAY_MS) -> None:
+    def __init__(self, delay_ms: int = DEFAULT_DELAY_MS, flip: bool = False) -> None:
         self.delay_ms = int(delay_ms)
+        self.flip = bool(flip)
 
 
 def pane_factory(
@@ -152,7 +153,11 @@ def pane_factory(
 
     def make_pane(name: str) -> VideoPane:
         try:
-            return build(delay_ms=options.delay_ms) if takes_delay else build()
+            return (
+                build(delay_ms=options.delay_ms, flip=options.flip)
+                if takes_delay
+                else build()
+            )
         except Exception as exc:  # noqa: BLE001 - a console with no video still helps
             logger.exception("the video pane for %s could not be built", name)
             return BrokenPane(f"{name}: {exc}")
@@ -287,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Shared with the window, which writes the saved delay into it before the
     # Live tab rebuilds its panes. One object, so the two cannot disagree.
-    panes = PaneOptions(settings.live_delay_ms)
+    panes = PaneOptions(settings.live_delay_ms, flip=settings.flip_video)
 
     window = ConsoleWindow(
         settings_path=wiring.settings_path,
