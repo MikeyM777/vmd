@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import time
 
-from vmd.ptz.onvif import PtzError, match_profiles, rtsp_path
+from vmd.ptz.onvif import PtzError, match_by_name, match_profiles, rtsp_path
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,38 @@ NOT_ASKED = "the camera has not been asked yet"
 # which comes back takes up to half a minute to be noticed - and nothing is
 # waiting on that but a slider, because steering does not go through here.
 RETRY_AFTER_SECONDS = 30.0
+
+
+def _channel_of(text: str) -> int | None:
+    """The channel number in an address or a profile name, when there is one.
+
+    `rtsp://10.0.0.2:554/ch2` is 2. `Profile_2`, `MediaProfile00002`,
+    `VideoSource_2` and `ch02` are all 2. A string with no digits, or with
+    several different numbers in it, is None - a guess with two answers is not
+    an answer, and this is only allowed to speak when it is certain.
+
+    Deliberately not "the last number in the string": an address like
+    `rtsp://192.168.1.250:554/ch2` has a port in it, and a token like
+    `profile_1_h264_1080` has three numbers of which only one is a channel. The
+    numbers are taken from the parts that can be a channel - the path's last
+    segment, or the whole token - and only when they agree.
+    """
+    import re
+
+    text = str(text or "")
+    if "://" in text:
+        # An address: the last segment of the path, and nothing else. The host
+        # and the port are not channels.
+        without_scheme = text.split("://", 1)[-1]
+        slash = without_scheme.find("/")
+        if slash < 0:
+            return None
+        text = without_scheme[slash:].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+
+    numbers = {int(found) for found in re.findall(r"\d+", text)}
+    if len(numbers) != 1:
+        return None
+    return numbers.pop()
 
 
 class Lenses:
@@ -167,6 +199,20 @@ class Lenses:
         # which profile actually serves each address. The second is evidence and
         # the first is inference, so the second wins wherever it has an answer.
         self._tokens = match_profiles(self._streams, profiles)
+        # The order of trust, weakest first, each overwriting the one before.
+        #
+        #   list order        `match_profiles`, when it has nothing better
+        #   channel number    `_by_channel`, from the address he typed
+        #   the profile name  the camera saying "Thermal", when it bothers to
+        #   the exact address `_by_address`, the camera saying which URI serves
+        #                     which profile - the only one that is not a guess
+        #
+        # Written out as four lines rather than folded into `match_profiles`
+        # because the order IS the design: a stronger rule quietly running
+        # before a weaker one is how the zoom ends up on the wrong glass with
+        # every individual step looking sensible.
+        self._tokens.update(self._by_channel(profiles))
+        self._tokens.update(match_by_name(self._streams, profiles))
         self._tokens.update(self._by_address(profiles))
         # The operator's own answer, on top of the guess. A token that this
         # camera has never heard of is dropped rather than sent: it is what a
@@ -195,6 +241,68 @@ class Lenses:
                 len(self._streams),
             )
         return True
+
+    def _by_channel(self, profiles: list) -> dict[str, str]:
+        """Pair the views with the lenses by the channel number in each.
+
+        "Swap the zoom sliders by default."
+
+        They came out crossed, and this is why. His two pictures are
+        `rtsp://.../ch1` and `rtsp://.../ch2`, and he lists the thermal - which
+        is ch2 - first. When nothing in the profile NAMES says which lens is
+        which, `match_profiles` falls through to pairing his list against the
+        camera's list in order, and the camera lists ch1 first. So the thermal
+        got the first profile, which is the visible lens, and every zoom went to
+        the wrong glass.
+
+        The channel number is the thing that actually tells his two pictures
+        apart, and it is written in the address he typed. Cameras carry the same
+        number in their profile tokens and names - `Profile_2`,
+        `MediaProfile00002`, `VideoSource_2`, `ch2` - so this pairs on that and
+        the order of either list stops mattering.
+
+        Applied only where BOTH sides offer a number and the numbers are
+        distinct. A camera whose profiles have no digits in them, or where two
+        profiles claim the same channel, is left to the steps either side of
+        this: nothing here overwrites a match the names already made, and the
+        exact address match still overrules this one.
+        """
+        # Every view or none. One view placed by its channel and the other left
+        # to list order is the "one bar right, one bar wrong" case, which is
+        # worse than both being wrong together because it looks like it works.
+        wanted: dict[str, int] = {}
+        for name in self._streams:
+            number = _channel_of(self._urls.get(name, ""))
+            if number is None:
+                return {}
+            wanted[name] = number
+        if not wanted or len(set(wanted.values())) != len(wanted):
+            return {}
+
+        offered: dict[int, str] = {}
+        clashed: set[int] = set()
+        for profile in profiles:
+            if not profile.can_zoom():
+                continue
+            number = _channel_of(f"{profile.token} {profile.name} {profile.source}")
+            if number is None:
+                continue
+            if number in offered:
+                clashed.add(number)
+                continue
+            offered[number] = profile.token
+        for number in clashed:
+            offered.pop(number, None)
+
+        found = {
+            name: offered[number]
+            for name, number in wanted.items()
+            if number in offered
+        }
+        # All of them or none. Placing one picture by its channel and leaving
+        # the other to list order is how one bar ends up right and the other
+        # ends up on the same lens as the first.
+        return found if len(found) == len(wanted) else {}
 
     def _by_address(self, profiles: list) -> dict[str, str]:
         """Ask the camera which profile serves each picture's address.

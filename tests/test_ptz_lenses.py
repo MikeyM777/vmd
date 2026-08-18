@@ -468,3 +468,94 @@ def test_a_zoom_outside_the_range_the_camera_reported_is_brought_onto_the_slider
     lenses = Lenses(FakeCamera(zoom=1.4), STREAMS, clock=Clock())
     lenses.poll()
     assert lenses.position("visible") == 1.0
+
+
+# ------------------------------------------------- the channel number decides
+#
+# "Swap the zoom sliders by default."
+#
+# They came out crossed on the real camera and this is why. His pictures are
+# rtsp://.../ch1 and rtsp://.../ch2, and he lists the thermal - ch2 - first.
+# When the profile names say nothing about which lens is which, `match_profiles`
+# falls through to pairing the two lists in order, and the camera lists ch1
+# first. So the thermal got the visible lens and every zoom went to the wrong
+# glass.
+
+
+# The camera as it actually is: profiles with no useful names, listed ch1 first,
+# and nothing that answers GetStreamUri.
+NAMELESS = [
+    Profile(token="Profile_1", name="mainstream", source="VideoSource_1"),
+    Profile(token="Profile_2", name="mainstream", source="VideoSource_2"),
+]
+
+HIS_CAMERA_URLS = {
+    "thermal": "rtsp://192.168.1.250:554/ch2",
+    "visible": "rtsp://192.168.1.250:554/ch1",
+}
+
+
+class NoAddresses(FakeCamera):
+    """A camera that will not say which address serves which profile.
+
+    Which is the case this falls to: the exact-address match is the best rule
+    there is and plenty of firmware does not support it.
+    """
+
+    def stream_uri(self, profile: str) -> str:
+        return ""
+
+
+def test_the_channel_number_pairs_the_views_with_the_lenses() -> None:
+    """His camera, his addresses, his listing order. Thermal is ch2 and must
+    reach the ch2 lens whichever order either list happens to be in."""
+    lenses = Lenses(NoAddresses(profiles=NAMELESS), STREAMS, urls=HIS_CAMERA_URLS)
+    assert lenses.find()
+    assert lenses.token("thermal") == "Profile_2"
+    assert lenses.token("visible") == "Profile_1"
+
+
+def test_without_the_channel_the_pairing_is_the_one_that_was_crossed() -> None:
+    """The proof that this is the fault and not a coincidence: take the channel
+    numbers out of the addresses and the old, crossed answer comes back."""
+    blind = {"thermal": "rtsp://192.168.1.250:554/main", "visible": "rtsp://192.168.1.250:554/sub"}
+    lenses = Lenses(NoAddresses(profiles=NAMELESS), STREAMS, urls=blind)
+    assert lenses.find()
+    assert lenses.token("thermal") == "Profile_1", "list order, which is what was wrong"
+
+
+def test_a_name_that_says_which_lens_it_is_still_wins() -> None:
+    """The order of trust is unchanged. A camera that bothers to say `Thermal`
+    is believed over any arithmetic on numbers."""
+    named = [
+        Profile(token="Profile_1", name="Thermal", source="VideoSource_1"),
+        Profile(token="Profile_2", name="Visible light", source="VideoSource_2"),
+    ]
+    # The channel numbers say the opposite of the names, on purpose.
+    lenses = Lenses(NoAddresses(profiles=named), STREAMS, urls=HIS_CAMERA_URLS)
+    assert lenses.find()
+    assert lenses.token("thermal") == "Profile_1", "the name was overruled by a number"
+
+
+def test_two_profiles_claiming_one_channel_are_not_guessed_at() -> None:
+    """A guess with two answers is not an answer. It falls through to the step
+    below rather than picking one and being silently wrong on half the
+    installations that have a main and a sub stream per sensor."""
+    same = [
+        Profile(token="Profile_1", name="mainstream", source="VideoSource_1"),
+        Profile(token="Profile_1_sub", name="substream", source="VideoSource_1"),
+    ]
+    lenses = Lenses(NoAddresses(profiles=same), STREAMS, urls=HIS_CAMERA_URLS)
+    assert lenses.find()
+    # Whatever it decides, it may not put both views on different lenses on the
+    # strength of a number that appears twice.
+    assert lenses.token("thermal") in {"Profile_1", "Profile_1_sub", None}
+
+
+def test_an_address_with_no_channel_in_it_leaves_the_pairing_alone() -> None:
+    """Nothing here may fire on a guess. One view with a number and one without
+    is not enough to place either."""
+    half = {"thermal": "rtsp://192.168.1.250:554/ch2", "visible": "rtsp://192.168.1.250:554/main"}
+    lenses = Lenses(NoAddresses(profiles=NAMELESS), STREAMS, urls=half)
+    assert lenses.find()
+    assert lenses.token("thermal") == "Profile_1", "it placed one view on a half answer"

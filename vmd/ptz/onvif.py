@@ -179,6 +179,48 @@ def read_profiles(text: str) -> list[Profile]:
     return [Profile(token=token)] if token else []
 
 
+def match_by_name(streams: list[str], profiles: list[Profile]) -> dict[str, str]:
+    """The views the camera itself identifies, by the words in its profiles.
+
+    The strongest of the guesses, and the only one that can be checked by
+    reading: a camera that calls a profile `Thermal` is telling you which lens
+    it is. Split out of `match_profiles` so that `vmd/ptz/lenses.py` can put it
+    back in the right place in the order of trust - it has to beat the channel
+    number, which it did not while it was buried inside a function whose result
+    the channel matcher then overwrote wholesale.
+    """
+    chosen: dict[str, str] = {}
+    taken: set[str] = set()
+
+    def words_of(profile: Profile) -> str:
+        return f"{profile.name} {profile.source} {profile.token}".lower()
+
+    for stream in streams:
+        wanted = (
+            THERMAL_WORDS
+            if any(word in stream.lower() for word in THERMAL_WORDS)
+            else VISIBLE_WORDS
+            if any(word in stream.lower() for word in VISIBLE_WORDS)
+            else ()
+        )
+        if not wanted:
+            continue
+        # The other lens's words must NOT appear, or "visible" matches a profile
+        # called "IR-cut visible" on the thermal head.
+        against = VISIBLE_WORDS if wanted is THERMAL_WORDS else THERMAL_WORDS
+        for profile in profiles:
+            if profile.token in taken:
+                continue
+            said = words_of(profile)
+            if any(_word_in(word, said) for word in wanted) and not any(
+                _word_in(word, said) for word in against
+            ):
+                chosen[stream] = profile.token
+                taken.add(profile.token)
+                break
+    return chosen
+
+
 def match_profiles(streams: list[str], profiles: list[Profile]) -> dict[str, str]:
     """Which profile belongs to which of the operator's streams.
 
@@ -222,35 +264,8 @@ def match_profiles(streams: list[str], profiles: list[Profile]) -> dict[str, str
     zoomable = [profile for profile in profiles if profile.can_zoom()]
     profiles = zoomable or profiles
 
-    chosen: dict[str, str] = {}
-    taken: set[str] = set()
-
-    def words_of(profile: Profile) -> str:
-        return f"{profile.name} {profile.source} {profile.token}".lower()
-
-    for stream in streams:
-        wanted = (
-            THERMAL_WORDS
-            if any(word in stream.lower() for word in THERMAL_WORDS)
-            else VISIBLE_WORDS
-            if any(word in stream.lower() for word in VISIBLE_WORDS)
-            else ()
-        )
-        if not wanted:
-            continue
-        # The other lens's words must NOT appear, or "visible" matches a profile
-        # called "IR-cut visible" on the thermal head.
-        against = VISIBLE_WORDS if wanted is THERMAL_WORDS else THERMAL_WORDS
-        for profile in profiles:
-            if profile.token in taken:
-                continue
-            said = words_of(profile)
-            if any(_word_in(word, said) for word in wanted) and not any(
-                _word_in(word, said) for word in against
-            ):
-                chosen[stream] = profile.token
-                taken.add(profile.token)
-                break
+    chosen: dict[str, str] = dict(match_by_name(streams, profiles))
+    taken: set[str] = set(chosen.values())
 
     # Whatever is left, paired by lens. One profile per distinct video source,
     # first listed first, because a camera that offers a main and a sub stream
