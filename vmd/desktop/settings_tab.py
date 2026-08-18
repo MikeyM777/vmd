@@ -3276,6 +3276,14 @@ def what_detection_is_doing(settings: Settings, settings_path) -> list[str]:
     said = ["What detection is doing", "-" * 23]
     root = Path(settings.storage.root)
     if not root.is_absolute():
+        # Relative to the settings file, which is how every other path in this
+        # program is resolved. A tools object built without one - which every
+        # test in test_desktop_camera_tools.py does - resolves against the
+        # working directory instead, which is what `load_settings` would have
+        # done anyway and is never wrong enough to cost the report.
+        if settings_path is None:
+            said.append("the recordings folder is a relative path and nothing said from where")
+            return said
         root = Path(settings_path).parent / root
     where = root / "detection.json"
     try:
