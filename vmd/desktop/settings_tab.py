@@ -16,6 +16,7 @@ Two rules follow from that, and both are load-bearing:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import shutil
@@ -3245,12 +3246,57 @@ class CameraTools:
         lines = ["VMD report", ""]
         lines.extend(extra)
         lines.append("")
+        lines.extend(what_detection_is_doing(settings, self.settings_path))
+        lines.append("")
         lines.extend(self.diagnose(settings))
         text = "\n".join(lines)
         for secret in _secrets(settings):
             text = text.replace(secret, "****")
         path.write_text(text, encoding="utf-8")
         return path
+
+
+def what_detection_is_doing(settings: Settings, settings_path) -> list[str]:
+    """The detector's own counters, per stream, as sentences.
+
+    "It's marking steady and static things... no movement." Something is wrong
+    and nothing on this console could say what. The detector has counted every
+    blob it found and every rule that threw one away since the day those
+    counters were written, into detection.json, every few seconds - and nothing
+    has ever read them. This is what puts them in the one file that gets sent to
+    somebody who can act on it.
+
+    Read from the file rather than asked of the detector, because the detector
+    is a separate process and this form has no handle on it. A file that is not
+    there is an ordinary state - detection off, or a folder that has moved - and
+    says so in one line rather than costing the report.
+    """
+    from vmd.detect.report import lines as detection_lines
+
+    said = ["What detection is doing", "-" * 23]
+    root = Path(settings.storage.root)
+    if not root.is_absolute():
+        root = Path(settings_path).parent / root
+    where = root / "detection.json"
+    try:
+        published = json.loads(where.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        said.append(f"nothing has been published to {where} yet")
+        return said
+
+    streams = published.get("streams")
+    if not isinstance(streams, list) or not streams:
+        said.append("the detector is running and watching no streams")
+        return said
+
+    for state in streams:
+        if not isinstance(state, dict):
+            continue
+        said.append("")
+        said.append(f"  {state.get('stream', 'a stream')}")
+        for line in detection_lines(state):
+            said.append(f"    {line}")
+    return said
 
 
 def _secrets(settings: Settings) -> set[str]:

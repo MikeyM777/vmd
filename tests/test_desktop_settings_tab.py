@@ -3127,3 +3127,50 @@ def test_the_flip_switch_is_off_and_saves_and_comes_back(qtbot, tmp_path: Path) 
 
     again, _ = build(qtbot, tmp_path)
     assert again.flip_video is True
+
+
+def test_the_report_carries_what_detection_is_doing(qtbot, tmp_path: Path) -> None:
+    """"It's marking steady and static things." The counters that answer that
+    have been written every few seconds since they were added and nothing ever
+    read them. The report is the one file that gets sent to somebody who can act
+    on it, so it is where they belong."""
+    import json
+
+    from vmd.desktop.settings_tab import what_detection_is_doing
+
+    settings = Settings()
+    settings.storage.root = tmp_path / "recordings"
+    (tmp_path / "recordings").mkdir(parents=True)
+    (tmp_path / "recordings" / "detection.json").write_text(
+        json.dumps(
+            {
+                "streams": [
+                    {
+                        "stream": "thermal",
+                        "frames": 90_000,
+                        "blobs": 52_000,
+                        "rejected": {"too_small": 800},
+                        "suppressed": 0,
+                        "events": 48_000,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    said = "\n".join(what_detection_is_doing(settings, tmp_path / "settings.json"))
+    assert "thermal" in said
+    assert "52,000" in said
+    assert "NEARLY EVERYTHING IS BEING REPORTED" in said
+
+
+def test_a_report_with_no_detection_file_still_gets_written(qtbot, tmp_path: Path) -> None:
+    """Detection off, or a folder that has moved. An ordinary state, and it must
+    cost one line rather than the whole report."""
+    from vmd.desktop.settings_tab import what_detection_is_doing
+
+    settings = Settings()
+    settings.storage.root = tmp_path / "nothing-here"
+    said = what_detection_is_doing(settings, tmp_path / "settings.json")
+    assert any("nothing has been published" in line for line in said)
