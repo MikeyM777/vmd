@@ -150,6 +150,39 @@ foreach ($check in $checks) {
     else { Write-Bad "MISSING - $($check.What)  ($($check.Fix))"; $missing += $check.What }
 }
 
+# Is VMD.exe older than the launcher it was built from?
+#
+# This one shipped, and it is the reason it is checked. VMD.exe was built ten
+# hours before vmd\launcher.py was given `--offline --frozen --no-sync`, so the
+# exe in every kit ran a plain `uv run` - which re-resolves the lock and BUILDS
+# the project. On the machine that made the kit that succeeds in a second and
+# nobody notices. On the offline machine there is no build backend to fetch and
+# it stops with "failed to build", which is the first thing the operator sees
+# after setting his cameras up.
+#
+# By timestamp and not by reading the exe: PyInstaller compresses what it
+# embeds, so searching the binary for the flags finds nothing whether they are
+# there or not - which is a check that passes for the wrong reason.
+#
+# After the loop above rather than before it, because that loop opens with
+# $missing = @(). Written above it, this check ran, printed STALE, added its
+# entry - and had it thrown away one line later, so the kit called itself ready
+# and shipped the exe it had just objected to.
+$exe = Join-Path $root 'VMD.exe'
+$launcher = Join-Path $root 'vmd\launcher.py'
+if ((Test-Path $exe) -and (Test-Path $launcher)) {
+    if ((Get-Item $exe).LastWriteTime -lt (Get-Item $launcher).LastWriteTime) {
+        Write-Bad "STALE - VMD.exe is older than vmd\launcher.py"
+        Write-Info "The exe is a launcher and it is compiled. One built before the"
+        Write-Info "launcher was last changed carries the OLD behaviour to the"
+        Write-Info "offline machine, where it fails with 'failed to build'."
+        Write-Info "Fix: run scripts\build_exe.ps1, then this again."
+        $missing += 'a VMD.exe built from the current launcher'
+    } else {
+        Write-Ok "VMD.exe is newer than the launcher it was built from"
+    }
+}
+
 # The one that is easy to get wrong and impossible to see: an interpreter that
 # is not inside the folder. Everything looks fine here and fails there.
 $python = Find-ProjectPython $root
