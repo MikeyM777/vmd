@@ -251,7 +251,7 @@ $uv = Join-Path $binDir 'uv.exe'
 Push-Location $root
 try {
     $import = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                    'import cv2, pydantic, ultralytics; print("libraries ok")')
+                                    'import cv2, pydantic, ultralytics; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 4)) { Write-Bad "  $line" }
         Write-Bad "The environment does not run on this machine."

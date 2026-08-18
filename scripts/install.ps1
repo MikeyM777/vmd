@@ -818,7 +818,7 @@ try {
     }
 
     $import = Invoke-Captured $uvExe @('run', '--frozen', '--no-sync', 'python', '-c',
-                                       'import cv2, pydantic, ultralytics; print("libraries ok")')
+                                       'import cv2, pydantic, ultralytics; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 3)) { Write-Bad "  $line" }
         Write-Bad "The environment was built but the libraries do not import."
