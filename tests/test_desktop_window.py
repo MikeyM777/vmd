@@ -173,12 +173,16 @@ class AngryRadio:
         raise OSError("the radio refused the connection")
 
 
-def write_settings(tmp_path: Path, playback: bool = False, title: str = "") -> Path:
+def write_settings(
+    tmp_path: Path, playback: bool = False, title: str = "", detect: bool = True
+) -> Path:
     path = tmp_path / "settings.json"
     settings = Settings()
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
-        StreamSettings(name="thermal", url="rtsp://camera/thermal", enabled=True)
+        StreamSettings(
+            name="thermal", url="rtsp://camera/thermal", enabled=True, detect=detect
+        )
     ]
     # Off in the product and therefore off here. Every test about Playback says
     # so for itself, which is the point: a tab that is only on the window
@@ -564,7 +568,8 @@ def test_a_screen_that_is_not_there_costs_a_line_in_the_log_and_nothing_else(
 
 
 def test_the_wiring_is_built_without_a_display(tmp_path: Path) -> None:
-    path = write_settings(tmp_path)
+    # No stream ticked for detection, which is what the assertion below is about.
+    path = write_settings(tmp_path, detect=False)
     wiring = build_wiring(load_settings(path), path, with_services=False)
     assert wiring.settings_path == path
     assert wiring.index_path == tmp_path / "recordings" / "segments.db"

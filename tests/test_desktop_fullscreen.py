@@ -190,8 +190,12 @@ def console(qtbot, tmp_path: Path) -> ConsoleWindow:
     settings = Settings()
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
-        StreamSettings(name="thermal", url="rtsp://camera/thermal", enabled=True),
-        StreamSettings(name="visible", url="rtsp://camera/visible", enabled=True),
+        StreamSettings(
+            name="thermal", url="rtsp://camera/thermal", enabled=True, detect=True
+        ),
+        StreamSettings(
+            name="visible", url="rtsp://camera/visible", enabled=True, detect=True
+        ),
     ]
     # Every tab this window can have, because this file is what measures them
     # all at every screen size. Playback is off in the product now - see

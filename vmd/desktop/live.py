@@ -774,6 +774,10 @@ class LiveTab(QWidget):
         # Where the pictures of what moved live, or None until a settings file
         # has said. A tab driven directly by a test has none and shows none.
         self._recordings_root = None
+        # The cameras whose movement is announced, or None while nothing has
+        # said. None means all of them - see `_worth_announcing` for why that is
+        # the safe direction for the unknown case.
+        self._watched: set[str] | None = None
         # When the outline round a picture comes off, or None when none is on.
         self._outline_until: float | None = None
         # Whether there is anywhere to send him when he asks to see footage.
@@ -1266,6 +1270,40 @@ class LiveTab(QWidget):
             else Qt.CursorShape.ArrowCursor
         )
 
+    def _worth_announcing(self, stream: str) -> bool:
+        """Whether movement on this camera is worth announcing at all.
+
+        "Although I turned off the VMD for the thermal it's still beeping in the
+        thermal camera."
+
+        He had turned it off and it was off - `detected_streams` drops the
+        camera and the detector is restarted without it. The switch was obeyed
+        where the watching happens and nowhere else, and the sound is not made
+        there. It is made here, from whatever rows are in events.db, and this
+        tab announced every one of them whatever the settings said.
+
+        There are several ways a row for a switched-off camera reaches that
+        file: a detector that has not finished dying when the save lands, one
+        left over from an earlier run that nothing is tracking, rows already
+        written before the switch was thrown. None of them should be able to
+        make a noise about a camera the operator has switched off - a switch
+        that is obeyed at the source and not at the point of effect is a switch
+        that works most of the time, which is the worst kind.
+
+        Not told means everything is announced. That direction is deliberate: a
+        console that has not yet been given its settings must not sit silent
+        through an intrusion because a set was never delivered. Failing open on
+        an alarm is right; failing closed is how a system kills somebody.
+
+        Named `_worth_announcing` and not `_watching`, which is what it was
+        called for about ten minutes: `set_watching` already keeps a STRING on
+        `self._watching`, so the method was shadowed by an attribute and every
+        read of the movement list raised `'str' object is not callable` inside
+        a Qt slot - where it is caught, logged, and looks exactly like a
+        perimeter with nobody on it.
+        """
+        return self._watched is None or stream in self._watched
+
     def set_watching(self, state: str) -> None:
         """Whether anything is watching for movement: ok, muted or a fault.
 
@@ -1351,10 +1389,24 @@ class LiveTab(QWidget):
             # Anything in the list that was not in it last time. Retention
             # deleting an event is not one of those, so footage being reclaimed
             # cannot announce itself as movement.
-            fresh = [event for event in events if event.id not in self._seen_ids]
+            #
+            # Filtered to the cameras that are actually being watched, and the
+            # `_seen_ids` above is deliberately NOT: every event is remembered
+            # as seen whether or not it was announced, so switching a camera
+            # back on tomorrow does not announce a night of movement that
+            # happened while it was off.
+            fresh = [
+                event
+                for event in events
+                if event.id not in self._seen_ids and self._worth_announcing(event.stream)
+            ]
             self._seen_ids = ids
             if fresh:
                 self._raise_alarm(max(fresh, key=lambda event: event.id))
+
+        # And what is drawn is what is watched. A camera switched off
+        # contributes nothing: no sound, no picture, no line.
+        events = [event for event in events if self._worth_announcing(event.stream)]
 
         # Only redraw when the list actually changed. This runs every two
         # seconds for months; the id alone is not enough of a signature, because
@@ -1604,6 +1656,19 @@ class LiveTab(QWidget):
         # alarm arrives: an alarm is the worst moment this console has and is
         # not when to start reading the settings file.
         self._recordings_root = settings.storage.root
+        # Which cameras are being watched for movement, which is what decides
+        # whether a row in events.db is allowed to make a sound. See
+        # `_worth_announcing`. The master switch is part of it: with detection
+        # off altogether, nothing is watched and nothing announces.
+        self._watched = (
+            {
+                stream.name
+                for stream in settings.camera.streams
+                if stream.enabled and stream.detect
+            }
+            if settings.detection.enabled
+            else set()
+        )
         # And how many cameras the airtime figure covers. Handed in rather than
         # worked out here: the tab does not know where the settings file is, and
         # that is what says which console this is. See `set_cameras_on_the_link`.

@@ -44,7 +44,15 @@ def settings_with(*names: str) -> Settings:
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[
-                StreamSettings(name=name, url=f"rtsp://10.0.0.2/{name}", enabled=True)
+                # detect=True: these are consoles that are watching. The model
+                # defaults it off, which is right for a camera nobody has set
+                # up yet and wrong for a fixture whose tests are about alarms.
+                StreamSettings(
+                    name=name,
+                    url=f"rtsp://10.0.0.2/{name}",
+                    enabled=True,
+                    detect=True,
+                )
                 for name in names
             ],
         )
@@ -1699,3 +1707,125 @@ def test_closing_the_tab_stops_the_timer(qtbot) -> None:
     assert tab._movement_timer.isActive()
     tab.shutdown()
     assert not tab._movement_timer.isActive()
+
+
+# ------------------------------------------- a camera that has been switched off
+#
+# "Although I turned off the VMD for the thermal it's still beeping in the
+# thermal camera."
+#
+# It really was off where the watching happens: `detected_streams` drops the
+# camera and the detector is restarted without it. But the SOUND is not made
+# there - it is made here, from whatever rows are in events.db - and this tab
+# announced every one of them whatever the settings said.
+
+
+def watching(*names: str, master: bool = True):
+    """Settings with detection ticked on exactly these streams."""
+    from vmd.settings import Settings, StreamSettings
+
+    settings = Settings()
+    settings.detection.enabled = master
+    settings.camera.streams = [
+        StreamSettings(
+            name=name, url=f"rtsp://camera/{name}", enabled=True, detect=name in names
+        )
+        for name in ("thermal", "visible")
+    ]
+    return settings
+
+
+def test_a_camera_switched_off_makes_no_sound_however_the_row_got_there(qtbot) -> None:
+    """A detector that has not finished dying, one left over from an earlier
+    run, or rows written before the switch was thrown - none of them may make a
+    noise about a camera the operator has switched off."""
+    events = FakeEvents()
+    tab, _ptz, _panes = build(qtbot, "thermal", "visible", events=events)
+    tab.apply(watching("visible"))
+    tab.refresh()
+
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    assert not tab.announced(), "it announced movement on a camera that is switched off"
+    assert tab.outlined_stream() is None
+    assert tab.recent_rows() == [], "it was drawn in the column as well"
+
+
+def test_the_camera_that_is_still_on_still_announces(qtbot) -> None:
+    """The other half, and the half that matters: switching one off must not
+    quietly switch the other off too."""
+    events = FakeEvents()
+    tab, _ptz, _panes = build(qtbot, "thermal", "visible", events=events)
+    tab.apply(watching("visible"))
+    tab.refresh()
+
+    events.events.append(movement(1, stream="visible"))
+    tab.refresh()
+
+    assert tab.announced()
+    assert "visible" in tab.alarm_text()
+
+
+def test_the_master_switch_silences_every_camera(qtbot) -> None:
+    events = FakeEvents()
+    tab, _ptz, _panes = build(qtbot, "thermal", "visible", events=events)
+    tab.apply(watching("thermal", "visible", master=False))
+    tab.refresh()
+
+    events.events.append(movement(1, stream="thermal"))
+    events.events.append(movement(2, stream="visible"))
+    tab.refresh()
+
+    assert not tab.announced()
+
+
+def test_switching_a_camera_back_on_does_not_announce_the_night_it_missed(
+    qtbot,
+) -> None:
+    """The trap in filtering. Every event is remembered as seen whether or not
+    it was announced - so turning thermal back on tomorrow morning does not
+    raise an alarm for movement that happened while it was off, which would be
+    a console shouting about something eight hours old."""
+    events = FakeEvents()
+    tab, _ptz, _panes = build(qtbot, "thermal", "visible", events=events)
+    tab.apply(watching("visible"))
+    tab.refresh()
+
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+    assert not tab.announced()
+
+    tab.apply(watching("thermal", "visible"))
+    tab.refresh()
+    assert not tab.announced(), "it shouted about movement from while it was off"
+
+    # And something that moves now is announced normally.
+    events.events.append(movement(2, stream="thermal"))
+    tab.refresh()
+    assert tab.announced()
+    assert "thermal" in tab.alarm_text()
+
+
+def test_a_tab_that_has_not_been_told_anything_announces_everything(qtbot) -> None:
+    """The safe direction for the unknown case. A console that has not been
+    given its settings must not sit silent through an intrusion because a set
+    was never delivered: failing open on an alarm is right, failing closed is
+    how a system kills somebody."""
+    # Built directly, because `build` applies a settings object and this is
+    # about the state before any settings have arrived at all.
+    events = FakeEvents()
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: f"rtsp://127.0.0.1:8554/{name}",
+        events=events,
+        executor=lambda work: work(),
+    )
+    qtbot.addWidget(tab)
+    tab.refresh()
+
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    assert tab.announced()

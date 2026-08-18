@@ -231,7 +231,9 @@ def settings_with(*names: str) -> Settings:
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[
-                StreamSettings(name=name, url=f"rtsp://10.0.0.2/{name}", enabled=True)
+                StreamSettings(
+                    name=name, url=f"rtsp://10.0.0.2/{name}", enabled=True, detect=True
+                )
                 for name in names
             ],
         )
