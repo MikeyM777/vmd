@@ -1972,3 +1972,48 @@ def test_a_camera_that_is_switched_off_gets_no_box_either(qtbot) -> None:
     tab.refresh()
 
     assert panes["thermal"].shown == []
+
+
+def test_the_box_is_turned_with_a_picture_that_is_shown_upside_down(qtbot) -> None:
+    """"The box that marks the movement is upside down. I've flipped the view
+    and the mark boxes are still on the opposite side."
+
+    libVLC applies the transform to the VIDEO and blends subpictures over the
+    result, so a box handed over in frame coordinates lands at the point
+    reflection of where it belongs. A person at the bottom left is boxed at the
+    top right - which is very often static scenery, and makes the whole system
+    look like it is marking things that are not moving.
+    """
+    from vmd.desktop.boxes import turned
+
+    # A person low on the left of a 640x512 thermal.
+    assert turned((60, 400, 30, 70), 640, 512) == (550, 42, 30, 70)
+    # Turning it twice is where it started.
+    assert turned(turned((60, 400, 30, 70), 640, 512), 640, 512) == (60, 400, 30, 70)
+
+
+def test_the_overlay_is_drawn_turned_when_the_view_is_flipped(qtbot, tmp_path) -> None:
+    """The end to end of it: with the view flipped, the mark that reaches the
+    file is at the turned position and not the raw one."""
+    from PySide6.QtGui import QImage
+
+    from vmd.desktop.boxes import draw
+
+    plain = tmp_path / "plain.png"
+    flipped = tmp_path / "flipped.png"
+    assert draw(plain, 640, 512, [(60, 400, 30, 70)], flip=False)
+    assert draw(flipped, 640, 512, [(60, 400, 30, 70)], flip=True)
+
+    def where(path):
+        picture = QImage(str(path))
+        inked = [
+            (x, y)
+            for y in range(picture.height())
+            for x in range(picture.width())
+            if picture.pixelColor(x, y).alpha() > 0
+        ]
+        return min(x for x, _ in inked), min(y for _, y in inked)
+
+    assert where(plain)[0] < 200, where(plain)
+    assert where(flipped)[0] > 400, "the box was not turned with the picture"
+    assert where(flipped)[1] < 100, where(flipped)

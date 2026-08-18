@@ -27,12 +27,11 @@ The mechanism is libVLC's `logo` sub-source: a file on disk, positioned at 0,0,
 at the video's own size, holding a transparent image with an outline on it.
 Changing the file changes what is drawn.
 
-**This has not been seen working.** It could not be verified on the machine it
-was written on: Qt cannot capture a native VLC window, a screen grab of one
-rendered through D3D11 comes back black, and a transcode test was inconclusive.
-It is therefore behind a switch that is off, and the switch is the only thing
-that turns any of this on. If it does not work on the real machine, the cost is
-one setting that does nothing and one file nobody looks at.
+**It works.** It could not be verified on the machine it was written on - Qt
+cannot capture a native VLC window and a screen grab of one rendered through
+D3D11 comes back black - so it shipped switched off, to be turned on and looked
+at. It was, and the report back was that the box appears and is in the wrong
+place: see `turned`, which is the whole of what was wrong.
 
 ---------------------------------------------------------------------------
 Two things this file is careful about
@@ -87,7 +86,27 @@ def folder() -> Path:
     return Path(tempfile.gettempdir()) / f"vmd-boxes-{os.getpid()}"
 
 
-def draw(path, width: int, height: int, boxes) -> bool:
+def turned(box, width: int, height: int):
+    """One box, moved to where it belongs on a picture that has been turned 180.
+
+    "The on-screen box that marks the movement is upside down. I've flipped the
+    view and the mark boxes are still on the opposite side."
+
+    libVLC applies the transform filter to the VIDEO and then blends
+    subpictures over the result, so a box handed over in frame coordinates lands
+    on a picture that has since been rotated under it - at the point reflection
+    of where it should be. A person at the bottom left is boxed at the top
+    right, which is very often a piece of static scenery, and the whole system
+    then looks like it is marking things that are not moving.
+
+    So when the picture is turned, the box is turned with it, here, in the one
+    place that knows both the box and the size of the picture it goes on.
+    """
+    x, y, w, h = (int(value) for value in box)
+    return (width - x - w, height - y - h, w, h)
+
+
+def draw(path, width: int, height: int, boxes, flip: bool = False) -> bool:
     """Write a transparent picture of `width` x `height` with outlines on it.
 
     Returns whether it wrote one. Never raises: a box is decoration on an alarm
@@ -97,9 +116,15 @@ def draw(path, width: int, height: int, boxes) -> bool:
     The size is the VIDEO's own size, not the widget's, because the boxes are in
     frame coordinates and libVLC composites this into the frame before any of it
     is scaled to the window.
+
+    `flip` says the picture is being shown turned through 180 degrees. See
+    `turned`: the box has to be turned with it or it lands on the opposite side
+    of the screen from the thing it is about.
     """
     if width <= 0 or height <= 0 or not boxes:
         return False
+    if flip:
+        boxes = [turned(box, int(width), int(height)) for box in boxes]
     try:
         from PySide6.QtGui import QColor, QImage, QPainter, QPen
 

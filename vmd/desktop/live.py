@@ -804,6 +804,7 @@ class LiveTab(QWidget):
         # Whether a box is drawn on the live picture, and the bookkeeping for
         # the ones that are up. See `_put_a_box_on_it`.
         self._boxes_on = False
+        self._flip_on = False
         self._box_names: dict[str, "boxes.Names"] = {}
         self._box_until: dict[str, float] = {}
         # When the outline round a picture comes off, or None when none is on.
@@ -1339,8 +1340,10 @@ class LiveTab(QWidget):
         stream = event.stream
         where = [tuple(int(value) for value in event.box)]
 
+        flip = self._flip_on
+
         def work() -> None:
-            if boxes.draw(path, width, height, where):
+            if boxes.draw(path, width, height, where, flip=flip):
                 self.box_drawn.emit(stream, str(path))
 
         try:
@@ -1621,6 +1624,13 @@ class LiveTab(QWidget):
             # different shape from the strip was, and a pixmap squeezed to fit
             # a box it was not made for is the one thing on this tab nobody
             # could tell from a camera that has gone soft.
+            # Turned with the picture, for the same reason the live box is: the
+            # still is of the frame the camera sent, and if the camera is
+            # mounted inverted then so is the still. See `boxes.turned`.
+            if self._flip_on:
+                from PySide6.QtGui import QTransform
+
+                picture = picture.transformed(QTransform().rotate(180))
             self._movement_picture.setPixmap(
                 picture.scaled(
                     self._movement_picture.width() or MOVEMENT_PICTURE_W,
@@ -1774,6 +1784,9 @@ class LiveTab(QWidget):
         # not when to start reading the settings file.
         self._recordings_root = settings.storage.root
         self._boxes_on = bool(settings.show_boxes)
+        # The picture may be shown turned through 180 degrees, and then the
+        # box has to be turned with it - see `boxes.turned`.
+        self._flip_on = bool(settings.flip_video)
         # Which cameras are being watched for movement, which is what decides
         # whether a row in events.db is allowed to make a sound. See
         # `_worth_announcing`. The master switch is part of it: with detection
