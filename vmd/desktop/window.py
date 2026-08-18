@@ -663,14 +663,21 @@ class StatusBand(QFrame):
         """What colour the dot is being drawn in right now."""
         return self._chips[0].glyph_colour() if self._chips else ""
 
-    def show_recording(self, recording: bool, bright: bool) -> None:
+    def show_recording(self, recording: bool, bright: bool, chosen: bool = False) -> None:
         """The dot that says whether the perimeter is being recorded.
 
-        Two states, and neither of them is "nothing there": a pulsing circle
-        while footage is reaching the disk, and a still bar when it is not. What
-        separates them across a room is the movement, not the colour - so a
-        console that is not recording cannot be mistaken for one whose dot
-        happened to be on its dim beat when somebody looked.
+        Three states, and none of them is "nothing there": a pulsing circle
+        while footage is reaching the disk, a still red bar when it has stopped
+        and should not have, and a quiet hollow circle when it is off because
+        somebody switched it off. What separates the first from the others
+        across a room is the movement, not the colour - so a console that is not
+        recording cannot be mistaken for one whose dot happened to be on its dim
+        beat when somebody looked.
+
+        The third is why the third exists. Recording off on purpose - the
+        Playback tab switched off - drawn in the same red as a dead drive is a
+        band with a permanent alarm in it, and a permanent alarm is one nobody
+        reads.
         """
         if not self._chips:
             return
@@ -678,6 +685,8 @@ class StatusBand(QFrame):
             self._chips[0].set_glyph(
                 "●", PALETTE["alarm"] if bright else _dimmed(PALETTE["alarm"])
             )
+        elif chosen:
+            self._chips[0].set_glyph("○", PALETTE["muted"])
         else:
             self._chips[0].set_glyph("■", PALETTE["alarm"])
 
@@ -1224,7 +1233,12 @@ class ConsoleWindow(QMainWindow):
     def _show_recording(self, state=_UNASKED) -> None:
         """Point the dot at the truth, and run the timer only while it moves."""
         recording = self.recording_now(state)
-        self.band.show_recording(recording, self._bright)
+        # Whether the dot is a state to notice or a state that was asked for.
+        # `state` may be the sentinel that means "nobody has asked yet", and a
+        # sentinel has no opinion about recording.
+        reading = state if isinstance(state, dict) else {}
+        chosen = bool((reading.get("recording_state") or {}).get("chosen"))
+        self.band.show_recording(recording, self._bright, chosen=chosen)
         if recording and self.isVisible():
             if not self._blink.isActive():
                 self._blink.start()
@@ -1550,12 +1564,24 @@ class ConsoleWindow(QMainWindow):
             # follow: `recording` is whether footage is reaching the disk, not
             # whether a process was alive at the instant the console looked.
             is_recording = bool(state.get("recording"))
+            # Three states and not two. Recording, not recording because
+            # something is wrong, and not recording because it was switched off
+            # - and the third is not an alarm. A console that is doing what it
+            # was told, drawn in the same red as a dead drive, is a band that
+            # teaches the operator to stop reading it.
+            chosen = bool(recording.get("chosen"))
+            if is_recording:
+                mood = "ok"
+            elif chosen:
+                mood = "muted"
+            else:
+                mood = "alarm"
             parts.append(
                 (
-                    _glance_word("recording", "ok" if is_recording else "alarm"),
+                    _glance_word("recording", mood),
                     recording.get("reason")
                     or ("recording" if is_recording else "NOT recording"),
-                    "ok" if is_recording else "alarm",
+                    mood,
                 )
             )
             streaming = state.get("streaming")

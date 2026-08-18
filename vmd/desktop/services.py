@@ -229,8 +229,29 @@ def recordable(settings: Settings) -> bool:
     An address as well as the tick, because a stream ticked to record with an
     empty address is not something to record either - that is the ordinary state
     of a machine part way through being configured.
+
+    And nothing is recorded while the Playback tab is switched off. "When the
+    playback is disabled don't record" - which follows: Playback is the only way
+    to watch recorded footage back, so with it off the recorder is filling a
+    disk nobody can open. It is a real decision and it costs something real -
+    see `recording_off_on_purpose`, which is what makes the console say so
+    calmly rather than reporting it as a fault.
     """
+    if not settings.show_playback:
+        return False
     return any(stream.enabled and stream.url for stream in settings.camera.streams)
+
+
+def recording_off_on_purpose(settings: Settings) -> bool:
+    """Whether recording is off because it was switched off, not because it broke.
+
+    The difference is the whole of how it is reported. A console that is not
+    recording because a drive died is an alarm in a red box; a console that is
+    not recording because the operator switched Playback off is doing what it
+    was told, and drawing that the same way is how a band full of red teaches
+    somebody to stop reading it.
+    """
+    return not settings.show_playback
 
 
 # --------------------------------------------------------- what is "material"
@@ -289,6 +310,11 @@ def recorder_fingerprint(settings: Settings) -> tuple:
             (stream.name, stream.url, stream.enabled)
             for stream in settings.camera.streams
         ),
+        # Whether there is to be any recording at all. The recorder does not
+        # read this itself - `recordable` does, and the console acts on it - but
+        # it belongs here so that flipping the Playback switch is a material
+        # change rather than one that takes effect at the next power cut.
+        settings.show_playback,
     )
 
 
@@ -2145,9 +2171,19 @@ class ConsoleServices:
         """
         minutes = FLAP_WINDOW / 60.0
         if not self.recording:
+            if recording_off_on_purpose(self.settings):
+                # Deliberately without the words "NOT recording", which is what
+                # the band reads to decide something is wrong. This is not.
+                return {
+                    "running": False,
+                    "restarts": 0,
+                    "chosen": True,
+                    "reason": "not recording - the Playback tab is switched off",
+                }
             return {
                 "running": False,
                 "restarts": 0,
+                "chosen": False,
                 "reason": "NOT recording - no stream is ticked to record",
             }
 

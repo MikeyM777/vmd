@@ -68,6 +68,9 @@ def settings_for(tmp_path: Path, detect: bool = False) -> Settings:
     root = tmp_path / "rec"
     recorded(root, "thermal")
     return Settings(
+        # Recording is off while the Playback tab is - see `recordable` - and
+        # this fixture is for a console that is genuinely recording.
+        show_playback=True,
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[
@@ -1407,10 +1410,14 @@ def test_the_recorder_and_the_detector_are_judged_by_one_flap_rule(tmp_path: Pat
 
 
 def test_a_stream_with_no_address_is_nothing_to_record() -> None:
+    """Every case here is about the streams. Playback is ticked on throughout,
+    because with it off nothing is recorded whatever the streams say - which is
+    the test below this one."""
     assert recordable(Settings()) is False
     assert (
         recordable(
             Settings(
+                show_playback=True,
                 camera=CameraSettings(
                     streams=[StreamSettings(name="thermal", url="", enabled=True)]
                 )
@@ -1421,6 +1428,7 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     assert (
         recordable(
             Settings(
+                show_playback=True,
                 camera=CameraSettings(
                     streams=[
                         StreamSettings(name="thermal", url="rtsp://x/t", enabled=False)
@@ -1433,6 +1441,7 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     assert (
         recordable(
             Settings(
+                show_playback=True,
                 camera=CameraSettings(
                     streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
                 )
@@ -1442,9 +1451,35 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     )
 
 
+def test_nothing_is_recorded_while_the_playback_tab_is_switched_off() -> None:
+    """"When the playback is disabled don't record."
+
+    Playback is the only way to watch recorded footage back, so with it off the
+    recorder is filling a disk nobody can open. It is a real decision and it
+    costs something real - which is why the console says so calmly rather than
+    reporting it as a fault. See `recording_off_on_purpose`.
+    """
+    from vmd.desktop.services import recording_off_on_purpose
+
+    watched = Settings(
+        show_playback=True,
+        camera=CameraSettings(
+            streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
+        ),
+    )
+    assert recordable(watched) is True
+    assert recording_off_on_purpose(watched) is False
+
+    hidden = watched.model_copy(update={"show_playback": False})
+    assert recordable(hidden) is False, "it went on recording with nowhere to watch it"
+    assert recording_off_on_purpose(hidden) is True
+
+
 def test_a_recorder_with_nothing_to_record_is_never_respawned(tmp_path: Path) -> None:
     clock = Clock()
-    settings = Settings(storage=StorageSettings(root=tmp_path / "rec"))
+    # Playback on, so that the reason below is about there being no stream
+    # rather than about the Playback switch - which is a different test.
+    settings = Settings(show_playback=True, storage=StorageSettings(root=tmp_path / "rec"))
     spawned: list = []
     settings_path = tmp_path / "settings.json"
     services = ConsoleServices(
@@ -2931,6 +2966,7 @@ def _rooted(where: Path, root: Path) -> Settings:
     """Settings for a recorder that is configured, pointed at this folder."""
     where.mkdir(parents=True, exist_ok=True)
     return Settings(
+        show_playback=True,
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[

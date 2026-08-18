@@ -1516,8 +1516,10 @@ class SettingsTab(QWidget):
             "Puts the Playback tab back on the console, with everything on it: "
             "the day to look at, the timeline, the marks where something moved, "
             "and saving a piece of footage to a file.\n\n"
-            "Recording does not depend on this. It is a separate program, it "
-            "runs whatever this says, and the footage is on the disk either way."
+            "It also switches RECORDING on. With Playback off there is nowhere "
+            "to watch footage back, so nothing is recorded at all.\n\n"
+            "Movement detection is not affected either way: the alarm, the "
+            "sound and the picture of what moved all carry on."
         )
         # `clicked` and not `toggled`: `toggled` also fires when the form fills
         # itself from the file, and asking "are you sure" while the tab is

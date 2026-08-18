@@ -2731,3 +2731,71 @@ def test_in_fullscreen_the_outline_is_what_says_which_camera_it_was(
     assert not window.live._alarm.isVisibleTo(window.live), "the red strip came back"
     window.fullscreen.leave()
     window.close()
+
+
+def test_recording_switched_off_on_purpose_is_not_drawn_as_a_fault(
+    qtbot, tmp_path: Path
+) -> None:
+    """"When the playback is disabled don't record... it's flashing the red dot."
+
+    With Playback off nothing is recorded, and the console has to say that
+    calmly. A band with a permanent red alarm in it is a band nobody reads, and
+    the dot that pulses red is the one that says footage IS reaching the disk.
+    """
+    window, _ = build(qtbot, tmp_path)
+    # The shape `ConsoleServices.recording_state` produces with Playback off.
+    off = {
+        "recording": False,
+        "recording_state": {
+            "running": False,
+            "restarts": 0,
+            "chosen": True,
+            "reason": "not recording - the Playback tab is switched off",
+        },
+        "streaming": "running",
+        "detection": {"enabled": False, "running": False, "restarts": 0, "reason": ""},
+        "restarts": {},
+        "storage": None,
+    }
+
+    recording = next(
+        part for part in window.status_parts(off) if "recording" in part[1].lower()
+    )
+    said, mood = recording[1], recording[2]
+    assert mood == "muted", f"drawn as {mood}: {said}"
+    assert "NOT recording" not in said, said
+    assert "playback" in said.lower(), said
+
+    window.band.show_recording(False, True, chosen=True)
+    assert window.band.recording_glyph() == "○", "the still red bar is for a fault"
+    window.close()
+
+
+def test_recording_that_has_really_stopped_is_still_an_alarm(
+    qtbot, tmp_path: Path
+) -> None:
+    """The half that must not be lost. Quietening the chosen case must not
+    quieten the case where a drive died."""
+    window, _ = build(qtbot, tmp_path, playback=True)
+    broken = {
+        "recording": False,
+        "recording_state": {
+            "running": False,
+            "restarts": 0,
+            "chosen": False,
+            "reason": "NOT recording - no stream is ticked to record",
+        },
+        "streaming": "running",
+        "detection": {"enabled": False, "running": False, "restarts": 0, "reason": ""},
+        "restarts": {},
+        "storage": None,
+    }
+
+    recording = next(
+        part for part in window.status_parts(broken) if "recording" in part[1].lower()
+    )
+    assert recording[2] == "alarm", recording
+
+    window.band.show_recording(False, True, chosen=False)
+    assert window.band.recording_glyph() == "■", "a fault must still look like one"
+    window.close()
