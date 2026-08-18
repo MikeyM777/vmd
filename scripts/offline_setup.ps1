@@ -187,15 +187,43 @@ if ($NoZip) {
     Write-Info "About 2 GB of files. This takes several minutes and looks like nothing"
     Write-Info "is happening; it is."
     try {
-        # ZipFile rather than Compress-Archive: Compress-Archive builds the
-        # whole archive in memory before writing it, which on a two gigabyte
-        # environment is either very slow or an out-of-memory error. Fastest
-        # rather than Optimal because the bulk of this is already-compressed
-        # wheels and binaries - Optimal spends twenty minutes to save very
-        # little on them.
+        # Written entry by entry rather than with CreateFromDirectory, and the
+        # reason is not style.
+        #
+        # `CreateFromDirectory` under Windows PowerShell writes the paths with
+        # BACKSLASHES. The zip format says they must be forward slashes
+        # (APPNOTE 4.4.17.1). Windows Explorer and 7-Zip both cope, so the
+        # archive looks perfect on the machine that made it - and anything that
+        # follows the specification extracts one flat directory full of files
+        # whose names have the separators in them as literal characters. On a
+        # kit whose whole job is to be opened on a machine nobody can fix
+        # remotely, that is not a risk worth carrying for the sake of one call.
+        #
+        # Fastest rather than Optimal because the bulk of this is
+        # already-compressed wheels and binaries: Optimal spends twenty minutes
+        # to save very little on them.
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $Out, $zipPath, [System.IO.Compression.CompressionLevel]::Fastest, $false)
+        Add-Type -AssemblyName System.IO.Compression
+        $fastest = [System.IO.Compression.CompressionLevel]::Fastest
+        $archive = [System.IO.Compression.ZipFile]::Open(
+            $zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $sep = [System.IO.Path]::DirectorySeparatorChar
+            $prefix = (Resolve-Path $Out).Path.TrimEnd($sep) + $sep
+            $files = Get-ChildItem -Path $Out -File -Recurse -Force
+            $done = 0
+            foreach ($file in $files) {
+                $name = $file.FullName.Substring($prefix.Length).Replace($sep, '/')
+                [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $archive, $file.FullName, $name, $fastest)
+                $done++
+                if (($done % 4000) -eq 0) {
+                    Write-Info "  $done of $($files.Count) files"
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
         $size = [math]::Round((Get-Item $zipPath).Length / 1GB, 1)
         Write-Ok "Made $zipPath  ($size GB)"
     } catch {
