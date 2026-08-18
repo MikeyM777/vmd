@@ -550,6 +550,21 @@ class Settings(Model):
             )
         return value
 
+    # Draw a box on the live picture round what moved.
+    #
+    # "I want a box on the view when the VMD detects something, like YOLO does
+    # but without the classifying text." The box and no words: nothing on this
+    # console puts a noun on what moved and this does not start.
+    #
+    # Off, and that is not a preference. The mechanism - libVLC compositing a
+    # subpicture, the only way anything can be put over these pictures at all -
+    # could not be verified on the machine it was written on, because a native
+    # VLC window cannot be captured by Qt and comes back black from a screen
+    # grab. So it ships switched off, to be turned on once on the real machine
+    # and looked at. If it does not work there the cost is a setting that does
+    # nothing. See `vmd/desktop/boxes.py`.
+    show_boxes: bool = False
+
     # Turn the live picture upside down.
     #
     # For testing, and asked for as such: a camera mounted inverted, or a bench

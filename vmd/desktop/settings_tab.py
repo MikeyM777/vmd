@@ -1281,9 +1281,19 @@ class SettingsTab(QWidget):
             "cover what they covered.\n\n"
             "For a camera mounted upside down, or a rig on a bench."
         )
+        self._boxes = QCheckBox("Draw a box on the live picture where something moved")
+        self._boxes.setToolTip(
+            "A box round what moved, on the live picture, for a few seconds.\n\n"
+            "No words - this system never says what it thinks a thing was, and "
+            "this does not start.\n\n"
+            "It is switched off because it has not been seen working on a real "
+            "camera yet. Turn it on, watch for a box the next time something "
+            "moves, and say whether one appeared."
+        )
         camera_form.addRow("Name", self._title)
         camera_form.addRow("Show on", self._screen)
         camera_form.addRow("Live picture", self._delay)
+        camera_form.addRow("", self._boxes)
         camera_form.addRow("", self._flip)
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
@@ -1982,6 +1992,14 @@ class SettingsTab(QWidget):
         self._delay.setCurrentIndex(index)
 
     @property
+    def show_boxes(self) -> bool:
+        return self._boxes.isChecked()
+
+    @show_boxes.setter
+    def show_boxes(self, value: bool) -> None:
+        self._boxes.setChecked(bool(value))
+
+    @property
     def flip_video(self) -> bool:
         return self._flip.isChecked()
 
@@ -2478,6 +2496,7 @@ class SettingsTab(QWidget):
         self.screen = settings.screen
         self.live_delay_ms = settings.live_delay_ms
         self.flip_video = settings.flip_video
+        self.show_boxes = settings.show_boxes
         self.show_playback = settings.show_playback
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
@@ -2670,6 +2689,7 @@ class SettingsTab(QWidget):
         payload["screen"] = self.screen
         payload["live_delay_ms"] = self.live_delay_ms
         payload["flip_video"] = self.flip_video
+        payload["show_boxes"] = self.show_boxes
         payload["show_playback"] = self.show_playback
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(

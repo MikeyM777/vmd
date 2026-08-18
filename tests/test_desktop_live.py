@@ -1829,3 +1829,146 @@ def test_a_tab_that_has_not_been_told_anything_announces_everything(qtbot) -> No
     tab.refresh()
 
     assert tab.announced()
+
+
+# --------------------------------------------------- a box on the live picture
+#
+# "I want a box on the view when the VMD detects something, like YOLO does but
+# without the classifying text."
+#
+# It is handed to libVLC as a subpicture rather than drawn over the video - see
+# vmd/desktop/boxes.py for why that is the only way - and it is off until it has
+# been seen working on a real camera.
+
+
+class BoxPane(FakeVideoPane):
+    """A pane that can be asked to show an overlay, and remembers being asked."""
+
+    def __init__(self, size=(1920, 1080)) -> None:
+        super().__init__()
+        self._size = size
+        self.shown: list[str] = []
+        self.hidden = 0
+
+    def video_size(self):
+        return self._size
+
+    def show_overlay(self, path: str) -> bool:
+        self.shown.append(path)
+        return True
+
+    def hide_overlay(self) -> bool:
+        self.hidden += 1
+        return True
+
+
+def boxed(qtbot, on: bool, size=(1920, 1080), clock=None):
+    """A tab whose panes can take an overlay, with boxes on or off."""
+    from vmd.settings import Settings
+
+    events = FakeEvents()
+    tab, _ptz, panes = build(
+        qtbot, "thermal", events=events, pane=lambda: BoxPane(size), clock=clock
+    )
+    settings = settings_with("thermal")
+    settings.show_boxes = on
+    tab.apply(settings)
+    return tab, events, panes
+
+
+def test_a_box_is_drawn_at_the_video_size_and_shown_on_the_pane(qtbot) -> None:
+    """The box is in FRAME coordinates and the overlay is drawn at the video's
+    own size, so it lands on the thing by construction."""
+    from pathlib import Path
+
+    tab, events, panes = boxed(qtbot, on=True)
+    tab.refresh()
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    pane = panes["thermal"]
+    assert pane.shown, "nothing was put on the picture"
+    written = Path(pane.shown[-1])
+    assert written.is_file(), "the pane was given a file that was never written"
+
+    from PySide6.QtGui import QImage
+
+    overlay = QImage(str(written))
+    assert (overlay.width(), overlay.height()) == (1920, 1080), (
+        "the overlay is not the size of the video, so the box lands in the wrong place"
+    )
+
+
+def test_no_box_is_drawn_when_it_has_not_been_asked_for(qtbot) -> None:
+    tab, events, panes = boxed(qtbot, on=False)
+    tab.refresh()
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    assert panes["thermal"].shown == []
+
+
+def test_a_pane_with_no_picture_yet_is_not_drawn_on(qtbot) -> None:
+    """A pane reports no size until libVLC has a picture. There is nothing to
+    draw on and nothing to work out the coordinates against."""
+    tab, events, panes = boxed(qtbot, on=True, size=(0, 0))
+    tab.refresh()
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    assert panes["thermal"].shown == []
+
+
+def test_the_box_comes_off_by_itself(qtbot) -> None:
+    """A box that stays stops meaning "this is where it was just now" and starts
+    looking like something that is still there."""
+    from vmd.desktop.boxes import BOX_SECONDS
+
+    now = [1000.0]
+    tab, events, panes = boxed(qtbot, on=True, clock=lambda: now[0])
+    tab.refresh()
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+    assert panes["thermal"].shown
+
+    now[0] += BOX_SECONDS - 1.0
+    tab.refresh()
+    assert panes["thermal"].hidden == 0, "it came off while it still meant now"
+
+    now[0] += 2.0
+    tab.refresh()
+    assert panes["thermal"].hidden == 1
+
+
+def test_the_file_name_changes_every_time(qtbot) -> None:
+    """libVLC is being asked to re-read a file it has already read. An image
+    loader that caches by name would draw the first box for ever."""
+    tab, events, panes = boxed(qtbot, on=True)
+    tab.refresh()
+    for index in (1, 2, 3):
+        events.events.insert(0, movement(index, stream="thermal"))
+        tab.refresh()
+
+    shown = panes["thermal"].shown
+    assert len(shown) >= 2
+    assert shown[-1] != shown[-2], "the same name twice running"
+
+
+def test_a_camera_that_is_switched_off_gets_no_box_either(qtbot) -> None:
+    """The box follows the announcement, and the announcement follows the
+    detection switch."""
+    from vmd.settings import Settings
+
+    events = FakeEvents()
+    tab, _ptz, panes = build(
+        qtbot, "thermal", "visible", events=events, pane=lambda: BoxPane()
+    )
+    settings = watching("visible")
+    settings.show_boxes = True
+    tab.apply(settings)
+    tab.refresh()
+
+    events.events.append(movement(1, stream="thermal"))
+    tab.refresh()
+
+    assert panes["thermal"].shown == []

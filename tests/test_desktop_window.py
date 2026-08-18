@@ -638,10 +638,11 @@ def test_a_pane_that_can_be_built_is_used(qtbot) -> None:
 class DelayedPane(FakeVideoPane):
     """A pane that remembers what it was built with."""
 
-    def __init__(self, delay_ms: int = -1, flip: bool = False) -> None:
+    def __init__(self, delay_ms: int = -1, flip: bool = False, boxes: bool = False) -> None:
         super().__init__()
         self.delay_ms = delay_ms
         self.flip = flip
+        self.boxes = boxes
 
 
 def test_a_pane_is_built_with_the_delay_it_was_given() -> None:

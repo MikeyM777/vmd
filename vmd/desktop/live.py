@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import threading
 import time
 from typing import Callable
 
@@ -58,6 +59,7 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.video import VideoPane
 from vmd.desktop.chime import Chime
+from vmd.desktop import boxes
 from vmd.desktop.watch import Watched
 from vmd.desktop.zoombar import ZoomBar
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands, ZoomHandle
@@ -65,6 +67,18 @@ from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def _one_off_thread(work) -> None:
+    """Run this on a thread of its own and forget about it.
+
+    The default when nothing else was handed in. A daemon, and never joined:
+    this outlives windows on purpose and a closing console may not wait on a
+    call that is drawing a picture. The same rule and the same shape as
+    `vmd/desktop/watch.py`, which states it.
+    """
+    thread = threading.Thread(target=work, name="vmd-box", daemon=True)
+    thread.start()
 
 ZOOM_SPEED = 0.5
 
@@ -570,6 +584,8 @@ class LiveTab(QWidget):
     # sentence written for somebody with a second machine and an hour; he has
     # neither, and an alarm is the moment he has least of both.
     show_footage = Signal(object)
+    #: (stream, path) - a worker has written an overlay and it can be shown.
+    box_drawn = Signal(str, str)
 
     # The operator asked for the pictures on the whole screen, or asked to come
     # back out. The window owns the mode - it is the thing that has a status
@@ -731,7 +747,14 @@ class LiveTab(QWidget):
         # anything has moved does not put a needless stop onto the link.
         self._last_velocity: tuple[float, float, float] | None = (0.0, 0.0, 0.0)
 
+        # The same seam the movement list is read through, kept so that drawing
+        # a box - about 80 ms at FHD - runs where reading the disk runs and not
+        # where the window is painted. A tab built without one gets a daemon
+        # thread, which is what `Watched` does with the same argument.
+        self._executor = executor or _one_off_thread
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # The worker writes the file; this thread hands it to libVLC.
+        self.box_drawn.connect(self._show_the_box)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(SPACE_STEP, SPACE_STEP, SPACE_STEP, SPACE_STEP)
@@ -778,6 +801,11 @@ class LiveTab(QWidget):
         # said. None means all of them - see `_worth_announcing` for why that is
         # the safe direction for the unknown case.
         self._watched: set[str] | None = None
+        # Whether a box is drawn on the live picture, and the bookkeeping for
+        # the ones that are up. See `_put_a_box_on_it`.
+        self._boxes_on = False
+        self._box_names: dict[str, "boxes.Names"] = {}
+        self._box_until: dict[str, float] = {}
         # When the outline round a picture comes off, or None when none is on.
         self._outline_until: float | None = None
         # Whether there is anywhere to send him when he asks to see footage.
@@ -1270,6 +1298,94 @@ class LiveTab(QWidget):
             else Qt.CursorShape.ArrowCursor
         )
 
+    def _put_a_box_on_it(self, event) -> None:
+        """Draw the box round what moved, on the live picture.
+
+        Off unless it has been asked for - see `Settings.show_boxes`, and
+        `vmd/desktop/boxes.py` for why this is a picture handed to libVLC rather
+        than a widget put over the video.
+
+        The drawing goes to a worker and nothing else does. Building and saving
+        a full-size transparent PNG was measured at about 80 ms at FHD, and 80
+        ms on the thread that paints the window is a console that stops
+        repainting - during an alarm, which is the one moment it may not. What
+        comes back to this thread is a file name, and naming a file to libVLC is
+        two calls that cost nothing.
+
+        The box is in FRAME coordinates and the overlay is drawn at the video's
+        own size, so it lands on the thing by construction. A pane that has not
+        got a picture yet reports no size, and then there is nothing to draw on
+        and nothing is drawn.
+        """
+        if not self._boxes_on:
+            return
+        pane = self._panes.get(event.stream)
+        size = getattr(pane, "video_size", None)
+        if pane is None or size is None:
+            return
+        try:
+            width, height = size()
+        except Exception:  # noqa: BLE001 - a box may never cost the alarm
+            logger.exception("the picture would not say how big it is")
+            return
+        if width <= 0 or height <= 0:
+            return
+
+        names = self._box_names.get(event.stream)
+        if names is None:
+            names = boxes.Names(boxes.folder(), event.stream)
+            self._box_names[event.stream] = names
+        path = names.take()
+        stream = event.stream
+        where = [tuple(int(value) for value in event.box)]
+
+        def work() -> None:
+            if boxes.draw(path, width, height, where):
+                self.box_drawn.emit(stream, str(path))
+
+        try:
+            self._executor(work)
+        except Exception:  # noqa: BLE001 - the alarm has already been made
+            logger.exception("the box could not be handed to a worker")
+
+    def _show_the_box(self, stream: str, path: str) -> None:
+        """The worker has written the file; put it on the picture.
+
+        On this thread, because it talks to libVLC and libVLC belongs to the
+        thread that owns the widget it draws into.
+        """
+        pane = self._panes.get(stream)
+        show = getattr(pane, "show_overlay", None)
+        if show is None:
+            return
+        try:
+            show(path)
+        except Exception:  # noqa: BLE001
+            logger.exception("the box could not be shown")
+            return
+        self._box_until[stream] = self._clock() + boxes.BOX_SECONDS
+
+    def _take_old_boxes_off(self) -> None:
+        """Six seconds, then off. Checked on the heartbeat, like the outline.
+
+        A box that stays is worse than no box: it stops meaning "this is where
+        it was just now" and starts looking like something that is still there.
+        """
+        if not self._box_until:
+            return
+        now = self._clock()
+        for stream, due in list(self._box_until.items()):
+            if now < due:
+                continue
+            del self._box_until[stream]
+            hide = getattr(self._panes.get(stream), "hide_overlay", None)
+            if hide is None:
+                continue
+            try:
+                hide()
+            except Exception:  # noqa: BLE001
+                logger.exception("the box would not come off %s", stream)
+
     def _worth_announcing(self, stream: str) -> bool:
         """Whether movement on this camera is worth announcing at all.
 
@@ -1441,6 +1557,7 @@ class LiveTab(QWidget):
         self._alarm_label.setText(f"Movement on {event.stream} at {clock}")
         self._alarm_event = event
         self._show_what_moved(event)
+        self._put_a_box_on_it(event)
         self._outline(event.stream)
         # And out loud, because he is not always looking at the screen. The
         # strip is red and wide and was completely silent, so an intrusion at
@@ -1656,6 +1773,7 @@ class LiveTab(QWidget):
         # alarm arrives: an alarm is the worst moment this console has and is
         # not when to start reading the settings file.
         self._recordings_root = settings.storage.root
+        self._boxes_on = bool(settings.show_boxes)
         # Which cameras are being watched for movement, which is what decides
         # whether a row in events.db is allowed to make a sound. See
         # `_worth_announcing`. The master switch is part of it: with detection
@@ -2075,6 +2193,7 @@ class LiveTab(QWidget):
 
         Late is a report, not a trigger. The pane is left exactly as it is."""
         self._take_the_outline_off_when_it_is_due()
+        self._take_old_boxes_off()
         for name, pane in self._panes.items():
             # A view the operator has switched away from is stopped on purpose.
             # Reading its state here would report it as stopped, which is true,

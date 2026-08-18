@@ -179,7 +179,9 @@ DEFAULT_DELAY_MS = 120
 TIGHT_CLOCK_AT_OR_BELOW_MS = 50
 
 
-def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, flip: bool = False) -> list[str]:
+def vlc_options(
+    delay_ms: int = DEFAULT_DELAY_MS, flip: bool = False, boxes: bool = False
+) -> list[str]:
     """What libVLC is started with, and every line of it is about delay.
 
     "Compared to the FLIR browser GUI our VMD is much later. It's unacceptable."
@@ -236,6 +238,24 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, flip: bool = False) -> list[st
         "--no-video-title-show",
         "--avcodec-hw=any",  # hardware decode where the machine offers it
     ]
+    if boxes:
+        # The box round what moved, composited by libVLC itself rather than
+        # drawn over its window - see `vmd/desktop/boxes.py` for why that is the
+        # only way it can be done at all. A sub-source is a subpicture, the same
+        # road subtitles take, so it survives hardware decoding and fullscreen.
+        #
+        # Opacity 0 and a blank file to start with: the filter has to exist from
+        # the moment the pane does, because it cannot be added to a running
+        # instance, and a pane is built long before anything moves in front of
+        # it.
+        options.extend(
+            [
+                "--sub-source=logo",
+                "--logo-x=0",
+                "--logo-y=0",
+                "--logo-opacity=0",
+            ]
+        )
     if flip:
         # libVLC's own transform filter, so the turning happens where the
         # picture is drawn and nowhere else: the recorder and the detector both
@@ -312,6 +332,7 @@ class VlcVideoPane(QWidget):
         parent: QWidget | None = None,
         delay_ms: int = DEFAULT_DELAY_MS,
         flip: bool = False,
+        boxes: bool = False,
     ) -> None:
         super().__init__(parent)
         vlc = load_vlc()
@@ -326,7 +347,8 @@ class VlcVideoPane(QWidget):
         # Per pane, because the delay is a setting and a saved change rebuilds
         # the panes. An instance built once at import would hold whatever the
         # first console of the morning was started with.
-        self._instance = vlc.Instance(vlc_options(delay_ms, flip=flip))
+        self._instance = vlc.Instance(vlc_options(delay_ms, flip=flip, boxes=boxes))
+        self._boxes = bool(boxes)
         self._player = self._instance.media_player_new()
         self._url: str | None = None
         self._last_frame_at = 0.0
@@ -408,6 +430,55 @@ class VlcVideoPane(QWidget):
         if self._released:
             return
         self._player.stop()
+
+    def video_size(self) -> tuple[int, int]:
+        """The picture's own size, or (0, 0) while nothing is playing.
+
+        The VIDEO's size and not the widget's. Detection boxes are in frame
+        coordinates and libVLC composites the overlay into the frame before any
+        of it is scaled to the window, so this is the size the overlay has to
+        be drawn at for the box to land on the thing.
+        """
+        if self._released:
+            return (0, 0)
+        try:
+            width, height = self._player.video_get_size(0)
+        except Exception:  # noqa: BLE001 - a player with no picture yet
+            return (0, 0)
+        return (int(width or 0), int(height or 0))
+
+    def show_overlay(self, path: str) -> bool:
+        """Draw this picture over the video. Says whether libVLC was asked.
+
+        The file has already been written by whoever called this, on a worker -
+        see `vmd/desktop/boxes.py`, which measures why. All this does is name it
+        and turn the opacity up, which are two calls into libVLC and cost
+        nothing.
+        """
+        if not self._boxes or self._released:
+            return False
+        try:
+            vlc = self._vlc
+            self._player.video_set_logo_string(vlc.VideoLogoOption.logo_file, str(path))
+            self._player.video_set_logo_int(vlc.VideoLogoOption.logo_x, 0)
+            self._player.video_set_logo_int(vlc.VideoLogoOption.logo_y, 0)
+            self._player.video_set_logo_int(vlc.VideoLogoOption.logo_opacity, 255)
+            return True
+        except Exception:  # noqa: BLE001 - a box may never cost the picture
+            logger.exception("the box could not be put on the picture")
+            return False
+
+    def hide_overlay(self) -> bool:
+        """Take the box off. Opacity rather than an empty file, because it is
+        one call and cannot fail on a disk that has gone."""
+        if not self._boxes or self._released:
+            return False
+        try:
+            self._player.video_set_logo_int(self._vlc.VideoLogoOption.logo_opacity, 0)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("the box could not be taken off the picture")
+            return False
 
     def release(self) -> None:
         """Hand libVLC back what it gave out. The pane is finished after this.
