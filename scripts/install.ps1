@@ -132,10 +132,19 @@ function Write-Summary {
 
     Write-Host ""
     Write-Host "  ==============================================================" -ForegroundColor DarkGray
+    # The heading says which of the two states this is, in the words themselves.
+    #
+    # It used to read "BROKEN - MUST BE FIXED BEFORE THE SYSTEM IS USED" either
+    # way, green over "Nothing." on a good install and red over a list on a bad
+    # one. On the screen the colour carries it. In the LOG it does not - and the
+    # log is the exact thing this installer asks people to send when something
+    # looks wrong, so the one artefact meant for diagnosing a fault was the one
+    # where a clean install and a broken one read the same. It was read as an
+    # error on a machine where nothing at all was wrong.
     if ($broken.Count -eq 0) {
-        Write-Host "  BROKEN - MUST BE FIXED BEFORE THE SYSTEM IS USED" -ForegroundColor Green
+        Write-Host "  NOTHING IS BROKEN - THIS SYSTEM CAN BE USED" -ForegroundColor Green
         Write-Host "  ==============================================================" -ForegroundColor DarkGray
-        Write-Host "    Nothing. This system can be used." -ForegroundColor Green
+        Write-Host "    Every check passed. There is nothing to fix." -ForegroundColor Green
     } else {
         Write-Host "  BROKEN - MUST BE FIXED BEFORE THE SYSTEM IS USED" -ForegroundColor Red
         Write-Host "  ==============================================================" -ForegroundColor DarkGray
