@@ -215,6 +215,31 @@ def detection_enabled(settings: Settings) -> bool:
     return bool(detected_streams(settings))
 
 
+def streamable(settings: Settings) -> bool:
+    """Is there anything for the streaming server to serve?
+
+    The same shape as `recordable`, and it exists for the same reason one layer
+    along. `Go2rtcService.start` sensibly refuses to spawn a server with no
+    streams in its configuration and says "no enabled streams" - but the
+    supervisor counts each of those as a start, and after three it reports
+
+        streaming: it has been started 3 times and has never stayed up for
+        60 seconds; starting it again is not fixing it
+
+    every two seconds, climbing, for as long as the console is open.
+
+    That is the ORDINARY state of a console the moment `cameras.bat` has made
+    it: the folder exists, the operator has not typed the stream addresses yet,
+    and the first thing the new installation does is report an escalating
+    failure of something that was never asked to run. It is the first
+    impression this system makes and it is not true.
+
+    So a streaming server with nothing to serve is not supervised at all, the
+    same way a recorder with nothing to record is not.
+    """
+    return any(stream.enabled and stream.url for stream in settings.camera.streams)
+
+
 def recordable(settings: Settings) -> bool:
     """Is there anything for the recorder to record?
 
@@ -1466,6 +1491,11 @@ class ConsoleServices:
         # And a recorder with nothing to record is not supervised either, for
         # exactly the same reason - see `recordable`.
         self.recording = recordable(settings)
+        # Whether the streaming server has anything to serve. See
+        # `streamable`: with nothing to serve it is not supervised, so a
+        # console that has not been given its stream addresses yet does not
+        # report an escalating failure of a thing nobody asked to run.
+        self.serving = streamable(settings)
 
         self.supervisor = Supervisor(self._managed(), clock=clock)
 
@@ -1528,7 +1558,7 @@ class ConsoleServices:
     def _managed(self) -> list[Managed]:
         """The children the supervisor holds, given what is configured now."""
         managed: list[Managed] = []
-        if self.streaming is not None:
+        if self.streaming is not None and self.serving:
             managed.append(Managed(name="streaming", service=self.streaming))
         if self.recording:
             managed.append(Managed(name="recorder", service=self.recorder))
@@ -1544,7 +1574,11 @@ class ConsoleServices:
         connection to the camera, which is the cost this whole arrangement
         exists to avoid.
         """
-        if self.streaming is not None:
+        # Nothing to serve is nothing to start and nothing to adopt: see
+        # `streamable`. Asking anyway costs one line in the Logs tab saying
+        # a server was not started, on a console whose band already says
+        # there are no pictures because nobody has typed an address yet.
+        if self.streaming is not None and self.serving:
             endpoint = read_endpoint(self.settings_path.parent / "streaming.json")
             # Whether that file describes anything worth adopting is a question
             # with a real answer, and it is asked before the panes are pointed
@@ -1940,9 +1974,20 @@ class ConsoleServices:
 
         wanted = self.detector is not None and detection_enabled(settings)
         recording = recordable(settings)
-        if wanted != self.detecting or recording != self.recording:
+        # And whether there is anything to stream. This is the one that
+        # changes on the very first Save a new installation ever gets: the
+        # console is made with no stream addresses, so nothing is served
+        # until he types them - and the supervisor has to be rebuilt at that
+        # moment or the pictures never start.
+        serving = streamable(settings)
+        if (
+            wanted != self.detecting
+            or recording != self.recording
+            or serving != self.serving
+        ):
             self.detecting = wanted
             self.recording = recording
+            self.serving = serving
             # A fresh supervisor rather than a mutated one: its restart counts
             # and back-off belong to a configuration that no longer exists, and
             # there is no supported way to add or remove a service from the one
@@ -1950,6 +1995,7 @@ class ConsoleServices:
             self.supervisor = Supervisor(self._managed(), clock=self._clock)
             self._forget_restarts("detector")
             self._forget_restarts("recorder")
+            self._forget_restarts("streaming")
 
         problems.extend(self._apply_to_recorder(previous, settings, recording))
         problems.extend(self._apply_to_detector(previous, settings, wanted))
@@ -2038,7 +2084,13 @@ class ConsoleServices:
     def state(self) -> dict:
         streaming_state = "not enabled"
         if self.streaming is not None:
-            streaming_state = self.streaming.status().reason
+            # Not supervised is not broken. A console whose stream
+            # addresses have not been typed in yet has nothing to serve and
+            # nothing is wrong with it - see `streamable`. The word is the
+            # one the band already draws quietly rather than in red.
+            streaming_state = (
+                self.streaming.status().reason if self.serving else "not enabled"
+            )
         recording = self.recording_state()
         return {
             # Still a bool, and still the first thing the status line asks -

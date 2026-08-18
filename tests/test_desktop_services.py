@@ -3541,3 +3541,152 @@ def test_a_bad_link_reading_cannot_take_the_heartbeat_down(tmp_path: Path) -> No
     services.tick()  # must not raise
     assert services.state()["link_bitrate"]["running"] is False
 
+
+
+# --------------------------------------- a console that has not been set up yet
+#
+# "After the cameras.bat and the autostart-on.bat I ran the VMD.exe and got
+# errors."
+#
+# `cameras.bat` makes a camera folder with no stream addresses in it - the
+# operator types those into the Settings tab next. In the meantime
+# `Go2rtcService.start` sensibly refuses to spawn a server with nothing in its
+# configuration, the supervisor counts each refusal as a start, and after three
+# it reports an escalating failure every two seconds for as long as the console
+# is open. It is the first impression a new installation makes and it is not
+# true.
+
+
+def test_a_console_with_no_stream_addresses_does_not_supervise_the_streamer() -> None:
+    from vmd.desktop.services import streamable
+
+    nothing = Settings(camera=CameraSettings(streams=[]))
+    assert streamable(nothing) is False
+
+    typed = Settings(
+        camera=CameraSettings(
+            streams=[StreamSettings(name="thermal", url="", enabled=True)]
+        )
+    )
+    assert streamable(typed) is False, "a stream with no address is nothing to serve"
+
+    ready = Settings(
+        camera=CameraSettings(
+            streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
+        )
+    )
+    assert streamable(ready) is True
+
+
+def test_nothing_is_reported_as_flapping_before_the_addresses_are_typed(
+    tmp_path: Path,
+) -> None:
+    """The whole fault, at the console's own level: fifteen heartbeats on a
+    freshly made camera folder must produce no start attempts and no failure."""
+    clock = Clock()
+    settings = Settings(
+        show_playback=True,
+        camera=CameraSettings(host="10.0.0.2", streams=[]),
+        storage=StorageSettings(root=tmp_path / "rec"),
+    )
+    started: list = []
+
+    class CountingStreamer:
+        settings = None
+
+        def start(self) -> None:
+            started.append(1)
+
+        def stop(self) -> None: ...
+
+        def status(self):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(running=False, reason="no enabled streams")
+
+        @property
+        def running(self) -> bool:
+            return False
+
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=tmp_path / "settings.json",
+        streaming=CountingStreamer(),
+        recorder=RecorderProcess(
+            tmp_path / "settings.json",
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: DeadOnArrival(),
+        ),
+        clock=clock,
+        disk=watching(settings),
+    )
+    services.start()
+    for _ in range(15):
+        clock.advance(2.0)
+        services.tick()
+
+    assert started == [], f"{len(started)} attempts to start a server with nothing to serve"
+    assert "streaming" not in [entry.name for entry in services.supervisor.managed]
+    # And it is reported as off rather than as broken: `_streaming_state` in the
+    # window draws exactly this word quietly.
+    assert services.state()["streaming"] == "not enabled"
+
+
+def test_typing_the_addresses_in_starts_the_streamer(tmp_path: Path) -> None:
+    """The other half, and the one that matters on the first Save a new
+    installation ever gets: the supervisor has to be rebuilt at that moment or
+    the pictures never start."""
+    clock = Clock()
+    settings = Settings(
+        show_playback=True,
+        camera=CameraSettings(host="10.0.0.2", streams=[]),
+        storage=StorageSettings(root=tmp_path / "rec"),
+    )
+
+    class Streamer:
+        def __init__(self) -> None:
+            self.settings = None
+            self.starts = 0
+
+        def start(self) -> None:
+            self.starts += 1
+
+        def stop(self) -> None: ...
+
+        def status(self):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(running=True, reason="streaming")
+
+        @property
+        def running(self) -> bool:
+            return self.starts > 0
+
+    streamer = Streamer()
+    services = ConsoleServices(
+        settings=settings,
+        settings_path=tmp_path / "settings.json",
+        streaming=streamer,
+        recorder=RecorderProcess(
+            tmp_path / "settings.json",
+            pid_path=tmp_path / "recorder.pid",
+            spawn=lambda c: DeadOnArrival(),
+        ),
+        clock=clock,
+        disk=watching(settings),
+    )
+    services.start()
+    assert "streaming" not in [entry.name for entry in services.supervisor.managed]
+
+    filled = settings.model_copy(
+        update={
+            "camera": CameraSettings(
+                host="10.0.0.2",
+                streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)],
+            )
+        }
+    )
+    services.apply(filled)
+    assert "streaming" in [entry.name for entry in services.supervisor.managed], (
+        "the addresses were typed in and the pictures never started"
+    )
