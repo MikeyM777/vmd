@@ -4,6 +4,12 @@
 and no graphics card. Every timing in here was measured rather than looked up,
 except where it says otherwise and names the source.*
 
+*Corrected 2026-08-19, when the field report gave the real stream sizes. They
+are not FHD: the thermal is **640x512 at 30 fps** and the visible is **640x480
+at 15 fps**, both about 1.5 Mb/s. Everything below was re-measured at those
+sizes, and the answer changed from "this needs the iGPU and careful budgeting"
+to "this fits on one core with room to spare".*
+
 ---
 
 ## The short version
@@ -35,12 +41,17 @@ second, that is a small fraction of the machine.
 
 ## Why the obvious approach does not work here
 
-**"Just run YOLO on the picture."** The camera sends FHD. Every detector resizes
-its input — 640×640 is the usual — so 1920 wide becomes 640 wide, a factor of
-three. The code's own figure for a person at 700 m is about 13 pixels tall on
-the thermal head; at FHD it is nearer 6 or 7. After the resize that person is
-**two pixels**. There is nothing left to detect. This is not a model problem and
-a better model does not fix it.
+**"Just run YOLO on the picture."** Less wrong at 640×512 than it was going to
+be at FHD, and still wrong. A detector resizes its input to 640×640, so a
+640-wide thermal frame is barely resized at all — but the frame is 512 tall
+against 640, so it is stretched, and the person is still whatever the sensor
+gave: the code's own figure is about 13 pixels on the thermal head. A model
+trained on photographs where a person is hundreds of pixels tall has very little
+to say about thirteen, and nothing about the six or seven a smaller target gives.
+
+Cropping is still the answer, and at these sizes it is cheap: a 13-pixel person
+inside a 112-pixel crop fed at 192×192 arrives as a **22-pixel** person, for
+21 ms.
 
 Measured here, `yolo11n` on CPU:
 
@@ -73,13 +84,39 @@ that is empty 99% of the time, that is not a close call.
 
 ## What the machine can do
 
-Measured on this development machine, at FHD:
+Measured on this development machine, at **the real stream sizes**:
 
-| Stage | Cost | Rate |
+| Stage | Cost | What that is at full rate |
 |---|---|---|
-| Background subtraction, full frame | 19 ms | 53/sec |
-| Background subtraction at quarter scale | 1.1 ms | 900/sec |
-| `yolo11n` on one 320×320 crop, **CPU** | 32 ms | 31/sec |
+| Motion on the thermal, 640×512 | **2.6 ms/frame** | 7.7% of one core at 30 fps |
+| Motion on the visible, 640×480 | **2.6 ms/frame** | 3.8% of one core at 15 fps |
+| `yolo11n` on one 192×192 crop, **CPU** | 21 ms | 47 crops/sec |
+| `yolo11n` on one 320×320 crop, **CPU** | 31 ms | 33 crops/sec |
+
+### The budget for both consoles on the i5
+
+Two consoles, two streams each, motion on all four, at full frame rate:
+
+| | |
+|---|---|
+| Motion, all four streams | **23% of one core** |
+| The i5-12600 has | 6 performance cores and 4 more |
+
+Crop detection on top of that, at five analysed frames a second with an average
+of one crop per analysed frame, is **20 crops a second**: about 0.6 of a core at
+192×192 on the CPU alone, and a small fraction of the iGPU through OpenVINO.
+
+**It fits, twice over, without the iGPU.** The earlier version of this document
+budgeted against FHD and concluded the iGPU was needed; at the real sizes the
+crop detector is affordable on the processor alone, and OpenVINO becomes a way
+of leaving the CPU free rather than a requirement.
+
+For comparison, the same measurements at the FHD this was first written against:
+
+| Stage | Cost |
+|---|---|
+| Motion, full frame at 1920×1080 | 19 ms — 53/sec |
+| Motion at quarter scale | 1.1 ms |
 
 Published for the target machine — Intel UHD 770 with OpenVINO, from several
 independent Frigate deployments:
@@ -171,15 +208,23 @@ last one has to be measured on the mini PC and cannot be settled here.
 The sensitivity presets set a **minimum blob height as a share of frame height**.
 On a 1080-line picture:
 
-| Sensitivity | Smallest blob accepted |
-|---|---|
-| low | 32 px tall |
-| **normal (the default)** | **16 px tall** |
-| high | 5.4 px tall |
+On the 512-line thermal — corrected from the 1080 this was first written
+against:
 
-If a person at 700 m is 6–13 px, **the default preset rejects them and says
-nothing.** No detector helps a system whose motion stage is discarding the
-target before anything looks at it.
+| Sensitivity | Smallest blob accepted | Smallest area |
+|---|---|---|
+| low | 15 px tall | 150 px² |
+| **normal (the default)** | **7.7 px tall** | 40 px² |
+| high | 2.6 px tall | 10 px² |
+
+Much less alarming than the FHD arithmetic suggested. A person of 13 px clears
+`normal` comfortably; one of 7 px is marginal on height and would need about
+7×3 px of area to clear 40, which it does not. **So `high` is still the setting
+for the far end of the range on the thermal**, and `normal` is defensible for
+the visible.
+
+No detector helps a system whose motion stage is discarding the target before
+anything looks at it, and the counters in the report now say whether it is.
 
 The detector already counts every rejection by rule and publishes them.
 Open `<recordings>\detection.json` and read:
