@@ -362,11 +362,11 @@ if (Test-Path (Join-Path $binDir 'go2rtc.exe')) {
 $weights = Join-Path $root 'yolo11n.pt'
 if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
     Write-Ok "The detector's weights are here (yolo11n.pt)."
-    Add-Good "the detector's weights (yolo11n.pt) - movement gets named"
+    Add-Good "the detector's weights (yolo11n.pt) - kept for the day naming comes back"
 } else {
-    Write-Info "No yolo11n.pt, so movement is detected but never named."
-    Add-Optional "yolo11n.pt is missing, so movement is detected but never named" @(
-        "Recording and detection still work; the events just say 'movement'.",
+    Write-Info "No yolo11n.pt. Nothing reads it today - naming what moved is off."
+    Add-Optional "yolo11n.pt is missing - nothing reads it today" @(
+        "Recording and detection are unaffected: nothing reads this file today.",
         "Nothing will be downloaded, because this machine has no internet."
     )
 }

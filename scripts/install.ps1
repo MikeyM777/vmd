@@ -667,10 +667,10 @@ if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
     }
 }
 if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
-    Add-Good "the detector's weights (yolo11n.pt) - movement gets named"
+    Add-Good "the detector's weights (yolo11n.pt) - kept for the day naming comes back"
 } else {
-    Add-Optional "yolo11n.pt is missing, so movement is detected but never named" @(
-        "Recording and detection still work; the events just say 'movement'.",
+    Add-Optional "yolo11n.pt is missing - nothing reads it today" @(
+        "Recording and detection are unaffected: nothing reads this file today.",
         "Download https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
         "and save it as:  $weights"
     )
