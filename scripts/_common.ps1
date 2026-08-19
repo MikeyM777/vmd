@@ -274,13 +274,32 @@ function Repair-VenvPaths($root) {
 
     $sitePackages = Join-Path $root '.venv\Lib\site-packages'
     if (Test-Path $sitePackages) {
-        foreach ($pth in (Get-ChildItem $sitePackages -Filter '_editable_impl_*.pth' -ErrorAction SilentlyContinue)) {
+        $pthFiles = @(Get-ChildItem $sitePackages -Filter '_editable_impl_*.pth' -ErrorAction SilentlyContinue)
+        foreach ($pth in $pthFiles) {
             $content = (Get-Content $pth.FullName -Raw -ErrorAction SilentlyContinue)
             if ($null -eq $content) { continue }
             if ($content.Trim().TrimEnd('\') -ine $root.TrimEnd('\')) {
                 Set-Content -Path $pth.FullName -Value $root -Encoding ASCII -NoNewline
                 $repaired += "the project path in $($pth.Name)"
             }
+        }
+        # No .pth at all is the same fault with nothing to rewrite, and it ends
+        # the same way: every library imports and the console stops with
+        #
+        #     Error while finding module specification for 'vmd.desktop'
+        #     (ModuleNotFoundError: No module named 'vmd')
+        #
+        # The file is one line naming the folder the project lives in, so it can
+        # simply be written. Only when this folder really is the project - a
+        # pyproject.toml and a vmd\ package beside it - because writing a path
+        # into site-packages that has no package at the end of it turns a clear
+        # import error into a mystery.
+        if ($pthFiles.Count -eq 0 -and
+            (Test-Path (Join-Path $root 'pyproject.toml')) -and
+            (Test-Path (Join-Path $root 'vmd\__init__.py'))) {
+            Set-Content -Path (Join-Path $sitePackages '_editable_impl_vmd.pth') `
+                -Value $root -Encoding ASCII -NoNewline
+            $repaired += "the missing _editable_impl_vmd.pth, which is what makes 'import vmd' work"
         }
     }
 

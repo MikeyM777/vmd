@@ -910,8 +910,13 @@ try {
         Stop-Installer 1
     }
 
+    # `vmd` too, and not as an afterthought: the project is not copied into
+    # .venv, it is one line in _editable_impl_vmd.pth naming the folder it lives
+    # in. Every library can import while `import vmd` fails, and then the
+    # console starts with "No module named 'vmd'" on an install this step called
+    # good. See the same list in scripts\offline_install.ps1.
     $import = Invoke-Captured $uvExe @('run', '--frozen', '--no-sync', 'python', '-c',
-                                       'import cv2, pydantic, ultralytics; print(''libraries ok'')')
+                                       'import cv2, pydantic, ultralytics, vmd; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 3)) { Write-Bad "  $line" }
         Write-Bad "The environment was built but the libraries do not import."

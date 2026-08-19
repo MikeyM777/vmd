@@ -259,8 +259,20 @@ Write-Step "Checking that it runs, without asking the network anything"
 $uv = Join-Path $binDir 'uv.exe'
 Push-Location $root
 try {
+    # `vmd` is in that list because of what the list without it let through:
+    # every third-party library imported, the installer said "The libraries
+    # import", and the console then died with
+    #
+    #     Error while finding module specification for 'vmd.desktop'
+    #     (ModuleNotFoundError: No module named 'vmd')
+    #
+    # The project itself is not installed into .venv as files - it is one line
+    # in _editable_impl_vmd.pth naming the folder it lives in - so it is the one
+    # part of the environment a copy to another machine can break, and it was
+    # the one part nothing checked. Step 2 repairs that line; this is what
+    # proves the repair worked.
     $import = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                    'import cv2, pydantic, ultralytics; print(''libraries ok'')')
+                                    'import cv2, pydantic, ultralytics, vmd; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 4)) { Write-Bad "  $line" }
         Write-Bad "The environment does not run on this machine."
