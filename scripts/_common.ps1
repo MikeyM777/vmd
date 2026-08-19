@@ -401,6 +401,151 @@ function Stop-ProjectProcesses($root) {
     return [pscustomobject]@{ Stopped = @($stopped | Sort-Object -Unique); StillRunning = @($left | Sort-Object -Unique) }
 }
 
+# --- what has to start by itself ---------------------------------------------
+#
+# Three files ask the same question - scripts\autostart.ps1, and both installers
+# checking that it worked - and they were each answering it their own way. Both
+# installers looked for exactly two tasks called "VMD Recorder" and "VMD
+# Console", which are the right names for one camera and the wrong names for
+# two: a machine with cameras\250 and cameras\251 has four tasks and none of
+# them is called either of those, so a correctly set up pair of consoles was
+# reported as "nothing will start after a restart".
+#
+# So the layout is worked out in one place, here, and the two mechanisms are
+# both admitted to: scheduled tasks, which is what this does when it can, and
+# shortcuts in the Startup folder, which is what it falls back to on a machine
+# where registering a task is refused. autostart.ps1 says why that happens.
+
+# One entry per console: the settings file it is pointed at, and the suffix its
+# tasks and shortcuts carry. Read off the disk rather than kept anywhere,
+# because a list kept anywhere is a second thing that can be wrong - the same
+# rule scripts\cameras.ps1 states.
+#
+# The single-camera layout is not a special case bolted on: it is one entry with
+# an empty suffix, which is how the names stay exactly what they always were.
+function Get-VmdConsoles($root) {
+    $camerasDir = Join-Path $root 'cameras'
+    $found = @()
+    if (Test-Path $camerasDir) {
+        $found = @(
+            Get-ChildItem -Path $camerasDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName 'settings.json') } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Suffix   = " $($_.Name)"
+                        Settings = (Join-Path $_.FullName 'settings.json')
+                    }
+                }
+        )
+    }
+    if ($found.Count -gt 0) { return $found }
+    return @([pscustomobject]@{ Suffix = ''; Settings = (Join-Path $root 'settings.json') })
+}
+
+function Get-StartupDir { [Environment]::GetFolderPath('Startup') }
+
+# What is actually set up, whichever way it was set up. The caller gets the
+# names it expected, the names it found, and one word for how.
+function Get-AutostartState($root) {
+    $expected = @()
+    foreach ($console in (Get-VmdConsoles $root)) {
+        $expected += "VMD Recorder$($console.Suffix)"
+        $expected += "VMD Console$($console.Suffix)"
+    }
+
+    $tasks = @()
+    foreach ($name in $expected) {
+        if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { $tasks += $name }
+    }
+
+    $startupDir = Get-StartupDir
+    $shortcuts = @()
+    foreach ($name in $expected) {
+        if (Test-Path (Join-Path $startupDir "$name.lnk")) { $shortcuts += $name }
+    }
+
+    # A name covered either way is covered. The console task is the one that can
+    # legitimately be absent - autostart.ps1 does not create it before VMD.exe
+    # exists - so "how" is reported rather than judged here.
+    $covered = @($expected | Where-Object { ($tasks -contains $_) -or ($shortcuts -contains $_) })
+    $how = 'none'
+    if ($tasks.Count -gt 0 -and $shortcuts.Count -gt 0) { $how = 'both' }
+    elseif ($tasks.Count -gt 0) { $how = 'tasks' }
+    elseif ($shortcuts.Count -gt 0) { $how = 'startup' }
+
+    return [pscustomobject]@{
+        Expected  = $expected
+        Tasks     = $tasks
+        Shortcuts = $shortcuts
+        Covered   = $covered
+        Missing   = @($expected | Where-Object { $covered -notcontains $_ })
+        How       = $how
+        Ok        = ($covered.Count -eq $expected.Count)
+    }
+}
+
+# The same verdict for both installers, reached once. They print it in their own
+# three groups, but what counts as good, as second-best and as broken is one
+# decision and belongs in one place.
+function Get-AutostartVerdict($root) {
+    $state = Get-AutostartState $root
+
+    if ($state.Ok -and $state.How -eq 'tasks') {
+        return [pscustomobject]@{
+            Level = 'good'
+            Say   = "Registered: $($state.Tasks -join ', ')."
+            What  = "automatic start after a restart ($($state.Tasks -join ', '))"
+            Fix   = @()
+            State = $state
+        }
+    }
+
+    if ($state.Ok) {
+        # It works. It is not what was asked for, and the difference only shows
+        # up on the day something crashes, so it is said out loud rather than
+        # counted as a clean install.
+        return [pscustomobject]@{
+            Level = 'optional'
+            Say   = "It starts from the Startup folder rather than a scheduled task."
+            What  = "it starts by itself from the Startup folder, not a scheduled task"
+            Fix   = @(
+                "Windows refused to create the scheduled tasks on this machine, so",
+                "shortcuts in the Startup folder do the job instead: the recorder and",
+                "the console both start when this user signs in.",
+                "What is lost is the recovery a task gives - restart after a crash, and",
+                "catching up a start that was missed while the machine was off.",
+                "To get the tasks: right-click autostart-on.bat, 'Run as administrator'."
+            )
+            State = $state
+        }
+    }
+
+    if ($state.Covered.Count -gt 0) {
+        return [pscustomobject]@{
+            Level = 'broken'
+            Say   = "Missing: $($state.Missing -join ', ')."
+            What  = "the system will not fully come back after a restart"
+            Fix   = @(
+                "Set up: $($state.Covered -join ', ').",
+                "Missing: $($state.Missing -join ', ').",
+                "Right-click autostart-on.bat and choose 'Run as administrator'."
+            )
+            State = $state
+        }
+    }
+
+    return [pscustomobject]@{
+        Level = 'broken'
+        Say   = "Nothing is set up to start by itself."
+        What  = "nothing will start after a restart, so a power cut stops the recording"
+        Fix   = @(
+            "Right-click autostart-on.bat and choose 'Run as administrator'.",
+            "Until then, recording only runs while somebody has started the console."
+        )
+        State = $state
+    }
+}
+
 # --- the transcript ----------------------------------------------------------
 #
 # "It says VLC can't be installed although it's already on the laptop, and

@@ -1073,23 +1073,16 @@ if ($NoAutostart) {
     # Asked of Windows rather than assumed from the fact that the script
     # returned. This is the step whose failure costs the most and shows the
     # least: nothing looks wrong until the day the laptop restarts.
-    $tasks = @('VMD Recorder', 'VMD Console') | Where-Object {
-        Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
-    }
-    if ($tasks.Count -eq 2) {
-        Write-Ok "Both scheduled tasks are registered."
-        Add-Good "automatic start after a restart (VMD Recorder, VMD Console)"
-    } elseif ($tasks.Count -gt 0) {
-        Write-Bad "Only $($tasks -join ', ') was registered."
-        Add-Broken "the system will not fully come back after a restart" @(
-            "Double-click autostart-on.bat to try again."
-        )
-    } else {
-        Write-Bad "Neither scheduled task was registered."
-        Add-Broken "nothing will start after a restart, so a reboot stops the recording" @(
-            "Double-click autostart-on.bat to try again.",
-            "Until then, recording only runs while somebody has started the console."
-        )
+    #
+    # Both mechanisms count, and the names come from the cameras that are set up
+    # rather than from a fixed pair. Looking for exactly "VMD Recorder" and "VMD
+    # Console" reported a correctly set up two-camera machine - whose tasks are
+    # "VMD Recorder 250" and the rest - as starting nothing at all.
+    $verdict = Get-AutostartVerdict $root
+    switch ($verdict.Level) {
+        'good'     { Write-Ok $verdict.Say;   Add-Good $verdict.What }
+        'optional' { Write-Warn $verdict.Say; Add-Optional $verdict.What $verdict.Fix }
+        default    { Write-Bad $verdict.Say;  Add-Broken $verdict.What $verdict.Fix }
     }
 }
 

@@ -393,6 +393,9 @@ if (Test-Path (Join-Path $root 'VMD.exe')) {
 #  6. starting by itself
 # =============================================================================
 Write-Step "Making the system start by itself after a restart"
+Write-Info "Windows may ask for permission again here. Creating the two scheduled"
+Write-Info "tasks needs it on some machines and not on others; if it asks, click Yes."
+Write-Info "Saying no is not fatal - shortcuts in the Startup folder are used instead."
 if ($NoAutostart) {
     Write-Info "Skipped, because -NoAutostart was given."
 } else {
@@ -404,23 +407,18 @@ if ($NoAutostart) {
     # Asked of Windows rather than assumed from the fact that the script
     # returned. On this laptop it is the step whose failure costs the most and
     # shows the least: nothing looks wrong until the day the power comes back.
-    $tasks = @('VMD Recorder', 'VMD Console') | Where-Object {
-        Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue
-    }
-    if ($tasks.Count -eq 2) {
-        Write-Ok "Both scheduled tasks are registered."
-        Add-Good "automatic start after a restart (VMD Recorder, VMD Console)"
-    } elseif ($tasks.Count -gt 0) {
-        Write-Bad "Only $($tasks -join ', ') was registered."
-        Add-Broken "the system will not fully come back after a restart" @(
-            "Double-click autostart-on.bat to try again."
-        )
-    } else {
-        Write-Bad "Neither scheduled task was registered."
-        Add-Broken "nothing will start after a restart, so a power cut stops the recording" @(
-            "Double-click autostart-on.bat to try again.",
-            "Until then, recording only runs while somebody has started the console."
-        )
+    #
+    # Both mechanisms count. On the first machine this was deployed to, Windows
+    # answered "Access is denied" to Register-ScheduledTask and the summary said
+    # nothing would start after a restart - which was true, and had no way to
+    # become untrue. autostart.ps1 now retries with administrator permission and
+    # falls back to the Startup folder, and this reads whichever of the two
+    # succeeded.
+    $verdict = Get-AutostartVerdict $root
+    switch ($verdict.Level) {
+        'good'     { Write-Ok $verdict.Say;   Add-Good $verdict.What }
+        'optional' { Write-Warn $verdict.Say; Add-Optional $verdict.What $verdict.Fix }
+        default    { Write-Bad $verdict.Say;  Add-Broken $verdict.What $verdict.Fix }
     }
 }
 

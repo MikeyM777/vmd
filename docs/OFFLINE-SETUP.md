@@ -84,6 +84,13 @@ internet: it will sit waiting for a connection that is not coming.
 
 Windows asks for permission once, to install VLC. Click **Yes**.
 
+It may ask a **second** time, near the end, to create the two scheduled tasks
+that bring the system back after a restart. Some machines refuse those to an
+ordinary account and some do not. Click **Yes** if it asks. Saying no is not
+fatal: shortcuts in the Startup folder are used instead, and the summary says
+so — they start the same two things at sign-in, but do not restart them after
+a crash.
+
 It prints three lists at the end:
 
 | List | What to do |
@@ -128,6 +135,13 @@ see.
 
 This is what makes the system come back by itself after a power cut. It finds
 every camera set up in step 4 and makes a pair of scheduled tasks for each.
+
+If Windows answers **Access is denied** — which it does on some machines for an
+account that is not an administrator — it asks for permission and tries again,
+and if that is refused it puts shortcuts in the Startup folder instead. All
+three outcomes are printed. To get the scheduled tasks on a machine that
+refused them, right-click `autostart-on.bat` and choose **Run as
+administrator**.
 
 Windows still needs somebody to sign in after a restart. To have it sign in by
 itself as well, read the top of `scripts\autostart.ps1` first — it costs

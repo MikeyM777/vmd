@@ -73,6 +73,41 @@
 #  SQLite index are then read and deleted by a console running as an ordinary
 #  user, which works right up until it does not, and the failure would show up
 #  as retention quietly not deleting anything on a full disk.
+#
+#  ---------------------------------------------------------------------------
+#  When Windows will not have a scheduled task at all
+#  ---------------------------------------------------------------------------
+#
+#  It happened on the first machine this was deployed to:
+#
+#      [6/7] Making the system start by itself after a restart
+#      TerminatingError(Register-ScheduledTask): "... Access is denied."
+#            Neither scheduled task was registered.
+#
+#  Creating a task in the root folder of Task Scheduler is not something every
+#  account may do. On a machine whose C:\Windows\System32\Tasks is locked down,
+#  or for an account that is not an administrator, Windows answers "Access is
+#  denied" and there is nothing this script can say to it that changes that.
+#
+#  So there are two mechanisms now, and this tries them in order:
+#
+#    1. The scheduled tasks above. Everything they can do - restart after a
+#       failure, run a task that was missed while the machine was off, ignore
+#       the battery - only exists here, so it is what is asked for first.
+#    2. If Windows refuses, and this is not already running as administrator,
+#       the same registration is retried once with administrator permission.
+#       That is one UAC prompt, on the machine where somebody is standing.
+#    3. If that is refused too - or there is no administrator to be had, which
+#       is the case that has no way out - shortcuts are put in the Startup
+#       folder instead. They need no permission from anybody: they run when
+#       this user signs in, exactly like the tasks, and they are what the
+#       installer's summary then reports.
+#
+#  What the fallback costs, stated rather than glossed over: no restart after a
+#  crash, no catch-up for a start that was missed, and no protection from Task
+#  Scheduler's battery rules - because none of those are Startup-folder
+#  features. The recording still comes back after a power cut, which is the
+#  thing the site is paying for.
 # =============================================================================
 param(
     [switch]$Install,
@@ -80,7 +115,14 @@ param(
     [switch]$Status,
     [switch]$Quiet,
     [switch]$EnableAutoLogon,
-    [switch]$DisableAutoLogon
+    [switch]$DisableAutoLogon,
+    # Both set by the elevated retry this script starts of itself, and by
+    # nothing else. -ForUser carries the account the tasks are FOR, because the
+    # elevated copy may be running as a different administrator entirely, and
+    # $env:USERNAME there would silently make the tasks for the wrong person.
+    # -NoElevate is what stops that copy trying to elevate again.
+    [string]$ForUser,
+    [switch]$NoElevate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,31 +134,11 @@ $RECORDER_TASK = 'VMD Recorder'
 $CONSOLE_TASK  = 'VMD Console'
 $WINLOGON      = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
-# What has to start, one entry per console: the settings file it is pointed at,
-# and the suffix its two tasks carry. Read off the disk rather than kept
-# anywhere, because a list kept anywhere is a second thing that can be wrong -
-# the same rule scripts\cameras.ps1 states.
-#
-# The single-camera layout is not a special case bolted on: it is one entry with
-# an empty suffix, which is how the task names stay exactly what they were.
-function Get-Consoles {
-    $camerasDir = Join-Path $root 'cameras'
-    $found = @()
-    if (Test-Path $camerasDir) {
-        $found = @(
-            Get-ChildItem -Path $camerasDir -Directory -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path (Join-Path $_.FullName 'settings.json') } |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        Suffix   = " $($_.Name)"
-                        Settings = (Join-Path $_.FullName 'settings.json')
-                    }
-                }
-        )
-    }
-    if ($found.Count -gt 0) { return $found }
-    return @([pscustomobject]@{ Suffix = ''; Settings = (Join-Path $root 'settings.json') })
-}
+# What has to start, one entry per console. Lives in scripts\_common.ps1 now,
+# because both installers have to reach the same answer when they check that
+# this worked - and they used to do it by looking for two fixed names, which is
+# the right answer for one camera and the wrong one for two.
+function Get-Consoles { Get-VmdConsoles $root }
 
 # Every task this script has ever created, so that switching it off takes away
 # the ones a previous layout left behind. Asked of Windows by name pattern
@@ -136,12 +158,84 @@ function Get-Task($name) {
 }
 
 # -----------------------------------------------------------------------------
+#  The Startup folder, which is the fallback and nothing else
+# -----------------------------------------------------------------------------
+# Only reached when Windows has refused to create the tasks, elevated and
+# otherwise. A shortcut in this folder needs no permission from anybody: it
+# belongs to the account it is in, and Windows runs it when that account signs
+# in - which is the same moment the -AtLogOn trigger would have fired.
+
+function Get-OurShortcuts {
+    $dir = Get-StartupDir
+    if (-not (Test-Path $dir)) { return @() }
+    @(Get-ChildItem -Path $dir -Filter '*.lnk' -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -like 'VMD Recorder*' -or $_.BaseName -like 'VMD Console*' })
+}
+
+function New-StartupShortcut($name, $target, $argumentString, $workingDir, $description) {
+    $dir = Get-StartupDir
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $path = Join-Path $dir "$name.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.TargetPath       = $target
+    $shortcut.Arguments        = $argumentString
+    $shortcut.WorkingDirectory = $workingDir
+    # 7 is minimised. The recorder wrapper hides its own window; this is for the
+    # second or two before it does, so that a sign-in does not flash a console
+    # at whoever is standing there.
+    $shortcut.WindowStyle      = 7
+    $shortcut.Description      = $description
+    $shortcut.Save()
+    return (Test-Path $path)
+}
+
+function Install-StartupShortcuts {
+    $exe = Join-Path $root 'VMD.exe'
+    $recorderScript = Join-Path $PSScriptRoot 'recorder_service.ps1'
+    $consoleScript  = Join-Path $PSScriptRoot 'startup_console.ps1'
+    $made = @()
+
+    foreach ($console in @(Get-Consoles)) {
+        $suffix = $console.Suffix
+        $forWhat = if ($suffix) { " for camera$suffix" } else { "" }
+
+        $ok = New-StartupShortcut "$RECORDER_TASK$suffix" 'powershell.exe' `
+            ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $recorderScript, $console.Settings) `
+            $root "Starts VMD recording$forWhat at sign-in."
+        if ($ok) { $made += "$RECORDER_TASK$suffix"; Write-Ok "`"$RECORDER_TASK$suffix`" put in the Startup folder - recording starts at sign-in." }
+
+        if (Test-Path $exe) {
+            # Through startup_console.ps1 rather than straight at VMD.exe, for
+            # the 45-second delay: a shortcut cannot wait, and a console that
+            # opens before the recorder has written recorder.pid starts a second
+            # recorder of its own.
+            $ok = New-StartupShortcut "$CONSOLE_TASK$suffix" 'powershell.exe' `
+                ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $consoleScript, $console.Settings) `
+                $root "Opens the VMD console$forWhat 45 seconds after sign-in."
+            if ($ok) { $made += "$CONSOLE_TASK$suffix"; Write-Ok "`"$CONSOLE_TASK$suffix`" put in the Startup folder - the console opens 45 seconds later." }
+        }
+    }
+    return $made
+}
+
+function Remove-StartupShortcuts {
+    $removed = @()
+    foreach ($shortcut in (Get-OurShortcuts)) {
+        Remove-Item $shortcut.FullName -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $shortcut.FullName)) { $removed += $shortcut.BaseName }
+    }
+    return $removed
+}
+
+# -----------------------------------------------------------------------------
 #  Status
 # -----------------------------------------------------------------------------
 function Show-Status {
     Write-Host ""
     Write-Host "  Starting by itself after a restart" -ForegroundColor White
     Write-Host ""
+    $startupNames = @(Get-OurShortcuts | ForEach-Object { $_.BaseName })
     foreach ($console in Get-Consoles) {
         foreach ($base in @($RECORDER_TASK, $CONSOLE_TASK)) {
             $name = "$base$($console.Suffix)"
@@ -149,6 +243,12 @@ function Show-Status {
             if ($task) {
                 $state = $task.State
                 Write-Host ("    {0,-22} on   ({1})" -f $name, $state) -ForegroundColor Green
+            } elseif ($startupNames -contains $name) {
+                # Named as what it is. "on" over a Startup shortcut and "on"
+                # over a scheduled task are not the same promise, and the
+                # difference is only visible after the failure it does not
+                # cover.
+                Write-Host ("    {0,-22} on   (Startup folder, not a scheduled task)" -f $name) -ForegroundColor Green
             } else {
                 Write-Host ("    {0,-22} off" -f $name) -ForegroundColor Yellow
             }
@@ -167,6 +267,11 @@ function Show-Status {
     foreach ($stray in $strays) {
         Write-Host ("    {0,-22} on, for a camera that is not set up here" -f $stray.TaskName) -ForegroundColor Yellow
     }
+    $strayShortcuts = @(Get-OurShortcuts | Where-Object { $expected -notcontains $_.BaseName })
+    foreach ($stray in $strayShortcuts) {
+        Write-Host ("    {0,-22} on in the Startup folder, for a camera that is not set up here" -f $stray.BaseName) -ForegroundColor Yellow
+    }
+    $strays += $strayShortcuts
     if ($strays.Count -gt 0) {
         Write-Host ""
         Write-Info "Run autostart-off.bat then autostart-on.bat to tidy those up."
@@ -228,8 +333,14 @@ function Install-Tasks {
     $exe = Join-Path $root 'VMD.exe'
     $recorderScript = Join-Path $PSScriptRoot 'recorder_service.ps1'
 
-    $user = "$env:USERDOMAIN\$env:USERNAME"
+    # -ForUser is set only by the elevated retry below, and it is the whole
+    # reason that retry can be trusted: the elevated copy may be running as a
+    # different administrator, and tasks made for that account would trigger at
+    # a sign-in that never happens on this laptop.
+    $user = if ($ForUser) { $ForUser } else { "$env:USERDOMAIN\$env:USERNAME" }
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+    $refused = @()
+    $refusal = ''
 
     # StartWhenAvailable so a task missed because the machine was off is run as
     # soon as it can be. No time limit, because the recorder is meant to run for
@@ -256,8 +367,15 @@ function Install-Tasks {
         $keeping += "$CONSOLE_TASK$($console.Suffix)"
     }
     foreach ($stray in @(Get-OurTasks | Where-Object { $keeping -notcontains $_.TaskName })) {
-        Unregister-ScheduledTask -TaskName $stray.TaskName -Confirm:$false
-        Write-Info "Removed `"$($stray.TaskName)`", left over from an earlier setup."
+        # Not fatal. A task this account may not delete is somebody else's to
+        # deal with, and stopping here would take the working half of the setup
+        # with it.
+        try {
+            Unregister-ScheduledTask -TaskName $stray.TaskName -Confirm:$false
+            Write-Info "Removed `"$($stray.TaskName)`", left over from an earlier setup."
+        } catch {
+            Write-Warn "Could not remove the leftover task `"$($stray.TaskName)`": $($_.Exception.Message)"
+        }
     }
 
     foreach ($console in $consoles) {
@@ -275,11 +393,21 @@ function Install-Tasks {
             -WorkingDirectory $root
         $recorderTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 
-        Register-ScheduledTask -TaskName "$RECORDER_TASK$suffix" -Force `
-            -Description "Starts VMD recording$forWhat when this user signs in. Recording is the product; it must not wait for the console." `
-            -Action $recorderAction -Trigger $recorderTrigger `
-            -Principal $principal -Settings $settings | Out-Null
-        Write-Ok "`"$RECORDER_TASK$suffix`" created - recording starts at sign-in."
+        # Caught rather than thrown, here and below. "Access is denied" from
+        # Register-ScheduledTask is not a broken installation, it is a machine
+        # that will not have tasks - and there is a second way to do this. What
+        # is refused is collected and dealt with after the loop, so that a
+        # refusal on the first camera does not skip the second.
+        try {
+            Register-ScheduledTask -TaskName "$RECORDER_TASK$suffix" -Force `
+                -Description "Starts VMD recording$forWhat when this user signs in. Recording is the product; it must not wait for the console." `
+                -Action $recorderAction -Trigger $recorderTrigger `
+                -Principal $principal -Settings $settings | Out-Null
+            Write-Ok "`"$RECORDER_TASK$suffix`" created - recording starts at sign-in."
+        } catch {
+            $refused += "$RECORDER_TASK$suffix"
+            if (-not $refusal) { $refusal = $_.Exception.Message }
+        }
 
         # --- the console ------------------------------------------------------
         if (Test-Path $exe) {
@@ -290,16 +418,82 @@ function Install-Tasks {
             # 45 seconds after sign-in, so the recorder has written recorder.pid
             # and the console adopts it instead of starting a second one.
             $consoleTrigger.Delay = 'PT45S'
-            Register-ScheduledTask -TaskName "$CONSOLE_TASK$suffix" -Force `
-                -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid." `
-                -Action $consoleAction -Trigger $consoleTrigger `
-                -Principal $principal -Settings $settings | Out-Null
-            Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later."
+            try {
+                Register-ScheduledTask -TaskName "$CONSOLE_TASK$suffix" -Force `
+                    -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid." `
+                    -Action $consoleAction -Trigger $consoleTrigger `
+                    -Principal $principal -Settings $settings | Out-Null
+                Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later."
+            } catch {
+                $refused += "$CONSOLE_TASK$suffix"
+                if (-not $refusal) { $refusal = $_.Exception.Message }
+            }
         } else {
             Write-Warn "VMD.exe is not built yet, so only the recorder task was created."
             Write-Info "Run install.bat again once VMD.exe exists to add the console task."
         }
     }
+    # --- what to do about anything Windows refused ---------------------------
+    if ($refused.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "Windows would not create $($refused -join ', ')."
+        Write-Warn "  $refusal"
+
+        # Step 2: the same registration, with administrator permission. Not
+        # attempted when already elevated (it would change nothing) and not
+        # attempted by the elevated copy itself (-NoElevate), which is what
+        # stops this asking for a password in a loop.
+        if (-not (Test-Admin) -and -not $NoElevate) {
+            Write-Info "Trying again with administrator permission."
+            Write-Info "Windows will ask once. Click Yes - it creates the two tasks and"
+            Write-Info "does nothing else. The window it opens closes by itself."
+            $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Install -Quiet -NoElevate -ForUser "{1}"' -f `
+                $PSCommandPath, $user
+            try {
+                Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Verb RunAs -Wait
+            } catch {
+                Write-Info "The permission prompt was refused or could not be shown."
+            }
+            # Asked of Windows rather than assumed from the fact that
+            # Start-Process returned: it returns whether or not the copy it
+            # started managed anything at all.
+            $still = @($refused | Where-Object { -not (Get-Task $_) })
+            if ($still.Count -eq 0) {
+                Write-Ok "Created with administrator permission: $($refused -join ', ')."
+                $refused = @()
+            } else {
+                $refused = $still
+            }
+        }
+    }
+
+    # Step 3: the Startup folder, which asks nobody's permission.
+    if ($refused.Count -gt 0) {
+        Write-Host ""
+        Write-Info "Falling back to the Startup folder, which needs no permission."
+        $made = @(Install-StartupShortcuts)
+        if ($made.Count -gt 0) {
+            Write-Host ""
+            Write-Info "This works - the recorder and the console start when $user signs"
+            Write-Info "in - but it is the weaker of the two. A scheduled task restarts"
+            Write-Info "after a crash, catches up a start it missed, and ignores the"
+            Write-Info "battery rules; a shortcut does none of those."
+            Write-Info "To get the tasks instead: right-click autostart-on.bat and choose"
+            Write-Info "'Run as administrator'."
+        } else {
+            Write-Bad "Nothing could be set up to start by itself."
+            Write-Bad "Recording will only run while somebody has opened the console."
+        }
+    } else {
+        # Both mechanisms at once would start two recorders, and the second one
+        # stands down noisily rather than silently. Whichever ran last wins, and
+        # the tasks are what ran last here.
+        $stale = @(Remove-StartupShortcuts)
+        if ($stale.Count -gt 0) {
+            Write-Info "Took the Startup-folder shortcuts away - the scheduled tasks do this now."
+        }
+    }
+
     if ($consoles.Count -gt 1) {
         Write-Host ""
         Write-Info "$($consoles.Count) consoles will open after a restart, one per camera."
@@ -330,12 +524,23 @@ function Remove-Tasks {
     # Windows rather than worked out from the cameras that are set up now: off
     # has to mean off, including for a camera folder somebody has deleted.
     $ours = @(Get-OurTasks)
-    if ($ours.Count -eq 0) {
+    $shortcuts = @(Get-OurShortcuts)
+    if ($ours.Count -eq 0 -and $shortcuts.Count -eq 0) {
         Write-Info "Nothing was starting by itself, so there was nothing to take away."
     }
     foreach ($task in $ours) {
-        Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
-        Write-Ok "`"$($task.TaskName)`" removed."
+        try {
+            Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
+            Write-Ok "`"$($task.TaskName)`" removed."
+        } catch {
+            Write-Warn "Could not remove `"$($task.TaskName)`": $($_.Exception.Message)"
+            Write-Warn "Right-click autostart-off.bat and choose 'Run as administrator'."
+        }
+    }
+    # The other mechanism, taken away by the same switch. Off has to mean off
+    # whichever way it was switched on.
+    foreach ($name in (Remove-StartupShortcuts)) {
+        Write-Ok "`"$name`" removed from the Startup folder."
     }
     Write-Info "The power settings were left as they are - change them in Windows"
     Write-Info "Settings under System, Power, if you want this laptop to sleep again."
