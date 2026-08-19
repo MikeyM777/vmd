@@ -455,7 +455,10 @@ def test_saving_removes_the_pane_of_a_stream_that_is_gone(qtbot, tmp_path: Path)
     """A pane still showing a stream nobody records is a picture the operator
     has no reason to trust."""
     window, _ = build(qtbot, tmp_path)
-    (row,) = window.settings_tab.stream_rows()
+    # The first card, not the only one: the form now draws an empty second card
+    # for the camera's other head - see MIN_STREAM_ROWS in
+    # vmd\desktop\settings_tab.py - and an empty card is not a view.
+    row = window.settings_tab.stream_rows()[0]
     row.name_field.setText("infrared")
 
     assert window.settings_tab.save() is True

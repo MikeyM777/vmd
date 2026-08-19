@@ -167,6 +167,90 @@ def test_the_list_of_views_cannot_be_added_to_or_cut_down_from_this_form(
         assert said.strip() != "remove", said
 
 
+def test_a_new_installation_gets_cards_to_type_the_views_into(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other half of locking the list, and it was missing.
+
+    `scripts\\cameras.ps1` writes a settings file holding a title and a camera
+    address, with `streams: []`, and a single-camera install has no file at all
+    until the first Save. With **Add a stream** gone, both of those drew a form
+    with no cards on it: the operator could type the camera's address and there
+    was no box anywhere on the tab for a stream address, and no button to make
+    one. Reported from the offline machine as "I can set the camera IP and I
+    can't see the streams".
+    """
+    tab, _ = build(qtbot, tmp_path)
+    rows = tab.stream_rows()
+    assert len(rows) == 2, "a new installation has nowhere to type a view"
+    assert all(row.is_blank() for row in rows)
+    assert all(row.url_field.placeholderText() for row in rows)
+
+
+def test_one_view_filled_in_and_one_card_left_empty_saves_one_view(
+    qtbot, tmp_path: Path
+) -> None:
+    """An empty card costs nothing: not a refusal, and not a line in the file.
+
+    Without this, drawing two cards on a console that watches one view would
+    make that console impossible to save at all - `_problem` would report the
+    empty card as a view with no address, for ever, with no Remove to press.
+    """
+    tab, path = build(qtbot, tmp_path)
+    first, second = tab.stream_rows()
+    first.name_field.setText("thermal")
+    first.url_field.setText("rtsp://10.0.0.2/ch2")
+
+    assert tab.save() is True, tab.message
+    assert [s.name for s in load_settings(path).camera.streams] == ["thermal"]
+    assert second.is_blank()
+
+
+def test_a_file_with_one_view_still_offers_a_card_for_the_second(
+    qtbot, tmp_path: Path
+) -> None:
+    """The second head, on the day it is set up.
+
+    A form that drew exactly what the file held would let a console that had
+    been saved with one view grow a second one only by hand-editing JSON, which
+    is the thing this form exists to avoid.
+    """
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2")],
+        )
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+    rows = tab.stream_rows()
+    assert len(rows) == 2
+    assert rows[1].is_blank()
+
+    # And saving without touching it leaves the file with the one view it had.
+    assert tab.save() is True, tab.message
+    assert [s.name for s in load_settings(path).camera.streams] == ["thermal"]
+
+    rows[1].name_field.setText("day")
+    rows[1].url_field.setText("rtsp://10.0.0.2/ch0")
+    assert tab.save() is True, tab.message
+    assert [s.name for s in load_settings(path).camera.streams] == ["thermal", "day"]
+
+
+def test_a_half_typed_card_is_still_refused(qtbot, tmp_path: Path) -> None:
+    """Blank is ignored; half-filled is a mistake, and says which half."""
+    tab, path = build(qtbot, tmp_path)
+    row = tab.stream_rows()[0]
+    row.name_field.setText("thermal")
+    assert tab.save() is False
+    assert "address" in tab.message.lower()
+
+    row.name_field.setText("")
+    row.url_field.setText("rtsp://10.0.0.2/ch2")
+    assert tab.save() is False
+    assert "name" in tab.message.lower()
+    assert not path.exists()
+
+
 def test_a_settings_file_with_three_views_still_draws_and_saves_three(
     qtbot, tmp_path: Path
 ) -> None:

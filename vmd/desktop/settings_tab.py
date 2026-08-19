@@ -94,6 +94,27 @@ StreamRow = tuple[str, str, bool, str]
 # than the longest control on it.
 STREAM_COLUMNS = 2
 
+# How many cards the form draws when the file has fewer, and the reason it has
+# to draw any.
+#
+# **Add a stream** was taken off this form because the views are a property of
+# the hardware. What was not noticed is where the views come from on a machine
+# that has just been installed: `scripts\cameras.ps1` writes a settings file
+# with `streams: []`, and a single-camera install has no file at all until the
+# first Save. Both of those load a form with NO cards on it - so the operator
+# could type the camera's address and nothing else, there was no box for a
+# stream anywhere on the tab, and no button to make one. Reported from the
+# offline machine as "I can set the camera IP and I cannot see the streams".
+#
+# Two blank cards, always: it is the number of heads on the camera, it is what
+# an operator setting up a new console needs, and a blank card is not a stream -
+# `_is_blank` drops it at Save and `_problem` does not complain about it. So
+# filling in one view and leaving the other empty saves one view, and the empty
+# card is still there next time for the day the second head is set up. That
+# last part is why this pads rather than only seeding an empty form: a file
+# with one view could otherwise never grow a second one from this form.
+MIN_STREAM_ROWS = 2
+
 # How much of the drive is never offered to the budget.
 #
 # A drive filled to the last byte is a Windows laptop that cannot write its own
@@ -581,6 +602,23 @@ class StreamRowWidget(QFrame):
             True,
             self._base.get("reader", "auto"),
         )
+
+    def is_blank(self) -> bool:
+        """A card nobody has typed into: not a view, and not a fault either.
+
+        The form draws `MIN_STREAM_ROWS` cards whether the file has that many
+        views or not, because a form with no cards on it is a form on which a
+        new camera cannot be set up at all. One of those cards may well be left
+        empty - a console that watches one view, or a second head not set up
+        yet - and an empty card must cost nothing: it is not written to the
+        file, and Save does not stop to complain about it.
+
+        Name AND address, both empty. A card with only one of the two filled in
+        is a half-typed setting, and `_problem` has a sentence for each of those
+        already.
+        """
+        name, url, _used, _reader = self.values()
+        return not name and not url
 
     def sensitivity(self) -> str:
         return self.sensitivity_field.currentData()
@@ -1309,9 +1347,12 @@ class SettingsTab(QWidget):
         # from here any more. See `_build_streams_box` in this docstring's
         # place below: the list is locked.
         self.streams_help = _note(
-            "One card for each of the camera's views. Every view on this list is "
-            "used: it is shown in the Live tab, it is recorded, and it is "
-            "watched if you ask for that below."
+            "One card for each of the camera's views. Give each one a short name "
+            "- thermal, day - and the address the camera serves it on. Every view "
+            "on this list is used: it is shown in the Live tab, it is recorded, "
+            "and it is watched if you ask for that below. A card left completely "
+            "empty is ignored, so a camera with one view is set up by filling in "
+            "one card."
         )
         streams_outer.addWidget(self.streams_help)
         # What "Watch for movement" means, said once for both cards rather than
@@ -2472,6 +2513,17 @@ class SettingsTab(QWidget):
         """What is on screen. Never a remembered list: the widgets are the truth."""
         return [row.values() for row in self._rows]
 
+    def draw_empty_cards_to_fill_in(self) -> None:
+        """Bring the form up to `MIN_STREAM_ROWS` cards with empty ones.
+
+        Called by `load`, and not by `set_streams`: `set_streams` is the honest
+        "these are the views" operation that `load`, the tests and the camera
+        tools all use, and padding inside it would mean handing it one view and
+        getting two back.
+        """
+        while len(self._rows) < MIN_STREAM_ROWS:
+            self.add_stream_row()
+
     # ------------------------------------------------------------------ load
 
     def load(self) -> None:
@@ -2528,6 +2580,10 @@ class SettingsTab(QWidget):
         # to the row that shows them, and a row that was handed only a name and
         # an address would write the defaults back over them at the next save.
         self.set_streams(list(settings.camera.streams))
+        # And a card to type into, on a console where the file has none. See
+        # `MIN_STREAM_ROWS` - this is the whole of what stopped a new
+        # installation being set up from this form.
+        self.draw_empty_cards_to_fill_in()
         self._set_message(" ".join(part for part in (problem, _adopted(settings)) if part))
 
     # ------------------------------------------------------------------ save
@@ -2699,7 +2755,8 @@ class SettingsTab(QWidget):
             host=self.camera_host.strip(),
             username=self.camera_username.strip(),
             password=self.camera_password,
-            streams=[row.stream_values() for row in self._rows],
+            # Blank cards are not views. See `MIN_STREAM_ROWS`.
+            streams=[row.stream_values() for row in self._rows if not row.is_blank()],
         )
         payload["detection"] = dict(payload.get("detection", {}))
         # Two of the four. `min_travel_px` and `classify` are not on this form
@@ -2742,7 +2799,14 @@ class SettingsTab(QWidget):
 
     def _problem(self) -> str:
         seen: set[str] = set()
-        for name, url, _used, _reader in self.streams():
+        for row in self._rows:
+            # A card nobody has typed into is not a view and not a mistake. See
+            # `MIN_STREAM_ROWS`: the form draws two whatever the file holds, so
+            # refusing to save because one of them is empty would make a
+            # one-view console impossible to save at all.
+            if row.is_blank():
+                continue
+            name, url, _used, _reader = row.values()
             if not url:
                 # A card on the list is a view in use, and there is no longer a
                 # Remove button to point him at - so there is exactly one way
