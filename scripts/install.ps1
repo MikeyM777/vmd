@@ -714,8 +714,92 @@ if ($sameFile) {
     Write-Ok "uv is already in bin\uv.exe"
 } elseif ($uvSource -and (Test-Path $uvSource)) {
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-    Copy-Item $uvSource $uvLocal -Force
-    Write-Ok "uv copied to bin\uv.exe"
+
+    # Left behind by the branch below, and deleted here rather than there: the
+    # process that held the old uv.exe is usually still holding it at the moment
+    # it is renamed, and is gone by the next install.
+    foreach ($stale in (Get-ChildItem $binDir -Filter 'uv.exe.old-*' -ErrorAction SilentlyContinue)) {
+        Remove-Item $stale.FullName -Force -ErrorAction SilentlyContinue
+    }
+
+    # Copying 30 MB over an identical 30 MB is the ordinary case on a re-run,
+    # and it is the case that fails: the file it overwrites is the one every
+    # running console and recorder was started from. Compare first, and the
+    # commonest re-run touches nothing at all.
+    $identical = $false
+    if (Test-Path $uvLocal) {
+        try { $identical = (Get-FileHash $uvLocal).Hash -eq (Get-FileHash $uvSource).Hash }
+        catch { $identical = $false }
+    }
+
+    if ($identical) {
+        Write-Ok "uv is already in bin\uv.exe, and it is this exact version"
+    } else {
+        try {
+            Copy-Item $uvSource $uvLocal -Force
+            Write-Ok "uv copied to bin\uv.exe"
+        } catch {
+            # This is what a second install on a working machine looks like:
+            #
+            #     Copy-Item : The process cannot access the file
+            #     'C:\...\bin\uv.exe' because it is being used by another process.
+            #
+            # The console, the recorder and both scheduled tasks are all started
+            # through bin\uv.exe, so on any machine where VMD is actually
+            # running that file is open - and with $ErrorActionPreference =
+            # 'Stop' the refusal ended the install at step 7 of 12, before the
+            # environment was built. The most complete installation on the
+            # machine was the one that could not be re-run.
+            #
+            # Step 9 does halt everything running out of this folder, which
+            # would have released this file - but it does that two steps later
+            # and on purpose: it is the price of rebuilding .venv, not of
+            # copying one executable. Killing a running recorder here, for a
+            # copy that has a way of succeeding without it, is the wrong trade.
+            #
+            # Windows will not let a running image be overwritten, but it will
+            # let it be RENAMED: the running process keeps the file it already
+            # opened, under its new name, and the name is free for the new one.
+            # So the old uv is moved aside and the copy retried.
+            $asideOk = $false
+            $aside = "$uvLocal.old-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+            try {
+                Move-Item $uvLocal $aside -Force
+                Copy-Item $uvSource $uvLocal -Force
+                $asideOk = $true
+            } catch {
+                # Put back what was moved, if the failure was the copy rather
+                # than the move. Leaving no uv.exe at all is worse than leaving
+                # the old one.
+                if ((Test-Path $aside) -and -not (Test-Path $uvLocal)) {
+                    Move-Item $aside $uvLocal -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            if ($asideOk) {
+                Write-Ok "uv copied to bin\uv.exe (the running copy was moved aside)"
+                Write-Info "Whatever is running keeps the old one until it is closed."
+            } else {
+                # Neither route worked. That is not a reason to stop: there is
+                # already a working uv in bin\, which is what the rest of this
+                # install uses. Say what holds it, because "another process" on
+                # its own sends people to Task Manager to guess.
+                Write-Warn "bin\uv.exe is in use, so it was left as it is."
+                $holders = @()
+                try {
+                    $holders = @(Get-Process -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Path -and ($_.Path -ieq $uvLocal) } |
+                        ForEach-Object { "$($_.ProcessName) (pid $($_.Id))" })
+                } catch { }
+                if ($holders.Count -gt 0) {
+                    Write-Info "Held by: $($holders -join ', ')"
+                }
+                Write-Info "That is VMD itself - the console, the recorder, or the two"
+                Write-Info "scheduled tasks. Close the console and run this again if you"
+                Write-Info "want the newer uv; nothing here needs it."
+            }
+        }
+    }
 } elseif (Test-Path $uvLocal) {
     Write-Ok "uv is already in bin\uv.exe"
 } else {
