@@ -26,6 +26,15 @@ def a_console(folder: Path, version: int) -> Path:
     return folder
 
 
+def a_marker(root: Path, **fields) -> Path:
+    """The file left behind by an update that was cut off part of the way."""
+    logs = root / "bin" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    path = logs / "update-in-progress.json"
+    path.write_text(json.dumps(fields), encoding="utf-8")
+    return path
+
+
 def a_status(root: Path, payload: dict, age_seconds: float = 0.0) -> Path:
     """The file the updater writes as it goes, as the panel finds it."""
     logs = root / "bin" / "logs"
@@ -135,12 +144,102 @@ def test_an_interrupted_update_is_reported_at_the_next_start(qtbot, tmp_path: Pa
     """The marker file left by a power cut. Nobody would think to look for it,
     so the panel says it in the one place they will be looking."""
     root = a_console(tmp_path / "VMD", 7)
-    logs = root / "bin" / "logs"
-    logs.mkdir(parents=True)
-    (logs / "update-in-progress.json").write_text('{"to": 8}', encoding="utf-8")
+    a_marker(root, to=8)
 
     panel = build(qtbot, root, [])
 
+    assert "interrupted" in panel.stick_line.text().lower()
+
+
+def test_an_update_cut_during_the_copy_still_offers_the_version_it_kept(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """The dead end. VERSION is one of the files an update copies in, so a cut
+    during the copy leaves it still reading 7 with previous\\7 beside it. The
+    rule that stops "Go back to VMD 7" appearing on a console running VMD 7
+    then hid the only button that does anything, under a line telling the
+    operator to press it - on the machine where this panel is the whole of
+    maintenance, with a marker that no restart clears.
+
+    While the marker is up, what VERSION says is not evidence of anything: it
+    is a file that may or may not have been replaced yet."""
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, started="2026-08-22T10:00:00", to=8)
+    panel = build(qtbot, root, [])
+    started = []
+    panel.start_rollback = lambda version: started.append(version)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    assert panel.back_button.isVisible() is True
+    assert "VMD 7" in panel.back_button.text()
+
+    panel.go_back()
+
+    assert started == [7]
+
+
+def test_the_interrupted_line_names_the_version_going_on_and_the_one_kept(
+    qtbot, tmp_path: Path
+) -> None:
+    """"An update was interrupted" leaves the operator with no idea which
+    version this machine is now nor which one the button would bring back."""
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, to=8)
+
+    panel = build(qtbot, root, [])
+
+    assert "VMD 8" in panel.stick_line.text()
+    assert "VMD 7" in panel.stick_line.text()
+
+
+def test_an_interrupted_update_offers_the_copy_it_took_not_the_oldest_one(
+    qtbot, tmp_path: Path
+) -> None:
+    """A machine that has been updated before keeps more than one previous\\.
+    The highest number in the folder is not the answer either: what this
+    update kept is the version that was running when it started, and the
+    marker is what says which version it was putting on."""
+    root = a_console(tmp_path / "VMD", 7)
+    for version in (6, 7):
+        (root / "previous" / str(version)).mkdir(parents=True)
+    a_marker(root, to=8)
+
+    panel = build(qtbot, root, [])
+
+    assert "VMD 7" in panel.back_button.text()
+
+
+def test_an_interrupted_rollback_offers_to_finish_going_back(qtbot, tmp_path: Path) -> None:
+    """A rollback raises a marker of its own, and the way out of one that was
+    cut off is to finish it - not to go back to something else. Its marker
+    says which copy it was putting back, and that is the button."""
+    root = a_console(tmp_path / "VMD", 8)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, to=7, kept=7, rollback=True)
+
+    panel = build(qtbot, root, [])
+
+    assert panel.back_button.isVisible() is True
+    assert "VMD 7" in panel.back_button.text()
+
+
+def test_an_interrupted_update_with_nothing_kept_is_still_offered_the_stick(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other way out. With no kept copy on the machine there is nothing to
+    go back to, so the update the stick is offering IS the repair - and a
+    disabled Update button under an interrupted-update warning is a panel on
+    which nothing at all can be pressed."""
+    root = a_console(tmp_path / "VMD", 7)
+    stick = a_stick(tmp_path / "E", 8)
+    a_marker(root, to=8)
+
+    panel = build(qtbot, root, [stick])
+
+    assert panel.back_button.isVisible() is False
+    assert panel.update_button.isEnabled() is True
     assert "interrupted" in panel.stick_line.text().lower()
 
 
@@ -244,6 +343,23 @@ def test_the_second_console_cannot_go_back_over_a_running_update(
     assert panel.back_button.isEnabled() is False
 
 
+def test_a_running_update_is_not_read_as_an_interrupted_one(qtbot, tmp_path: Path) -> None:
+    """The marker is up for the whole of the dangerous half of an update, so
+    the other console sees a marker and a status file being written at the same
+    time. Read as "interrupted" it would put a live Go back button in front of
+    an operator while the files are being replaced under it."""
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "6").mkdir(parents=True)
+    a_marker(root, to=8)
+    a_status(root, {"step": "copying the new version in", "finished": False})
+
+    panel = build(qtbot, root, [])
+
+    assert "already running" in panel.stick_line.text()
+    assert panel.back_button.isEnabled() is False
+    assert panel.update_button.isEnabled() is False
+
+
 def test_an_update_that_finished_is_not_mistaken_for_one_still_running(
     qtbot, tmp_path: Path
 ) -> None:
@@ -311,6 +427,48 @@ def test_an_updater_that_refuses_to_start_says_so_instead_of_waiting(
     assert "no room on disk" in panel.stick_line.text()
     assert panel._watch.isActive() is False
     assert panel.update_button.isEnabled() is True
+
+
+def test_an_updater_that_wrote_one_line_and_died_is_not_watched_for_ever(
+    qtbot, tmp_path: Path
+) -> None:
+    """The deadline only covers an updater that never wrote a word. One that
+    wrote a step and was then killed left the panel watching a file nothing
+    would ever touch again, with all three buttons dead - which is the same
+    dead end by a different road. The rule is the one `already_running` uses:
+    every step the updater takes is bounded by TIMEOUT_SECONDS, so a status
+    file older than that was written by something no longer alive."""
+    root = a_console(tmp_path / "VMD", 7)
+    stick = a_stick(tmp_path / "E", 8)
+    panel = build(qtbot, root, [stick])
+    panel.start_update = lambda stick: (True, "")
+    panel.update_now()
+
+    a_status(root, {"step": "copying the new version in", "finished": False}, age_seconds=6 * 3600)
+    panel._read_status()
+
+    assert panel._watch.isActive() is False
+    assert "stopped without finishing" in panel.stick_line.text()
+    assert panel.look_button.isEnabled() is True
+    assert panel.back_button.isEnabled() is True
+    assert panel.update_button.isEnabled() is True
+
+
+def test_a_status_file_being_written_to_is_watched_however_long_it_takes(
+    qtbot, tmp_path: Path
+) -> None:
+    """A uv sync is minutes, and the updater says nothing while it runs."""
+    root = a_console(tmp_path / "VMD", 7)
+    stick = a_stick(tmp_path / "E", 8)
+    panel = build(qtbot, root, [stick])
+    panel.start_update = lambda stick: (True, "")
+    panel.update_now()
+
+    a_status(root, {"step": "installing any new libraries", "finished": False}, age_seconds=600)
+    panel._read_status()
+
+    assert panel._watch.isActive() is True
+    assert panel.stick_line.text() == "installing any new libraries"
 
 
 def test_the_form_reloading_does_not_undo_a_running_update(qtbot, tmp_path: Path) -> None:

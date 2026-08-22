@@ -13,13 +13,14 @@ it.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from vmd.update.apply import PREVIOUS, Progress, restore, run
+from vmd.update.apply import MARKER, PREVIOUS, Progress, _named, restore, run
 from vmd.update.runner import (
     TIMEOUT_SECONDS,
     selftest_command,
@@ -133,14 +134,16 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
 
+    when = datetime.now().isoformat(timespec="seconds")
+
     if args.rollback is not None:
-        return go_back(root, args.rollback, stop, sync_from_cache, start_console)
+        return go_back(root, args.rollback, when, stop, sync_from_cache, start_console)
 
     report = run(
         root,
         Path(args.stick),
         machine=os.environ.get("COMPUTERNAME", "unknown"),
-        when=datetime.now().isoformat(timespec="seconds"),
+        when=when,
         stop=stop,
         sync=sync,
         selftest=selftest,
@@ -151,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
-def go_back(root: Path, version: int, stop, sync, start_console) -> int:
+def go_back(root: Path, version: int, when: str, stop, sync, start_console) -> int:
     """Put `previous\\<version>` back over this install.
 
     The three things that touch the machine are handed in, as they are for
@@ -159,12 +162,19 @@ def go_back(root: Path, version: int, stop, sync, start_console) -> int:
     happen in, which is the part worth testing.
 
     Every way out writes a finished status, including the ways nobody planned
-    for. The console that pressed Go back is watching that file, and a rollback
-    that ends without writing it is a panel waiting on a process that is not
-    running - on the one operation where the operator most needs to be told
-    what state the machine was left in.
+    for - `stop` included, which raises when the stopper does not return inside
+    five minutes. The console that pressed Go back is watching that file, and a
+    rollback that ends without writing it is a panel waiting on a process that
+    is not running, on the one operation where the operator most needs to be
+    told what state the machine was left in.
+
+    And it keeps the same marker discipline an update keeps, for the same
+    reason: this rewrites the same tree. Cut off in the middle it leaves an
+    install that is part one version and part another, and without the marker
+    the panel reads that as a machine with nothing wrong.
     """
     progress = Progress(root)
+    progress.begin(when)
     progress.report.moved_from = read_version(root)
     progress.report.moved_to = version
 
@@ -172,41 +182,81 @@ def go_back(root: Path, version: int, stop, sync, start_console) -> int:
     if not kept.is_dir():
         # Before the console is stopped, so nothing has been done: the console
         # that asked is still up, and it is the thing that reads this answer.
-        progress.finish(False, f"There is no kept copy of VMD {version} on this machine.")
+        progress.finish(False, f"There is no kept copy of {_named(version)} on this machine.")
         return 1
 
-    progress.say("putting the previous version back")
-    stop()
+    marker = progress.folder / MARKER
+    # Whether the install has been opened up. It answers two questions with one
+    # flag: whether the marker stays up, and which of the two failures this was
+    # - a rollback stopped before it touched anything is not the same news as
+    # one stopped halfway through, and telling an operator their install is
+    # half one version and half another when it is not would send somebody to
+    # the site for nothing.
+    opened_up = False
     try:
+        # Inside the try, so a marker that cannot be written is reported like
+        # any other failure rather than ending this process in silence. It
+        # records which copy was being put back, which is what lets the panel
+        # offer the same button again after a cut.
+        marker.write_text(
+            json.dumps({"started": when, "to": version, "kept": version, "rollback": True}),
+            encoding="utf-8",
+        )
+        progress.say("putting the previous version back")
+        stop()
+
+        opened_up = True
         restore(kept, root)
+        # Whole again, and entirely the kept version: whatever happens below
+        # this line, no part of the other one is left in the tree.
+        opened_up = False
+
+        progress.say("installing that version's libraries")
+        installed, said = sync()
+        progress.finish(
+            installed,
+            f"{_named(version)} is back. The console will start again by itself."
+            if installed
+            else f"{_named(version)}'s files are back, but its libraries could not be "
+            f"installed from this machine's cache ({said}). Bring a stick with "
+            f"{_named(version)} on it.",
+        )
+        return 0 if installed else 1
     except Exception as failure:
-        # A file held open by something that did not die when the console was
-        # stopped, a full disk. The install is now part one version and part
-        # another, which is not a state anything on this machine can fix, so it
-        # is said in the plainest words there are and the console is put back up
-        # to say them.
+        # Deliberately everything: a stopper that never returned, a file held
+        # open by something that did not die, a full disk. Whichever it was,
+        # the console is watching a status file and there is nobody else to
+        # tell.
         said = f"{type(failure).__name__}: {failure}"
+        progress.say("something went wrong", said)
+        if not opened_up:
+            progress.finish(
+                False,
+                f"Going back to {_named(version)} stopped before anything was "
+                f"replaced ({said}). Nothing was changed.",
+            )
+            return 1
         progress.finish(
             False,
-            f"Going back to VMD {version} stopped part of the way through ({said}). "
-            f"This copy is now part VMD {progress.report.moved_from} and part VMD "
-            f"{version} and has to be installed again from a stick.",
+            f"Going back to {_named(version)} stopped part of the way through ({said}). "
+            f"This copy is now part {_named(progress.report.moved_from)} and part "
+            f"{_named(version)} and has to be installed again from a stick.",
         )
-        start_console()
         return 1
-
-    progress.say("installing that version's libraries")
-    installed, said = sync()
-    progress.finish(
-        installed,
-        f"VMD {version} is back. The console will start again by itself."
-        if installed
-        else f"VMD {version}'s files are back, but its libraries could not be "
-        f"installed from this machine's cache ({said}). Bring a stick with "
-        f"VMD {version} on it.",
-    )
-    start_console()
-    return 0 if installed else 1
+    finally:
+        if not opened_up:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                # A marker that will not delete costs one false "an update was
+                # interrupted" at the next start. Raising here would replace
+                # the return value on its way out and throw away the only
+                # report of what happened.
+                pass
+        # Whatever happened, and last: an operator left staring at a desktop
+        # with no console is the worst outcome there is, and it is the one that
+        # has nothing to do with whether the rollback worked.
+        start_console()
 
 
 if __name__ == "__main__":

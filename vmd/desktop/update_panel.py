@@ -111,24 +111,52 @@ class UpdatePanel(QGroupBox):
     # ------------------------------------------------------------- describing
 
     def previous_version(self) -> int | None:
-        """The version kept by the last update, or None if there is not one.
+        """The version to go back to, or None if there is not one.
 
-        Never this version. A rollback leaves the copy it put back where it
-        was - nothing deletes previous\\7 - so after going back to VMD 7 the
-        folder still offers VMD 7, and "Go back to VMD 7" printed on a console
-        already running VMD 7 is a button that means nothing on the one panel
-        where every control has to mean something.
+        Ordinarily never this version. A rollback leaves the copy it put back
+        where it was - nothing deletes previous\\7 - so after going back to
+        VMD 7 the folder still offers VMD 7, and "Go back to VMD 7" printed on
+        a console already running VMD 7 is a button that means nothing on the
+        one panel where every control has to mean something.
+
+        That filter is dropped the moment the marker is up, and dropping it is
+        the whole of a fault that could leave this machine with no working
+        control at all. VERSION is one of the files an update copies in, so an
+        update cut off during the copy leaves VERSION still reading 7 with
+        previous\\7 beside it: the filter then removed the only kept copy
+        there was, and Go back disappeared underneath a line telling the
+        operator to press it. While the marker is up, what VERSION says is not
+        evidence of anything - it is a file that may or may not have been
+        replaced yet - so the marker's own account is used instead. It says
+        which version was going on, and a rollback's marker says which copy it
+        was putting back; either is a better answer than the highest number in
+        the folder, which on a machine that has been updated twice is the
+        version before the one this update kept.
         """
         folder = self._root / "previous"
         if not folder.is_dir():
             return None
-        mine = read_version(self._root)
-        versions = [
-            int(item.name)
-            for item in folder.iterdir()
-            if item.name.isdigit() and int(item.name) != mine
-        ]
-        return max(versions) if versions else None
+        versions = [int(item.name) for item in folder.iterdir() if item.name.isdigit()]
+        if not versions:
+            return None
+
+        stopped = self.interrupted()
+        if stopped is None:
+            mine = read_version(self._root)
+            kept = [version for version in versions if version != mine]
+            return max(kept) if kept else None
+
+        putting_back = stopped.get("kept")
+        if isinstance(putting_back, int) and putting_back in versions:
+            # A rollback that was cut off. The way out of it is to finish it.
+            return putting_back
+        going_on = stopped.get("to")
+        kept = [version for version in versions if version != going_on]
+        # `or versions`: an interrupted update always has a way out. A folder
+        # that holds nothing but the version that was going on is not a state
+        # anything writes, but answering None to it would be the dead end this
+        # whole method exists to close.
+        return max(kept or versions)
 
     def interrupted(self) -> dict | None:
         marker = self._root / LOGS / MARKER
@@ -156,11 +184,12 @@ class UpdatePanel(QGroupBox):
         bound on the longest step there is, so past it the file is a leftover.
         """
         path = self._root / LOGS / STATUS
-        try:
-            written = path.stat().st_mtime
-        except OSError:
-            return False
-        if (time.time() - written) >= TIMEOUT_SECONDS:
+        # Absent and stale are both "nothing is running", and they are asked
+        # first: below this, a file that cannot be read counts as a file
+        # something is writing, and a file that is not there would have been
+        # read as an update in progress on every machine that has never run
+        # one.
+        if not path.is_file() or self._stale(path):
             return False
         try:
             status = json.loads(path.read_text(encoding="utf-8"))
@@ -169,6 +198,23 @@ class UpdatePanel(QGroupBox):
             # is writing, which is the question that was asked.
             return True
         return isinstance(status, dict) and not status.get("finished")
+
+    def _stale(self, path: Path) -> bool:
+        """Whether nothing has written to that file for longer than a step.
+
+        The one rule, in one place, because it is asked twice: of a status file
+        found lying there when the panel is drawn, and of the one this panel is
+        watching. Every subprocess the updater runs is bounded by
+        TIMEOUT_SECONDS - that is what the constant is - so a file untouched
+        for longer than that was written by a process that is no longer alive.
+        A missing file is not stale, it is absent, and that is the deadline's
+        question rather than this one's.
+        """
+        try:
+            written = path.stat().st_mtime
+        except OSError:
+            return False
+        return (time.time() - written) >= TIMEOUT_SECONDS
 
     def look(self) -> None:
         """Read everything and draw it. Cheap enough to call on every show."""
@@ -186,16 +232,11 @@ class UpdatePanel(QGroupBox):
         if previous is not None:
             self.back_button.setText(f"Go back to VMD {previous}")
 
-        stopped = self.interrupted()
-        if stopped is not None:
-            self.stick_line.setText(
-                "An update was interrupted before it finished. The version that "
-                "was here has been kept - use Go back if this console is not "
-                "behaving."
-            )
-            self.update_button.setEnabled(False)
-            return
-
+        # Asked before the marker is read, and that order is load-bearing: an
+        # update that is running right now has its marker up, and read the
+        # other way round the other console's panel calls a live update an
+        # interrupted one and hands the operator a Go back button that would
+        # put the old files over it.
         if self.already_running():
             self._state = None
             self.stick_line.setText(
@@ -209,9 +250,46 @@ class UpdatePanel(QGroupBox):
             self.back_button.setEnabled(False)
             return
 
+        stopped = self.interrupted()
+        if stopped is not None and previous is not None:
+            self.stick_line.setText(self._interrupted_line(stopped, previous))
+            self.update_button.setEnabled(False)
+            return
+
         self._state = look(self._root, self._drives())
-        self.stick_line.setText(self._state.message)
+        message = self._state.message
+        if stopped is not None:
+            # Nothing kept, so Go back is not the way out and the stick is: an
+            # interrupted update under a disabled Update button is a panel on
+            # which nothing at all can be pressed.
+            message = (
+                f"{self._what_was_interrupted(stopped)} was interrupted before it "
+                f"finished, and there is no kept copy on this machine to go back "
+                f"to. Updating again from a stick is the way to put this right. "
+                f"{message}"
+            )
+        self.stick_line.setText(message)
         self.update_button.setEnabled(self._state.kind == "ready")
+
+    def _what_was_interrupted(self, stopped: dict) -> str:
+        """"An update to VMD 8", or "An update" when the marker says nothing."""
+        going_on = stopped.get("to")
+        if stopped.get("rollback"):
+            return f"Going back to VMD {going_on}" if isinstance(going_on, int) else "Going back"
+        return f"An update to VMD {going_on}" if isinstance(going_on, int) else "An update"
+
+    def _interrupted_line(self, stopped: dict, previous: int) -> str:
+        """Both versions by name.
+
+        "An update was interrupted" leaves the operator knowing neither which
+        version this machine is now nor which one the button would bring back,
+        which are the only two things they need in order to decide anything.
+        """
+        return (
+            f"{self._what_was_interrupted(stopped)} was interrupted before it "
+            f"finished. VMD {previous} is still on this machine - press Go "
+            f"back to VMD {previous} to put it back."
+        )
 
     # --------------------------------------------------------------- updating
 
@@ -291,6 +369,9 @@ class UpdatePanel(QGroupBox):
         if not path.is_file():
             self._give_up_if_nothing_ever_started()
             return
+        if self._stale(path):
+            self._stop_watching_something_that_died()
+            return
         try:
             status = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -308,6 +389,24 @@ class UpdatePanel(QGroupBox):
             self.look_button.setEnabled(True)
             self.look()
         self.stick_line.setText(status.get("message") or status.get("step") or "")
+
+    def _stop_watching_something_that_died(self) -> None:
+        """Stop waiting on an updater that wrote a step and then stopped.
+
+        The deadline covers an updater that never wrote a word; this covers the
+        other half, and without it the panel watched a file nothing would ever
+        touch again with all three buttons dead. What is said afterwards is
+        whatever `look` finds - if the marker is up it names the version that
+        was going on and the one to press Go back for, which is exactly the
+        state this ends in - with one sentence in front of it saying why the
+        console is still here.
+        """
+        self._watch.stop()
+        self._deadline = None
+        self.look_button.setEnabled(True)
+        self.back_button.setEnabled(True)
+        self.look()
+        self.stick_line.setText(f"The updater stopped without finishing. {self.stick_line.text()}")
 
     def _give_up_if_nothing_ever_started(self) -> None:
         """Stop waiting on an updater that has never written a word.

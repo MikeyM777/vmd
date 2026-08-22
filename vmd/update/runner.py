@@ -69,14 +69,20 @@ def stop_command(root: Path, spare: int) -> list[str]:
     running to start it again. It was measured, not guessed: a process started
     that way killed itself here on the first attempt.
     """
+    # Doubled, because that is how an apostrophe is written inside a
+    # single-quoted PowerShell string. C:\\Users\\O'Brien\\VMD is an ordinary
+    # Windows path, and left alone it ends the quoting early: the console is
+    # then not stopped at all and the rest of the path is read as commands, so
+    # the update goes on to replace files the recorder is still holding open.
+    quoted = str(Path(root)).replace("'", "''")
+    script = str(Path(root) / "scripts" / "_common.ps1").replace("'", "''")
     return [
         "powershell",
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        f". '{Path(root) / 'scripts' / '_common.ps1'}'; "
-        f"Stop-ProjectProcesses '{Path(root)}' {spare} | Out-Null",
+        f". '{script}'; Stop-ProjectProcesses '{quoted}' {spare} | Out-Null",
     ]
 
 
@@ -191,43 +197,9 @@ def start(root: Path, stick: Path, settings: Path) -> tuple[bool, str]:
     only way it could be: by the time there is an answer, this console has been
     killed.
     """
-    root = Path(root)
-    status = root / LOGS / STATUS
-    status.parent.mkdir(parents=True, exist_ok=True)
-    # The panel watches this file for `finished`. Last update's copy of it would
-    # answer the moment this one begins.
-    status.unlink(missing_ok=True)
-
-    python = project_python(root)
-    if python is None:
-        return False, "This copy has no interpreter in bin\\python\\, so it cannot update itself."
-
-    try:
-        where = temp_copy_of(root, temp_folder())
-        spawn_orphan(
-            [
-                str(python),
-                "-m",
-                "vmd.update.main",
-                "--root",
-                str(root),
-                "--stick",
-                str(stick),
-                "--settings",
-                str(settings),
-            ],
-            cwd=where,
-            environment=dict(os.environ, PYTHONPATH=str(where)),
-        )
-    except OSError as failure:
-        # A copy that could not be made - a leftover from the last update that
-        # something still holds open, a full disk - or Windows refusing to start
-        # the process at all. Raised into the button that was pressed, either
-        # would close the panel over a traceback; said out loud it is a sentence
-        # the operator can read down the telephone. Nothing on the machine has
-        # been touched at this point, so there is nothing to undo.
-        return False, f"The updater could not be started: {failure}"
-    return True, ""
+    return _start_updater(
+        root, ["--stick", str(stick), "--settings", str(settings)], doing="update itself"
+    )
 
 
 def start_rollback(root: Path, version: int, settings: Path) -> tuple[bool, str]:
@@ -239,37 +211,50 @@ def start_rollback(root: Path, version: int, settings: Path) -> tuple[bool, str]
     `taskkill /F /T`: a plain detached child of the console is inside the tree
     that kill walks, so a rollback started that way is killed by its own second
     step, with the old version half copied back over the new one. That is the
-    worst state this machine can be left in, and it is why this goes through
-    `spawn_orphan` and not through a Popen of its own.
+    worst state this machine can be left in.
+
+    "Exactly the way" is why this is one line: the two used to be forty lines
+    each, the same forty, and the fault above is precisely what a copy that
+    drifts from its original produces.
+    """
+    return _start_updater(
+        root, ["--rollback", str(version), "--settings", str(settings)], doing="go back"
+    )
+
+
+def _start_updater(root: Path, arguments: list[str], doing: str) -> tuple[bool, str]:
+    """Start `vmd.update.main` out of a copy of this tree, orphaned.
+
+    The whole of what an update and a rollback share, which is everything
+    except the arguments: clearing the last run's answer, finding the
+    interpreter, making the copy and getting out of the process tree.
+
+    `doing` is what this copy cannot do, for the one sentence that names it.
     """
     root = Path(root)
     status = root / LOGS / STATUS
     status.parent.mkdir(parents=True, exist_ok=True)
-    # The panel watches this file for a rollback exactly as it does for an
-    # update, so the last update's answer has to go before this one starts.
+    # The panel watches this file for `finished`. The last run's copy of it
+    # would answer the moment this one begins.
     status.unlink(missing_ok=True)
 
     python = project_python(root)
     if python is None:
-        return False, "This copy has no interpreter in bin\\python\\, so it cannot go back."
+        return False, f"This copy has no interpreter in bin\\python\\, so it cannot {doing}."
 
     try:
         where = temp_copy_of(root, temp_folder())
         spawn_orphan(
-            [
-                str(python),
-                "-m",
-                "vmd.update.main",
-                "--root",
-                str(root),
-                "--rollback",
-                str(version),
-                "--settings",
-                str(settings),
-            ],
+            [str(python), "-m", "vmd.update.main", "--root", str(root), *arguments],
             cwd=where,
             environment=dict(os.environ, PYTHONPATH=str(where)),
         )
     except OSError as failure:
-        return False, f"Going back could not be started: {failure}"
+        # A copy that could not be made - a leftover from the last update that
+        # something still holds open, a full disk - or Windows refusing to start
+        # the process at all. Raised into the button that was pressed, either
+        # would close the panel over a traceback; said out loud it is a sentence
+        # the operator can read down the telephone. Nothing on the machine has
+        # been touched at this point, so there is nothing to undo.
+        return False, f"The updater could not be started: {failure}"
     return True, ""

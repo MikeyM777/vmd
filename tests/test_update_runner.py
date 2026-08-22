@@ -66,6 +66,22 @@ def test_the_updater_tells_the_stopper_to_leave_the_updater_alone(
     assert "4242" in command[-1]
 
 
+def test_a_folder_with_an_apostrophe_in_it_is_still_quoted_as_one_word(
+    tmp_path: Path,
+) -> None:
+    """PowerShell ends a single-quoted string at the next apostrophe, and
+    C:\\Users\\O'Brien\\VMD is an ordinary Windows path. Unescaped, the console
+    is not stopped and what follows the apostrophe is read as commands - so the
+    update goes ahead with the recorder still holding the files it is about to
+    replace. An apostrophe inside such a string is written twice."""
+    root = tmp_path / "O'Brien" / "VMD"
+
+    command = stop_command(root, spare=4242)
+
+    assert str(root) not in command[-1], "the raw path would end the quoting early"
+    assert str(root).replace("'", "''") in command[-1]
+
+
 def test_the_selftest_is_run_by_the_project_s_own_interpreter(tmp_path: Path) -> None:
     root = tmp_path / "VMD"
     (root / "bin").mkdir(parents=True)
@@ -306,13 +322,16 @@ def kept_copy(root: Path, version: int) -> Path:
 class Ran:
     """Every subprocess the rollback would have run, and none of them run."""
 
-    def __init__(self, code: int = 0) -> None:
+    def __init__(self, code: int = 0, stop_raises: BaseException | None = None) -> None:
         self.commands: list[list[str]] = []
         self.started: list[list[str]] = []
         self.code = code
+        self.stop_raises = stop_raises
 
     def run(self, command, **kwargs):
         self.commands.append(list(command))
+        if self.stop_raises is not None and "Stop-ProjectProcesses" in " ".join(command):
+            raise self.stop_raises
         return subprocess.CompletedProcess(command, self.code, "", "the cache is empty")
 
     def popen(self, command, **kwargs):
@@ -341,6 +360,10 @@ def read_status(root: Path) -> dict:
     return json.loads(
         (root / "bin" / "logs" / "update-status.json").read_text(encoding="utf-8")
     )
+
+
+def marker(root: Path) -> Path:
+    return root / "bin" / "logs" / "update-in-progress.json"
 
 
 def test_going_back_puts_the_kept_version_over_the_install(
@@ -419,6 +442,94 @@ def test_a_rollback_whose_libraries_are_gone_says_what_is_wrong_with_the_machine
     assert "the cache is empty" in status["message"]
     assert "Bring a stick with VMD 7 on it" in status["message"]
     assert ran.started, "the console is started again whatever happened"
+
+
+def test_going_back_raises_the_same_marker_an_update_does(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A rollback rewrites the same tree an update does, and until now nothing
+    recorded that it was doing it. Killed in the middle, it left a part-7,
+    part-8 install that the panel read as a machine with nothing wrong."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    (root / "VERSION").write_text("8\n", encoding="utf-8")
+    kept_copy(root, 7)
+    ran = Ran()
+
+    rollback(root, 7, monkeypatch, ran)
+
+    assert not marker(root).exists(), "it comes down when the tree is whole again"
+
+
+def test_a_rollback_that_cannot_finish_leaves_the_marker_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The one file that says this install is neither version. It stays up so
+    that the panel says so at the next start, and the marker names the copy
+    that was going back so the operator is offered the same button again."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    (root / "VERSION").write_text("8\n", encoding="utf-8")
+    kept_copy(root, 7)
+    ran = Ran()
+
+    def refuse(kept, where):
+        raise OSError("[WinError 32] the file is being used by another process")
+
+    from vmd.update import main as main_module
+
+    monkeypatch.setattr(main_module, "restore", refuse)
+    code = rollback(root, 7, monkeypatch, ran)
+
+    assert code == 1
+    assert json.loads(marker(root).read_text(encoding="utf-8"))["kept"] == 7
+    status = read_status(root)
+    assert status["finished"] is True and status["ok"] is False
+    assert "part VMD 8 and part VMD 7" in status["message"]
+
+
+def test_a_stopper_that_never_returns_still_writes_an_answer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`subprocess.run(timeout=300)` raises. Outside the guard it ended the
+    process with the status file still saying finished: false, and the console
+    watching it had nothing to read and nothing to press."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    kept_copy(root, 7)
+    ran = Ran(stop_raises=subprocess.TimeoutExpired("powershell", 300))
+
+    code = rollback(root, 7, monkeypatch, ran)
+
+    status = read_status(root)
+    assert code == 1
+    assert status["finished"] is True and status["ok"] is False
+    assert "TimeoutExpired" in status["message"]
+    assert ran.started, "and the console is put back up to say it"
+
+
+def test_a_machine_whose_version_cannot_be_read_is_not_told_about_VMD_None(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The machine most likely to be going back is the one whose VERSION file
+    was half written. "This copy is now part VMD None" is the sentence it was
+    going to be given."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    kept_copy(root, 7)
+    ran = Ran()
+
+    def refuse(kept, where):
+        raise OSError("[WinError 32] the file is being used by another process")
+
+    from vmd.update import main as main_module
+
+    monkeypatch.setattr(main_module, "restore", refuse)
+    rollback(root, 7, monkeypatch, ran)
+
+    message = read_status(root)["message"]
+    assert "None" not in message
+    assert "VMD (version unknown)" in message
 
 
 def test_going_back_to_a_version_that_is_not_kept_changes_nothing(
