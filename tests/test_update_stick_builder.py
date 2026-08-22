@@ -45,6 +45,70 @@ def build_stick(source: Path, stick: Path, extra: list[str] | None = None):
     )
 
 
+def classify_error(text: str) -> str:
+    """Ask the script whether one error string is a no-internet failure.
+
+    The GUI's whole job is to turn GitHub being unreachable into one sentence a
+    non-technical operator can act on, instead of a raw web-exception stack. The
+    decision lives in a PowerShell helper, Test-NetworkError; -ClassifyError is
+    the seam that runs just that helper and prints its verdict, so it can be
+    checked here without a network - which conftest.py forbids a test from
+    reaching anyway.
+    """
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-ClassifyError",
+            text,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout.strip()
+
+
+def test_a_no_internet_failure_is_named_as_one(tmp_path: Path) -> None:
+    """The exact words Windows writes when a laptop with no route to the internet
+    tries to reach GitHub - the DNS lookup fails first - plus the other shapes of
+    "cannot reach the far host". Each must be recognised so the operator is told
+    to connect the laptop, not shown a stack trace."""
+    network_failures = [
+        # The real message, captured from Invoke-WebRequest with no network.
+        "The remote name could not be resolved: 'codeload.github.com'",
+        # The WebExceptionStatus name the build joins to the message.
+        "NameResolutionFailure",
+        "Unable to connect to the remote server",
+        "A connection attempt failed because the connected party did not "
+        "properly respond after a period of time",
+        "The operation has timed out",
+    ]
+    for text in network_failures:
+        assert classify_error(text) == "NETWORK", text
+
+
+def test_a_failure_that_is_not_the_network_keeps_its_own_message() -> None:
+    """The classifier is deliberately narrow. A 404 for a branch that does not
+    exist, a full stick, a bad VERSION file - none is a network fault, and
+    calling one "no internet" would send somebody to check their wifi while the
+    real fault sat elsewhere. Empty text is not a network failure either."""
+    not_network = [
+        "The remote server returned an error: (404) Not Found.",
+        "There is not enough space on the disk.",
+        "The VERSION file says 'x', which is not a version number.",
+        "",
+    ]
+    for text in not_network:
+        assert classify_error(text) == "OTHER", text
+
+
 def a_repository(folder: Path, version: int) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "vmd").mkdir()

@@ -40,6 +40,12 @@ param(
     # actually reached for a wheel could not run at all. It is also useful by
     # hand, to see what a stick is about to carry before committing to the wait.
     [switch]$ListWheelsOnly,
+    # A test seam, the sibling of -ListWheelsOnly. Given the text of one error, it
+    # prints NETWORK or OTHER and stops, so tests\test_update_stick_builder.py can
+    # prove Test-NetworkError names a no-internet failure - the case that turns a
+    # raw web-exception stack into one sentence for the operator - without a test
+    # ever reaching the network conftest.py forbids. Nothing in the build reads it.
+    [string]$ClassifyError,
     # Passed by VMD-Update-Stick.bat. Shows a small window instead of doing the
     # work, and the window shells back into this same script without -Gui to do
     # it. Accepted even when unused so that a .bat passing it does not stop with
@@ -147,6 +153,58 @@ $ROOT_SCRATCH = @('.jpg', '.jpeg', '.png', '.bmp', '.html', '.bin', '.log',
 # that has no business on a customer's site. Pruned at every depth, unlike the
 # two lists above, because that is where they are.
 $SCRATCH_EVERYWHERE = @('__pycache__')
+
+
+function Test-NetworkError($text) {
+    <#
+        Was this failure the laptop having no way to reach GitHub, rather than a
+        fault in the code, the branch name or the stick?
+
+        Kept as its own function that takes a plain string so it can be tested
+        without a network: a test hands it the exact words Windows writes and
+        checks the verdict. The build's catch block feeds it the exception's
+        message joined with a WebException's Status name ("NameResolutionFailure"
+        and its kind), because a machine with no route to the internet fails the
+        DNS lookup first and reports exactly that - "The remote name could not be
+        resolved" - before anything else is tried.
+
+        Matched by the words rather than by exception type on purpose: the same
+        no-internet condition arrives as a WebException from Invoke-WebRequest, as
+        that same exception re-wrapped when it crosses the child process boundary,
+        and as an IOException from Expand-Archive if the download half-arrived. The
+        type is not stable across those; the words Windows uses for "there is no
+        network" are, and it is those words the operator needs turned into the one
+        sentence they can act on.
+
+        Deliberately narrow. A 404 for a branch that does not exist, or a stick
+        that filled up, is NOT a network failure and must keep its own specific
+        message - so those words are not on this list. A wrong verdict here would
+        send somebody to check their internet while the real fault sat elsewhere.
+    #>
+    if (-not $text) { return $false }
+    $lower = ([string]$text).ToLower()
+    # Each phrase is one Windows writes when the machine cannot reach the far host
+    # at all: DNS could not be looked up, no route, refused, timed out, or the
+    # WebExceptionStatus name for the same. None of them can be produced by a
+    # server that answered - which is what keeps a 404 or a 500 off this list.
+    $signals = @(
+        'could not be resolved',
+        'no such host is known',
+        'unable to connect',
+        'connection attempt failed',
+        'operation has timed out',
+        'network is unreachable',
+        'the underlying connection was closed',
+        'connection with the server could not be established',
+        'nameresolutionfailure',
+        'proxynameresolutionfailure',
+        'connectfailure'
+    )
+    foreach ($signal in $signals) {
+        if ($lower.Contains($signal)) { return $true }
+    }
+    return $false
+}
 
 
 function Get-Source {
@@ -791,6 +849,15 @@ function Get-StickPython($stick) {
 # same script WITHOUT -Gui and shows what comes back, so there is one code path
 # that builds a stick and the window is only a way to start it. That is why the
 # tests never touch this block - they call the same script the button does.
+
+# The classifier seam runs before the window, so a test invoking it with a bare
+# -ClassifyError (and no -Gui) gets its answer and stops. Write-Output, not
+# Write-Host, so the verdict is a value on stdout the test reads back cleanly.
+if ($PSBoundParameters.ContainsKey('ClassifyError')) {
+    if (Test-NetworkError $ClassifyError) { Write-Output 'NETWORK' } else { Write-Output 'OTHER' }
+    exit 0
+}
+
 if ($Gui) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
@@ -870,7 +937,7 @@ if ($Gui) {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'VMD update stick'
-    $form.Size = New-Object System.Drawing.Size(560, 260)
+    $form.Size = New-Object System.Drawing.Size(560, 320)
     $form.StartPosition = 'CenterScreen'
 
     $label = New-Object System.Windows.Forms.Label
@@ -893,26 +960,133 @@ if ($Gui) {
     $status.Size = New-Object System.Drawing.Size(504, 110)
     $form.Controls.Add($status)
 
+    # The one line the operator cannot miss: gold while it works, green when the
+    # stick is ready, red when it is not. A non-technical person watching a box of
+    # log lines scroll needs a single coloured verdict at the end, not to read the
+    # last line and judge it. Hidden until the first build, so an idle window is
+    # not a wall of colour that means nothing yet.
+    $banner = New-Object System.Windows.Forms.Label
+    $banner.Location = New-Object System.Drawing.Point(16, 178)
+    $banner.Size = New-Object System.Drawing.Size(504, 44)
+    $banner.TextAlign = 'MiddleCenter'
+    $banner.Font = New-Object System.Drawing.Font($banner.Font.FontFamily, 10, [System.Drawing.FontStyle]::Bold)
+    $banner.Visible = $false
+    $form.Controls.Add($banner)
+
     $go = New-Object System.Windows.Forms.Button
     $go.Text = 'Build the stick'
-    $go.Location = New-Object System.Drawing.Point(400, 180)
+    $go.Location = New-Object System.Drawing.Point(400, 236)
     $go.Size = New-Object System.Drawing.Size(120, 30)
     $go.Add_Click({
+        # A build already running is left to finish. The button is disabled below
+        # for the same reason, but a click queued in the instant before that takes
+        # effect would otherwise start a SECOND child writing the same stick - two
+        # processes each deleting and rewriting files\ at once, which is a corrupt
+        # stick and a manifest that matches neither of them.
+        if ($script:Building) { return }
+
         # The item reads like "E:\ (VMD 8)"; the drive is the part before the
         # first space, and the rest is only there to be read.
         $chosen = ($drives.SelectedItem -split ' ')[0]
         if (-not $chosen) { $status.AppendText("Plug the stick in and open this again.`r`n"); return }
+
+        $script:Building = $true
         $go.Enabled = $false
+        $go.Text = 'Working...'
+        $script:FailReason = ''
+        $banner.Visible = $true
+        $banner.Text = 'Working - do not remove the stick.'
+        $banner.BackColor = [System.Drawing.Color]::Goldenrod
+        $banner.ForeColor = [System.Drawing.Color]::Black
         $status.AppendText("Building on $chosen ...`r`n")
-        $form.Refresh()
-        # The same script, without -Gui, is what does the work. 2>&1 folds its
-        # error stream into the output so a failure is shown in the box rather
-        # than lost to a console nobody opened.
-        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -To $chosen 2>&1
-        foreach ($line in $output) { $status.AppendText("$line`r`n") }
-        $go.Enabled = $true
+
+        # The work runs in a child powershell - this same script without -Gui -
+        # read LIVE, so the operator watches the four steps arrive one by one
+        # instead of watching a frozen window. It is deliberately NOT the old
+        # inline "& powershell ... 2>&1": that blocked this UI thread for the
+        # whole minute the download and copy take, and a window that paints
+        # nothing for a minute is one a non-technical person reads as crashed and
+        # unplugs mid-write - the exact accident this rewrite exists to stop.
+        #
+        # A dedicated reader runspace does the blocking ReadLine on the child's
+        # output and pushes each line into a thread-safe queue; the WinForms.Timer
+        # below, on THIS thread, drains that queue into the box. The reader has to
+        # be its own runspace and not an OutputDataReceived handler: that event
+        # fires on a threadpool thread that has no runspace attached, and running
+        # any PowerShell there dies with "there is no Runspace available to run
+        # scripts in this thread" - which killed the whole window when tried.
+        $script:BuildQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
+        $script:BuildState = [hashtable]::Synchronized(@{ Done = $false; ExitCode = $null })
+
+        $reader = {
+            param($scriptPath, $drive, $queue, $state)
+            try {
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = 'powershell.exe'
+                # Each argument quoted on its own: a drive is "E:\" with no space,
+                # but the script path can sit under "C:\Program Files\..." and an
+                # unquoted path there splits into two arguments and the child never
+                # starts. CreateNoWindow with UseShellExecute false means the child
+                # flashes no console of its own.
+                $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -To `"$drive`""
+                $psi.UseShellExecute = $false
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $psi.CreateNoWindow = $true
+                $proc = New-Object System.Diagnostics.Process
+                $proc.StartInfo = $psi
+                [void]$proc.Start()
+                # Blocking line reads, which is the whole reason this is on its own
+                # thread. The child's Write-Host reaches this redirected stdout -
+                # the full console host writes it there - so the [1/4]..[4/4] steps
+                # arrive here as the child prints them, not in one lump at the end.
+                while ($null -ne ($line = $proc.StandardOutput.ReadLine())) {
+                    $queue.Enqueue($line)
+                }
+                # Anything on stderr is read only after stdout has closed. The
+                # script routes every message it means to show through Write-Host,
+                # so stderr carries only an unhandled crash and is near always
+                # empty; reading it after avoids interleaving two blocking reads.
+                $errText = $proc.StandardError.ReadToEnd()
+                if ($errText) {
+                    foreach ($errLine in ($errText -split "`r?`n")) {
+                        if ($errLine) { $queue.Enqueue($errLine) }
+                    }
+                }
+                $proc.WaitForExit()
+                $state.ExitCode = $proc.ExitCode
+            } catch {
+                # The reader itself failing - the child could not even be started -
+                # is still shown as a finished build that did not work, never a
+                # silent hang.
+                $queue.Enqueue("The stick was not finished: $($_.Exception.Message)")
+                $state.ExitCode = 1
+            } finally {
+                # Set last of all, so the drain timer can never see Done before the
+                # final line is safely in the queue.
+                $state.Done = $true
+            }
+        }
+
+        $script:BuildRunspace = [runspacefactory]::CreateRunspace()
+        $script:BuildRunspace.Open()
+        $script:BuildPowerShell = [powershell]::Create()
+        $script:BuildPowerShell.Runspace = $script:BuildRunspace
+        [void]$script:BuildPowerShell.AddScript($reader).
+            AddArgument($PSCommandPath).AddArgument($chosen).
+            AddArgument($script:BuildQueue).AddArgument($script:BuildState)
+        $script:BuildHandle = $script:BuildPowerShell.BeginInvoke()
+
+        $buildTimer.Start()
     })
     $form.Controls.Add($go)
+
+    # Whether a build is running right now. The button reads it to refuse a
+    # second start, and the drive-watcher reads it to stand off entirely while a
+    # stick is being written, so a stick brushed in its socket mid-build is not
+    # read as "removed" and acted on. Cleared only when the child has exited.
+    $script:Building = $false
+    $script:FailReason = ''
 
     # The set of drives as of the last look. The watcher compares against it and
     # only rebuilds the list when it actually differs.
@@ -936,6 +1110,14 @@ if ($Gui) {
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 1000
     $timer.Add_Tick({
+        # Hands off entirely while a build is running. A stick being written to is
+        # one the operator must not touch, and a momentary wobble in the socket
+        # that dropped it from the drive list for one tick would otherwise clear
+        # the selection, disable the button and print "The stick was removed."
+        # over the top of a build that is still going fine. The build owns the
+        # window until it finishes; the watcher resumes the moment it does.
+        if ($script:Building) { return }
+
         try {
             $now = @(Get-RemovableDriveIds)
         } catch {
@@ -992,12 +1174,91 @@ if ($Gui) {
 
         $script:LastDrives = $now
     })
+    # --- draining the live build output -------------------------------------
+    #
+    # A second System.Windows.Forms.Timer, for the same reason the watcher is one:
+    # Tick fires on the UI thread, so this may touch $status and $banner directly.
+    # It runs faster than the watcher because it is showing progress a person is
+    # reading, and it runs ONLY between a build starting and finishing - started
+    # in the click handler, stopped here the moment the child has exited.
+    $buildTimer = New-Object System.Windows.Forms.Timer
+    $buildTimer.Interval = 150
+    $buildTimer.Add_Tick({
+        # Empty whatever the reader has queued since the last tick into the box.
+        # The reader thread only ever touches the thread-safe queue, never a
+        # control; this thread only ever reads the queue and writes the controls.
+        # That split is what keeps the child's output off the classic cross-thread
+        # InvalidOperationException the watcher's own comment warns about.
+        $line = $null
+        while ($script:BuildQueue.TryDequeue([ref]$line)) {
+            $status.AppendText("$line`r`n")
+            # Keep the reason the build failed, to name it on the red banner. The
+            # no-internet sentence is preferred whenever it appears, because it is
+            # the one an operator can act on without help.
+            if ($line -match 'No internet') {
+                $script:FailReason = 'No internet. Connect this laptop to the internet and press Build again.'
+            } elseif ($line -match 'not finished' -and -not $script:FailReason) {
+                # The child's line already begins "The stick was not finished:",
+                # and the banner adds "The stick was NOT finished." itself, so the
+                # prefix is stripped here to keep the banner from saying it twice.
+                $script:FailReason = ($line.Trim() -replace '^(?i)the stick was not finished:\s*', '')
+            }
+        }
+
+        # Nothing more to do until the child has actually exited. Done is set by
+        # the reader only after its last line is queued, so the drain above has
+        # already shown everything by the time this fires true.
+        if (-not $script:BuildState.Done) { return }
+
+        $buildTimer.Stop()
+        # Tidy the reader runspace now the work is over. EndInvoke is wrapped
+        # because a reader that threw has already reported it through the queue,
+        # and a failure to reap it must not itself crash the window.
+        try { [void]$script:BuildPowerShell.EndInvoke($script:BuildHandle) } catch { }
+        if ($script:BuildPowerShell) { $script:BuildPowerShell.Dispose(); $script:BuildPowerShell = $null }
+        if ($script:BuildRunspace) { $script:BuildRunspace.Close(); $script:BuildRunspace.Dispose(); $script:BuildRunspace = $null }
+
+        if ($script:BuildState.ExitCode -eq 0) {
+            $banner.Text = 'READY - take the stick to the VMD computer. You can unplug it now.'
+            $banner.BackColor = [System.Drawing.Color]::ForestGreen
+            $banner.ForeColor = [System.Drawing.Color]::White
+        } else {
+            $reason = $script:FailReason
+            if (-not $reason) { $reason = 'See the messages above for what went wrong.' }
+            $banner.Text = "The stick was NOT finished. $reason"
+            $banner.BackColor = [System.Drawing.Color]::Firebrick
+            $banner.ForeColor = [System.Drawing.Color]::White
+        }
+
+        $go.Text = 'Build the stick'
+        # Offer a retry only if the stick is still there to write to. On a clean
+        # or a failed build alike, a retry must be able to run - the build removes
+        # update.json and manifest.json before it copies, so a half-written stick
+        # is one the console ignores until a later build completes it.
+        $go.Enabled = ((Get-SelectedDriveId) -ne '')
+        # Cleared last, which lets the watcher take the window back. Until this
+        # line it has been standing off, so the built stick was never read as
+        # removed while it was being written.
+        $script:Building = $false
+    })
+
     $form.Add_FormClosed({
-        # Stop and dispose the timer as the window closes, so a tick already
+        # Stop and dispose both timers as the window closes, so a tick already
         # queued cannot fire into a disposed form and raise an ObjectDisposed
-        # error the operator would see as a crash on the way out.
+        # error the operator would see as a crash on the way out. The reader
+        # runspace is torn down too if the window is closed mid-build, so no
+        # orphaned child powershell is left holding the stick.
         $timer.Stop()
         $timer.Dispose()
+        $buildTimer.Stop()
+        $buildTimer.Dispose()
+        if ($script:BuildPowerShell) {
+            try { [void]$script:BuildPowerShell.EndInvoke($script:BuildHandle) } catch { }
+            try { $script:BuildPowerShell.Dispose() } catch { }
+        }
+        if ($script:BuildRunspace) {
+            try { $script:BuildRunspace.Close(); $script:BuildRunspace.Dispose() } catch { }
+        }
     })
     $timer.Start()
 
@@ -1179,8 +1440,23 @@ manifest.json before it is installed, and anything unexpected stops the update.
     exit 0
 } catch {
     Write-Host ""
-    Write-Bad "The stick was not finished: $($_.Exception.Message)"
-    Write-Info "(line $($_.InvocationInfo.ScriptLineNumber) of update_stick.ps1)"
+    # One place classifies every failure that reaches here, so both downloads -
+    # the code ZIP and the uv that fetches wheels - turn a no-internet fault into
+    # the same one sentence. The WebException's Status name is joined to the
+    # message because "The remote name could not be resolved" and
+    # "NameResolutionFailure" each name the condition, and either is enough.
+    $errText = "$($_.Exception.Message)"
+    if ($_.Exception -is [System.Net.WebException]) {
+        $errText = "$errText $($_.Exception.Status)"
+    }
+    if (Test-NetworkError $errText) {
+        # The wording the GUI keys on for its red banner, and plain enough on its
+        # own for whoever ran the script from a terminal.
+        Write-Bad "The stick was not finished: No internet. Connect this laptop to the internet and press Build again."
+    } else {
+        Write-Bad "The stick was not finished: $($_.Exception.Message)"
+        Write-Info "(line $($_.InvocationInfo.ScriptLineNumber) of update_stick.ps1)"
+    }
     Write-Host ""
     exit 1
 }
