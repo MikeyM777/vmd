@@ -18,7 +18,8 @@ reported and never what it asked for.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from shiboken6 import isValid
 
 from vmd.desktop.zoombar import (
     CAUGHT_UP_STEPS,
@@ -365,8 +366,13 @@ def test_dragging_steers_the_lens_without_flooding_it(qtbot) -> None:
     # so this is the real gesture and not a signal poked by hand.
     bar.slider().setSliderDown(False)
 
-    most = int(1.0 / DRAG_EVERY_SECONDS) + 2       # one per 250 ms, plus the release
-    assert 2 <= len(went) <= most, f"{len(went)} commands for a one-second drag: {went}"
+    # Pinned at both ends and written out as numbers, because the loose end is
+    # the one this change was about: "at most a few" alone is satisfied by
+    # sending almost nothing, which is exactly the dead drag being fixed. A
+    # second of dragging is four commands from the throttle and one from the
+    # release; five is what should come out and six leaves room for a boundary.
+    assert 4 <= len(went) <= 6, f"{len(went)} commands for a one-second drag: {went}"
+    assert int(1.0 / DRAG_EVERY_SECONDS) == 4, "the bounds above are read off this"
     assert went[-1] == ("visible", 0.79), went[-1]
     wheres = [where for _name, where in went]
     assert wheres == sorted(wheres), f"a drag one way asked for zooms the other way: {wheres}"
@@ -552,23 +558,35 @@ def test_a_reading_that_agrees_ends_the_hold_at_once(qtbot) -> None:
     assert bar.slider().value() == 60, "the handle went on ignoring a camera that had caught up"
 
 
-def test_a_reading_within_a_step_or_two_counts_as_arrived(qtbot) -> None:
+def test_two_steps_out_counts_as_arrived_and_three_does_not(qtbot) -> None:
     """A lens does not stop on the exact hundredth it was sent to, and a rule
-    that demanded it would never fire."""
-    clock = Clock()
-    bar = ZoomBar("visible", clock=clock)
-    qtbot.addWidget(bar)
-    bar.set_position(0.10)
+    that demanded it would never fire. Two steps of a hundred is the tolerance.
 
-    bar.slider().setSliderDown(True)
-    bar.slider().setValue(80)
-    bar.slider().setSliderDown(False)
+    The step counts below are written out as literals rather than derived from
+    CAUGHT_UP_STEPS on purpose. Read off the constant, this test says only
+    "whatever the tolerance is, it is the tolerance", and it would go on passing
+    if the window quietly widened to half the travel - which would put the
+    handle back in the hands of readings taken mid-journey, the failure
+    HOLD_AFTER_ASKING exists to prevent.
+    """
+    assert CAUGHT_UP_STEPS == 2, "the readings below are chosen for a two-step window"
 
-    clock.tick(1.0)
-    bar.set_position((80 + CAUGHT_UP_STEPS) / STEPS)
-    clock.tick(1.0)
-    bar.set_position(0.60)
-    assert bar.slider().value() == 60
+    def hold_ended_after(reading: float) -> bool:
+        clock = Clock()
+        bar = ZoomBar("visible", clock=clock)
+        qtbot.addWidget(bar)
+        bar.set_position(0.10)
+        bar.slider().setSliderDown(True)
+        bar.slider().setValue(80)            # asks for 0.80
+        bar.slider().setSliderDown(False)
+        clock.tick(1.0)
+        bar.set_position(reading)
+        clock.tick(1.0)                      # still well inside HOLD_AFTER_ASKING
+        bar.set_position(0.60)
+        return bar.slider().value() == 60
+
+    assert hold_ended_after(0.82), "two steps out is a lens that has arrived"
+    assert not hold_ended_after(0.83), "three steps out is a lens still on its way"
 
 
 def test_a_reading_that_disagrees_is_still_ignored_until_the_hold_expires(qtbot) -> None:
@@ -594,10 +612,69 @@ def test_a_reading_that_disagrees_is_still_ignored_until_the_hold_expires(qtbot)
     assert bar.slider().value() == 11
 
 
-# ------------------------------------------ a hold that ends without a stop
+# ------------------------------------------------- the ways a hold has to end
 #
-# Older than the throttle and the repeat above, and worth fixing on the way
-# past: it breaks the property this whole console is built on.
+# Three of them, and each one is a lens that would otherwise go on being
+# commanded by a button nobody is holding any more.
+
+
+def test_the_repeat_stops_when_the_lens_reaches_its_stop(qtbot) -> None:
+    """A lens cannot be told to go past its stop, so once the target is there
+    every further repeat is the same no-op sent again.
+
+    Harmless on the picture and not harmless on the link. `PtzCommands` keeps
+    one lane per lens, and a lane with something in it every six tenths of a
+    second is a lane that is never empty - so a stop for the head can be left
+    waiting behind an in-flight zoom for the whole time the finger is down,
+    rather than for the one call it is allowed to wait for. Before the button
+    repeated at all, a press at the stop sent exactly one no-op and stopped.
+    """
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.95)               # and the reading never changes
+    went, _crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    assert went == [("visible", 1.0)]
+    assert not bar.repeat_timer().isActive(), "still repeating at the end of the travel"
+
+    # The finger is still down. Nothing more may go out.
+    qtbot.wait(int(REPEAT_EVERY_SECONDS * 3000))
+    assert went == [("visible", 1.0)], f"the repeat carried on past the stop: {went}"
+    into.released.emit()
+
+
+def test_the_repeat_steps_up_to_the_stop_before_it_gives_up(qtbot) -> None:
+    """Stopping at the end must not become stopping short of it."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.90)
+    went, _crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    qtbot.waitUntil(
+        lambda: not bar.repeat_timer().isActive(),
+        timeout=int(REPEAT_EVERY_SECONDS * 8000),
+    )
+    into.released.emit()
+    assert [where for _name, where in went] == [0.90 + NUDGE / STEPS, 1.0], went
+
+
+def test_the_repeat_stops_at_the_wide_end_too(qtbot) -> None:
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.05)
+    went, _crept = commands(bar)
+
+    out, _into = bar.buttons()
+    out.pressed.emit()
+    assert went == [("visible", 0.0)]
+    assert not bar.repeat_timer().isActive()
+    qtbot.wait(int(REPEAT_EVERY_SECONDS * 3000))
+    assert went == [("visible", 0.0)], went
+    out.released.emit()
 
 
 def test_a_press_that_crept_is_always_ended_by_a_stop(qtbot) -> None:
@@ -645,3 +722,83 @@ def test_a_press_that_did_not_creep_never_sends_a_stop(qtbot) -> None:
     bar.set_position(None)               # the camera stops answering mid-hold
     into.released.emit()
     assert crept == [], f"a stop was sent for a creep that never started: {crept}"
+
+
+# ------------------------------------------------------- saying what you mean
+
+
+def test_the_release_does_not_repeat_the_value_the_drag_just_sent(qtbot) -> None:
+    """The throttle lets a value through and then the release sends the same
+    value again. The mailbox absorbs it, so nothing breaks - but a control that
+    says the same thing twice is a control whose log cannot be read, and the
+    count of commands per gesture is the measurement this whole change is
+    judged on."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+    went, _crept = commands(bar)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(70)            # the throttle is open: this goes out
+    bar.slider().setSliderDown(False)    # and he let go on the same value
+    assert went == [("visible", 0.7)], went
+
+
+def test_the_release_sends_whenever_the_handle_moved_after_the_last_one(qtbot) -> None:
+    """Which is the point of the release emit and must survive the tidying
+    above: the value he stopped on is the only one of the gesture he chose."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+    went, _crept = commands(bar)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(70)            # goes out
+    bar.slider().setValue(72)            # throttled: no clock has passed
+    bar.slider().setSliderDown(False)
+    assert went == [("visible", 0.7), ("visible", 0.72)], went
+
+
+def test_the_next_drag_sends_at_once_however_soon_it_starts(qtbot) -> None:
+    """The throttle is per gesture, not a rolling window over the session. Two
+    drags in quick succession are two intentions, and making the second one wait
+    out the tail of the first is the dead handle coming back for the drag that
+    corrects the one before it."""
+    bar = ZoomBar("visible", clock=Clock())   # never ticked: no time passes at all
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+    went, _crept = commands(bar)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(30)
+    bar.slider().setSliderDown(False)
+    assert went == [("visible", 0.3)], went
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(60)
+    assert went[-1] == ("visible", 0.6), f"the second drag was throttled by the first: {went}"
+
+
+def test_the_repeat_cannot_outlive_the_widget(qtbot) -> None:
+    """A held button that survived its own bar would go on commanding a lens
+    through a control nobody can see. The timer is a child of the widget, so Qt
+    destroys it with its parent - and this is the test that it really is one.
+
+    `deleteLater` only posts an event. `processEvents` will NOT deliver a
+    DeferredDelete posted at loop level 0, so a version of this test written
+    with `processEvents` alone passes whether or not the timer is parented to
+    anything, which is a test that cannot fail. `sendPostedEvents` with that
+    event type asked for by name is what actually runs the destructor.
+    """
+    bar = ZoomBar("visible", clock=Clock())   # deliberately not given to qtbot:
+    bar.set_position(0.30)                    # this test destroys it by hand
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    timer = bar.repeat_timer()
+    assert timer.isActive(), "nothing is being proved unless the repeat was running"
+
+    bar.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(timer), "the repeat outlived the bar that owns it"

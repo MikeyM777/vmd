@@ -210,20 +210,23 @@ class ZoomBar(QWidget):
         # and a reading is compared against it to find out whether the lens has
         # arrived and the hold above can end.
         self._target: float | None = None
-        # When the last command of a drag went out, for the quarter-second
-        # throttle. Cleared on release so every drag starts by sending at once.
+        # When the last command of a drag went out, and what it carried. The
+        # first is the quarter-second throttle; the second is what stops the
+        # release repeating a value the throttle has just sent. Both cleared on
+        # release, so every drag starts by sending at once.
         self._drag_sent_at: float | None = None
+        self._drag_sent: int | None = None
+        # Whether the press being held emitted a creep. Read at release instead
+        # of asking the camera again, because the camera's answer can change
+        # while the button is down and a creep must be ended by a stop whatever
+        # it has since said. See `_released`.
+        self._crept = False
         # Which way a held button is stepping, and the timer that keeps it
         # stepping. The timer is parented to this widget on purpose: a repeat
         # that outlived the bar would go on commanding a lens through a widget
         # that is no longer on the screen, and a child QTimer is destroyed with
         # its parent.
         self._direction = 0
-        # Whether the press being held emitted a creep. Read at release instead
-        # of asking the camera again, because the camera's answer can change
-        # while the button is down and a creep must be ended by a stop whatever
-        # it has since said. See `_released`.
-        self._crept = False
         self._repeat = QTimer(self)
         self._repeat.setInterval(int(REPEAT_EVERY_SECONDS * 1000))
         self._repeat.timeout.connect(self._step_again)
@@ -313,8 +316,10 @@ class ZoomBar(QWidget):
             # and the zoom would crawl while the button was held down.
             self._target = self._position
             self._crept = False
-            self._step()
+            # Started before the first step and not after it, so that a step
+            # landing on the end of the travel can stop the repeat it is inside.
             self._repeat.start()
+            self._step()
             return
         # No position to step from, so the only honest thing a button can do is
         # keep the lens moving for as long as it is held - which is what the
@@ -348,6 +353,21 @@ class ZoomBar(QWidget):
         """One step of a held button, from the last target and not the reading."""
         base = self._target if self._target is not None else 0.0
         self._ask(base + self._direction * NUDGE / STEPS)
+        if self._at_the_stop():
+            # There is nowhere further to ask for, so every repeat from here is
+            # the same no-op sent again. Harmless on the picture and not on the
+            # link: this lens's lane in `PtzCommands` would never be empty for
+            # as long as the finger was down, and a stop for the head is only
+            # allowed to wait behind ONE zoom already on the wire.
+            self._repeat.stop()
+
+    def _at_the_stop(self) -> bool:
+        """Whether the target has reached the end of the travel it is heading for."""
+        if self._target is None:
+            return False
+        return (self._direction > 0 and self._target >= 1.0) or (
+            self._direction < 0 and self._target <= 0.0
+        )
 
     def _step_again(self) -> None:
         if not (self._absolute and self._position is not None):
@@ -402,17 +422,31 @@ class ZoomBar(QWidget):
             ):
                 return
             self._drag_sent_at = now
+            self._drag_sent = value
         self._ask(value / STEPS)
 
     def _let_go(self) -> None:
-        """The end of a drag: a command at the value he stopped on, always.
+        """The end of a drag: a command at the value he stopped on.
 
         Unthrottled, because this is the only value of the whole gesture he
-        actually chose. Cleared afterwards so the next drag sends at once
-        instead of waiting out the tail of this one.
+        actually chose - and skipped when the throttle happened to let that
+        exact value through a moment ago, because sending it twice says nothing
+        the first one did not. The mailbox absorbs the duplicate either way; it
+        is the count of commands per gesture that this control is judged on, and
+        a log where every drag ends with the same line twice is one nobody can
+        read.
+
+        Both throttle marks are cleared whatever happens, so the next drag sends
+        at once rather than waiting out the tail of this one. Two drags in quick
+        succession are two intentions, and the second is usually the correction.
         """
+        value = self._slider.value()
+        unchanged = value == self._drag_sent
         self._drag_sent_at = None
-        self._ask(self._slider.value() / STEPS)
+        self._drag_sent = None
+        if unchanged:
+            return
+        self._ask(value / STEPS)
 
     # -------------------------------------------------------------- the answer
 
