@@ -309,20 +309,30 @@ them.
 The laptop needs two things, once: `VMD-Update-Stick.bat` and the `scripts\`
 folder beside it. They are already in the VMD folder on the offline computer —
 copy them onto the laptop on the same stick the first time. Nothing else is
-installed on the laptop, not Python, not git; the button downloads everything
+installed on the laptop, not Python, not git; the window downloads everything
 it needs from GitHub itself.
 
-1. Plug the stick in.
-2. Double-click `VMD-Update-Stick.bat`. A single window opens — no black
-   command window, nothing to type. It notices the stick on its own.
-3. Press **Build the stick**. It shows what it is doing line by line — getting
-   the code, copying it, checking it — and finishes with a green line:
-   **READY — take the stick to the VMD computer. You can unplug it now.**
+It is done in **two steps, because the laptop has one USB port** and its
+internet is a USB adapter — the internet and the stick are never plugged in at
+the same time. Double-click `VMD-Update-Stick.bat` first: a single window opens,
+no black command window, nothing to type. Then:
 
-   It downloads the current version from GitHub and writes it to the stick,
-   with any libraries the VMD computer does not have yet. If the laptop has no
-   internet it says so in one line and changes nothing; connect it and press
-   the button again.
+1. **With the internet adapter plugged in (no stick), press "Get the latest
+   version."** It downloads the current version from GitHub onto the laptop's
+   own disk and finishes with **"Downloaded VMD N. Unplug the internet, plug the
+   stick in."** No internet? It says so in one line and changes nothing; connect
+   it and press again. What it downloaded waits on the laptop even if you close
+   the window.
+2. **Unplug the internet adapter, plug the stick in.** The window notices the
+   stick and lights up the second button.
+3. **Press "Write it to the stick."** It copies what was downloaded onto the
+   stick and finishes green: **READY — take the stick to the VMD computer. You
+   can unplug it now.** This step needs no internet.
+
+The very first time, the stick carries the program only. Libraries are added
+from the second update onward, once the stick has been to the VMD computer once
+and carried its list of what it already has back to the laptop — the window
+says when it is doing code only.
 
 **On the VMD computer:**
 
