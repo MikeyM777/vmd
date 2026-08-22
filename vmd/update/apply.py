@@ -156,16 +156,74 @@ def _prune_removed(source: Path, target: Path) -> None:
     directory afterward, removes any file the new tree does not claim at the
     same relative path, and then removes any directory that pruning left
     empty - never touching a directory that still holds something.
+
+    A junction or symlink placed inside target reads as an ordinary
+    directory to naive iteration, and following it walks whatever it points
+    at - which can be anywhere on the machine, including somebody's data
+    outside the install entirely. Nothing in this codebase creates such a
+    link, but "nothing creates it" is not "it cannot be there", so this never
+    descends into one: see _prune_directory and _confined below.
     """
-    # Deepest paths first, so a directory is only checked for emptiness after
-    # everything that used to be inside it has already been dealt with.
-    for path in sorted(target.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        counterpart = source / path.relative_to(target)
-        if path.is_dir():
-            if not any(path.iterdir()):
-                path.rmdir()
-        elif not counterpart.is_file():
-            path.unlink()
+    _prune_directory(source, target, target)
+
+
+def _prune_directory(source_root: Path, target_root: Path, directory: Path) -> None:
+    """Prune one directory, already known to be a real directory, in place.
+
+    Walked by hand rather than with rglob, because rglob has no way to say
+    "list what is in here without following that": it would step through a
+    junction exactly as it steps through a real subdirectory, and every path
+    found beneath it would relative_to() as if it were an ordinary part of
+    target_root. That is precisely how a junction at vmd\\escape pointing
+    outside the install let a real file outside the whitelisted tree get
+    deleted with no confirmation - the walk never knew it had left target_root
+    at all. Recursing by hand means every directory is looked at, and decided
+    about, before anything beneath it is ever touched.
+    """
+    for entry in sorted(directory.iterdir()):
+        if entry.is_symlink() or entry.is_junction():
+            # A link is never something copy_in itself could have produced -
+            # shutil.copytree and shutil.copy2 always write real files and
+            # real directories, never a link - so any link found here came
+            # from outside this update entirely, the same way the reported
+            # junction did. Deciding whether it is "carried" by the new
+            # version and following it to find out would mean walking
+            # whatever it points at, which is the fault being fixed. So a
+            # link is never adjudicated, never walked into, and never
+            # deleted here, regardless of whether the new version has a
+            # same-named entry.
+            continue
+        if not _confined(entry, target_root):
+            # Belt beneath the check above, not instead of it: a path can
+            # still resolve outside target_root through a reparse point
+            # higher up in the tree, or through some other reparse kind that
+            # is_symlink() and is_junction() do not both catch. Nothing below
+            # is deleted unless it demonstrably still lives inside the
+            # directory this call was asked to prune.
+            continue
+        if entry.is_dir():
+            _prune_directory(source_root, target_root, entry)
+            if not any(entry.iterdir()):
+                entry.rmdir()
+        else:
+            counterpart = source_root / entry.relative_to(target_root)
+            if not counterpart.is_file():
+                entry.unlink()
+
+
+def _confined(path: Path, root: Path) -> bool:
+    """Whether path, once every link along it is resolved, is still under root.
+
+    resolve() follows symlinks and junctions to where they actually point,
+    the same resolution Windows itself would use to open the file - so this
+    is the one check that cannot be fooled by a kind of reparse point nobody
+    has thought to name yet.
+    """
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def replace_file(source: Path, target: Path) -> None:

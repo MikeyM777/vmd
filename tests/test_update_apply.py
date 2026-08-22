@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from vmd.update import apply as apply_module
 from vmd.update.apply import (
@@ -230,6 +234,83 @@ def test_replace_file_survives_a_locked_leftover_from_a_previous_run(
 
     assert target.read_bytes() == b"new"
     assert leftover.read_bytes() == b"stale"  # could not be removed, left alone
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """True if a real junction now sits at link, pointing at target.
+
+    mklink /J needs no elevated privilege on Windows, unlike a symlink - which
+    is exactly why a junction, not a symlink, is the realistic way this could
+    turn up on a locked-down, air-gapped console.
+    """
+    if sys.platform != "win32":
+        return False
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+    )
+    return result.returncode == 0 and link.is_junction()
+
+
+def test_pruning_never_follows_a_junction_out_of_the_tree_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """The reported escape: a junction inside vmd\\ pointing outside the
+    install, an update that does not carry it, and a real file behind the
+    junction that must survive copy_in untouched. See _prune_directory's
+    docstring in vmd/update/apply.py for why rglob could not be trusted here -
+    it would step through the junction as if it were an ordinary subdirectory
+    and delete whatever it found on the other side."""
+    root = an_install(tmp_path / "VMD")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_file = outside / "real.txt"
+    real_file.write_text("somebody's data\n", encoding="utf-8")
+
+    link = root / "vmd" / "escape"
+    if not _make_junction(link, outside):
+        pytest.skip("could not create a junction on this machine")
+
+    files = new_files(tmp_path / "files")  # does not carry vmd\escape
+
+    copy_in(files, root)
+
+    assert real_file.read_text(encoding="utf-8") == "somebody's data\n"
+
+
+def test_a_path_that_resolves_outside_the_tree_is_skipped_not_deleted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The second, independent guard inside _prune_directory: even a path
+    that does not read as a symlink or a junction at all is left alone if
+    resolving it lands outside the directory being pruned - the belt beneath
+    the link check, for a kind of reparse point nobody has named yet.
+    Monkeypatched rather than built with a real link, because this is
+    specifically exercising the case where is_symlink() and is_junction()
+    both say no and the confinement check is the only thing left standing."""
+    root = an_install(tmp_path / "VMD")
+    mystery = root / "vmd" / "mystery.py"
+    mystery.write_text("not part of the update, and not a link either\n", encoding="utf-8")
+    files = new_files(tmp_path / "files")  # does not carry vmd\mystery.py
+
+    outside = tmp_path / "outside" / "somewhere.py"
+    outside.parent.mkdir()
+    outside.write_text("elsewhere\n", encoding="utf-8")
+
+    real_resolve = Path.resolve
+
+    def lying_resolve(self, *args, **kwargs):
+        if self == mystery:
+            return outside
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", lying_resolve)
+
+    copy_in(files, root)
+
+    # Would have been pruned as unclaimed by the update, if not for the
+    # resolved path landing outside root\vmd.
+    assert mystery.exists()
 
 
 def a_stick(folder: Path, version: int, files: Path) -> Path:
