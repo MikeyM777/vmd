@@ -350,3 +350,43 @@ def test_a_genuinely_missing_windows_package_still_appears(tmp_path: Path) -> No
     assert "numpy==" in result.stdout
     for linux_only in _LINUX_ONLY:
         assert linux_only not in result.stdout, linux_only
+
+
+def test_three_component_python_full_version_markers_compare_correctly(
+    tmp_path: Path,
+) -> None:
+    """The marker evaluator casts to [version] to compare, and [version]'3.12'
+    has Build -1, so a target python_full_version of a bare '3.12' makes
+    'python_full_version >= 3.12.0' come out FALSE - and any future dependency
+    gated on a three-component 'python_full_version >= 3.12.x' marker would be
+    silently dropped, missing at the far end after a car journey. The target has
+    to carry the real interpreter's full version. futurelib is gated >= 3.12.5
+    and must be packed; nextverlib >= 3.13 and pastlib < 3.12 must not be."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        '[[package]]\nname = "torchlike"\nversion = "1.0.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        "dependencies = [\n"
+        "    { name = \"futurelib\", marker = \"python_full_version >= '3.12.5'\" },\n"
+        "    { name = \"nextverlib\", marker = \"python_full_version >= '3.13'\" },\n"
+        "    { name = \"pastlib\", marker = \"python_full_version < '3.12'\" },\n"
+        "]\n\n"
+        '[[package]]\nname = "futurelib"\nversion = "2.0.0"\n\n'
+        '[[package]]\nname = "nextverlib"\nversion = "3.0.0"\n\n'
+        '[[package]]\nname = "pastlib"\nversion = "4.0.0"\n',
+        encoding="utf-8",
+    )
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-TEST.json").write_text(
+        json.dumps(
+            {"machine": "WIN-TEST", "version": 7, "libraries": {"torchlike": "1.0.0"}}
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert "futurelib==2.0.0" in result.stdout, "python_full_version >= 3.12.5 is true for 3.12.9"
+    assert "nextverlib" not in result.stdout, "python_full_version >= 3.13 is false"
+    assert "pastlib" not in result.stdout, "python_full_version < 3.12 is false"

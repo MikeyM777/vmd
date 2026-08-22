@@ -420,7 +420,16 @@ $script:TargetEnv = @{
     'platform_python_implementation' = 'CPython'
     'implementation_name'            = 'cpython'
     'python_version'                 = '3.12'
-    'python_full_version'            = '3.12'
+    # All three components, and that is not cosmetic. Compare-MarkerValues casts
+    # both sides to [version], and [version]'3.12' has Build -1 while
+    # [version]'3.12.0' has Build 0, so a two-component '3.12' here would make
+    # python_full_version >= '3.12.0' come out FALSE and any dependency gated on
+    # a three-component python_full_version >= '3.12.x' marker be silently
+    # dropped - fail-closed, a library missing at the far end after the trip.
+    # This is the real bundled interpreter, bin\python\cpython-3.12.9-...; it
+    # must track that folder if the interpreter is ever bumped. python_version
+    # above stays two components: PEP 508 defines it as major.minor.
+    'python_full_version'            = '3.12.9'
 }
 
 # One atomic comparison in a marker: a variable or quoted string, an operator,
