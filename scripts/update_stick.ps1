@@ -786,6 +786,79 @@ if ($Gui) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
+    # --- reading the drives, in one place both the picker and the watcher use ---
+
+    function Get-RemovableDriveIds {
+        # The DeviceIDs ("E:") of every removable drive Windows sees right now,
+        # sorted so the set can be compared against the last tick without caring
+        # about order. Get-WmiObject Win32_LogicalDisk -Filter 'DriveType=2' is
+        # the same enumeration the picker was built from, kept identical on
+        # purpose so the watcher and the list can never disagree about what a
+        # removable drive is.
+        return @(Get-WmiObject Win32_LogicalDisk -Filter 'DriveType=2' |
+            ForEach-Object { $_.DeviceID } | Sort-Object)
+    }
+
+    function Get-StickLabel($deviceId) {
+        # The version suffix shown in the list for a drive: " (VMD 7)" for a
+        # built stick, "" for a blank one, " (unreadable)" for one whose
+        # update.json will not parse. Wrapped so a drive that is still mounting
+        # cannot throw its way out of rebuilding the whole list.
+        $updateJson = Join-Path "$deviceId\" 'update.json'
+        if (-not (Test-Path $updateJson)) { return '' }
+        try { return " (VMD $((Get-Content $updateJson -Raw | ConvertFrom-Json).version))" }
+        catch { return ' (unreadable)' }
+    }
+
+    function Get-StickDescription($deviceId) {
+        # The sentence announced when a drive appears. A blank drive and an
+        # unreadable one are both fine outcomes the operator should see named,
+        # not errors - a blank stick gets set up, an unreadable one gets rebuilt.
+        $root = "$deviceId\"
+        $updateJson = Join-Path $root 'update.json'
+        if (-not (Test-Path $updateJson)) {
+            return "Stick detected on $root - blank, will be set up as a VMD stick."
+        }
+        try {
+            $version = (Get-Content $updateJson -Raw | ConvertFrom-Json).version
+            return "Stick detected on $root - it has VMD $version."
+        } catch {
+            return "Stick detected on $root - unreadable, it will be rebuilt."
+        }
+    }
+
+    function Set-DriveItems($ids) {
+        # Rebuild the list from the given DeviceIDs. Called only when the set of
+        # drives actually changed, so a selection the operator made by hand is
+        # not cleared and re-made once a second.
+        $drives.Items.Clear()
+        foreach ($id in $ids) {
+            [void]$drives.Items.Add("$id\$(Get-StickLabel $id)")
+        }
+    }
+
+    function Select-DriveId($deviceId) {
+        # Point the list at the item for $deviceId ("E:"), if it is there. The
+        # item reads like "E:\ (VMD 7)", so its first space-separated token is the
+        # drive root "E:\".
+        for ($i = 0; $i -lt $drives.Items.Count; $i++) {
+            if ((($drives.Items[$i]) -split ' ')[0] -eq "$deviceId\") {
+                $drives.SelectedIndex = $i
+                return
+            }
+        }
+    }
+
+    function Get-SelectedDriveId {
+        # The DeviceID ("E:") of the current selection, or '' if nothing is
+        # chosen. Strips the trailing backslash so it compares with the DeviceIDs
+        # from Get-RemovableDriveIds.
+        if (-not $drives.SelectedItem) { return '' }
+        return (($drives.SelectedItem -split ' ')[0]).TrimEnd('\')
+    }
+
+    # --- the window ---------------------------------------------------------
+
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'VMD update stick'
     $form.Size = New-Object System.Drawing.Size(560, 260)
@@ -801,18 +874,6 @@ if ($Gui) {
     $drives.Location = New-Object System.Drawing.Point(100, 16)
     $drives.Width = 420
     $drives.DropDownStyle = 'DropDownList'
-    # Removable drives only (DriveType 2), each labelled with the version it
-    # already carries if it is a VMD stick, so the person choosing can tell a
-    # stick that has been built before from a blank one.
-    foreach ($drive in (Get-WmiObject Win32_LogicalDisk -Filter 'DriveType=2')) {
-        $version = ''
-        $updateJson = Join-Path $drive.DeviceID '\update.json'
-        if (Test-Path $updateJson) {
-            try { $version = " (VMD $((Get-Content $updateJson -Raw | ConvertFrom-Json).version))" } catch { }
-        }
-        [void]$drives.Items.Add("$($drive.DeviceID)\$version")
-    }
-    if ($drives.Items.Count -gt 0) { $drives.SelectedIndex = 0 }
     $form.Controls.Add($drives)
 
     $status = New-Object System.Windows.Forms.TextBox
@@ -843,6 +904,93 @@ if ($Gui) {
         $go.Enabled = $true
     })
     $form.Controls.Add($go)
+
+    # The set of drives as of the last look. The watcher compares against it and
+    # only rebuilds the list when it actually differs.
+    $script:LastDrives = @(Get-RemovableDriveIds)
+    Set-DriveItems $script:LastDrives
+    if ($drives.Items.Count -gt 0) {
+        $drives.SelectedIndex = 0
+        try { $status.AppendText((Get-StickDescription (Get-SelectedDriveId)) + "`r`n") } catch { }
+    } else {
+        $go.Enabled = $false
+        $status.AppendText("Plug a stick in - it will be picked up automatically.`r`n")
+    }
+
+    # --- watching for a stick being plugged in or pulled out ----------------
+    #
+    # A System.Windows.Forms.Timer, NOT System.Timers.Timer: this one raises Tick
+    # on the UI thread, so the callback may touch the combo box directly. A
+    # System.Timers.Timer fires on a threadpool thread, and touching a control
+    # from another thread is the classic cross-thread InvalidOperationException -
+    # a crash a second or two after the window opens.
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 1000
+    $timer.Add_Tick({
+        try {
+            $now = @(Get-RemovableDriveIds)
+        } catch {
+            # Enumeration itself can throw while a drive is mid-mount. Skip this
+            # tick and let the next one see the drive once it has settled, rather
+            # than showing an error for a stick that is fine a moment later.
+            return
+        }
+
+        # Do nothing unless the set of drives changed, so a selection the
+        # operator made by hand is not stamped over every single second.
+        $before = @($script:LastDrives)
+        $changed = ($before.Count -ne $now.Count)
+        if (-not $changed) {
+            foreach ($d in $now) { if ($before -notcontains $d) { $changed = $true; break } }
+        }
+        if (-not $changed) { return }
+
+        $added = @($now | Where-Object { $before -notcontains $_ })
+        $removed = @($before | Where-Object { $now -notcontains $_ })
+        $selected = Get-SelectedDriveId
+
+        try {
+            Set-DriveItems $now
+        } catch {
+            # A drive that vanished between the enumerate above and the read here.
+            # Leave LastDrives untouched so the next tick redoes this cleanly
+            # rather than crashing on a drive that is no longer there.
+            return
+        }
+
+        if ($added.Count -gt 0) {
+            # A new stick: choose it for the operator and say what it is. If it is
+            # not ready to read yet the describe throws; LastDrives is left as it
+            # was so the next tick announces it once it has mounted.
+            $new = $added[0]
+            Select-DriveId $new
+            $go.Enabled = $true
+            try {
+                $status.AppendText((Get-StickDescription $new) + "`r`n")
+            } catch {
+                return
+            }
+        } elseif ($selected -ne '' -and ($removed -contains $selected)) {
+            # The stick that was selected was pulled out.
+            $drives.SelectedIndex = -1
+            $go.Enabled = $false
+            $status.AppendText("The stick was removed.`r`n")
+        } else {
+            # A change that did not involve the selected drive - another drive
+            # came or went. Keep the operator's choice rather than jumping it.
+            if ($selected -ne '') { Select-DriveId $selected }
+        }
+
+        $script:LastDrives = $now
+    })
+    $form.Add_FormClosed({
+        # Stop and dispose the timer as the window closes, so a tick already
+        # queued cannot fire into a disposed form and raise an ObjectDisposed
+        # error the operator would see as a crash on the way out.
+        $timer.Stop()
+        $timer.Dispose()
+    })
+    $timer.Start()
 
     [void]$form.ShowDialog()
     exit 0
