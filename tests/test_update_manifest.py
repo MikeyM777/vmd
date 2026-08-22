@@ -73,6 +73,48 @@ def test_a_file_the_manifest_never_heard_of_is_reported(tmp_path: Path) -> None:
     assert "stray.py" in problems[0]
 
 
+def test_a_folder_that_is_not_there_is_refused(tmp_path: Path) -> None:
+    """A manifest that lists nothing, beside no files\\ folder at all, used to
+    agree with itself and pass. The updater would then kill the console before
+    what_to_copy discovered there was nothing to copy - an operator told
+    "nothing was changed" by a machine that had just been shut down."""
+    problems = verify(tmp_path / "not-here", {"files": []})
+
+    assert problems
+    assert "files" in problems[0]
+
+
+def test_an_empty_folder_that_is_there_still_verifies(tmp_path: Path) -> None:
+    """The check is that the folder exists, not that it has something in it."""
+    folder = tmp_path / "files"
+    folder.mkdir()
+
+    assert verify(folder, {"files": []}) == []
+
+
+def test_a_manifest_entry_that_is_not_a_file_is_a_sentence_not_an_exception(
+    tmp_path: Path,
+) -> None:
+    """Every shape of rubbish that is still valid JSON. verify is called from a
+    detached process whose only way of speaking is its status file, so an
+    exception raised here is not a message anybody ever sees - it is a console
+    left waiting on a program that has already died."""
+    folder = a_tree(tmp_path)
+
+    for damaged in (
+        {"files": [{"path": "VERSION"}]},  # KeyError: 'size'
+        {"files": ["VERSION"]},  # TypeError: string indices must be integers
+        {"files": [{"path": 5, "size": 1, "sha256": "x"}]},  # a path that is not one
+        {"files": "VERSION"},  # not a list of anything
+        {"files": 8},
+        {},  # no list at all
+        ["VERSION"],  # not even an object
+    ):
+        problems = verify(folder, damaged)
+        assert problems, damaged
+        assert all(isinstance(line, str) for line in problems)
+
+
 def test_write_puts_the_manifest_beside_the_folder(tmp_path: Path) -> None:
     folder = a_tree(tmp_path)
     target = tmp_path / "manifest.json"

@@ -64,12 +64,40 @@ def verify(folder: Path | str, manifest: dict) -> list[str]:
     at the machine, and "3 files do not match" with no names has told them
     nothing they can act on. An empty list means the tree is exactly what the
     manifest says it is.
+
+    Sentences and not exceptions either, for the manifest's own shape as much as
+    for the files it lists. This is called from a detached process whose only
+    way of speaking is the status file it writes; a KeyError raised over a badly
+    built manifest is not a message anybody ever reads, it is a console left
+    waiting for ever on a program that has already died. Every kind of rubbish
+    that is still valid JSON therefore comes back as "the stick is damaged",
+    which is what it is.
     """
     folder = Path(folder)
     problems: list[str] = []
     listed = set()
 
-    for entry in manifest.get("files", []):
+    if not folder.is_dir():
+        # A manifest listing no files, beside no files\ folder at all, used to
+        # agree with itself and pass - and the console was then killed before
+        # what_to_copy found there was nothing to copy. Refusing here is what
+        # keeps "nothing was changed" true for a machine that is still running.
+        return [f"the update's files are not on the stick: there is no {folder.name}\\ folder"]
+
+    entries = manifest.get("files") if isinstance(manifest, dict) else None
+    if not isinstance(entries, list):
+        return ["the stick's manifest does not list any files, so nothing on it can be checked"]
+
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            problems.append(f"the stick's manifest has an entry that is not a file ({entry!r})")
+            continue
+        if "size" not in entry or "sha256" not in entry:
+            problems.append(
+                f"the stick's manifest does not say the size and the checksum "
+                f"of {entry['path']}"
+            )
+            continue
         name = entry["path"]
         listed.add(name)
         path = folder / name
