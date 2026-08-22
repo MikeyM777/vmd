@@ -58,6 +58,13 @@ param(
     [switch]$Download,
     [switch]$WriteFromStage,
     [string]$StageDir,
+    # A test seam. A wheel download that fails needs a network to fail against,
+    # which the tests are forbidden from touching, so this stands in: it marks
+    # every wheel that would be fetched as failed WITHOUT reaching for pip, so the
+    # "some libraries could not be fetched" outcome - staged, but ending on a
+    # warning rather than a green success - can be proved offline. Never passed by
+    # the .bat or the window.
+    [switch]$SimulateWheelFailure,
     # Passed by VMD-Update-Stick.bat. Shows a small window instead of doing the
     # work, and the window shells back into this same script without -Gui to do
     # it. Accepted even when unused so that a .bat passing it does not stop with
@@ -1016,24 +1023,44 @@ if ($Gui) {
         try { return (Get-Content $marker -Raw | ConvertFrom-Json).version } catch { return $null }
     }
 
+    function Get-StagedComplete {
+        # Whether the staged download has every library it needs. A download that
+        # missed a wheel writes complete=false; the label and the Write button key
+        # on it so an incomplete stage is never offered as ready to write. A marker
+        # with no such field is an older, wheel-free stage and counts as complete.
+        $marker = Join-Path $script:StageDir 'stage.json'
+        if (-not (Test-Path $marker)) { return $false }
+        try {
+            $m = Get-Content $marker -Raw | ConvertFrom-Json
+            if ($null -eq $m.complete) { return $true }
+            return [bool]$m.complete
+        } catch { return $false }
+    }
+
     function Update-StagedLabel {
         # The persistent line at the top of the window: what is downloaded and
         # waiting, or a prompt to do Step 1. Read every time so reopening the
-        # window still shows a version staged in an earlier session.
+        # window still shows a version staged in an earlier session - and an
+        # incomplete download is shown as such, not as ready.
         $v = Get-StagedVersion
-        if ($null -ne $v) {
+        if ($null -eq $v) {
+            $stagedLabel.Text = "Nothing downloaded yet - do Step 1 first, with the internet plugged in."
+            $stagedLabel.ForeColor = [System.Drawing.Color]::DimGray
+        } elseif (Get-StagedComplete) {
             $stagedLabel.Text = "VMD $v is downloaded and ready to write to a stick."
             $stagedLabel.ForeColor = [System.Drawing.Color]::DarkGreen
         } else {
-            $stagedLabel.Text = "Nothing downloaded yet - do Step 1 first, with the internet plugged in."
-            $stagedLabel.ForeColor = [System.Drawing.Color]::DimGray
+            $stagedLabel.Text = "VMD $v downloaded, but a library is missing - press Get the latest version again with the internet on."
+            $stagedLabel.ForeColor = [System.Drawing.Color]::DarkOrange
         }
     }
 
     function Update-Step2Enabled {
-        # Step 2 lights up only when BOTH halves of its job are present - a stick to
-        # write to and a download to write - and never while a build is running.
-        $step2.Enabled = ((-not $script:Building) -and ((Get-SelectedDriveId) -ne '') -and ($null -ne (Get-StagedVersion)))
+        # Step 2 lights up only when ALL of its job is present - a stick to write
+        # to, a download to write, and that download COMPLETE - and never while a
+        # build is running. An incomplete stage is kept for a fast retry but must
+        # not be written: the far end would refuse a stick missing a library.
+        $step2.Enabled = ((-not $script:Building) -and ((Get-SelectedDriveId) -ne '') -and ($null -ne (Get-StagedVersion)) -and (Get-StagedComplete))
     }
 
     # --- the window ---------------------------------------------------------
@@ -1140,6 +1167,7 @@ if ($Gui) {
         $script:Building = $true
         $script:BuildKind = $kind
         $script:FailReason = ''
+        $script:WarnReason = ''
         $step1.Enabled = $false
         $step2.Enabled = $false
         $banner.Visible = $true
@@ -1365,10 +1393,13 @@ if ($Gui) {
             } catch {
                 return
             }
-            # Light Step 2 up and say what to do - but only if there is a download
-            # to write. A stick with nothing staged means Step 1 was skipped.
-            if ($null -ne (Get-StagedVersion)) {
+            # Light Step 2 up and say what to do - but only if there is a COMPLETE
+            # download to write. Nothing staged means Step 1 was skipped; an
+            # incomplete stage means a wheel is still missing.
+            if (($null -ne (Get-StagedVersion)) -and (Get-StagedComplete)) {
                 $status.AppendText("Stick detected - press Write it to the stick.`r`n")
+            } elseif ($null -ne (Get-StagedVersion)) {
+                $status.AppendText("Stick detected, but the download is missing a library - press Get the latest version again first.`r`n")
             } else {
                 $status.AppendText("Stick detected. Do Step 1 first, with the internet, to download a version.`r`n")
             }
@@ -1408,6 +1439,11 @@ if ($Gui) {
             # Keep the reason the build failed, to name it on the red banner. The
             # no-internet sentence is preferred whenever it appears, because it is
             # the one an operator can act on without help.
+            if ($line -match 'could not be fetched') {
+                # The one-line summary phase one prints when the code staged but a
+                # wheel did not - carried onto the amber banner below.
+                $script:WarnReason = $line.Trim()
+            }
             if ($line -match 'No internet') {
                 $script:FailReason = 'No internet. Connect this laptop to the internet and try again.'
             } elseif (($line -match 'not finished' -or $line -match 'did not finish' -or $line -match 'did not start') -and -not $script:FailReason) {
@@ -1440,6 +1476,16 @@ if ($Gui) {
                 $banner.Text = 'READY - take the stick to the VMD computer. You can unplug it now.'
             }
             $banner.BackColor = [System.Drawing.Color]::ForestGreen
+            $banner.ForeColor = [System.Drawing.Color]::White
+        } elseif ($script:BuildState.ExitCode -eq 2 -and $script:BuildKind -eq 'download') {
+            # Amber, not green: the code staged but a library did not. A retry with
+            # the internet back fills the rest; this stick must not be carried yet.
+            # Orange rather than the gold of the "Working" state, so a finished
+            # warning does not read as still-in-progress.
+            $warn = $script:WarnReason
+            if (-not $warn) { $warn = "Downloaded VMD $(Get-StagedVersion), but a library could not be fetched." }
+            $banner.Text = "$warn Press Get the latest version again with the internet on."
+            $banner.BackColor = [System.Drawing.Color]::DarkOrange
             $banner.ForeColor = [System.Drawing.Color]::White
         } else {
             $reason = $script:FailReason
@@ -1551,6 +1597,16 @@ if ($Download) {
         $count = @(Get-ChildItem $stageFiles -Recurse -File -Force).Count
         Write-Ok "$count files staged - the program, and none of this laptop's own."
 
+        # Clear any wheels a previous download left, so the stage carries only this
+        # version's libraries. wheels\ is created with -Force below but never merged
+        # into: a wheel packed for a version that is no longer staged would be
+        # copied to the stick by phase two and sit there unlisted - clutter that
+        # grows across version bumps. Cleared the same way Copy-Program wipes
+        # files\. tools\ (uv and the fetching Python) is deliberately left, so only
+        # the first download of a run waits for those.
+        $stageWheels = Join-Path $StageDir 'wheels'
+        if (Test-Path $stageWheels) { Remove-Item $stageWheels -Recurse -Force }
+
         # The wheel diff, against the note phase two cached from a stick on a
         # previous write. The stick is never present while the internet is, so its
         # note cannot be read now; the cache under machines\ is what stands in.
@@ -1591,6 +1647,11 @@ if ($Download) {
             exit 0
         }
 
+        # The wheels that would not come down. Counted, not just logged, so a
+        # download that fetched the code but missed a library ends on a warning
+        # rather than the green "Downloaded" that would put an incomplete stick on
+        # the road.
+        $wheelFailures = 0
         if ($NoWheels) {
             Write-Info "Not downloading any libraries, because -NoWheels was given."
         } elseif ($missing.Count -gt 0) {
@@ -1598,14 +1659,24 @@ if ($Download) {
             New-Item -ItemType Directory -Force -Path $wheels | Out-Null
             # uv and a Python are fetched into the staging folder, not onto a
             # stick, and kept there between downloads so only the first one waits.
-            $python = Get-StickPython $StageDir
+            # The test seam skips the fetch entirely - it needs no python.
+            $python = $null
+            if (-not $SimulateWheelFailure) { $python = Get-StickPython $StageDir }
             foreach ($name in ($missing.Keys | Sort-Object)) {
                 $pin = "$name==$($missing[$name])"
                 Write-Info "Downloading $pin"
-                & $python -m pip download $pin --no-deps --only-binary=:all: `
-                    --platform win_amd64 --python-version 3.12 --implementation cp `
-                    --dest $wheels | Out-Host
-                if ($LASTEXITCODE -ne 0) { Write-Bad "could not download $pin" }
+                if ($SimulateWheelFailure) {
+                    $failed = $true
+                } else {
+                    & $python -m pip download $pin --no-deps --only-binary=:all: `
+                        --platform win_amd64 --python-version 3.12 --implementation cp `
+                        --dest $wheels | Out-Host
+                    $failed = ($LASTEXITCODE -ne 0)
+                }
+                if ($failed) {
+                    Write-Bad "could not download $pin"
+                    $wheelFailures++
+                }
             }
         }
 
@@ -1627,15 +1698,33 @@ if ($Download) {
 
         # The marker that survives to the next button press: it is what the window
         # reads to say "VMD N is ready to write", and what phase two reads for the
-        # version to stamp on the stick.
+        # version to stamp on the stick. "complete" is false when a wheel did not
+        # come down - the window keys on it so the persistent label and the Write
+        # button do not offer an incomplete stick as ready, and a retry with the
+        # internet fills only the rest.
         Write-Json ([ordered]@{
-            version = $version
-            built   = (Get-Date).ToString('s')
-            branch  = $Branch
-            source  = $Repository
+            version  = $version
+            built    = (Get-Date).ToString('s')
+            branch   = $Branch
+            source   = $Repository
+            complete = ($wheelFailures -eq 0)
         }) (Join-Path $StageDir 'stage.json')
 
         Write-Host ""
+        if ($wheelFailures -gt 0) {
+            # The code IS staged - stage.json was written above, so a retry with
+            # the internet back fills only the wheels that are still missing - but
+            # this must NOT end on the green "Downloaded" that would send an
+            # incomplete stick on a car journey to be refused at the far end. A
+            # plain warning and a distinct exit code (2) the window paints amber.
+            $word = 'libraries'
+            if ($wheelFailures -eq 1) { $word = 'library' }
+            Write-Bad "Downloaded VMD $version, but $wheelFailures $word could not be fetched."
+            Write-Info "Connect the internet and press Get the latest version again. The VMD computer"
+            Write-Info "will refuse a stick that is missing a library, so do not carry this one yet."
+            Write-Host ""
+            exit 2
+        }
         Write-Ok "Downloaded VMD $version. Unplug the internet, plug the stick in."
         Write-Host ""
         exit 0
@@ -1888,12 +1977,16 @@ try {
         exit 0
     }
 
+    # Counted, not just logged, so a stick that fetched the code but missed a
+    # library ends on a warning rather than the green "Stick ready" below.
+    $wheelFailures = 0
     if ($NoWheels) {
         Write-Info "Not downloading any libraries, because -NoWheels was given."
     } elseif ($missing.Count -gt 0) {
         $wheels = Join-Path $To 'wheels'
         New-Item -ItemType Directory -Force -Path $wheels | Out-Null
-        $python = Get-StickPython $To
+        $python = $null
+        if (-not $SimulateWheelFailure) { $python = Get-StickPython $To }
         foreach ($name in ($missing.Keys | Sort-Object)) {
             $pin = "$name==$($missing[$name])"
             Write-Info "Downloading $pin"
@@ -1903,10 +1996,18 @@ try {
             # --only-binary and the three platform flags pin the wheel to the
             # machine at the far end - win_amd64, CPython 3.12 - rather than to
             # this laptop, whose own Python is not what the offline machine runs.
-            & $python -m pip download $pin --no-deps --only-binary=:all: `
-                --platform win_amd64 --python-version 3.12 --implementation cp `
-                --dest $wheels | Out-Host
-            if ($LASTEXITCODE -ne 0) { Write-Bad "could not download $pin" }
+            if ($SimulateWheelFailure) {
+                $failed = $true
+            } else {
+                & $python -m pip download $pin --no-deps --only-binary=:all: `
+                    --platform win_amd64 --python-version 3.12 --implementation cp `
+                    --dest $wheels | Out-Host
+                $failed = ($LASTEXITCODE -ne 0)
+            }
+            if ($failed) {
+                Write-Bad "could not download $pin"
+                $wheelFailures++
+            }
         }
     }
 
@@ -1947,6 +2048,19 @@ manifest.json before it is installed, and anything unexpected stops the update.
         ($readme -replace "`r?`n", "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
 
     Write-Host ""
+    if ($wheelFailures -gt 0) {
+        # The stick is written and verified, but a library did not come down, so
+        # this ends on a warning and exit 2 - not the green "Stick ready" that
+        # would send an incomplete stick to be refused at the far end. Kept the
+        # same shape as the download phase so the two do not drift.
+        $word = 'libraries'
+        if ($wheelFailures -eq 1) { $word = 'library' }
+        Write-Bad "Stick written for VMD $version, but $wheelFailures $word could not be fetched."
+        Write-Info "Build it again with the internet connected before carrying it; the VMD"
+        Write-Info "computer will refuse a stick that is missing a library."
+        Write-Host ""
+        exit 2
+    }
     Write-Ok "Stick ready: VMD $version at $To"
     Write-Host ""
     exit 0

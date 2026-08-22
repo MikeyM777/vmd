@@ -118,7 +118,11 @@ def test_phase_one_stages_the_code_and_records_the_version(tmp_path: Path) -> No
     assert result.returncode == 0, result.stdout + result.stderr
     assert (stage / "files" / "vmd" / "app.py").is_file()
     assert (stage / "files" / "VERSION").read_text(encoding="utf-8").strip() == "8"
-    assert json.loads((stage / "stage.json").read_text(encoding="utf-8"))["version"] == 8
+    marker = json.loads((stage / "stage.json").read_text(encoding="utf-8"))
+    assert marker["version"] == 8
+    # A clean download (nothing to fetch here) is marked complete, which is what
+    # lights the Write button.
+    assert marker["complete"] is True
     assert not (stage / "files" / "settings.json").exists()
     assert not (stage / "files" / ".git").exists()
 
@@ -168,6 +172,59 @@ def test_phase_one_diffs_wheels_against_the_cached_note(tmp_path: Path) -> None:
     assert "numpy==2.2.0" in result.stdout
     assert "torch" not in result.stdout
     assert "First time" not in result.stdout
+
+
+def test_phase_one_a_failed_wheel_ends_non_green_but_still_stages(tmp_path: Path) -> None:
+    """A wheel that will not come down must NOT produce the green "Downloaded"
+    outcome - the operator would carry a stick missing a library and discover it
+    only when the VMD computer refuses it, a wasted second trip. The code still
+    stages, so a retry with the internet fills only the rest, but the phase ends
+    on exit 2 and a plain warning. -SimulateWheelFailure forces the fetch to fail
+    without a network (and without -NoWheels, which would skip the fetch)."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        '[[package]]\nname = "numpy"\nversion = "2.2.0"\n', encoding="utf-8"
+    )
+    stage = tmp_path / "stage"
+    (stage / "machines").mkdir(parents=True)
+    (stage / "machines" / "WIN-TEST.json").write_text(
+        json.dumps({"machine": "WIN-TEST", "version": 7, "libraries": {}}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-Download",
+            "-StageDir",
+            str(stage),
+            "-SourceFolder",
+            str(source),
+            "-SimulateWheelFailure",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+    # Non-green: exit 2, the warning is said, and the green "Unplug the internet"
+    # line is NOT printed.
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not be fetched" in result.stdout
+    assert "Unplug the internet" not in result.stdout
+    # Still staged, so a retry fills only the rest: the code and the marker are
+    # there, and the marker records the stage as incomplete so the window will not
+    # offer it as ready to write.
+    assert (stage / "files" / "vmd" / "app.py").is_file()
+    marker = json.loads((stage / "stage.json").read_text(encoding="utf-8"))
+    assert marker["version"] == 8
+    assert marker["complete"] is False
 
 
 def test_phase_two_writes_a_verifiable_stick_from_the_stage(tmp_path: Path) -> None:
