@@ -299,19 +299,30 @@ read them.
 The offline computer never gets an internet connection. New versions travel on
 one USB stick, dedicated to VMD and used for nothing else.
 
+This is two machines: the VMD computer, which is always offline, and a laptop
+with internet that never touches VMD except to fill the stick. They are kept
+apart on purpose, and the stick is the only thing that ever crosses between
+them.
+
 **On the laptop with internet:**
 
-The laptop needs `VMD-Update-Stick.bat` and the `scripts\` folder beside it.
-Both are in the VMD folder already — the same folder Part 1 built — so the
-computer that built the offline kit is the obvious one to build sticks on. On
-any other laptop, copy those two things across first; nothing else is needed,
-not even Python or git.
+The laptop needs two things, once: `VMD-Update-Stick.bat` and the `scripts\`
+folder beside it. They are already in the VMD folder on the offline computer —
+copy them onto the laptop on the same stick the first time. Nothing else is
+installed on the laptop, not Python, not git; the button downloads everything
+it needs from GitHub itself.
 
-1. Plug in the VMD stick.
-2. Double-click `VMD-Update-Stick.bat`. It notices the stick on its own.
-3. Choose the drive if it did not, and press **Build the stick**. It downloads
-   the current version from GitHub and writes it to the stick, along with any
-   libraries the VMD computer does not have yet.
+1. Plug the stick in.
+2. Double-click `VMD-Update-Stick.bat`. A single window opens — no black
+   command window, nothing to type. It notices the stick on its own.
+3. Press **Build the stick**. It shows what it is doing line by line — getting
+   the code, copying it, checking it — and finishes with a green line:
+   **READY — take the stick to the VMD computer. You can unplug it now.**
+
+   It downloads the current version from GitHub and writes it to the stick,
+   with any libraries the VMD computer does not have yet. If the laptop has no
+   internet it says so in one line and changes nothing; connect it and press
+   the button again.
 
 **On the VMD computer:**
 
