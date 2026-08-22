@@ -10,7 +10,7 @@ REM
 REM  It launches the window and gets out of the way. The old version ran
 REM  PowerShell in this console and then "pause"d, which left a black window
 REM  sitting behind the GUI saying "Press any key to close" - and the operator
-REM  was told "no cmd". So instead:
+REM  was told "no cmd". So the normal path instead:
 REM
 REM    start ""      - hand the PowerShell off to Windows and do not wait for it,
 REM                    so this .bat returns at once and its console closes. The
@@ -30,6 +30,23 @@ REM  flash is a fair price for keeping it to two.
 REM ============================================================
 
 cd /d "%~dp0"
+
+REM  The one error the operator MUST see, so it is the one place a console is
+REM  allowed to stay. If the scripts folder was not copied alongside this .bat -
+REM  the most likely mistake, since the whole thing is two items that must travel
+REM  together - the hidden launch below would flash and then show nothing at all,
+REM  which is worse than the old visible cmd that at least printed the error. So
+REM  this case is caught here and shown in a window that waits to be read.
+if not exist "%~dp0scripts\update_stick.ps1" (
+  echo.
+  echo   This file needs the scripts folder next to it.
+  echo.
+  echo   Copy the whole VMD-Update-Stick.bat AND the scripts folder together
+  echo   into the same place, then run this again.
+  echo.
+  pause
+  exit /b 1
+)
 
 start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0scripts\update_stick.ps1" -Gui
 

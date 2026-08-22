@@ -1016,10 +1016,11 @@ if ($Gui) {
         # any PowerShell there dies with "there is no Runspace available to run
         # scripts in this thread" - which killed the whole window when tried.
         $script:BuildQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
-        $script:BuildState = [hashtable]::Synchronized(@{ Done = $false; ExitCode = $null })
+        $script:BuildState = [hashtable]::Synchronized(@{ Done = $false; ExitCode = $null; Pid = $null })
 
         $reader = {
             param($scriptPath, $drive, $queue, $state)
+            $proc = $null
             try {
                 $psi = New-Object System.Diagnostics.ProcessStartInfo
                 $psi.FileName = 'powershell.exe'
@@ -1036,18 +1037,30 @@ if ($Gui) {
                 $proc = New-Object System.Diagnostics.Process
                 $proc.StartInfo = $psi
                 [void]$proc.Start()
-                # Blocking line reads, which is the whole reason this is on its own
-                # thread. The child's Write-Host reaches this redirected stdout -
-                # the full console host writes it there - so the [1/4]..[4/4] steps
-                # arrive here as the child prints them, not in one lump at the end.
+                # The child's PID, published at once so a window closed mid-build
+                # can kill this whole tree instead of being orphaned. Set before
+                # the read loop so the close path can always find it.
+                $state.Pid = $proc.Id
+
+                # Both pipes are drained AT THE SAME TIME, and that is not a nicety.
+                # The child pipes uv's and pip's own stderr to this redirected
+                # stderr (| Out-Host forwards only stdout), and either can write far
+                # more than the ~4 KB pipe buffer while its stdout is still flowing.
+                # Draining stdout to EOF first and stderr only after would let the
+                # child block writing stderr, never close stdout, and this reader
+                # block on ReadLine forever - the window stuck on "Working..." with
+                # no way out, worst on the very first build that fetches uv and
+                # Python. ReadToEndAsync starts emptying stderr on a threadpool
+                # thread now, so it can never fill, while stdout is read line by
+                # line here for the live [1/4]..[4/4] steps.
+                $errTask = $proc.StandardError.ReadToEndAsync()
                 while ($null -ne ($line = $proc.StandardOutput.ReadLine())) {
                     $queue.Enqueue($line)
                 }
-                # Anything on stderr is read only after stdout has closed. The
-                # script routes every message it means to show through Write-Host,
-                # so stderr carries only an unhandled crash and is near always
-                # empty; reading it after avoids interleaving two blocking reads.
-                $errText = $proc.StandardError.ReadToEnd()
+                # stdout has closed; the async stderr read completes as the child
+                # exits. Its text - a crash, or uv/pip's own error output - is shown
+                # after the steps rather than interleaved through them.
+                $errText = $errTask.Result
                 if ($errText) {
                     foreach ($errLine in ($errText -split "`r?`n")) {
                         if ($errLine) { $queue.Enqueue($errLine) }
@@ -1062,22 +1075,43 @@ if ($Gui) {
                 $queue.Enqueue("The stick was not finished: $($_.Exception.Message)")
                 $state.ExitCode = 1
             } finally {
+                # Free the OS process handle. Disposed here rather than left to the
+                # runspace teardown so a long-lived window that builds many sticks
+                # does not leak a handle per build.
+                if ($proc) { try { $proc.Dispose() } catch { } }
                 # Set last of all, so the drain timer can never see Done before the
                 # final line is safely in the queue.
                 $state.Done = $true
             }
         }
 
-        $script:BuildRunspace = [runspacefactory]::CreateRunspace()
-        $script:BuildRunspace.Open()
-        $script:BuildPowerShell = [powershell]::Create()
-        $script:BuildPowerShell.Runspace = $script:BuildRunspace
-        [void]$script:BuildPowerShell.AddScript($reader).
-            AddArgument($PSCommandPath).AddArgument($chosen).
-            AddArgument($script:BuildQueue).AddArgument($script:BuildState)
-        $script:BuildHandle = $script:BuildPowerShell.BeginInvoke()
-
-        $buildTimer.Start()
+        # Starting the reader is itself wrapped: if opening the runspace or
+        # BeginInvoke throws, an unguarded failure would leave the button reading
+        # "Working..." for ever and surface a raw .NET ThreadException dialog. On
+        # any failure here the window recovers - red banner, button back - exactly
+        # as it would for a build that ran and failed.
+        try {
+            $script:BuildRunspace = [runspacefactory]::CreateRunspace()
+            $script:BuildRunspace.Open()
+            $script:BuildPowerShell = [powershell]::Create()
+            $script:BuildPowerShell.Runspace = $script:BuildRunspace
+            [void]$script:BuildPowerShell.AddScript($reader).
+                AddArgument($PSCommandPath).AddArgument($chosen).
+                AddArgument($script:BuildQueue).AddArgument($script:BuildState)
+            $script:BuildHandle = $script:BuildPowerShell.BeginInvoke()
+            $buildTimer.Start()
+        } catch {
+            $banner.Text = "The stick was NOT finished. $($_.Exception.Message)"
+            $banner.BackColor = [System.Drawing.Color]::Firebrick
+            $banner.ForeColor = [System.Drawing.Color]::White
+            $go.Text = 'Build the stick'
+            $go.Enabled = ((Get-SelectedDriveId) -ne '')
+            $script:Building = $false
+            if ($script:BuildPowerShell) { try { $script:BuildPowerShell.Dispose() } catch { } }
+            if ($script:BuildRunspace) { try { $script:BuildRunspace.Dispose() } catch { } }
+            $script:BuildPowerShell = $null
+            $script:BuildRunspace = $null
+        }
     })
     $form.Controls.Add($go)
 
@@ -1245,19 +1279,36 @@ if ($Gui) {
     $form.Add_FormClosed({
         # Stop and dispose both timers as the window closes, so a tick already
         # queued cannot fire into a disposed form and raise an ObjectDisposed
-        # error the operator would see as a crash on the way out. The reader
-        # runspace is torn down too if the window is closed mid-build, so no
-        # orphaned child powershell is left holding the stick.
+        # error the operator would see as a crash on the way out.
         $timer.Stop()
         $timer.Dispose()
         $buildTimer.Stop()
         $buildTimer.Dispose()
+
+        # A window closed WHILE a build is running must not leave the child
+        # powershell writing the stick with nobody watching - a half-written stick
+        # is the exact failure this whole design exists to prevent. The child and
+        # everything it spawned (uv, pip, python) are killed by PID as a tree.
+        # EndInvoke is deliberately NOT called first: it blocks the UI thread until
+        # the child finishes on its own, which was measured at nearly seven seconds
+        # of a frozen, closing window with the stick still being written. Killing
+        # the tree ends the reader's ReadLine at once, so the Stop below returns
+        # immediately instead.
+        if ($script:Building -and $script:BuildState -and $script:BuildState.Pid) {
+            try {
+                Start-Process -FilePath 'taskkill.exe' `
+                    -ArgumentList '/T', '/F', '/PID', $script:BuildState.Pid `
+                    -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+            } catch { }
+        }
         if ($script:BuildPowerShell) {
-            try { [void]$script:BuildPowerShell.EndInvoke($script:BuildHandle) } catch { }
+            # Stop the reader pipeline rather than wait it out; after the kill above
+            # it has already ended, so this returns at once.
+            try { $script:BuildPowerShell.Stop() } catch { }
             try { $script:BuildPowerShell.Dispose() } catch { }
         }
         if ($script:BuildRunspace) {
-            try { $script:BuildRunspace.Close(); $script:BuildRunspace.Dispose() } catch { }
+            try { $script:BuildRunspace.Dispose() } catch { }
         }
     })
     $timer.Start()
