@@ -406,23 +406,154 @@ function Normalise-Name($name) {
 }
 
 
-function Test-MarkersApplyToTarget($markerLines) {
-    <#
-        Do a package occurrence's resolution-markers apply to the machine this
-        stick is for - CPython 3.12 on win_amd64?
+# The one machine every wheel on this stick is for: the offline console, which
+# is CPython 3.12 on 64-bit Windows and nothing else. These are the environment
+# markers PEP 508 evaluates against, filled in for that machine. They are stated
+# here rather than read from this laptop on purpose - the laptop is not the
+# machine the stick is for, and a marker judged against the laptop's own OS would
+# pack the laptop's wheels.
+$script:TargetEnv = @{
+    'os_name'                        = 'nt'
+    'sys_platform'                   = 'win32'
+    'platform_system'                = 'Windows'
+    'platform_machine'               = 'AMD64'
+    'platform_python_implementation' = 'CPython'
+    'implementation_name'            = 'cpython'
+    'python_version'                 = '3.12'
+    'python_full_version'            = '3.12'
+}
 
-        A package with no markers applies to everything, so it applies to us. A
-        package WITH markers applies if any one of them can be true for our
-        target. A marker cannot describe our target if it demands an older
-        Python (python_full_version < '3.12') or a different operating system
-        (sys_platform != 'win32'), so an occurrence every one of whose markers
-        says one of those things is not for this machine and is passed over.
+# One atomic comparison in a marker: a variable or quoted string, an operator,
+# and another variable or quoted string. Everything between the atoms is 'and',
+# 'or' and parentheses, handled by the evaluator below.
+$script:MarkerAtom = [regex]@'
+(?<a>[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")\s*(?<op>==|!=|<=|>=|~=|not in|in|<|>)\s*(?<b>[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")
+'@
+
+
+function Resolve-MarkerOperand($token) {
+    # A quoted literal is itself; a bare word is an environment marker, looked up
+    # for the target. A bare word that is not one of the known markers (an extra
+    # name, say) returns $null, and the caller treats an unknown atom as true so
+    # that an unfamiliar marker never causes a needed package to be dropped.
+    if ($token -match "^'(.*)'$") { return $Matches[1] }
+    if ($token -match '^"(.*)"$') { return $Matches[1] }
+    if ($script:TargetEnv.ContainsKey($token)) { return $script:TargetEnv[$token] }
+    return $null
+}
+
+
+function Compare-MarkerValues($a, $op, $b) {
+    # Version-aware for the ordering operators when both sides look like version
+    # numbers, so python_full_version < '3.15' compares as versions and not as
+    # text - "3.9" is greater than "3.15" as strings, which would get the answer
+    # exactly backwards.
+    $looksVersion = ($a -match '^\d+(\.\d+)*$') -and ($b -match '^\d+(\.\d+)*$')
+    if ($looksVersion -and ($op -eq '<' -or $op -eq '<=' -or $op -eq '>' -or $op -eq '>=')) {
+        $va = [version]$a
+        $vb = [version]$b
+        switch ($op) {
+            '<'  { return $va -lt $vb }
+            '<=' { return $va -le $vb }
+            '>'  { return $va -gt $vb }
+            '>=' { return $va -ge $vb }
+        }
+    }
+    switch ($op) {
+        '==' { return $a -eq $b }
+        '!=' { return $a -ne $b }
+        '<'  { return ([string]$a) -lt ([string]$b) }
+        '<=' { return ([string]$a) -le ([string]$b) }
+        '>'  { return ([string]$a) -gt ([string]$b) }
+        '>=' { return ([string]$a) -ge ([string]$b) }
+        '~=' { return $a -eq $b }
+        'in' { return ([string]$b).Contains([string]$a) }
+        'not in' { return -not ([string]$b).Contains([string]$a) }
+    }
+    return $true
+}
+
+
+function Test-MarkerAtom($a, $op, $b) {
+    $va = Resolve-MarkerOperand $a
+    $vb = Resolve-MarkerOperand $b
+    # An atom naming a marker this script does not model is treated as true, the
+    # safe direction: it can only keep a package in, never wrongly drop one.
+    if ($null -eq $va -or $null -eq $vb) { return $true }
+    return (Compare-MarkerValues $va $op $vb)
+}
+
+
+function Test-MarkerHoldsForTarget($marker) {
+    <#
+        Does one PEP 508 marker string hold for the target machine?
+
+        A real evaluator rather than a pattern match, because the markers in this
+        lock are not flat: torch reaches its CUDA libraries through markers like
+        "(platform_machine == 'aarch64' and sys_platform == 'linux') or
+        (platform_machine == 'x86_64' and sys_platform == 'linux')", and deciding
+        that against win32 needs the 'and', the 'or' and the parentheses actually
+        evaluated. Each atomic comparison is resolved to true or false first, then
+        what remains - T, F, and, or, and brackets - is parsed with 'and' binding
+        tighter than 'or', as PEP 508 says.
     #>
+    if (-not $marker) { return $true }
+    # Resolve every atomic comparison to a bare T or F, then isolate the brackets
+    # as their own tokens so the parser can see them.
+    $reduced = $script:MarkerAtom.Replace($marker, {
+        param($m)
+        if (Test-MarkerAtom $m.Groups['a'].Value $m.Groups['op'].Value $m.Groups['b'].Value) { ' T ' } else { ' F ' }
+    })
+    $reduced = $reduced -replace '\(', ' ( ' -replace '\)', ' ) '
+    $script:MarkerTokens = @($reduced -split '\s+' | Where-Object { $_ -ne '' })
+    $script:MarkerPos = 0
+    return (Read-MarkerOr)
+}
+
+function Read-MarkerOr {
+    $value = Read-MarkerAnd
+    while ($script:MarkerPos -lt $script:MarkerTokens.Count -and $script:MarkerTokens[$script:MarkerPos] -eq 'or') {
+        $script:MarkerPos++
+        $right = Read-MarkerAnd
+        $value = $value -or $right
+    }
+    return $value
+}
+
+function Read-MarkerAnd {
+    $value = Read-MarkerTerm
+    while ($script:MarkerPos -lt $script:MarkerTokens.Count -and $script:MarkerTokens[$script:MarkerPos] -eq 'and') {
+        $script:MarkerPos++
+        $right = Read-MarkerTerm
+        $value = $value -and $right
+    }
+    return $value
+}
+
+function Read-MarkerTerm {
+    $token = $script:MarkerTokens[$script:MarkerPos]
+    if ($token -eq '(') {
+        $script:MarkerPos++
+        $value = Read-MarkerOr
+        if ($script:MarkerPos -lt $script:MarkerTokens.Count -and $script:MarkerTokens[$script:MarkerPos] -eq ')') {
+            $script:MarkerPos++
+        }
+        return $value
+    }
+    $script:MarkerPos++
+    if ($token -eq 'T') { return $true }
+    if ($token -eq 'F') { return $false }
+    # An unexpected token cannot make a package be dropped: treated as true.
+    return $true
+}
+
+
+function Test-MarkerListHolds($markerLines) {
+    # A package's resolution-markers hold for the target if ANY one of them does;
+    # a package with none applies unconditionally.
     if ($markerLines.Count -eq 0) { return $true }
     foreach ($marker in $markerLines) {
-        $notForUs = ($marker -match "python_full_version\s*<\s*'3\.12'") -or
-                    ($marker -match "sys_platform\s*!=\s*'win32'")
-        if (-not $notForUs) { return $true }
+        if (Test-MarkerHoldsForTarget $marker) { return $true }
     }
     return $false
 }
@@ -431,29 +562,34 @@ function Test-MarkersApplyToTarget($markerLines) {
 function Get-LockedPackages($lockPath) {
     <#
         The packages a uv.lock pins for THIS machine, as normalised-name ->
-        version.
+        version - and only the ones that machine actually installs.
 
         Read with a regex rather than a TOML parser, because a TOML parser is a
         library and this laptop has nothing installed on it. The shape uv.lock
-        uses is stable and simple enough to read line by line: a [[package]]
-        table header, then an unindented name = "..." and an unindented
-        version = "..." within it.
+        uses is stable enough to read line by line: a [[package]] header, an
+        unindented name = "..." and version = "..." within it, an optional
+        resolution-markers block, an optional source, and dependency lists whose
+        entries are inline { name = "..." } tables.
 
-        The dependency references inside a package - the { name = "..." } items
-        in a dependencies or requires-dist list - are deliberately NOT matched,
-        because they are inline tables that begin with a brace, so "^\s*name" (no
-        brace) skips them. Only the first version after a name is taken, so a
-        stray version deeper in the same table cannot overwrite the package's
-        own. The format version on line one (version = 1, no quotes) is skipped
-        because it is not a quoted string.
+        Two things a plain name -> version read gets wrong, and both are handled
+        here:
 
-        The one thing a plain name -> version read gets wrong: uv lists a package
-        once PER set of resolution-markers, so numpy appears twice in this very
-        lock - 2.4.6 for python < 3.12 and 2.5.1 for python >= 3.12. Taking
-        whichever came last would be a coin toss that packs the < 3.12 wheel for
-        a machine that runs 3.12, a wheel the far end will never install. So each
-        occurrence is checked against the target with the markers it carries, and
-        one that is for another Python or another platform is not recorded.
+        1. uv lists a package once PER set of resolution-markers, so numpy is in
+           this lock twice - 2.4.6 for python < 3.12 and 2.5.1 for python >= 3.12.
+           The occurrence whose own resolution-markers do not hold for a 3.12
+           machine is not recorded, so the 3.12 pin wins whatever the order.
+
+        2. A package can be in the lock as its own table with NO markers of its
+           own, yet be reached only through a dependency EDGE that is gated to
+           another platform - torch's whole CUDA stack (cuda-bindings, triton,
+           the nvidia-* libraries) is pulled in only under sys_platform != 'win32'
+           or == 'linux'. Read by its own table alone it looks unconditionally
+           needed, and the laptop would try to fetch nineteen Linux-only wheels
+           every build, most of which do not exist for Windows. So the edges are
+           read too: a package every one of whose inbound edges is gated to a
+           platform this machine is not is dropped. nvidia-ml-py survives that,
+           correctly - ultralytics depends on it with no marker, so a Windows
+           machine really does have it.
     #>
     $packages = @{}
     if (-not (Test-Path $lockPath)) { return $packages }
@@ -461,37 +597,100 @@ function Get-LockedPackages($lockPath) {
     $name = $null
     $version = $null
     $markers = @()
+    $isEditable = $false
     $inMarkers = $false
+    $inDeps = $false
+    $inDepSection = $false
+
+    # Candidate name -> version for occurrences whose own markers hold, and the
+    # inbound-edge tallies used to drop the off-platform packages afterwards.
+    $candidates = @{}
+    $hasEdge = @{}
+    $hasTargetEdge = @{}
+
+    $flush = {
+        # The editable root package (source = { editable = "." }) is the project
+        # itself, not a wheel to fetch, so it is never a candidate.
+        if ($name -and $version -and (-not $isEditable) -and (Test-MarkerListHolds $markers)) {
+            $candidates[(Normalise-Name $name)] = $version
+        }
+    }
 
     foreach ($line in (Get-Content $lockPath)) {
         if ($line -match '^\s*\[\[package\]\]') {
-            # The previous package ends here. Record it unless its markers say it
-            # is not for this machine.
-            if ($name -and $version -and (Test-MarkersApplyToTarget $markers)) {
-                $packages[(Normalise-Name $name)] = $version
-            }
-            $name = $null; $version = $null; $markers = @(); $inMarkers = $false
+            & $flush
+            $name = $null; $version = $null; $markers = @(); $isEditable = $false
+            $inMarkers = $false; $inDeps = $false; $inDepSection = $false
             continue
         }
+
         if ($inMarkers) {
             if ($line -match '"([^"]+)"') { $markers += $Matches[1] }
             if ($line -match '\]') { $inMarkers = $false }
             continue
         }
+
+        # A dependency edge inside a resolved list: { name = "X", marker = "..." }.
+        # Collected only while inside a dependencies / optional-dependencies /
+        # dev-dependencies list, never inside [package.metadata], whose
+        # requires-dist entries are abstract specifiers and not the resolved graph.
+        if ($inDeps) {
+            if ($line -match '^\s*\]') { $inDeps = $false; continue }
+            if ($line -match '^\s*\{\s*name\s*=\s*"([^"]+)"') {
+                $edgeName = Normalise-Name $Matches[1]
+                $edgeMarker = $null
+                if ($line -match 'marker\s*=\s*"([^"]+)"') { $edgeMarker = $Matches[1] }
+                $hasEdge[$edgeName] = $true
+                if (Test-MarkerHoldsForTarget $edgeMarker) { $hasTargetEdge[$edgeName] = $true }
+            }
+            continue
+        }
+
         if ($line -match '^\s*resolution-markers\s*=\s*\[') {
             $inMarkers = $true
-            # A single-line resolution-markers = [ ... ] closes on the same line.
             if ($line -match '\]') { $inMarkers = $false }
             continue
         }
+
+        # The start of a resolved dependency list. A bare "dependencies = [" is
+        # one; a group like "detect = [" or "dev = [" is one only while we are
+        # inside a [package.optional-dependencies] or [package.dev-dependencies]
+        # section, which is what $inDepSection tracks.
+        if ($line -match '^\s*dependencies\s*=\s*\[') {
+            $inDeps = $true
+            if ($line -match '^\s*dependencies\s*=\s*\[\s*\]') { $inDeps = $false }
+            continue
+        }
+        if ($line -match '^\s*\[package\.optional-dependencies\]' -or
+            $line -match '^\s*\[package\.dev-dependencies\]') {
+            $inDepSection = $true
+            continue
+        }
+        if ($line -match '^\s*\[') {
+            # Any other table header - [package.metadata], [package.metadata.*] -
+            # ends the section where group lists count as resolved edges.
+            $inDepSection = $false
+            continue
+        }
+        if ($inDepSection -and $line -match '^\s*[A-Za-z0-9_.-]+\s*=\s*\[') {
+            $inDeps = $true
+            if ($line -match '\]\s*$') { $inDeps = $false }
+            continue
+        }
+
+        if ($line -match '^\s*source\s*=\s*\{.*editable') { $isEditable = $true; continue }
         if ($line -match '^\s*name\s*=\s*"([^"]+)"') { $name = $Matches[1]; continue }
         if ($line -match '^\s*version\s*=\s*"([^"]+)"' -and $name -and -not $version) {
             $version = $Matches[1]
         }
     }
-    # The last package in the file has no [[package]] after it to flush it.
-    if ($name -and $version -and (Test-MarkersApplyToTarget $markers)) {
-        $packages[(Normalise-Name $name)] = $version
+    & $flush
+
+    # Drop a candidate that is in the lock only for another platform: it has
+    # inbound edges, and not one of them is gated to this target.
+    foreach ($candidate in $candidates.Keys) {
+        if ($hasEdge[$candidate] -and -not $hasTargetEdge[$candidate]) { continue }
+        $packages[$candidate] = $candidates[$candidate]
     }
     return $packages
 }

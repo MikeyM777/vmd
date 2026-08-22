@@ -14,6 +14,7 @@ test that fails on the machine it was written on and hangs on anybody else's.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -257,3 +258,95 @@ def test_a_package_pinned_per_python_version_uses_the_target_s_pin(
     assert "already on the machine" in result.stdout
     assert "2.4.6" not in result.stdout, "the < 3.12 pin is not for this machine"
     assert "needs numpy" not in result.stdout
+
+
+# The Linux CUDA stack torch drags in: their own [[package]] tables in the real
+# lock, reachable only through dependency edges gated to sys_platform != 'win32'
+# or == 'linux'. None is part of a Windows install, and most have no Windows
+# wheel at all. nvidia-ml-py is deliberately NOT here: ultralytics depends on it
+# with no marker, so it is a genuine Windows library and must still be packable.
+_LINUX_ONLY = [
+    "cuda-bindings",
+    "cuda-pathfinder",
+    "cuda-toolkit",
+    "triton",
+    "nvidia-cublas",
+    "nvidia-cuda-cupti",
+    "nvidia-cuda-nvrtc",
+    "nvidia-cuda-runtime",
+    "nvidia-cudnn-cu13",
+    "nvidia-cufft",
+    "nvidia-cufile",
+    "nvidia-curand",
+    "nvidia-cusolver",
+    "nvidia-cusparse",
+    "nvidia-cusparselt-cu13",
+    "nvidia-nccl-cu13",
+    "nvidia-nvjitlink",
+    "nvidia-nvshmem-cu13",
+    "nvidia-nvtx",
+]
+
+
+def test_it_never_packs_the_linux_cuda_stack_for_a_windows_machine(
+    tmp_path: Path,
+) -> None:
+    """Read against the REAL lock, not a fake. Those packages are their own
+    tables with no resolution-markers of their own, so a filter that only reads
+    a table's own markers treats them as unconditionally needed - 19 guaranteed
+    failing pip downloads every build, and "already has everything" that never
+    fires for this project. The fix reads the dependency EDGES and drops a
+    package whose every inbound edge is gated to a platform this target is not."""
+    from vmd.update.note import installed_libraries
+
+    repo = Path(__file__).resolve().parent.parent
+    source = a_repository(tmp_path / "repo", 8)
+    shutil.copyfile(repo / "uv.lock", source / "uv.lock")
+
+    # This machine is itself a Windows install of VMD, so its own .venv is a
+    # genuine, unfaked list of what a Windows machine actually has.
+    have = installed_libraries(repo)
+    assert have, "the repo's own .venv should list installed libraries"
+
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-REAL.json").write_text(
+        json.dumps({"machine": "WIN-REAL", "version": 7, "libraries": have}),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for linux_only in _LINUX_ONLY:
+        assert linux_only not in result.stdout, (
+            f"{linux_only} is a Linux-only wheel and must never be packed"
+        )
+
+
+def test_a_genuinely_missing_windows_package_still_appears(tmp_path: Path) -> None:
+    """The other half of the same fix: dropping the Linux stack must not drop a
+    real Windows library that the machine is actually missing. Take numpy off
+    the machine and it must be named, still pinned to the target's 3.12 version,
+    while the Linux stack stays absent."""
+    from vmd.update.note import installed_libraries
+
+    repo = Path(__file__).resolve().parent.parent
+    source = a_repository(tmp_path / "repo", 8)
+    shutil.copyfile(repo / "uv.lock", source / "uv.lock")
+
+    have = dict(installed_libraries(repo))
+    have.pop("numpy", None)
+
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-REAL.json").write_text(
+        json.dumps({"machine": "WIN-REAL", "version": 7, "libraries": have}),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert "numpy==" in result.stdout
+    for linux_only in _LINUX_ONLY:
+        assert linux_only not in result.stdout, linux_only
