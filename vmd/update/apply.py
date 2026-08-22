@@ -25,6 +25,7 @@ what it prevents:
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -54,6 +55,12 @@ KEEP_OUT = (
 
 PREVIOUS = "previous"
 
+# Written beside the copied files in previous\<version>\, recording which of
+# the backed-up names actually existed before the update. restore uses it to
+# tell "this name should be put back" apart from "this name should never have
+# existed" - the second case has nothing to copy, only something to remove.
+KEPT_MANIFEST = ".kept.json"
+
 
 def what_to_copy(files: Path | str) -> list[str]:
     """The names in the update that this machine will take."""
@@ -73,20 +80,30 @@ def back_up(root: Path | str, version: int | None, names) -> Path:
     Only the names being replaced. A backup that also held settings.json would
     be a rollback that puts an old camera password back, which is a fault
     nobody would think to look for.
+
+    Every name asked about is recorded in KEPT_MANIFEST, even the ones that do
+    not exist yet - a name absent from the install today but about to be
+    created by this update. Without that record, restore cannot tell "this was
+    never here" from "the backup happens to have nothing to copy", and a
+    rollback would leave behind whatever the update introduced.
     """
     root = Path(root)
     kept = root / PREVIOUS / (str(version) if version is not None else "unknown")
     if kept.exists():
         shutil.rmtree(kept)
     kept.mkdir(parents=True)
+    existed = {}
     for name in names:
         source = root / name
-        if not source.exists():
+        present = source.exists()
+        existed[name] = present
+        if not present:
             continue
         if source.is_dir():
             shutil.copytree(source, kept / name)
         else:
             shutil.copy2(source, kept / name)
+    (kept / KEPT_MANIFEST).write_text(json.dumps(existed, sort_keys=True), encoding="utf-8")
     return kept
 
 
@@ -100,10 +117,42 @@ def copy_in(files: Path | str, root: Path | str) -> list[str]:
         target = root / name
         if source.is_dir():
             shutil.copytree(source, target, dirs_exist_ok=True)
+            _prune_removed(source, target)
         else:
             replace_file(source, target)
         copied.append(name)
     return copied
+
+
+def _prune_removed(source: Path, target: Path) -> None:
+    """Delete from target whatever source no longer has, after a merge.
+
+    copy_in merges the new tree onto the old one with dirs_exist_ok=True
+    instead of replacing the directory outright, because emptying the live
+    folder before the new one has fully landed would leave a console that
+    cannot even run its own broken half if the copy dies partway through.
+    Copy first, prune second - the live tree is only ever missing files for
+    the moment it takes to delete them, never for the moment it takes to
+    write everything new.
+
+    The cost of merging instead of replacing is that a file deleted in the
+    new version is never removed by the merge on its own - it stays on disk,
+    and Python imports it exactly as happily as it imports a current one.
+    That is a console quietly running part of one release and part of
+    another, with nothing in the log to say so. This walks the merged
+    directory afterward, removes any file the new tree does not claim at the
+    same relative path, and then removes any directory that pruning left
+    empty - never touching a directory that still holds something.
+    """
+    # Deepest paths first, so a directory is only checked for emptiness after
+    # everything that used to be inside it has already been dealt with.
+    for path in sorted(target.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        counterpart = source / path.relative_to(target)
+        if path.is_dir():
+            if not any(path.iterdir()):
+                path.rmdir()
+        elif not counterpart.is_file():
+            path.unlink()
 
 
 def replace_file(source: Path, target: Path) -> None:
@@ -126,19 +175,48 @@ def replace_file(source: Path, target: Path) -> None:
         return
     except OSError:
         pass
-    aside = target.with_name(f"{target.name}.old-replaced")
-    if aside.exists():
-        aside.unlink(missing_ok=True)
+    aside = _unused_aside(target)
     target.rename(aside)
     shutil.copy2(source, target)
 
 
+def _unused_aside(target: Path) -> Path:
+    """A name next to target that nothing currently claims.
+
+    This used to be a single fixed name, deleted if it existed before the
+    rename. That delete could itself fail - the leftover from a previous run
+    can be held open by an antivirus scanner or by a process that has not
+    finished exiting yet - and an unhandled PermissionError there would crash
+    an update at the exact moment it looked safe to proceed. Counting up to a
+    name nothing owns removes the delete from the critical path entirely:
+    nothing ever has to be freed before the rename can happen.
+    """
+    candidate = target.with_name(f"{target.name}.old-replaced")
+    counter = 1
+    while candidate.exists():
+        candidate = target.with_name(f"{target.name}.old-replaced.{counter}")
+        counter += 1
+    return candidate
+
+
 def restore(kept: Path | str, root: Path | str) -> list[str]:
-    """Put a kept copy back over the install. Returns what was restored."""
+    """Put a kept copy back over the install. Returns what was restored.
+
+    A KEPT_MANIFEST beside the copied files, if the backup wrote one, also
+    tells restore which names existed before the update at all - anything
+    recorded as absent is removed rather than left in place, so a rollback
+    undoes an addition as completely as it undoes a change. A previous\\
+    folder written before this manifest existed has none, and restore falls
+    back to putting back only what it was actually given, exactly as it
+    always did.
+    """
     kept = Path(kept)
     root = Path(root)
+    existed = _read_kept_manifest(kept)
     restored = []
     for entry in sorted(kept.iterdir()):
+        if entry.name == KEPT_MANIFEST:
+            continue
         target = root / entry.name
         if entry.is_dir():
             if target.exists():
@@ -147,4 +225,25 @@ def restore(kept: Path | str, root: Path | str) -> list[str]:
         else:
             replace_file(entry, target)
         restored.append(entry.name)
+    for name, was_present in existed.items():
+        if was_present:
+            continue
+        target = root / name
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            restored.append(name)
+        elif target.exists():
+            target.unlink()
+            restored.append(name)
     return restored
+
+
+def _read_kept_manifest(kept: Path) -> dict:
+    """What back_up recorded about which names existed, or {} if it did not."""
+    manifest = kept / KEPT_MANIFEST
+    if not manifest.is_file():
+        return {}
+    try:
+        return json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}

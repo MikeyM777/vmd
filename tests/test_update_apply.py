@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
-from vmd.update.apply import KEEP_OUT, back_up, copy_in, restore, what_to_copy
+from vmd.update.apply import KEEP_OUT, back_up, copy_in, replace_file, restore, what_to_copy
 
 
 def an_install(root: Path) -> Path:
@@ -106,3 +107,114 @@ def test_a_second_backup_of_the_same_version_replaces_the_first(tmp_path: Path) 
     kept = back_up(root, version=7, names=what_to_copy(files))
 
     assert not (kept / "stray.txt").exists()
+
+
+def test_a_module_deleted_upstream_is_removed_by_the_merge(tmp_path: Path) -> None:
+    """copy_in merges rather than replaces, so a module the new version no
+    longer has would otherwise stay on disk and importable forever - a
+    console quietly running part of one release and part of another."""
+    root = an_install(tmp_path / "VMD")
+    (root / "vmd" / "old_module.py").write_text("gone in the new one\n", encoding="utf-8")
+    files = new_files(tmp_path / "files")
+
+    copy_in(files, root)
+
+    assert not (root / "vmd" / "old_module.py").exists()
+    # Not part of this update, so not this update's business to touch.
+    assert (root / "scripts" / "install.ps1").read_text(encoding="utf-8") == "old\n"
+
+
+def test_pruning_removes_directories_left_empty_but_not_ones_still_in_use(
+    tmp_path: Path,
+) -> None:
+    root = an_install(tmp_path / "VMD")
+    (root / "vmd" / "empty_soon").mkdir()
+    (root / "vmd" / "empty_soon" / "gone.py").write_text("old\n", encoding="utf-8")
+    (root / "vmd" / "still_used").mkdir()
+    (root / "vmd" / "still_used" / "kept.py").write_text("old\n", encoding="utf-8")
+    files = new_files(tmp_path / "files")
+    (files / "vmd" / "still_used").mkdir()
+    (files / "vmd" / "still_used" / "kept.py").write_text("new\n", encoding="utf-8")
+
+    copy_in(files, root)
+
+    assert not (root / "vmd" / "empty_soon").exists()
+    assert (root / "vmd" / "still_used" / "kept.py").read_text(encoding="utf-8") == "new\n"
+
+
+def test_restore_removes_what_the_update_added_that_was_never_there_before(
+    tmp_path: Path,
+) -> None:
+    """back_up records absence as well as presence, so a rollback can undo an
+    addition, not just a change. Without that, VMD.exe would survive a
+    rollback to a version that never had one."""
+    root = an_install(tmp_path / "VMD")  # an_install has no VMD.exe
+    files = new_files(tmp_path / "files")
+    (files / "VMD.exe").write_bytes(b"new-exe")
+
+    kept = back_up(root, version=7, names=what_to_copy(files))
+    copy_in(files, root)
+    assert (root / "VMD.exe").is_file()
+
+    restore(kept, root)
+
+    assert not (root / "VMD.exe").exists()
+
+
+def test_restore_without_a_kept_manifest_still_restores(tmp_path: Path) -> None:
+    """A previous\\ folder written by a version of back_up that predates the
+    manifest has no .kept.json. restore must not require what an older
+    backup never wrote - it falls back to putting back only what it has."""
+    root = an_install(tmp_path / "VMD")
+    files = new_files(tmp_path / "files")
+    kept = back_up(root, version=7, names=what_to_copy(files))
+    (kept / ".kept.json").unlink()
+    copy_in(files, root)
+
+    restore(kept, root)
+
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (root / "VERSION").read_text(encoding="utf-8") == "7"
+
+
+def test_replace_file_survives_a_locked_leftover_from_a_previous_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Stands in for two real Windows faults at once: an executable still
+    open (copy2 fails) and a leftover rename from an earlier run that cannot
+    be deleted either (unlink fails) - the kind of thing a slow-to-exit
+    process or an antivirus scanner does, not something worth holding a real
+    file handle open to test. replace_file must still succeed, by picking an
+    aside name the stuck leftover does not occupy."""
+    target = tmp_path / "VMD.exe"
+    target.write_bytes(b"old")
+    leftover = tmp_path / "VMD.exe.old-replaced"
+    leftover.write_bytes(b"stale")
+    source = tmp_path / "new" / "VMD.exe"
+    source.parent.mkdir()
+    source.write_bytes(b"new")
+
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, *args, **kwargs):
+        if self == leftover:
+            raise PermissionError("locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+
+    real_copy2 = shutil.copy2
+    calls = {"n": 0}
+
+    def flaky_copy2(src, dst, *args, **kwargs):
+        if calls["n"] == 0 and Path(dst) == target:
+            calls["n"] += 1
+            raise OSError("locked")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", flaky_copy2)
+
+    replace_file(source, target)
+
+    assert target.read_bytes() == b"new"
+    assert leftover.read_bytes() == b"stale"  # could not be removed, left alone
