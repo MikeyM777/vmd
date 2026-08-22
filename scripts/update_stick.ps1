@@ -46,6 +46,18 @@ param(
     # raw web-exception stack into one sentence for the operator - without a test
     # ever reaching the network conftest.py forbids. Nothing in the build reads it.
     [string]$ClassifyError,
+    # The two phases, for the laptop that has ONE USB port and gets its internet
+    # from a USB netstick - so the internet and the disk-on-key can never be
+    # plugged in at the same time. -Download gets the code from GitHub onto a
+    # staging folder on the laptop's own disk (internet in, no stick).
+    # -WriteFromStage copies that staged folder onto the stick (stick in, no
+    # internet). -StageDir is the folder that survives between the two, and across
+    # the window being closed and reopened. The one-shot -To path above is left
+    # exactly as it was, for the case where everything is present at once and for
+    # the tests that drive it.
+    [switch]$Download,
+    [switch]$WriteFromStage,
+    [string]$StageDir,
     # Passed by VMD-Update-Stick.bat. Shows a small window instead of doing the
     # work, and the window shells back into this same script without -Gui to do
     # it. Accepted even when unused so that a .bat passing it does not stop with
@@ -304,6 +316,57 @@ function Copy-Program($source, $target) {
         Get-ChildItem $target -Recurse -Force -Directory -Filter $name -ErrorAction SilentlyContinue |
             ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     }
+}
+
+
+function Copy-Tree($src, $dst) {
+    <#
+        Replace $dst wholesale with a copy of $src, used by the write phase to put
+        an already-cleaned staged tree onto the stick.
+
+        The whole of the target is removed first, for the same reason Copy-Program
+        removes files\: a file the new version DELETED, left behind from a previous
+        write, would be picked up by the manifest written moments later - which
+        describes what is on the stick, not what was in the source - and carried
+        onto the machine as though it belonged to the update. Unlike Copy-Program
+        this does no filtering: the staged tree it copies has already had the
+        laptop's own things and the scratch held back, so a second pass of the
+        same rules would be a place for the two lists to drift apart.
+    #>
+    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    foreach ($entry in (Get-ChildItem $src -Force)) {
+        $into = Join-Path $dst $entry.Name
+        if ($entry.PSIsContainer) {
+            Copy-Item $entry.FullName $into -Recurse -Force
+        } else {
+            Copy-Item $entry.FullName $into -Force
+        }
+    }
+}
+
+
+function Read-VmdVersion($source) {
+    <#
+        The integer in the VERSION file, or a sentence saying why the folder is
+        not a copy of VMD. Pulled out of the build so the one-shot path, the
+        download phase and anything else read a version the one same way and give
+        the one same error.
+    #>
+    $versionFile = Join-Path $source 'VERSION'
+    if (-not (Test-Path $versionFile)) {
+        throw ("There is no VERSION file in $source, so this is not a copy of VMD. " +
+               "Check the folder, or the branch name.")
+    }
+    $version = 0
+    # "$( )" around the read, because an empty VERSION file makes Get-Content
+    # -Raw return nothing at all, and .Trim() on nothing is a red stack trace
+    # instead of the sentence below.
+    $versionText = "$(Get-Content $versionFile -Raw)".Trim()
+    if (-not [int]::TryParse($versionText, [ref]$version)) {
+        throw "The VERSION file in $source says '$versionText', which is not a version number."
+    }
+    return $version
 }
 
 
@@ -933,103 +996,178 @@ if ($Gui) {
         return (($drives.SelectedItem -split ' ')[0]).TrimEnd('\')
     }
 
+    # --- reading the staged download, for the two-step flow -----------------
+
+    # Where the download waits between the two button presses, and across the
+    # window being closed and reopened. %LOCALAPPDATA% because it is per-user,
+    # always writable without administrator rights, and survives a reboot - and
+    # because nothing secret is ever staged (Copy-Program holds settings, cameras
+    # and recordings back), so a public copy of the program and its public wheels
+    # sitting there on a borrowed laptop leaks nothing. Anyone who would rather the
+    # staging folder travelled with the kit can point the child at -StageDir.
+    $script:StageDir = Join-Path $env:LOCALAPPDATA 'VMD-Update-Stick\stage'
+
+    function Get-StagedVersion {
+        # The version a previous download left staged, or $null if none is. Read
+        # from the marker, not the files\ tree, so a half-written stage that has no
+        # marker yet counts as nothing staged.
+        $marker = Join-Path $script:StageDir 'stage.json'
+        if (-not (Test-Path $marker)) { return $null }
+        try { return (Get-Content $marker -Raw | ConvertFrom-Json).version } catch { return $null }
+    }
+
+    function Update-StagedLabel {
+        # The persistent line at the top of the window: what is downloaded and
+        # waiting, or a prompt to do Step 1. Read every time so reopening the
+        # window still shows a version staged in an earlier session.
+        $v = Get-StagedVersion
+        if ($null -ne $v) {
+            $stagedLabel.Text = "VMD $v is downloaded and ready to write to a stick."
+            $stagedLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+        } else {
+            $stagedLabel.Text = "Nothing downloaded yet - do Step 1 first, with the internet plugged in."
+            $stagedLabel.ForeColor = [System.Drawing.Color]::DimGray
+        }
+    }
+
+    function Update-Step2Enabled {
+        # Step 2 lights up only when BOTH halves of its job are present - a stick to
+        # write to and a download to write - and never while a build is running.
+        $step2.Enabled = ((-not $script:Building) -and ((Get-SelectedDriveId) -ne '') -and ($null -ne (Get-StagedVersion)))
+    }
+
     # --- the window ---------------------------------------------------------
+    #
+    # Two steps, in the order the one-port laptop forces: get the version with the
+    # internet in and no stick, then write it with the stick in and no internet. A
+    # numbered checklist so a non-technical operator cannot get the order wrong.
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'VMD update stick'
-    $form.Size = New-Object System.Drawing.Size(560, 320)
+    $form.Size = New-Object System.Drawing.Size(600, 400)
     $form.StartPosition = 'CenterScreen'
 
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = 'USB drive:'
-    $label.Location = New-Object System.Drawing.Point(16, 20)
-    $label.AutoSize = $true
-    $form.Controls.Add($label)
+    # The persistent status of the download, top of the window, survives reopen.
+    $stagedLabel = New-Object System.Windows.Forms.Label
+    $stagedLabel.Location = New-Object System.Drawing.Point(16, 12)
+    $stagedLabel.Size = New-Object System.Drawing.Size(568, 22)
+    $stagedLabel.Font = New-Object System.Drawing.Font($stagedLabel.Font.FontFamily, 9.75, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($stagedLabel)
+
+    $step1Label = New-Object System.Windows.Forms.Label
+    $step1Label.Text = 'Step 1 - with the internet plugged in:'
+    $step1Label.Location = New-Object System.Drawing.Point(16, 50)
+    $step1Label.AutoSize = $true
+    $form.Controls.Add($step1Label)
+
+    $step1 = New-Object System.Windows.Forms.Button
+    $step1.Text = 'Get the latest version'
+    $step1.Location = New-Object System.Drawing.Point(368, 45)
+    $step1.Size = New-Object System.Drawing.Size(216, 30)
+    $form.Controls.Add($step1)
+
+    $step2Label = New-Object System.Windows.Forms.Label
+    $step2Label.Text = 'Step 2 - with the stick plugged in:'
+    $step2Label.Location = New-Object System.Drawing.Point(16, 90)
+    $step2Label.AutoSize = $true
+    $form.Controls.Add($step2Label)
 
     $drives = New-Object System.Windows.Forms.ComboBox
-    $drives.Location = New-Object System.Drawing.Point(100, 16)
-    $drives.Width = 420
+    $drives.Location = New-Object System.Drawing.Point(16, 114)
+    $drives.Width = 340
     $drives.DropDownStyle = 'DropDownList'
     $form.Controls.Add($drives)
+
+    $step2 = New-Object System.Windows.Forms.Button
+    $step2.Text = 'Write it to the stick'
+    $step2.Location = New-Object System.Drawing.Point(368, 110)
+    $step2.Size = New-Object System.Drawing.Size(216, 30)
+    $form.Controls.Add($step2)
 
     $status = New-Object System.Windows.Forms.TextBox
     $status.Multiline = $true
     $status.ReadOnly = $true
     $status.ScrollBars = 'Vertical'
-    $status.Location = New-Object System.Drawing.Point(16, 60)
-    $status.Size = New-Object System.Drawing.Size(504, 110)
+    $status.Location = New-Object System.Drawing.Point(16, 150)
+    $status.Size = New-Object System.Drawing.Size(568, 140)
     $form.Controls.Add($status)
 
-    # The one line the operator cannot miss: gold while it works, green when the
-    # stick is ready, red when it is not. A non-technical person watching a box of
-    # log lines scroll needs a single coloured verdict at the end, not to read the
-    # last line and judge it. Hidden until the first build, so an idle window is
-    # not a wall of colour that means nothing yet.
+    # The one line the operator cannot miss: gold while it works, green on success,
+    # red on failure. A non-technical person watching a box of log lines scroll
+    # needs a single coloured verdict at the end, not to read the last line and
+    # judge it. Hidden until the first press, so an idle window is not a wall of
+    # colour that means nothing yet.
     $banner = New-Object System.Windows.Forms.Label
-    $banner.Location = New-Object System.Drawing.Point(16, 178)
-    $banner.Size = New-Object System.Drawing.Size(504, 44)
+    $banner.Location = New-Object System.Drawing.Point(16, 300)
+    $banner.Size = New-Object System.Drawing.Size(568, 50)
     $banner.TextAlign = 'MiddleCenter'
     $banner.Font = New-Object System.Drawing.Font($banner.Font.FontFamily, 10, [System.Drawing.FontStyle]::Bold)
     $banner.Visible = $false
     $form.Controls.Add($banner)
 
-    $go = New-Object System.Windows.Forms.Button
-    $go.Text = 'Build the stick'
-    $go.Location = New-Object System.Drawing.Point(400, 236)
-    $go.Size = New-Object System.Drawing.Size(120, 30)
-    $go.Add_Click({
-        # A build already running is left to finish. The button is disabled below
-        # for the same reason, but a click queued in the instant before that takes
-        # effect would otherwise start a SECOND child writing the same stick - two
-        # processes each deleting and rewriting files\ at once, which is a corrupt
-        # stick and a manifest that matches neither of them.
+    # --- state shared with the reader ---------------------------------------
+
+    $script:Building = $false
+    $script:BuildKind = ''
+    $script:FailReason = ''
+
+    # --- one place that starts a child build and reads it live --------------
+    #
+    # Both buttons come through here; only the child arguments and the "kind"
+    # differ. The kind ('download' or 'write') is remembered so the finish can
+    # word its banner for the phase that ran. A scriptblock, not a function, so it
+    # plainly closes over the controls and timers defined in this same block.
+    #
+    # The work runs in a child powershell - this same script without -Gui - read
+    # LIVE, so the operator watches the steps arrive one by one instead of a frozen
+    # window. It is deliberately NOT an inline "& powershell ... 2>&1": that would
+    # block this UI thread for the whole minute a download or copy takes, and a
+    # window that paints nothing for a minute is one a non-technical person reads
+    # as crashed and unplugs mid-write - the exact accident this exists to stop. A
+    # dedicated reader runspace does the blocking ReadLine and pushes each line
+    # into a thread-safe queue; the WinForms.Timer below drains it on THIS thread.
+    # The reader has to be its own runspace and not an OutputDataReceived handler:
+    # that event fires on a threadpool thread with no runspace attached, and
+    # running any PowerShell there dies with "there is no Runspace available to run
+    # scripts in this thread" - which killed the whole window when tried.
+    $startBuild = {
+        param($childArgs, $kind)
+        # A build already running is left to finish. The buttons are disabled below
+        # for the same reason; this covers a click queued in the instant before
+        # that takes effect, which would otherwise start a second child.
         if ($script:Building) { return }
 
-        # The item reads like "E:\ (VMD 8)"; the drive is the part before the
-        # first space, and the rest is only there to be read.
-        $chosen = ($drives.SelectedItem -split ' ')[0]
-        if (-not $chosen) { $status.AppendText("Plug the stick in and open this again.`r`n"); return }
-
         $script:Building = $true
-        $go.Enabled = $false
-        $go.Text = 'Working...'
+        $script:BuildKind = $kind
         $script:FailReason = ''
+        $step1.Enabled = $false
+        $step2.Enabled = $false
         $banner.Visible = $true
-        $banner.Text = 'Working - do not remove the stick.'
+        if ($kind -eq 'download') {
+            $step1.Text = 'Working...'
+            $banner.Text = 'Getting the latest version - keep the internet plugged in.'
+        } else {
+            $step2.Text = 'Working...'
+            $banner.Text = 'Writing to the stick - do not remove it.'
+        }
         $banner.BackColor = [System.Drawing.Color]::Goldenrod
         $banner.ForeColor = [System.Drawing.Color]::Black
-        $status.AppendText("Building on $chosen ...`r`n")
 
-        # The work runs in a child powershell - this same script without -Gui -
-        # read LIVE, so the operator watches the four steps arrive one by one
-        # instead of watching a frozen window. It is deliberately NOT the old
-        # inline "& powershell ... 2>&1": that blocked this UI thread for the
-        # whole minute the download and copy take, and a window that paints
-        # nothing for a minute is one a non-technical person reads as crashed and
-        # unplugs mid-write - the exact accident this rewrite exists to stop.
-        #
-        # A dedicated reader runspace does the blocking ReadLine on the child's
-        # output and pushes each line into a thread-safe queue; the WinForms.Timer
-        # below, on THIS thread, drains that queue into the box. The reader has to
-        # be its own runspace and not an OutputDataReceived handler: that event
-        # fires on a threadpool thread that has no runspace attached, and running
-        # any PowerShell there dies with "there is no Runspace available to run
-        # scripts in this thread" - which killed the whole window when tried.
         $script:BuildQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
         $script:BuildState = [hashtable]::Synchronized(@{ Done = $false; ExitCode = $null; Pid = $null })
 
         $reader = {
-            param($scriptPath, $drive, $queue, $state)
+            param($childArgs, $queue, $state)
             $proc = $null
             try {
                 $psi = New-Object System.Diagnostics.ProcessStartInfo
                 $psi.FileName = 'powershell.exe'
-                # Each argument quoted on its own: a drive is "E:\" with no space,
-                # but the script path can sit under "C:\Program Files\..." and an
-                # unquoted path there splits into two arguments and the child never
-                # starts. CreateNoWindow with UseShellExecute false means the child
-                # flashes no console of its own.
-                $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -To `"$drive`""
+                # The full argument string is built by the caller, which quotes the
+                # script path and the drive itself - a path can sit under
+                # "C:\Program Files\..." and split an unquoted argument, and the
+                # child would never start. CreateNoWindow with UseShellExecute false
+                # means the child flashes no console of its own.
+                $psi.Arguments = $childArgs
                 $psi.UseShellExecute = $false
                 $psi.RedirectStandardOutput = $true
                 $psi.RedirectStandardError = $true
@@ -1070,9 +1208,9 @@ if ($Gui) {
                 $state.ExitCode = $proc.ExitCode
             } catch {
                 # The reader itself failing - the child could not even be started -
-                # is still shown as a finished build that did not work, never a
+                # is still shown as a finished job that did not work, never a
                 # silent hang.
-                $queue.Enqueue("The stick was not finished: $($_.Exception.Message)")
+                $queue.Enqueue("It did not finish: $($_.Exception.Message)")
                 $state.ExitCode = 1
             } finally {
                 # Free the OS process handle. Disposed here rather than left to the
@@ -1096,43 +1234,76 @@ if ($Gui) {
             $script:BuildPowerShell = [powershell]::Create()
             $script:BuildPowerShell.Runspace = $script:BuildRunspace
             [void]$script:BuildPowerShell.AddScript($reader).
-                AddArgument($PSCommandPath).AddArgument($chosen).
+                AddArgument($childArgs).
                 AddArgument($script:BuildQueue).AddArgument($script:BuildState)
             $script:BuildHandle = $script:BuildPowerShell.BeginInvoke()
             $buildTimer.Start()
         } catch {
-            $banner.Text = "The stick was NOT finished. $($_.Exception.Message)"
+            $banner.Text = "It did not start. $($_.Exception.Message)"
             $banner.BackColor = [System.Drawing.Color]::Firebrick
             $banner.ForeColor = [System.Drawing.Color]::White
-            $go.Text = 'Build the stick'
-            $go.Enabled = ((Get-SelectedDriveId) -ne '')
+            $step1.Text = 'Get the latest version'
+            $step2.Text = 'Write it to the stick'
+            $step1.Enabled = $true
             $script:Building = $false
+            Update-Step2Enabled
             if ($script:BuildPowerShell) { try { $script:BuildPowerShell.Dispose() } catch { } }
             if ($script:BuildRunspace) { try { $script:BuildRunspace.Dispose() } catch { } }
             $script:BuildPowerShell = $null
             $script:BuildRunspace = $null
         }
-    })
-    $form.Controls.Add($go)
+    }
 
-    # Whether a build is running right now. The button reads it to refuse a
-    # second start, and the drive-watcher reads it to stand off entirely while a
-    # stick is being written, so a stick brushed in its socket mid-build is not
-    # read as "removed" and acted on. Cleared only when the child has exited.
-    $script:Building = $false
-    $script:FailReason = ''
+    # --- Step 1: get the latest version (needs the internet, not a stick) ----
+    #
+    # Always pressable. Pressed with no internet it fails with the one-line "No
+    # internet..." message and changes nothing. It downloads into the staging
+    # folder and never touches a stick.
+    $step1.Add_Click({
+        if ($script:Building) { return }
+        $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Download -StageDir `"$($script:StageDir)`""
+        $status.AppendText("Getting the latest version into $($script:StageDir) ...`r`n")
+        & $startBuild $cmd 'download'
+    })
+
+    # --- Step 2: write the staged download onto the stick (needs the stick) --
+    #
+    # Enabled only once BOTH a stick is in and a download is staged. It never
+    # writes on its own - the operator must aim it at the right stick - but it is
+    # one obvious press when it is time.
+    $step2.Add_Click({
+        if ($script:Building) { return }
+        if ($null -eq (Get-StagedVersion)) {
+            $status.AppendText("Get the latest version first, with the internet plugged in.`r`n")
+            return
+        }
+        $chosen = Get-SelectedDriveId
+        if ($chosen -eq '') {
+            $status.AppendText("Plug the stick in first.`r`n")
+            return
+        }
+        $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -WriteFromStage -StageDir `"$($script:StageDir)`" -To `"$chosen\`""
+        $status.AppendText("Writing to $chosen\ ...`r`n")
+        & $startBuild $cmd 'write'
+    })
+
+    # --- first paint --------------------------------------------------------
 
     # The set of drives as of the last look. The watcher compares against it and
-    # only rebuilds the list when it actually differs.
+    # only rebuilds the list when it actually differs. $script:Building is set in
+    # the shared build starter above; the drive-watcher reads it to stand off
+    # entirely while a build runs, so a stick brushed in its socket mid-write is
+    # not read as "removed" and acted on.
     $script:LastDrives = @(Get-RemovableDriveIds)
     Set-DriveItems $script:LastDrives
+    Update-StagedLabel
     if ($drives.Items.Count -gt 0) {
         $drives.SelectedIndex = 0
         try { $status.AppendText((Get-StickDescription (Get-SelectedDriveId)) + "`r`n") } catch { }
     } else {
-        $go.Enabled = $false
-        $status.AppendText("Plug a stick in - it will be picked up automatically.`r`n")
+        $status.AppendText("Plug the internet in and press Get the latest version. Then unplug it, plug a stick in, and press Write it to the stick.`r`n")
     }
+    Update-Step2Enabled
 
     # --- watching for a stick being plugged in or pulled out ----------------
     #
@@ -1189,21 +1360,29 @@ if ($Gui) {
             # was so the next tick announces it once it has mounted.
             $new = $added[0]
             Select-DriveId $new
-            $go.Enabled = $true
             try {
                 $status.AppendText((Get-StickDescription $new) + "`r`n")
             } catch {
                 return
             }
+            # Light Step 2 up and say what to do - but only if there is a download
+            # to write. A stick with nothing staged means Step 1 was skipped.
+            if ($null -ne (Get-StagedVersion)) {
+                $status.AppendText("Stick detected - press Write it to the stick.`r`n")
+            } else {
+                $status.AppendText("Stick detected. Do Step 1 first, with the internet, to download a version.`r`n")
+            }
+            Update-Step2Enabled
         } elseif ($selected -ne '' -and ($removed -contains $selected)) {
             # The stick that was selected was pulled out.
             $drives.SelectedIndex = -1
-            $go.Enabled = $false
             $status.AppendText("The stick was removed.`r`n")
+            Update-Step2Enabled
         } else {
             # A change that did not involve the selected drive - another drive
             # came or went. Keep the operator's choice rather than jumping it.
             if ($selected -ne '') { Select-DriveId $selected }
+            Update-Step2Enabled
         }
 
         $script:LastDrives = $now
@@ -1230,12 +1409,13 @@ if ($Gui) {
             # no-internet sentence is preferred whenever it appears, because it is
             # the one an operator can act on without help.
             if ($line -match 'No internet') {
-                $script:FailReason = 'No internet. Connect this laptop to the internet and press Build again.'
-            } elseif ($line -match 'not finished' -and -not $script:FailReason) {
+                $script:FailReason = 'No internet. Connect this laptop to the internet and try again.'
+            } elseif (($line -match 'not finished' -or $line -match 'did not finish' -or $line -match 'did not start') -and -not $script:FailReason) {
                 # The child's line already begins "The stick was not finished:",
-                # and the banner adds "The stick was NOT finished." itself, so the
-                # prefix is stripped here to keep the banner from saying it twice.
-                $script:FailReason = ($line.Trim() -replace '^(?i)the stick was not finished:\s*', '')
+                # "The download did not finish:" or "It did not ...", and the banner
+                # adds its own lead-in, so that lead-in is stripped here to keep the
+                # banner from saying it twice.
+                $script:FailReason = ($line.Trim() -replace '^(?i)(the stick was not finished|the download did not finish|it did not finish|it did not start):\s*', '')
             }
         }
 
@@ -1253,27 +1433,37 @@ if ($Gui) {
         if ($script:BuildRunspace) { $script:BuildRunspace.Close(); $script:BuildRunspace.Dispose(); $script:BuildRunspace = $null }
 
         if ($script:BuildState.ExitCode -eq 0) {
-            $banner.Text = 'READY - take the stick to the VMD computer. You can unplug it now.'
+            if ($script:BuildKind -eq 'download') {
+                $v = Get-StagedVersion
+                $banner.Text = "Downloaded VMD $v. Unplug the internet, plug the stick in."
+            } else {
+                $banner.Text = 'READY - take the stick to the VMD computer. You can unplug it now.'
+            }
             $banner.BackColor = [System.Drawing.Color]::ForestGreen
             $banner.ForeColor = [System.Drawing.Color]::White
         } else {
             $reason = $script:FailReason
             if (-not $reason) { $reason = 'See the messages above for what went wrong.' }
-            $banner.Text = "The stick was NOT finished. $reason"
+            if ($script:BuildKind -eq 'download') {
+                $banner.Text = "Not downloaded. $reason"
+            } else {
+                $banner.Text = "The stick was NOT finished. $reason"
+            }
             $banner.BackColor = [System.Drawing.Color]::Firebrick
             $banner.ForeColor = [System.Drawing.Color]::White
         }
 
-        $go.Text = 'Build the stick'
-        # Offer a retry only if the stick is still there to write to. On a clean
-        # or a failed build alike, a retry must be able to run - the build removes
-        # update.json and manifest.json before it copies, so a half-written stick
-        # is one the console ignores until a later build completes it.
-        $go.Enabled = ((Get-SelectedDriveId) -ne '')
-        # Cleared last, which lets the watcher take the window back. Until this
-        # line it has been standing off, so the built stick was never read as
-        # removed while it was being written.
+        # Both buttons back to their labels. Step 1 is always pressable; Step 2 is
+        # re-decided from whether a stick is in and a download is now staged.
+        $step1.Text = 'Get the latest version'
+        $step2.Text = 'Write it to the stick'
+        $step1.Enabled = $true
+        # Cleared before the two updates below so Update-Step2Enabled sees a build
+        # that is no longer running. Until this line the watcher has stood off, so
+        # the stick was never read as removed while it was being written.
         $script:Building = $false
+        Update-StagedLabel
+        Update-Step2Enabled
     })
 
     $form.Add_FormClosed({
@@ -1319,7 +1509,290 @@ if ($Gui) {
 
 
 # =============================================================================
-#  the build
+#  phase one: download to the staging folder (internet in, no stick)
+# =============================================================================
+#
+# This half needs the internet and never touches a stick. It downloads the code
+# to a folder on the laptop's own disk, works out which libraries the machine at
+# the far end is missing - from the note phase two cached on a previous write,
+# because the stick itself is never present while the internet is - packs those
+# wheels, and checks the staged copy against a manifest built from it.
+if ($Download) {
+    try {
+        if (-not $StageDir) { throw "Say where to stage the download, like this:  -StageDir <folder>" }
+        # Absolute before anything is written, and without needing the folder to
+        # exist yet - the same reason -To is resolved this way below.
+        $StageDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($StageDir)
+
+        Write-Host ""
+        Write-Host "  Getting the latest VMD onto this laptop" -ForegroundColor White
+        Set-StepTotal 3
+
+        Write-Step "Getting the code"
+        $source = Get-Source
+        Write-Ok "Got it from $source"
+
+        $stageFiles = Join-Path $StageDir 'files'
+        # The staging folder and the source are told apart before either is
+        # created or emptied: Copy-Program's first act is to remove the whole of
+        # files\, and a -StageDir pointed inside the checkout would delete part of
+        # the thing being copied.
+        if ((Test-Nested $stageFiles $source) -or (Test-Nested $source $StageDir)) {
+            throw ("The staging folder ($StageDir) is inside the source folder ($source), " +
+                   "or the other way round. Point -StageDir at a folder of its own.")
+        }
+        New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+
+        $version = Read-VmdVersion $source
+        Write-Ok "This is VMD $version."
+
+        Write-Step "Copying the program into the staging folder"
+        Copy-Program $source $stageFiles
+        $count = @(Get-ChildItem $stageFiles -Recurse -File -Force).Count
+        Write-Ok "$count files staged - the program, and none of this laptop's own."
+
+        # The wheel diff, against the note phase two cached from a stick on a
+        # previous write. The stick is never present while the internet is, so its
+        # note cannot be read now; the cache under machines\ is what stands in.
+        $notes = @()
+        $machinesDir = Join-Path $StageDir 'machines'
+        if (Test-Path $machinesDir) {
+            $notes = @(Get-ChildItem $machinesDir -Filter '*.json' -ErrorAction SilentlyContinue)
+        }
+        $missing = @{}
+        if ($notes.Count -eq 0) {
+            # No stick has been written yet, so there is no note to diff against and
+            # no way to know what to pack. Said plainly, and it is not a silent
+            # failure: the console at the far end refuses a code-only stick when the
+            # update needs a library and asks for another build, so nothing breaks
+            # quietly - it just takes one round trip before wheels can travel.
+            Write-Info "First time - this carries the program only. If the update needs a new"
+            Write-Info "library the VMD computer will say so; run this again after the stick has"
+            Write-Info "been to the VMD computer once and it will pack libraries too."
+        } else {
+            foreach ($note in $notes) {
+                Write-Ok "Packing for $($note.BaseName), from the note it left last time."
+            }
+            $locked = Get-LockedPackages (Join-Path $source 'uv.lock')
+            $missing = Get-MissingPackages $locked $notes
+            foreach ($name in ($missing.Keys | Sort-Object)) {
+                Write-Info "needs $name==$($missing[$name])"
+            }
+            if ($missing.Count -eq 0) {
+                Write-Ok "Every library this update needs is already on the machine this stick has visited."
+            }
+        }
+
+        # -ListWheelsOnly stops here, before the network or a wheel is touched, the
+        # same seam the one-shot path offers the tests.
+        if ($ListWheelsOnly) {
+            Write-Host ""
+            Write-Ok "Listed what would be downloaded, and downloaded nothing (-ListWheelsOnly)."
+            exit 0
+        }
+
+        if ($NoWheels) {
+            Write-Info "Not downloading any libraries, because -NoWheels was given."
+        } elseif ($missing.Count -gt 0) {
+            $wheels = Join-Path $StageDir 'wheels'
+            New-Item -ItemType Directory -Force -Path $wheels | Out-Null
+            # uv and a Python are fetched into the staging folder, not onto a
+            # stick, and kept there between downloads so only the first one waits.
+            $python = Get-StickPython $StageDir
+            foreach ($name in ($missing.Keys | Sort-Object)) {
+                $pin = "$name==$($missing[$name])"
+                Write-Info "Downloading $pin"
+                & $python -m pip download $pin --no-deps --only-binary=:all: `
+                    --platform win_amd64 --python-version 3.12 --implementation cp `
+                    --dest $wheels | Out-Host
+                if ($LASTEXITCODE -ne 0) { Write-Bad "could not download $pin" }
+            }
+        }
+
+        Write-Step "Checking the staged copy"
+        # Self-verify the staged files\ against a manifest built from them, so a
+        # download that arrived short is caught on the laptop, not at the far end.
+        # This manifest is the staging area's own; the stick gets a fresh one in
+        # phase two, hashed from the bytes that actually land on it.
+        $stageManifest = Join-Path $StageDir 'stage-manifest.json'
+        Write-Json (Get-Manifest $stageFiles) $stageManifest
+        $problems = Test-Stick $stageFiles $stageManifest
+        if ($problems.Count -gt 0) {
+            Write-Bad "The staged copy does not match itself:"
+            foreach ($problem in $problems) { Write-Info "  $problem" }
+            Write-Bad "The download did not finish cleanly. Get the latest version again."
+            exit 1
+        }
+        Write-Ok "Every one of the $count files was read back and matched."
+
+        # The marker that survives to the next button press: it is what the window
+        # reads to say "VMD N is ready to write", and what phase two reads for the
+        # version to stamp on the stick.
+        Write-Json ([ordered]@{
+            version = $version
+            built   = (Get-Date).ToString('s')
+            branch  = $Branch
+            source  = $Repository
+        }) (Join-Path $StageDir 'stage.json')
+
+        Write-Host ""
+        Write-Ok "Downloaded VMD $version. Unplug the internet, plug the stick in."
+        Write-Host ""
+        exit 0
+    } catch {
+        Write-Host ""
+        # The same classifier the one-shot path uses, so a no-internet download -
+        # the case this whole phase exists to make survivable on a one-port laptop -
+        # becomes one sentence instead of a web-exception stack.
+        $errText = "$($_.Exception.Message)"
+        if ($_.Exception -is [System.Net.WebException]) {
+            $errText = "$errText $($_.Exception.Status)"
+        }
+        if (Test-NetworkError $errText) {
+            Write-Bad "The download did not finish: No internet. Connect this laptop to the internet and try again."
+        } else {
+            Write-Bad "The download did not finish: $($_.Exception.Message)"
+            Write-Info "(line $($_.InvocationInfo.ScriptLineNumber) of update_stick.ps1)"
+        }
+        Write-Host ""
+        exit 1
+    }
+}
+
+
+# =============================================================================
+#  phase two: write the staged folder onto the stick (stick in, no internet)
+# =============================================================================
+#
+# This half needs the stick and never touches the network. Before it overwrites
+# anything it caches the note the offline machine left on the stick into the
+# staging folder - the only moment the stick and its note are in front of the
+# laptop - so the NEXT download knows which wheels to pack. Then it copies the
+# staged tree on, writes and self-verifies the manifest, and marks the stick.
+if ($WriteFromStage) {
+    try {
+        if (-not $StageDir) { throw "Say where the download was staged, like this:  -StageDir <folder>" }
+        if (-not $To) { throw "Say which drive to write to, like this:  -To E:\" }
+        $StageDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($StageDir)
+        $To = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($To)
+
+        $stageMarker = Join-Path $StageDir 'stage.json'
+        $stageFiles = Join-Path $StageDir 'files'
+        # Nothing staged means Step 1 was never done. Refuse rather than make half
+        # a stick - the window disables this button until a download is staged, so
+        # this is the safety net for the command line and for a staging folder that
+        # was cleared between the two presses.
+        if (-not (Test-Path $stageMarker) -or -not (Test-Path $stageFiles)) {
+            throw "Get the latest version first, with the internet plugged in."
+        }
+        $marker = Get-Content $stageMarker -Raw | ConvertFrom-Json
+        $version = $marker.version
+
+        Write-Host ""
+        Write-Host "  Writing VMD $version onto the stick" -ForegroundColor White
+        Set-StepTotal 4
+
+        $files = Join-Path $To 'files'
+        if ((Test-Nested $To $StageDir) -or (Test-Nested $StageDir $To)) {
+            throw "The stick ($To) is the staging folder. Point -To at the USB drive."
+        }
+        New-Item -ItemType Directory -Force -Path $To | Out-Null
+
+        Write-Step "Remembering what this stick knows"
+        # Cache the note(s) the offline VMD computer left on this stick BEFORE a
+        # thing is overwritten, so the next download can pack the right wheels.
+        # This is the only time the stick and its note meet the laptop; the
+        # internet half never sees them.
+        $stickMachines = Join-Path $To 'machines'
+        $stageMachines = Join-Path $StageDir 'machines'
+        $noteFiles = @()
+        if (Test-Path $stickMachines) {
+            $noteFiles = @(Get-ChildItem $stickMachines -Filter '*.json' -ErrorAction SilentlyContinue)
+        }
+        if ($noteFiles.Count -gt 0) {
+            New-Item -ItemType Directory -Force -Path $stageMachines | Out-Null
+            foreach ($nf in $noteFiles) {
+                Copy-Item $nf.FullName (Join-Path $stageMachines $nf.Name) -Force
+                Write-Ok "Remembered the note from $($nf.BaseName) for next time."
+            }
+        } else {
+            Write-Info "This stick carries no machine note yet - the next download will still be code only."
+        }
+
+        Write-Step "Copying the program onto the stick"
+        # The stick stops calling itself an update stick while the write runs:
+        # vmd\update\stick.py treats a drive as a stick only when both update.json
+        # and manifest.json are on it, so removing them here means a write that
+        # fails halfway leaves a drive the console ignores rather than one that
+        # offers yesterday's version over today's half-written files.
+        foreach ($name in @('update.json', 'manifest.json')) {
+            $stale = Join-Path $To $name
+            if (Test-Path $stale) { Remove-Item $stale -Force }
+        }
+        Copy-Tree $stageFiles $files
+        $count = @(Get-ChildItem $files -Recurse -File -Force).Count
+        Write-Ok "$count files copied."
+
+        # Any wheels the download staged travel too. Not in the manifest - the
+        # manifest is files\ only, as at the far end - just copied across.
+        $stageWheels = Join-Path $StageDir 'wheels'
+        if (Test-Path $stageWheels) {
+            $toWheels = Join-Path $To 'wheels'
+            Copy-Tree $stageWheels $toWheels
+            $wheelCount = @(Get-ChildItem $toWheels -Recurse -File -Force).Count
+            Write-Ok "$wheelCount library file(s) copied."
+        }
+
+        Write-Step "Writing the manifest and checking the stick against it"
+        $manifestPath = Join-Path $To 'manifest.json'
+        Write-Json (Get-Manifest $files) $manifestPath
+        $problems = Test-Stick $files $manifestPath
+        if ($problems.Count -gt 0) {
+            Write-Bad "The stick does not match the manifest it was just given:"
+            foreach ($problem in $problems) { Write-Info "  $problem" }
+            Write-Bad "Do not take this stick anywhere. Try another one, or write it again."
+            exit 1
+        }
+        Write-Ok "Every one of the $count files was read back and matched."
+
+        Write-Step "Marking the stick as ready"
+        Write-Json ([ordered]@{
+            version = $version
+            built   = (Get-Date).ToString('s')
+            branch  = $marker.branch
+            source  = $marker.source
+        }) (Join-Path $To 'update.json')
+
+        $readme = @"
+VMD update stick - VMD $version, built $((Get-Date).ToString('dd MMM yyyy'))
+
+Take this stick to the VMD computer, open the console, go to the Settings tab
+and press "Update now" at the bottom.
+
+Do not put anything else on this stick. Everything on it is checked against
+manifest.json before it is installed, and anything unexpected stops the update.
+"@
+        [System.IO.File]::WriteAllText((Join-Path $To 'README.txt'),
+            ($readme -replace "`r?`n", "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+        Write-Host ""
+        Write-Ok "Stick ready: VMD $version at $To"
+        Write-Host ""
+        exit 0
+    } catch {
+        Write-Host ""
+        # No network is touched in this phase, so there is no no-internet case to
+        # classify: a failure here is a stick that would not take the files.
+        Write-Bad "The stick was not finished: $($_.Exception.Message)"
+        Write-Info "(line $($_.InvocationInfo.ScriptLineNumber) of update_stick.ps1)"
+        Write-Host ""
+        exit 1
+    }
+}
+
+
+# =============================================================================
+#  the build (one shot: everything present at once)
 # =============================================================================
 try {
     if (-not $To) { throw "Say which drive to write to, like this:  -To E:\" }
@@ -1353,19 +1826,7 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $To | Out-Null
 
-    $versionFile = Join-Path $source 'VERSION'
-    if (-not (Test-Path $versionFile)) {
-        throw ("There is no VERSION file in $source, so this is not a copy of VMD. " +
-               "Check the folder, or the branch name.")
-    }
-    $version = 0
-    # "$( )" around the read, because an empty VERSION file makes Get-Content
-    # -Raw return nothing at all, and .Trim() on nothing is a red stack trace
-    # instead of the sentence below.
-    $versionText = "$(Get-Content $versionFile -Raw)".Trim()
-    if (-not [int]::TryParse($versionText, [ref]$version)) {
-        throw "The VERSION file in $source says '$versionText', which is not a version number."
-    }
+    $version = Read-VmdVersion $source
     Write-Ok "This is VMD $version."
 
     Write-Step "Copying the program onto the stick"

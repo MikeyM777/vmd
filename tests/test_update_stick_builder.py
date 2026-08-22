@@ -14,6 +14,7 @@ test that fails on the machine it was written on and hangs on anybody else's.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,6 +44,210 @@ def build_stick(source: Path, stick: Path, extra: list[str] | None = None):
         timeout=300,
         check=False,
     )
+
+
+def download_to_stage(source: Path, stage: Path, extra: list[str] | None = None):
+    """Phase one, driven the way the GUI's first button drives it.
+
+    The real laptop has one USB port and gets its internet from a USB netstick,
+    so the disk-on-key and the internet are never plugged in together. Phase one
+    downloads to a staging folder on the laptop's own disk with NO stick present;
+    -SourceFolder stands in for the GitHub download so the test needs no network,
+    and -NoWheels so it needs no pip.
+    """
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-Download",
+            "-StageDir",
+            str(stage),
+            "-SourceFolder",
+            str(source),
+            "-NoWheels",
+            *(extra or []),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+
+def write_from_stage(stage: Path, stick: Path, extra: list[str] | None = None):
+    """Phase two, driven the way the GUI's second button drives it.
+
+    Copies the already-staged tree onto the stick with NO internet involved. This
+    is the half that runs with the netstick unplugged and the disk-on-key in.
+    """
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-WriteFromStage",
+            "-StageDir",
+            str(stage),
+            "-To",
+            str(stick),
+            *(extra or []),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+
+def test_phase_one_stages_the_code_and_records_the_version(tmp_path: Path) -> None:
+    """Download with no stick present: the program lands in the staging folder,
+    a marker records which version was staged, and nothing of the developer's own
+    travels - the same exclusions as a one-shot build."""
+    source = a_repository(tmp_path / "repo", 8)
+    stage = tmp_path / "stage"
+
+    result = download_to_stage(source, stage)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (stage / "files" / "vmd" / "app.py").is_file()
+    assert (stage / "files" / "VERSION").read_text(encoding="utf-8").strip() == "8"
+    assert json.loads((stage / "stage.json").read_text(encoding="utf-8"))["version"] == 8
+    assert not (stage / "files" / "settings.json").exists()
+    assert not (stage / "files" / ".git").exists()
+
+
+def test_phase_one_the_first_time_carries_code_only_and_says_so(tmp_path: Path) -> None:
+    """With no cached machine note yet - no stick has ever been written - there is
+    nothing to diff wheels against, so it packs code only and says plainly why,
+    which matches how the console refuses a code-only stick and asks for another.
+    Nothing is silently broken."""
+    source = a_repository(tmp_path / "repo", 8)
+    stage = tmp_path / "stage"
+
+    result = download_to_stage(source, stage)
+
+    assert "First time" in result.stdout
+    # No library was named as missing: there is no "needs <name>==<version>" line
+    # (matched precisely, since the plain-English message itself uses the word).
+    assert not re.search(r"needs \S+==", result.stdout)
+
+
+def test_phase_one_diffs_wheels_against_the_cached_note(tmp_path: Path) -> None:
+    """Once phase two has cached a stick's note into the staging folder, phase one
+    diffs against it and names only the libraries that machine is missing - numpy
+    moved, torch did not, so only numpy is asked for."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        '[[package]]\nname = "numpy"\nversion = "2.2.0"\n\n'
+        '[[package]]\nname = "torch"\nversion = "2.6.0"\n',
+        encoding="utf-8",
+    )
+    stage = tmp_path / "stage"
+    (stage / "machines").mkdir(parents=True)
+    (stage / "machines" / "WIN-TEST.json").write_text(
+        json.dumps(
+            {
+                "machine": "WIN-TEST",
+                "version": 7,
+                "libraries": {"numpy": "2.1.0", "torch": "2.6.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = download_to_stage(source, stage)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "numpy==2.2.0" in result.stdout
+    assert "torch" not in result.stdout
+    assert "First time" not in result.stdout
+
+
+def test_phase_two_writes_a_verifiable_stick_from_the_stage(tmp_path: Path) -> None:
+    """Phase two turns the staged tree into a real stick: files, a manifest the
+    far-end Python accepts, an update.json with the version, and a README."""
+    from vmd.update.manifest import verify
+
+    source = a_repository(tmp_path / "repo", 8)
+    stage = tmp_path / "stage"
+    download_to_stage(source, stage)
+    stick = tmp_path / "E"
+
+    result = write_from_stage(stage, stick)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (stick / "files" / "vmd" / "app.py").is_file()
+    assert json.loads((stick / "update.json").read_text(encoding="utf-8"))["version"] == 8
+    assert "VMD 8" in (stick / "README.txt").read_text(encoding="utf-8")
+    listed = json.loads((stick / "manifest.json").read_text(encoding="utf-8"))
+    assert verify(stick / "files", listed) == []
+
+
+def test_phase_two_caches_the_sticks_machine_note_for_next_time(tmp_path: Path) -> None:
+    """The note the offline machine left on the stick is copied back into the
+    staging folder before the stick is overwritten - it is the only moment the
+    stick is in front of the laptop, and it is what lets the NEXT download know
+    which wheels to pack."""
+    source = a_repository(tmp_path / "repo", 8)
+    stage = tmp_path / "stage"
+    download_to_stage(source, stage)
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-REAL.json").write_text(
+        json.dumps({"machine": "WIN-REAL", "version": 7, "libraries": {"numpy": "2.1.0"}}),
+        encoding="utf-8",
+    )
+
+    write_from_stage(stage, stick)
+
+    assert (stage / "machines" / "WIN-REAL.json").is_file()
+
+
+def test_phase_two_with_nothing_staged_asks_for_step_one_first(tmp_path: Path) -> None:
+    """Pressing Write with no download staged must not half-make a stick; it says
+    to do Step 1 first, with the internet plugged in."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stick = tmp_path / "E"
+
+    result = write_from_stage(stage, stick)
+
+    assert result.returncode != 0
+    assert "Get the latest version first" in (result.stdout + result.stderr)
+
+
+def test_a_full_two_phase_round_trip(tmp_path: Path) -> None:
+    """The whole flow in one test: stage from a source with the note a machine
+    left last time already on the target stick, write it, and the target is a
+    valid stick AND the note has been cached back for the next download."""
+    from vmd.update.manifest import verify
+
+    source = a_repository(tmp_path / "repo", 12)
+    stage = tmp_path / "stage"
+    r1 = download_to_stage(source, stage)
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-REAL.json").write_text(
+        json.dumps({"machine": "WIN-REAL", "version": 11, "libraries": {"numpy": "2.1.0"}}),
+        encoding="utf-8",
+    )
+
+    r2 = write_from_stage(stage, stick)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    listed = json.loads((stick / "manifest.json").read_text(encoding="utf-8"))
+    assert verify(stick / "files", listed) == []
+    assert json.loads((stick / "update.json").read_text(encoding="utf-8"))["version"] == 12
+    assert (stage / "machines" / "WIN-REAL.json").is_file()
 
 
 def classify_error(text: str) -> str:
