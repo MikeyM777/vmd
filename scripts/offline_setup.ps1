@@ -160,6 +160,21 @@ Then open each camera's shortcut and fill in the Settings tab: the camera's
 username, password, and the address of each picture. Press Save. Recording
 starts as soon as that is saved.
 
+Updating it later
+-----------------
+
+This computer stays offline for good, but it can still be given new versions.
+A new version travels on one USB stick dedicated to VMD:
+
+  - On a computer WITH internet, double-click VMD-Update-Stick.bat (it is in
+    the VMD folder) and press Build the stick.
+  - Bring the stick here, open the console, and press Update now in the
+    Software box at the bottom of the Settings tab. The stick is recognised on
+    its own when it is plugged in.
+
+If the new version does not start, the console puts the old one back by itself.
+Part 4 of docs\OFFLINE-SETUP.md is the whole of it.
+
 If step 2 does not work
 -----------------------
 

@@ -57,6 +57,7 @@ from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
 from vmd.settings import Settings, consoles_on_this_radio, load_settings, save_settings
 from vmd.storage.index import SegmentIndex
+from vmd.update.version import describe as describe_version
 
 logger = logging.getLogger(__name__)
 
@@ -910,8 +911,18 @@ class ConsoleWindow(QMainWindow):
         # the Live tab's own side column - and the pictures themselves are not
         # moved, rebuilt or reparented by any of it. See
         # `vmd/desktop/fullscreen.py` for why that last part is not optional.
+        # `settings.screen` goes with it: the mode fills the screen the window
+        # is on, and which screen this console belongs on is the installation's
+        # decision rather than the window's. Without it, a console dragged onto
+        # the other monitor for a moment took THAT monitor the next time F11 was
+        # pressed - and there are two of these on one desktop, with the operator
+        # working on the screen the other one is not watching from.
         self.fullscreen = FullscreenLive(
-            window=self, tabs=self.tabs, band=self.band, live=self.live
+            window=self,
+            tabs=self.tabs,
+            band=self.band,
+            live=self.live,
+            screen=settings.screen,
         )
         # The Live tab carries the button; a tab that could not be built carries
         # nothing, and then the keys are the whole of it.
@@ -1180,7 +1191,19 @@ class ConsoleWindow(QMainWindow):
         renamed the thing somebody was told to look for.
         """
         name = (name or "").strip()
-        self.setWindowTitle(f"VMD - {name}" if name else "VMD")
+        # The version is part of the name of the program, not decoration: it is
+        # the first thing anybody is asked for when they report something, and
+        # on this machine there is no About box, no terminal and no second
+        # screen to find it on.
+        #
+        # Read from the project root, not from the settings folder: on a
+        # multi-camera install the settings file lives in
+        # cameras\250\settings.json, and the VERSION file that travels with an
+        # update lives at the top of the whole checkout, three levels above
+        # this module (vmd/desktop/window.py -> vmd/desktop -> vmd -> root).
+        root = Path(__file__).resolve().parent.parent.parent
+        program = describe_version(root)
+        self.setWindowTitle(f"{program} - {name}" if name else program)
         tell = getattr(self.live, "set_title", None)
         if tell is not None:
             try:
@@ -1375,6 +1398,12 @@ class ConsoleWindow(QMainWindow):
         try:
             self.set_title(getattr(settings, "title", ""))
             self.show_playback_tab(getattr(settings, "show_playback", False))
+            # Which monitor this console belongs on can be changed from the
+            # Settings tab, and fullscreen is what reads it after start-up. A
+            # mode still holding the number the console opened with would put
+            # the pictures back on the old monitor at the next F11, hours after
+            # the operator had watched himself change it.
+            self.fullscreen.set_screen(getattr(settings, "screen", None))
         except Exception:  # noqa: BLE001 - the rest of the save must still run
             logger.exception("the window would not take the saved name or tabs")
 

@@ -130,9 +130,13 @@ away from undoing an update somebody has just travelled to deliver.
 
 ### Applying
 
-The console does not apply the update: it starts `scripts/apply_update.ps1`
-detached and watches its log, because the files being replaced include the
-console itself.
+The console does not apply the update: it starts `vmd/update/main.py` as a
+detached process, run by the interpreter in `bin\python\` out of a temporary
+copy of the `vmd` package, and watches `bin\logs\update-status.json`. Python
+rather than PowerShell as first sketched: the applier has to be exercised
+against a fake install tree in a test, and this repository tests with pytest and
+has no PowerShell test runner. It is stdlib-only, because it runs while the
+environment it would otherwise import from is being replaced.
 
 1. **Find the stick.** Removable drives with `update.json` and `manifest.json`.
    Two of them: refuse, and name both.

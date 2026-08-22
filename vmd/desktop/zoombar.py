@@ -24,6 +24,15 @@ be right until the first command that did not arrive, and it would go on looking
 right for ever afterwards, which is the exact failure this control exists to
 make visible. A camera that does not report its zoom gets a slider that says so
 and buttons that still work.
+
+**And it has to answer while he is still moving it.** "There are a lot of delay
+in the zoom sliders." Two seconds of that is the radio link and cannot be fixed
+here; the rest was this file waiting on purpose - a drag that told the lens
+nothing until it was released, a button that stepped once per press, and a
+handle frozen for seven seconds after every command whether or not the lens had
+already arrived. Those three are gone. What they were protecting against is not:
+see DRAG_EVERY_SECONDS, REPEAT_EVERY_SECONDS and CAUGHT_UP_STEPS, each of which
+keeps the failure its predecessor was written for.
 """
 
 from __future__ import annotations
@@ -31,7 +40,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -69,18 +78,61 @@ NUDGE = 5
 # two-second feedback loop overshoots every time.
 CREEP = 0.35
 
+# How often a drag is allowed to reach the lens while the handle is still held.
+#
+# It used to be never: the whole drag said nothing and one command went out on
+# release, so the lens did not begin to move until he let go and then the picture
+# changed after he had stopped. His words were "there are a lot of delay in the
+# zoom sliders", and most of that delay was this control waiting rather than the
+# two seconds the radio link costs.
+#
+# What the old rule was protecting against is real but was never what it looked
+# like. `valueChanged` fires on every intermediate value, so a drag across the
+# bar produced sixty `go_to` signals a second - but `PtzCommands` (see
+# `vmd/ptz/service.py`) is a LATEST-VALUE mailbox with one lane per lens, so
+# those sixty were never sixty on the wire: a newer zoom for a lens replaces an
+# older one that has not been sent yet, and at most one zoom command per lens is
+# ever in flight. The cost was on this side of the mailbox - sixty signals a
+# second, and a lens repeatedly redirected towards positions the operator had
+# already passed through.
+#
+# A quarter of a second keeps that property and buys back the dead drag: four or
+# five commands across a second-long drag, each one a place he was actually
+# pointing at, and the lens sets off while he is still moving. Timed off the
+# injected clock and never off `time.monotonic` directly, so the tests that
+# drive this with a fake clock stay deterministic.
+DRAG_EVERY_SECONDS = 0.25
+
+# How often a held + or - steps again, on a camera that can be told where to go.
+#
+# Deliberately not `QPushButton.setAutoRepeat`: that rate is a platform setting
+# chosen for text cursors, and this is a lens 700 m away whose round trip was
+# last measured at two seconds. Getting from wide to tele used to be a dozen
+# separate presses because a press stepped exactly once.
+REPEAT_EVERY_SECONDS = 0.6
+
+# How close a reading has to be to what was last asked for before the reading is
+# believed again. Two steps of a hundred, which is finer than any lens on this
+# link settles to. See HOLD_AFTER_ASKING.
+CAUGHT_UP_STEPS = 2
+
 WIDE_WORDS = "wide"
 TIGHT_WORDS = "tele"
 UNKNOWN_CAPTION = "zoom not reported"
 
-# How long after the operator last asked for a zoom the handle is left where he
-# put it, whatever the camera says.
+# The longest the handle is left where he put it, whatever the camera says.
 #
 # The lens is still travelling for most of this. Readings that arrive while it
 # is are where the lens WAS, and writing them into the handle drags it back out
 # from under him - so it stays put until it has had a fair chance of being true.
 # Longer than the settling window `vmd/ptz/lenses.py` reads over, so the last
 # reading of a journey is the first one allowed to move the handle.
+#
+# An upper bound and not a fixed wait. The hold ends the moment a reading agrees
+# with what was asked for, because at that point the lens has arrived and every
+# reading after it is the truth - ignoring those for another five seconds is a
+# handle that has stopped listening to a camera that is answering correctly, and
+# it made the whole control feel a beat behind the picture. See CAUGHT_UP_STEPS.
 HOLD_AFTER_ASKING = 7.0
 
 # What a reading is called. The readout used to be `42%` and nothing else - a
@@ -153,6 +205,31 @@ class ZoomBar(QWidget):
         # When he last asked for a zoom, so a reading of where the lens used to
         # be cannot pull the handle out from under him. See HOLD_AFTER_ASKING.
         self._asked_at: float | None = None
+        # The last place the lens was ASKED to go, which is not the last place
+        # it was seen to be. Two things need it: the held button steps from it,
+        # and a reading is compared against it to find out whether the lens has
+        # arrived and the hold above can end.
+        self._target: float | None = None
+        # When the last command of a drag went out, and what it carried. The
+        # first is the quarter-second throttle; the second is what stops the
+        # release repeating a value the throttle has just sent. Both cleared on
+        # release, so every drag starts by sending at once.
+        self._drag_sent_at: float | None = None
+        self._drag_sent: int | None = None
+        # Whether the press being held emitted a creep. Read at release instead
+        # of asking the camera again, because the camera's answer can change
+        # while the button is down and a creep must be ended by a stop whatever
+        # it has since said. See `_released`.
+        self._crept = False
+        # Which way a held button is stepping, and the timer that keeps it
+        # stepping. The timer is parented to this widget on purpose: a repeat
+        # that outlived the bar would go on commanding a lens through a widget
+        # that is no longer on the screen, and a child QTimer is destroyed with
+        # its parent.
+        self._direction = 0
+        self._repeat = QTimer(self)
+        self._repeat.setInterval(int(REPEAT_EVERY_SECONDS * 1000))
+        self._repeat.timeout.connect(self._step_again)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -166,21 +243,38 @@ class ZoomBar(QWidget):
         self._slider.setPageStep(NUDGE)
         self._slider.setSingleStep(1)
         self._slider.setToolTip("Where the lens is. Drag to send it somewhere.")
+        # It refuses the keyboard, exactly as the two buttons beside it do.
+        #
+        # This is the rule the whole Live tab is held to - the arrow keys steer,
+        # only + and - zoom, and nothing else on that tab takes the arrows - and
+        # a slider is the one control that breaks it by default. A QSlider with
+        # an ordinary focus policy takes focus from a click and then consumes
+        # Left and Right to change its own value, so from the moment the
+        # operator touched the zoom his arrows zoomed the lens instead of
+        # turning the head. Silently, and against the caption on the tab itself,
+        # which says the arrows pan and tilt.
+        #
+        # It costs nothing the control is for. `NoFocus` is about the keyboard
+        # alone: the handle is still dragged, the groove is still clicked, and
+        # the click now hands the keyboard to the Live tab above - which is the
+        # thing that steers.
+        self._slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._slider.setStyleSheet(_SLIDER_STYLE)
-        # Two connections, and the split is the whole of why dragging this used
-        # to feel wrong.
+        # Two connections, and the split is the whole of how dragging this
+        # feels.
         #
-        # `valueChanged` fires on every intermediate value. Dragging the handle
-        # across the bar therefore asked the lens for sixty different zooms in a
-        # second, at a camera whose replies were last measured at two seconds -
-        # so the lens spent the drag chasing positions the operator had already
-        # left, and arrived somewhere he had passed through rather than where he
-        # let go. It is kept only for the ways of moving a slider that produce
-        # one value and mean it: the arrow keys, the wheel, a click on the
-        # groove. While the handle is held, it says nothing.
+        # `valueChanged` fires on every intermediate value, which for the ways
+        # of moving a slider that produce one value and mean it - the arrow
+        # keys, the wheel, a click on the groove - is exactly one command. While
+        # the handle is held it is throttled instead of silenced: the lens is
+        # steered at the value under the mouse, at most once every quarter of a
+        # second. See DRAG_EVERY_SECONDS for why sixty a second was wrong and
+        # why four or five is right.
         #
-        # `sliderReleased` is the drag: one command, at the value he stopped on.
+        # `sliderReleased` is the end of the drag, and it always sends, so the
+        # lens finishes at the value he let go on and not at the last one the
+        # throttle happened to let through.
         self._slider.valueChanged.connect(self._slid)
         self._slider.sliderReleased.connect(self._let_go)
 
@@ -223,17 +317,93 @@ class ZoomBar(QWidget):
 
     def _pressed(self, direction: int) -> None:
         if self._absolute and self._position is not None:
-            target = _clamp(self._position + direction * NUDGE / STEPS)
-            self.go_to.emit(self._name, target)
+            # Held, not tapped. A press used to step exactly once, so getting a
+            # 30x lens from wide to tele meant pressing the button a dozen
+            # times; it steps now for as long as it is held.
+            #
+            # The first step is sent immediately rather than after the first
+            # interval, because a button that does nothing for six tenths of a
+            # second reads as a button that was not pressed.
+            self._direction = direction
+            # Seeded from the camera's reading, and only here. Every step after
+            # this one is measured from the last target instead, which is the
+            # crux of it: a reading lags the lens by seconds, so stepping from
+            # the reading would ask for very nearly the same place over and over
+            # and the zoom would crawl while the button was held down.
+            self._target = self._position
+            self._crept = False
+            # Started before the first step and not after it, so that a step
+            # landing on the end of the travel can stop the repeat it is inside.
+            self._repeat.start()
+            self._step()
             return
         # No position to step from, so the only honest thing a button can do is
         # keep the lens moving for as long as it is held - which is what the
         # arrow keys already do for pan and tilt.
+        #
+        # Remembered rather than worked out again at release. See `_released`.
+        self._crept = True
         self.creep.emit(self._name, direction * CREEP)
 
     def _released(self) -> None:
-        if not (self._absolute and self._position is not None):
+        # Stopped first and unconditionally. A repeat that survived the button
+        # coming up is a lens that goes on zooming with nothing held, which is
+        # the zoom's version of the fault `PtzCommands` guards the head against.
+        self._repeat.stop()
+        self._direction = 0
+        # What the press DID, not what the camera would answer now.
+        #
+        # These two used to decide independently, each reading the camera's
+        # current answer, and the answer changes while the button is down
+        # because the lens is polled throughout. A camera that started reporting
+        # a position mid-hold therefore got a creep from the press and nothing
+        # at all from the release - a lens still travelling with no button held,
+        # and nothing coming to stop it, which is the one outcome this file is
+        # not allowed to produce. The mirror case sent a stop for a creep that
+        # was never started. A press that crept is ended by a stop, always.
+        if self._crept:
+            self._crept = False
             self.creep.emit(self._name, 0.0)
+
+    def _step(self) -> None:
+        """One step of a held button, from the last target and not the reading."""
+        base = self._target if self._target is not None else 0.0
+        self._ask(base + self._direction * NUDGE / STEPS)
+        if self._at_the_stop():
+            # There is nowhere further to ask for, so every repeat from here is
+            # the same no-op sent again. Harmless on the picture and not on the
+            # link: this lens's lane in `PtzCommands` would never be empty for
+            # as long as the finger was down, and a stop for the head is only
+            # allowed to wait behind ONE zoom already on the wire.
+            self._repeat.stop()
+
+    def _at_the_stop(self) -> bool:
+        """Whether the target has reached the end of the travel it is heading for."""
+        if self._target is None:
+            return False
+        return (self._direction > 0 and self._target >= 1.0) or (
+            self._direction < 0 and self._target <= 0.0
+        )
+
+    def _step_again(self) -> None:
+        if not (self._absolute and self._position is not None):
+            # The camera stopped reporting where the lens is while the button
+            # was down. Stepping needs somewhere to step from and there is no
+            # longer an honest one, so the repeat ends rather than carrying on
+            # from a number nothing has confirmed since.
+            self._repeat.stop()
+            return
+        self._step()
+
+    def _ask(self, where: float) -> None:
+        """Ask the lens to go somewhere, and remember that it was asked.
+
+        The single door out of this widget for an absolute zoom, so that the
+        target and the hold cannot be updated by one path and not another.
+        """
+        self._target = _clamp(where)
+        self._asked_at = self._clock()
+        self.go_to.emit(self._name, self._target)
 
     def _recently_asked(self) -> bool:
         """Whether he has touched this slider recently enough to still own it."""
@@ -241,20 +411,58 @@ class ZoomBar(QWidget):
             return False
         return (self._clock() - self._asked_at) < HOLD_AFTER_ASKING
 
+    def _caught_up(self) -> bool:
+        """Whether the reading just in agrees with what was last asked for.
+
+        Compared in the slider's own steps rather than in the raw floats, so
+        that the tolerance means what it says. A lens does not stop on the exact
+        hundredth it was sent to, and two thirds of a per cent of arithmetic
+        error is not a lens that has failed to arrive.
+        """
+        if self._target is None or self._position is None:
+            return False
+        return abs(round(self._position * STEPS) - round(self._target * STEPS)) <= CAUGHT_UP_STEPS
+
     def _slid(self, value: int) -> None:
         if self._echoing:
             return
         if self._slider.isSliderDown():
-            # Mid-drag. The handle follows the mouse, and the lens is told once,
-            # when he lets go. See the two connections above.
-            return
-        self._asked_at = self._clock()
-        self.go_to.emit(self._name, value / STEPS)
+            # Mid-drag, and throttled rather than silent. `PtzCommands` keeps
+            # only the latest command per lens, so these do not queue on the
+            # wire; the quarter second is what stops the lens being redirected
+            # at every pixel the mouse crosses. See DRAG_EVERY_SECONDS.
+            now = self._clock()
+            if (
+                self._drag_sent_at is not None
+                and (now - self._drag_sent_at) < DRAG_EVERY_SECONDS
+            ):
+                return
+            self._drag_sent_at = now
+            self._drag_sent = value
+        self._ask(value / STEPS)
 
     def _let_go(self) -> None:
-        """The end of a drag: one command, at the value he stopped on."""
-        self._asked_at = self._clock()
-        self.go_to.emit(self._name, self._slider.value() / STEPS)
+        """The end of a drag: a command at the value he stopped on.
+
+        Unthrottled, because this is the only value of the whole gesture he
+        actually chose - and skipped when the throttle happened to let that
+        exact value through a moment ago, because sending it twice says nothing
+        the first one did not. The mailbox absorbs the duplicate either way; it
+        is the count of commands per gesture that this control is judged on, and
+        a log where every drag ends with the same line twice is one nobody can
+        read.
+
+        Both throttle marks are cleared whatever happens, so the next drag sends
+        at once rather than waiting out the tail of this one. Two drags in quick
+        succession are two intentions, and the second is usually the correction.
+        """
+        value = self._slider.value()
+        unchanged = value == self._drag_sent
+        self._drag_sent_at = None
+        self._drag_sent = None
+        if unchanged:
+            return
+        self._ask(value / STEPS)
 
     # -------------------------------------------------------------- the answer
 
@@ -268,6 +476,14 @@ class ZoomBar(QWidget):
         self._position = None if position is None else _clamp(position)
         known = self._position is not None
         self._slider.setEnabled(known)
+        if self._caught_up():
+            # The lens has arrived where it was asked to go, so the hold below
+            # has nothing left to protect: every reading from here is where the
+            # lens IS, not where it was on the way. Holding on for the rest of
+            # the seven seconds would leave the handle ignoring a camera that is
+            # answering correctly, which is most of what "a lot of delay in the
+            # zoom sliders" was on a link that happened to be behaving.
+            self._asked_at = None
         # The handle is only moved when he is not the one moving it, and not for
         # a moment after he was.
         #
@@ -371,6 +587,10 @@ class ZoomBar(QWidget):
     def buttons(self) -> tuple[QPushButton, QPushButton]:
         """Zoom out, zoom in."""
         return self._out, self._in
+
+    def repeat_timer(self) -> QTimer:
+        """What keeps a held button stepping, so a test can see it stop."""
+        return self._repeat
 
 
 def _clamp(value: float) -> float:
