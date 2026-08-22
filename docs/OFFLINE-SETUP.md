@@ -301,11 +301,17 @@ one USB stick, dedicated to VMD and used for nothing else.
 
 **On the laptop with internet:**
 
+The laptop needs `VMD-Update-Stick.bat` and the `scripts\` folder beside it.
+Both are in the VMD folder already — the same folder Part 1 built — so the
+computer that built the offline kit is the obvious one to build sticks on. On
+any other laptop, copy those two things across first; nothing else is needed,
+not even Python or git.
+
 1. Plug in the VMD stick.
-2. Double-click `VMD-Update-Stick.bat`.
-3. Choose the drive and press **Build the stick**. It downloads the current
-   version from GitHub and writes it to the stick, along with any libraries the
-   VMD computer does not have yet.
+2. Double-click `VMD-Update-Stick.bat`. It notices the stick on its own.
+3. Choose the drive if it did not, and press **Build the stick**. It downloads
+   the current version from GitHub and writes it to the stick, along with any
+   libraries the VMD computer does not have yet.
 
 **On the VMD computer:**
 
