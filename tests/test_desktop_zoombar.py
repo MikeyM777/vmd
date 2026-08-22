@@ -21,10 +21,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 
 from vmd.desktop.zoombar import (
+    CAUGHT_UP_STEPS,
     CHECKING_CAPTION,
+    DRAG_EVERY_SECONDS,
     HOLD_AFTER_ASKING,
     CREEP,
     NUDGE,
+    REPEAT_EVERY_SECONDS,
     STEPS,
     UNKNOWN_CAPTION,
     ZoomBar,
@@ -331,27 +334,58 @@ class Clock:
         self.now += seconds
 
 
-def test_dragging_asks_the_lens_for_one_zoom_and_not_sixty(qtbot) -> None:
+def test_dragging_steers_the_lens_without_flooding_it(qtbot) -> None:
     """`valueChanged` fires on every intermediate value. Dragging the handle
     across the bar therefore asked for sixty different zooms in a second, at a
     camera whose replies were last measured at two seconds - so the lens spent
     the drag chasing positions he had already left, and stopped somewhere he had
     passed through rather than where he let go.
+
+    Sending none of them was the wrong answer to that, and it is what he
+    complained about: the lens did not begin to move until he let go, so the
+    whole drag felt dead and the picture changed after he had stopped. A few is
+    right. `PtzCommands` keeps only the latest zoom per lens, so a command that
+    has not gone out yet is replaced rather than queued and the wire carries at
+    most one whatever the slider does; the quarter second is what stops the lens
+    being redirected at every pixel the mouse crosses. Four or five places he
+    was really pointing at, and the last one is where he let go.
     """
-    bar = ZoomBar("visible", clock=Clock())
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
     qtbot.addWidget(bar)
     bar.set_position(0.1)
     went, _crept = commands(bar)
 
     bar.slider().setSliderDown(True)
-    for value in range(20, 80, 5):        # the drag
+    for value in range(20, 80):           # the drag: sixty values across a second
         bar.slider().setValue(value)
-    assert went == [], f"{len(went)} commands sent mid-drag"
+        clock.tick(1.0 / 60.0)
 
     # Letting go. `setSliderDown(False)` is what Qt emits `sliderReleased` from,
     # so this is the real gesture and not a signal poked by hand.
     bar.slider().setSliderDown(False)
-    assert went == [("visible", 0.75)], went
+
+    most = int(1.0 / DRAG_EVERY_SECONDS) + 2       # one per 250 ms, plus the release
+    assert 2 <= len(went) <= most, f"{len(went)} commands for a one-second drag: {went}"
+    assert went[-1] == ("visible", 0.79), went[-1]
+    wheres = [where for _name, where in went]
+    assert wheres == sorted(wheres), f"a drag one way asked for zooms the other way: {wheres}"
+    assert all(name == "visible" for name, _where in went)
+
+
+def test_a_drag_with_no_time_in_it_is_still_one_command(qtbot) -> None:
+    """The throttle is a clock and not a counter. Sixty values arriving inside
+    one tick is the shape of the flood the old rule was written against, and it
+    has to come out as one command however many values Qt emits."""
+    bar = ZoomBar("visible", clock=Clock())   # never ticked
+    qtbot.addWidget(bar)
+    bar.set_position(0.1)
+    went, _crept = commands(bar)
+
+    bar.slider().setSliderDown(True)
+    for value in range(20, 80):
+        bar.slider().setValue(value)
+    assert len(went) == 1, f"{len(went)} commands sent within one instant: {went}"
 
 
 def test_a_click_on_the_groove_still_asks_at_once(qtbot) -> None:
@@ -416,3 +450,145 @@ def test_the_reading_underneath_is_never_held_back(qtbot) -> None:
 
     bar.set_position(0.34)
     assert "34" in bar.caption(), bar.caption()
+
+
+# ------------------------------------------------- holding the buttons down
+#
+# "Zoom from wide to tele" used to be a dozen separate presses, because a press
+# stepped exactly once on a camera that reports where its lens is.
+
+
+def test_holding_the_button_keeps_stepping(qtbot) -> None:
+    """And each step is further than the last, which is the whole difficulty.
+
+    The camera below reports the SAME position throughout - which is what a
+    camera on this link genuinely does while a lens is travelling, because the
+    reading lags the lens by seconds. Stepping from the reading would therefore
+    ask for the same place over and over and the zoom would crawl on the screen
+    while the operator held the button down. Each step is measured from the last
+    target instead, so the repeats walk away from where the lens was seen.
+    """
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.30)               # and it will not change again
+    went, _crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    assert went, "a press that sends nothing until the first repeat reads as a dead button"
+    qtbot.waitUntil(lambda: len(went) >= 4, timeout=int(REPEAT_EVERY_SECONDS * 8000))
+    into.released.emit()
+
+    wheres = [where for _name, where in went]
+    assert wheres[0] == 0.30 + NUDGE / STEPS
+    assert all(
+        later > earlier for earlier, later in zip(wheres, wheres[1:])
+    ), f"the repeats did not get anywhere; each was stepped from the stale reading: {wheres}"
+
+
+def test_letting_the_button_go_stops_the_repeat(qtbot) -> None:
+    """A lens that goes on zooming with nothing held is the zoom's version of a
+    head still slewing after the key came up."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.30)
+    went, _crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    into.released.emit()
+    assert not bar.repeat_timer().isActive()
+
+    sent = len(went)
+    qtbot.wait(int(REPEAT_EVERY_SECONDS * 3000))
+    assert len(went) == sent, f"{len(went) - sent} commands after the button came up"
+
+
+def test_holding_a_button_on_a_camera_with_no_position_is_unchanged(qtbot) -> None:
+    """The creep path is not touched by any of this, and must not be. A camera
+    that cannot be sent to a position is zoomed by moving while held and stopped
+    when the button comes up, and that stop is a safety property: there is no
+    reading to notice the lens is still going."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(None)
+    went, crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    assert crept == [("visible", CREEP)]
+    assert not bar.repeat_timer().isActive(), "the creep path must not start a repeat"
+    qtbot.wait(int(REPEAT_EVERY_SECONDS * 2000))
+    into.released.emit()
+    assert crept == [("visible", CREEP), ("visible", 0.0)]
+    assert went == [], "a camera that reports no position may not be sent to one"
+
+
+# ------------------------------------------------ letting go of the handle early
+
+
+def test_a_reading_that_agrees_ends_the_hold_at_once(qtbot) -> None:
+    """The hold exists so that readings of where the lens WAS cannot drag the
+    handle out from under him. Once a reading arrives that agrees with what he
+    asked for, the lens has arrived and there is nothing left to protect - so
+    ignoring the camera for the rest of the seven seconds is a handle that has
+    stopped listening to a camera answering correctly. That is the delay he felt
+    on a link that happened to be behaving."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+    bar.slider().setSliderDown(False)
+
+    clock.tick(1.0)
+    bar.set_position(0.80)               # the lens says it arrived
+    assert bar.slider().value() == 80
+
+    clock.tick(1.0)                      # well inside the old seven seconds
+    bar.set_position(0.60)               # and he is told about it
+    assert bar.slider().value() == 60, "the handle went on ignoring a camera that had caught up"
+
+
+def test_a_reading_within_a_step_or_two_counts_as_arrived(qtbot) -> None:
+    """A lens does not stop on the exact hundredth it was sent to, and a rule
+    that demanded it would never fire."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+    bar.slider().setSliderDown(False)
+
+    clock.tick(1.0)
+    bar.set_position((80 + CAUGHT_UP_STEPS) / STEPS)
+    clock.tick(1.0)
+    bar.set_position(0.60)
+    assert bar.slider().value() == 60
+
+
+def test_a_reading_that_disagrees_is_still_ignored_until_the_hold_expires(qtbot) -> None:
+    """Which is the half of this that must not be lost. A lens seconds into a
+    journey reports where it started, and that reading is exactly the one that
+    used to pull the handle backwards out from under the mouse."""
+    clock = Clock()
+    bar = ZoomBar("visible", clock=clock)
+    qtbot.addWidget(bar)
+    bar.set_position(0.10)
+
+    bar.slider().setSliderDown(True)
+    bar.slider().setValue(80)
+    bar.slider().setSliderDown(False)
+
+    for _ in range(6):                   # six seconds of readings, all of them stale
+        clock.tick(1.0)
+        bar.set_position(0.11)
+        assert bar.slider().value() == 80, "a reading that disagrees moved the handle"
+
+    clock.tick(HOLD_AFTER_ASKING)
+    bar.set_position(0.11)               # now it has had its fair chance
+    assert bar.slider().value() == 11
