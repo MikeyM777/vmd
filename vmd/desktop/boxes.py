@@ -89,6 +89,12 @@ def folder() -> Path:
 def turned(box, width: int, height: int):
     """One box, moved to where it belongs on a picture that has been turned 180.
 
+    Nothing calls this today. The switch that turned the live picture - a
+    bench-test switch for a camera mounted inverted - was taken out once the
+    cameras were up, and this went quiet with it. It is kept because it is
+    the answer to a question that will be asked again the first time a camera
+    really is mounted upside down, and it is four lines with a test on it.
+
     "The on-screen box that marks the movement is upside down. I've flipped the
     view and the mark boxes are still on the opposite side."
 
@@ -106,7 +112,7 @@ def turned(box, width: int, height: int):
     return (width - x - w, height - y - h, w, h)
 
 
-def draw(path, width: int, height: int, boxes, flip: bool = False) -> bool:
+def draw(path, width: int, height: int, boxes) -> bool:
     """Write a transparent picture of `width` x `height` with outlines on it.
 
     Returns whether it wrote one. Never raises: a box is decoration on an alarm
@@ -117,14 +123,9 @@ def draw(path, width: int, height: int, boxes, flip: bool = False) -> bool:
     frame coordinates and libVLC composites this into the frame before any of it
     is scaled to the window.
 
-    `flip` says the picture is being shown turned through 180 degrees. See
-    `turned`: the box has to be turned with it or it lands on the opposite side
-    of the screen from the thing it is about.
     """
     if width <= 0 or height <= 0 or not boxes:
         return False
-    if flip:
-        boxes = [turned(box, int(width), int(height)) for box in boxes]
     try:
         from PySide6.QtGui import QColor, QImage, QPainter, QPen
 

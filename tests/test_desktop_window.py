@@ -641,10 +641,9 @@ def test_a_pane_that_can_be_built_is_used(qtbot) -> None:
 class DelayedPane(FakeVideoPane):
     """A pane that remembers what it was built with."""
 
-    def __init__(self, delay_ms: int = -1, flip: bool = False, boxes: bool = False) -> None:
+    def __init__(self, delay_ms: int = -1, boxes: bool = False) -> None:
         super().__init__()
         self.delay_ms = delay_ms
-        self.flip = flip
         self.boxes = boxes
 
 
@@ -671,8 +670,8 @@ def test_the_next_pane_is_built_with_the_delay_that_was_saved() -> None:
 
     # And the same for the other thing a pane is built with, which cannot be
     # changed after the fact either: it is a libVLC instance option.
-    options.flip = True
-    assert make_pane("thermal").flip is True
+    options.boxes = True
+    assert make_pane("thermal").boxes is True
 
 
 def test_a_pane_that_cannot_be_told_a_delay_is_not_told_one() -> None:

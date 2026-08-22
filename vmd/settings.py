@@ -565,18 +565,11 @@ class Settings(Model):
     # nothing. See `vmd/desktop/boxes.py`.
     show_boxes: bool = False
 
-    # Turn the live picture upside down.
-    #
-    # For testing, and asked for as such: a camera mounted inverted, or a bench
-    # rig, shows an upside-down picture and there is no reason to climb a mast
-    # to find out whether the rest of the console works.
-    #
-    # It turns the PICTURE and nothing else. What is recorded is untouched -
-    # the recorder never sees this - and so is what the detector reads, so the
-    # areas drawn on the ignore mask still mean what they meant. That is the
-    # right way round for a test switch: it can be left on by accident without
-    # quietly changing the evidence or where the system is looking.
-    flip_video: bool = False
+    # `flip_video` was here: a switch that turned the live picture through 180
+    # degrees, for bench testing a camera mounted inverted. Taken out at the
+    # operator's request once the cameras were up. A settings file that still
+    # carries the key loads exactly as before - unknown keys are ignored - and
+    # the key is dropped the next time the file is written.
 
     # Whether the Playback tab exists.
     #

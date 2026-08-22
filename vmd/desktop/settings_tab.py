@@ -1310,17 +1310,10 @@ class SettingsTab(QWidget):
             "hitching.\n\n"
             "It has no effect at all on what is recorded."
         )
-        # For testing, and labelled as such. A camera mounted inverted, or a
-        # bench rig, shows an upside-down picture and there is no reason to
-        # climb a mast to find out whether the rest of the console works.
-        self._flip = QCheckBox("Turn the live picture upside down (for testing)")
-        self._flip.setToolTip(
-            "Turns both live pictures through 180 degrees.\n\n"
-            "The PICTURE only. What is recorded is not turned, and neither is "
-            "what movement detection reads - so the areas you have drawn still "
-            "cover what they covered.\n\n"
-            "For a camera mounted upside down, or a rig on a bench."
-        )
+        # **Turn the live picture upside down (for testing)** was here. It was
+        # a bench switch - a camera mounted inverted, or a rig on a desk - and
+        # the cameras are up now, so it has gone at the operator's request.
+        # The setting it wrote is gone with it; see `vmd/settings.py`.
         self._boxes = QCheckBox("Draw a box on the live picture where something moved")
         self._boxes.setToolTip(
             "A box round what moved, on the live picture, for a few seconds.\n\n"
@@ -1334,7 +1327,6 @@ class SettingsTab(QWidget):
         camera_form.addRow("Show on", self._screen)
         camera_form.addRow("Live picture", self._delay)
         camera_form.addRow("", self._boxes)
-        camera_form.addRow("", self._flip)
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
@@ -2045,14 +2037,6 @@ class SettingsTab(QWidget):
         self._boxes.setChecked(bool(value))
 
     @property
-    def flip_video(self) -> bool:
-        return self._flip.isChecked()
-
-    @flip_video.setter
-    def flip_video(self, value: bool) -> None:
-        self._flip.setChecked(bool(value))
-
-    @property
     def show_playback(self) -> bool:
         return self._show_playback.isChecked()
 
@@ -2551,7 +2535,6 @@ class SettingsTab(QWidget):
         self.camera_title = settings.title
         self.screen = settings.screen
         self.live_delay_ms = settings.live_delay_ms
-        self.flip_video = settings.flip_video
         self.show_boxes = settings.show_boxes
         self.show_playback = settings.show_playback
         self.camera_host = settings.camera.host
@@ -2801,7 +2784,6 @@ class SettingsTab(QWidget):
         payload["title"] = self.camera_title.strip()
         payload["screen"] = self.screen
         payload["live_delay_ms"] = self.live_delay_ms
-        payload["flip_video"] = self.flip_video
         payload["show_boxes"] = self.show_boxes
         payload["show_playback"] = self.show_playback
         payload["camera"] = dict(payload.get("camera", {}))

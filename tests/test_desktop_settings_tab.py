@@ -3241,20 +3241,24 @@ def test_the_delay_the_operator_can_ask_for_is_one_he_can_steer_through(
     assert min(offered) >= 50, "zero leaves nothing to cover a late packet with"
 
 
-def test_the_flip_switch_is_off_and_saves_and_comes_back(qtbot, tmp_path: Path) -> None:
-    """Off, because it is a test switch. It turns the picture and nothing else:
-    what is recorded and what the detector reads are both untouched, so it can
-    be left on by accident without changing the evidence."""
-    tab, _ = build(qtbot, tmp_path)
-    assert tab.flip_video is False
+def test_there_is_no_switch_for_turning_the_picture_upside_down(
+    qtbot, tmp_path: Path
+) -> None:
+    """It was a bench switch - a camera mounted inverted, or a rig on a desk -
+    and it is gone at the operator's request now the cameras are up.
 
-    tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
-    tab.flip_video = True
-    assert tab.save() is True
-    assert load_settings(tab.settings_path).flip_video is True
+    Policed rather than merely deleted: a control taken off a form and left
+    in the settings model is a setting somebody turns on in the file one
+    afternoon, on a console with no control to turn it off again.
+    """
+    tab, path = build(qtbot, tmp_path)
+    assert not hasattr(tab, "flip_video"), "the flip setting is back"
+    for box in tab.findChildren(QCheckBox):
+        assert "upside down" not in box.text().lower(), box.text()
 
-    again, _ = build(qtbot, tmp_path)
-    assert again.flip_video is True
+    tab.set_streams([("thermal", "rtsp://192.0.2.10/t", True, "auto")])
+    assert tab.save() is True, tab.message
+    assert "flip_video" not in json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_the_report_carries_what_detection_is_doing(qtbot, tmp_path: Path) -> None:

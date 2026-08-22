@@ -179,9 +179,7 @@ DEFAULT_DELAY_MS = 120
 TIGHT_CLOCK_AT_OR_BELOW_MS = 50
 
 
-def vlc_options(
-    delay_ms: int = DEFAULT_DELAY_MS, flip: bool = False, boxes: bool = False
-) -> list[str]:
+def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, boxes: bool = False) -> list[str]:
     """What libVLC is started with, and every line of it is about delay.
 
     "Compared to the FLIR browser GUI our VMD is much later. It's unacceptable."
@@ -256,11 +254,6 @@ def vlc_options(
                 "--logo-opacity=0",
             ]
         )
-    if flip:
-        # libVLC's own transform filter, so the turning happens where the
-        # picture is drawn and nowhere else: the recorder and the detector both
-        # read the stream themselves and neither of them passes through here.
-        options.extend(["--video-filter=transform", "--transform-type=180"])
     if delay <= TIGHT_CLOCK_AT_OR_BELOW_MS:
         # Only at the fastest setting, and this is a retreat from shipping them
         # to everybody.
@@ -331,7 +324,6 @@ class VlcVideoPane(QWidget):
         self,
         parent: QWidget | None = None,
         delay_ms: int = DEFAULT_DELAY_MS,
-        flip: bool = False,
         boxes: bool = False,
     ) -> None:
         super().__init__(parent)
@@ -347,7 +339,7 @@ class VlcVideoPane(QWidget):
         # Per pane, because the delay is a setting and a saved change rebuilds
         # the panes. An instance built once at import would hold whatever the
         # first console of the morning was started with.
-        self._instance = vlc.Instance(vlc_options(delay_ms, flip=flip, boxes=boxes))
+        self._instance = vlc.Instance(vlc_options(delay_ms, boxes=boxes))
         self._boxes = bool(boxes)
         self._player = self._instance.media_player_new()
         self._url: str | None = None

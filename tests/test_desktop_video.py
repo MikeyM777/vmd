@@ -223,15 +223,11 @@ def test_the_default_delay_is_the_one_the_settings_model_has() -> None:
     assert Settings().live_delay_ms == DEFAULT_DELAY_MS
 
 
-def test_the_picture_can_be_turned_upside_down_for_testing() -> None:
-    """A camera mounted inverted, or a rig on a bench. libVLC's own transform
-    filter, so the turning happens where the picture is drawn and nowhere
-    else."""
+def test_nothing_asks_libvlc_to_turn_the_picture() -> None:
+    """The switch that did is gone, and so is the filter it set. A transform
+    filter left on a pane nobody can switch off is a picture upside down with
+    no control on the form that explains it."""
     from vmd.desktop.video import vlc_options
 
     plain = vlc_options(120)
-    assert "--video-filter=transform" not in plain
-
-    flipped = vlc_options(120, flip=True)
-    assert "--video-filter=transform" in flipped
-    assert "--transform-type=180" in flipped
+    assert not [option for option in plain if "transform" in option], plain

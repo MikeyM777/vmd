@@ -1992,17 +1992,19 @@ def test_the_box_is_turned_with_a_picture_that_is_shown_upside_down(qtbot) -> No
     assert turned(turned((60, 400, 30, 70), 640, 512), 640, 512) == (60, 400, 30, 70)
 
 
-def test_the_overlay_is_drawn_turned_when_the_view_is_flipped(qtbot, tmp_path) -> None:
-    """The end to end of it: with the view flipped, the mark that reaches the
-    file is at the turned position and not the raw one."""
+def test_the_overlay_is_drawn_where_the_movement_was(qtbot, tmp_path) -> None:
+    """The mark that reaches the file is at the position it was given.
+
+    This was a pair - plain and flipped - until the switch that turned the
+    live picture was taken out. What it still guards is the half that was
+    always the point: the box lands where the detector said it was.
+    """
     from PySide6.QtGui import QImage
 
     from vmd.desktop.boxes import draw
 
     plain = tmp_path / "plain.png"
-    flipped = tmp_path / "flipped.png"
-    assert draw(plain, 640, 512, [(60, 400, 30, 70)], flip=False)
-    assert draw(flipped, 640, 512, [(60, 400, 30, 70)], flip=True)
+    assert draw(plain, 640, 512, [(60, 400, 30, 70)])
 
     def where(path):
         picture = QImage(str(path))
@@ -2015,5 +2017,4 @@ def test_the_overlay_is_drawn_turned_when_the_view_is_flipped(qtbot, tmp_path) -
         return min(x for x, _ in inked), min(y for _, y in inked)
 
     assert where(plain)[0] < 200, where(plain)
-    assert where(flipped)[0] > 400, "the box was not turned with the picture"
-    assert where(flipped)[1] < 100, where(flipped)
+    assert where(plain)[1] > 300, where(plain)
