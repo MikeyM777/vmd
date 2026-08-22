@@ -219,6 +219,11 @@ class ZoomBar(QWidget):
         # that is no longer on the screen, and a child QTimer is destroyed with
         # its parent.
         self._direction = 0
+        # Whether the press being held emitted a creep. Read at release instead
+        # of asking the camera again, because the camera's answer can change
+        # while the button is down and a creep must be ended by a stop whatever
+        # it has since said. See `_released`.
+        self._crept = False
         self._repeat = QTimer(self)
         self._repeat.setInterval(int(REPEAT_EVERY_SECONDS * 1000))
         self._repeat.timeout.connect(self._step_again)
@@ -307,12 +312,16 @@ class ZoomBar(QWidget):
             # the reading would ask for very nearly the same place over and over
             # and the zoom would crawl while the button was held down.
             self._target = self._position
+            self._crept = False
             self._step()
             self._repeat.start()
             return
         # No position to step from, so the only honest thing a button can do is
         # keep the lens moving for as long as it is held - which is what the
         # arrow keys already do for pan and tilt.
+        #
+        # Remembered rather than worked out again at release. See `_released`.
+        self._crept = True
         self.creep.emit(self._name, direction * CREEP)
 
     def _released(self) -> None:
@@ -321,7 +330,18 @@ class ZoomBar(QWidget):
         # the zoom's version of the fault `PtzCommands` guards the head against.
         self._repeat.stop()
         self._direction = 0
-        if not (self._absolute and self._position is not None):
+        # What the press DID, not what the camera would answer now.
+        #
+        # These two used to decide independently, each reading the camera's
+        # current answer, and the answer changes while the button is down
+        # because the lens is polled throughout. A camera that started reporting
+        # a position mid-hold therefore got a creep from the press and nothing
+        # at all from the release - a lens still travelling with no button held,
+        # and nothing coming to stop it, which is the one outcome this file is
+        # not allowed to produce. The mirror case sent a stop for a creep that
+        # was never started. A press that crept is ended by a stop, always.
+        if self._crept:
+            self._crept = False
             self.creep.emit(self._name, 0.0)
 
     def _step(self) -> None:

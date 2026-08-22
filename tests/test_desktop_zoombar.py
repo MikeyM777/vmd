@@ -592,3 +592,56 @@ def test_a_reading_that_disagrees_is_still_ignored_until_the_hold_expires(qtbot)
     clock.tick(HOLD_AFTER_ASKING)
     bar.set_position(0.11)               # now it has had its fair chance
     assert bar.slider().value() == 11
+
+
+# ------------------------------------------ a hold that ends without a stop
+#
+# Older than the throttle and the repeat above, and worth fixing on the way
+# past: it breaks the property this whole console is built on.
+
+
+def test_a_press_that_crept_is_always_ended_by_a_stop(qtbot) -> None:
+    """Whatever the camera has said in between, and this is a safety property.
+
+    The press and the release each used to decide for themselves whether this
+    was a camera that can be sent to a position, by looking at the camera's
+    answer at that moment. The answer can change while the button is down - the
+    lens is being polled throughout - so a press that emitted a creep could be
+    followed by a release that took the absolute branch and emitted no stop at
+    all. What that leaves behind is the failure this console fears most on the
+    steering side and had never checked for on the zoom: a lens still travelling
+    with no button held, and nothing coming to stop it.
+    """
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(None)               # nothing to be sent to, so: creep
+    went, crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    assert crept == [("visible", CREEP)]
+
+    bar.set_position(0.40)               # the camera starts answering mid-hold
+    into.released.emit()
+    assert crept == [("visible", CREEP), ("visible", 0.0)], (
+        "the lens was left creeping with the button already up"
+    )
+    assert went == [], went
+
+
+def test_a_press_that_did_not_creep_never_sends_a_stop(qtbot) -> None:
+    """The same fault the other way round, which is quieter and still wrong: a
+    stop for a movement nobody started. On a camera that has just gone quiet it
+    is a zoom halted in the middle of somebody else's command."""
+    bar = ZoomBar("visible", clock=Clock())
+    qtbot.addWidget(bar)
+    bar.set_position(0.40)               # a position to be sent to, so: absolute
+    went, crept = commands(bar)
+
+    _out, into = bar.buttons()
+    into.pressed.emit()
+    assert went == [("visible", 0.45)]
+
+    bar.set_position(None)               # the camera stops answering mid-hold
+    into.released.emit()
+    assert crept == [], f"a stop was sent for a creep that never started: {crept}"
