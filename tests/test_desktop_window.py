@@ -25,6 +25,12 @@ from vmd.settings import (
     load_settings,
     save_settings,
 )
+from vmd.update.version import describe as describe_version
+
+# What `set_title` itself reads: the version travels with this checkout, so a
+# hardcoded "VMD" here would drift the moment VERSION is bumped and start
+# failing for a reason that has nothing to do with titles.
+PROGRAM = describe_version(Path(__file__).resolve().parent.parent)
 
 
 # Anything the console reads off the recordings folder is read on a worker now,
@@ -293,7 +299,7 @@ def test_the_name_of_the_place_is_on_the_window_and_over_the_pictures(
     what the shortcut and every instruction call this program.
     """
     window, _ = build(qtbot, tmp_path, title="ירושלים")
-    assert window.windowTitle() == "VMD - ירושלים"
+    assert window.windowTitle() == f"{PROGRAM} - ירושלים"
     assert window.live.title_text() == "ירושלים"
     assert window.live.title_visible()
     window.close()
@@ -303,7 +309,7 @@ def test_a_console_with_no_name_says_nothing_at_all(qtbot, tmp_path: Path) -> No
     """One camera on one machine needs no label, and an empty box above the
     pictures is furniture."""
     window, _ = build(qtbot, tmp_path)
-    assert window.windowTitle() == "VMD"
+    assert window.windowTitle() == PROGRAM
     assert not window.live.title_visible()
     window.close()
 
@@ -324,7 +330,7 @@ def test_a_saved_name_reaches_the_window_that_is_open(qtbot, tmp_path: Path) -> 
     settings = load_settings(window._settings_path)
     settings.title = "  ירושלים  "
     window.settings_saved(settings)
-    assert window.windowTitle() == "VMD - ירושלים", "the spaces were kept"
+    assert window.windowTitle() == f"{PROGRAM} - ירושלים", "the spaces were kept"
     assert window.live.title_text() == "ירושלים"
     window.close()
 

@@ -57,6 +57,7 @@ from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
 from vmd.settings import Settings, consoles_on_this_radio, load_settings, save_settings
 from vmd.storage.index import SegmentIndex
+from vmd.update.version import describe as describe_version
 
 logger = logging.getLogger(__name__)
 
@@ -1180,7 +1181,19 @@ class ConsoleWindow(QMainWindow):
         renamed the thing somebody was told to look for.
         """
         name = (name or "").strip()
-        self.setWindowTitle(f"VMD - {name}" if name else "VMD")
+        # The version is part of the name of the program, not decoration: it is
+        # the first thing anybody is asked for when they report something, and
+        # on this machine there is no About box, no terminal and no second
+        # screen to find it on.
+        #
+        # Read from the project root, not from the settings folder: on a
+        # multi-camera install the settings file lives in
+        # cameras\250\settings.json, and the VERSION file that travels with an
+        # update lives at the top of the whole checkout, three levels above
+        # this module (vmd/desktop/window.py -> vmd/desktop -> vmd -> root).
+        root = Path(__file__).resolve().parent.parent.parent
+        program = describe_version(root)
+        self.setWindowTitle(f"{program} - {name}" if name else program)
         tell = getattr(self.live, "set_title", None)
         if tell is not None:
             try:
