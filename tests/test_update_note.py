@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import pytest
+
+from vmd.update import note as note_module
 from vmd.update.note import installed_libraries, write_note
 
 
@@ -14,6 +18,10 @@ def a_venv(root: Path, packages: dict[str, str]) -> None:
     for name, version in packages.items():
         info = site / f"{name}-{version}.dist-info"
         info.mkdir()
+        # A real dist-info folder always has a METADATA file. installed_libraries
+        # deliberately never opens it - the version comes off the folder name -
+        # but it is written here anyway so the fixture is what a real .venv
+        # actually looks like, not a shape invented to suit the reader.
         (info / "METADATA").write_text(
             f"Name: {name}\nVersion: {version}\n", encoding="utf-8"
         )
@@ -73,3 +81,45 @@ def test_writing_the_note_twice_replaces_it(tmp_path: Path) -> None:
 
     assert len(list((stick / "machines").glob("*.json"))) == 1
     assert json.loads(path.read_text(encoding="utf-8"))["version"] == 8
+
+
+def test_a_failure_during_the_second_write_leaves_the_first_note_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A power cut or a pulled stick can interrupt a write at any point, and the
+    note is the one thing that survives a failed update to tell the laptop what
+    this machine has. So a failure partway through writing it must never leave
+    a truncated or half-written file behind - the destination must stay either
+    the old complete note or the new one, never something in between.
+
+    os.replace is the last step of a crash-safe write: everything up to it
+    happens on a temporary file, and only a working replace ever touches the
+    real path. Making that final step fail proves the point precisely because
+    it comes after real disk I/O has already happened for the second write - if
+    the destination were touched any earlier than that, this would already have
+    corrupted it.
+    """
+    root = tmp_path / "VMD"
+    root.mkdir()
+    (root / "VERSION").write_text("7", encoding="utf-8")
+    stick = tmp_path / "stick"
+    stick.mkdir()
+
+    path = write_note(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00")
+    first = path.read_text(encoding="utf-8")
+
+    def stick_pulled(*args: object, **kwargs: object) -> None:
+        raise OSError("stick pulled mid-write")
+
+    monkeypatch.setattr(note_module.os, "replace", stick_pulled)
+    (root / "VERSION").write_text("8", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        write_note(root, stick, machine="WIN-TEST", when="2026-08-23T10:00:00")
+
+    assert path.read_text(encoding="utf-8") == first
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 7
+
+    # No temporary file left behind beside the note that survived.
+    leftovers = [p for p in (stick / "machines").iterdir() if p != path]
+    assert leftovers == []

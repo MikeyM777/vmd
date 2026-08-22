@@ -14,7 +14,9 @@ already wasted; it must not also be uninformative.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from vmd.update.version import read_version
@@ -67,9 +69,33 @@ def write_note(root: Path | str, stick: Path | str, machine: str, when: str) -> 
 
     One file per machine, named after the machine, so that one stick can serve
     several sites without either of them packing for the other.
+
+    Written crash-safe: a plain write truncates the destination before it has
+    anything to put in its place, so a power cut or a stick pulled mid-write
+    would leave a half-written note - the one file that survives a failed
+    update to say what this machine has, destroyed at the exact moment that
+    matters most. Instead the new note is written whole to a temporary file in
+    the same folder, flushed and fsynced to the platter, and only then swapped
+    into place with os.replace - same directory because os.replace is only
+    atomic within one filesystem. The destination is therefore always either
+    the old complete note or the new one, never something in between.
     """
     folder = Path(stick) / MACHINES
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{machine}.json"
-    path.write_text(json.dumps(note(root, machine, when), indent=1), encoding="utf-8")
+    payload = json.dumps(note(root, machine, when), indent=1)
+
+    handle, temp_name = tempfile.mkstemp(
+        dir=str(folder), prefix=path.name + ".", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(payload)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
     return path
