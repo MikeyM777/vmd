@@ -159,3 +159,101 @@ def test_it_says_when_it_has_never_seen_a_machine(tmp_path: Path) -> None:
     result = build_stick(source, stick)
 
     assert "never been to a VMD machine" in result.stdout
+
+
+def test_it_asks_for_exactly_the_libraries_the_machine_lacks(tmp_path: Path) -> None:
+    """The whole reason the machine writes a note. Packing the lock's full set
+    every time means torch, and torch is over 2 GB - a stick, a wait and a
+    trip, for a change of three lines."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        '[[package]]\nname = "numpy"\nversion = "2.2.0"\n\n'
+        '[[package]]\nname = "torch"\nversion = "2.6.0"\n',
+        encoding="utf-8",
+    )
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-TEST.json").write_text(
+        json.dumps(
+            {
+                "machine": "WIN-TEST",
+                "version": 7,
+                "libraries": {"numpy": "2.1.0", "torch": "2.6.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert "numpy==2.2.0" in result.stdout
+    assert "torch" not in result.stdout, "torch is already on that machine"
+
+
+def test_the_two_sides_normalise_a_name_the_same_way(tmp_path: Path) -> None:
+    """The machine writes pyside6-essentials (PEP 503) and uv.lock spells the
+    same library PySide6_Essentials. If the laptop's normalisation disagreed
+    with vmd/update/note.py's, it would list that 90 MB wheel as missing and
+    pack it for a machine that already has it. Same normalisation, same version,
+    nothing to download."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        '[[package]]\nname = "PySide6_Essentials"\nversion = "6.8.0"\n',
+        encoding="utf-8",
+    )
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-TEST.json").write_text(
+        json.dumps(
+            {
+                "machine": "WIN-TEST",
+                "version": 7,
+                "libraries": {"pyside6-essentials": "6.8.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert "already on the machine" in result.stdout
+    assert "needs pyside6-essentials" not in result.stdout
+
+
+def test_a_package_pinned_per_python_version_uses_the_target_s_pin(
+    tmp_path: Path,
+) -> None:
+    """uv lists a package once per resolution-marker set, so numpy is in the
+    real lock twice: 2.4.6 for python < 3.12 and 2.5.1 for python >= 3.12. The
+    offline machine runs 3.12, so the stick must diff against 2.5.1. Taking
+    whichever the lock happened to write last would pack the wrong wheel, and
+    the far end would refuse it. The machine here already has 2.5.1, so once the
+    right pin is chosen there is nothing to fetch."""
+    source = a_repository(tmp_path / "repo", 8)
+    (source / "uv.lock").write_text(
+        "[[package]]\nname = \"numpy\"\nversion = \"2.4.6\"\n"
+        "resolution-markers = [\n"
+        "    \"python_full_version < '3.12' and sys_platform == 'win32'\",\n"
+        "    \"python_full_version < '3.12' and sys_platform != 'win32'\",\n"
+        "]\n\n"
+        "[[package]]\nname = \"numpy\"\nversion = \"2.5.1\"\n"
+        "resolution-markers = [\n"
+        "    \"python_full_version >= '3.12' and sys_platform == 'win32'\",\n"
+        "    \"python_full_version >= '3.12' and sys_platform != 'win32'\",\n"
+        "]\n",
+        encoding="utf-8",
+    )
+    stick = tmp_path / "E"
+    (stick / "machines").mkdir(parents=True)
+    (stick / "machines" / "WIN-TEST.json").write_text(
+        json.dumps(
+            {"machine": "WIN-TEST", "version": 7, "libraries": {"numpy": "2.5.1"}}
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_stick(source, stick, extra=["-ListWheelsOnly"])
+
+    assert "already on the machine" in result.stdout
+    assert "2.4.6" not in result.stdout, "the < 3.12 pin is not for this machine"
+    assert "needs numpy" not in result.stdout

@@ -34,10 +34,16 @@ param(
     [string]$Branch = 'master',
     [string]$SourceFolder,
     [switch]$NoWheels,
-    # Passed by VMD-Update-Stick.bat and ignored until Task 11 puts a window on
-    # this. Accepted now rather than then, because a .bat that passes a
-    # parameter the .ps1 has never heard of stops with "a parameter cannot be
-    # found that matches" before it prints anything at all.
+    # Says which wheels it WOULD download and then stops, without fetching one.
+    # This is what the tests use to exercise the lock-versus-note diff, because
+    # tests/conftest.py refuses any socket that is not loopback and a test that
+    # actually reached for a wheel could not run at all. It is also useful by
+    # hand, to see what a stick is about to carry before committing to the wait.
+    [switch]$ListWheelsOnly,
+    # Passed by VMD-Update-Stick.bat. Shows a small window instead of doing the
+    # work, and the window shells back into this same script without -Gui to do
+    # it. Accepted even when unused so that a .bat passing it does not stop with
+    # "a parameter cannot be found that matches" before it prints anything.
     [switch]$Gui
 )
 
@@ -385,6 +391,265 @@ function Test-Nested($inner, $outer) {
 }
 
 
+function Normalise-Name($name) {
+    <#
+        The one spelling of a package name both sides agree on, PEP 503.
+        It has to match vmd\update\note.py's `normalise` character for
+        character, because that is what the offline machine used when it wrote
+        its note: the machine writes pyside6-essentials and uv.lock spells the
+        same library PySide6_Essentials, and if the two normalisations disagreed
+        the laptop would pack a 90 MB wheel the machine already has, or miss one
+        it needs. note.py does re.sub(r"[-_.]+", "-", name).lower(); this is the
+        same substitution and the same lowercasing.
+    #>
+    return ($name -replace '[-_.]+', '-').ToLower()
+}
+
+
+function Test-MarkersApplyToTarget($markerLines) {
+    <#
+        Do a package occurrence's resolution-markers apply to the machine this
+        stick is for - CPython 3.12 on win_amd64?
+
+        A package with no markers applies to everything, so it applies to us. A
+        package WITH markers applies if any one of them can be true for our
+        target. A marker cannot describe our target if it demands an older
+        Python (python_full_version < '3.12') or a different operating system
+        (sys_platform != 'win32'), so an occurrence every one of whose markers
+        says one of those things is not for this machine and is passed over.
+    #>
+    if ($markerLines.Count -eq 0) { return $true }
+    foreach ($marker in $markerLines) {
+        $notForUs = ($marker -match "python_full_version\s*<\s*'3\.12'") -or
+                    ($marker -match "sys_platform\s*!=\s*'win32'")
+        if (-not $notForUs) { return $true }
+    }
+    return $false
+}
+
+
+function Get-LockedPackages($lockPath) {
+    <#
+        The packages a uv.lock pins for THIS machine, as normalised-name ->
+        version.
+
+        Read with a regex rather than a TOML parser, because a TOML parser is a
+        library and this laptop has nothing installed on it. The shape uv.lock
+        uses is stable and simple enough to read line by line: a [[package]]
+        table header, then an unindented name = "..." and an unindented
+        version = "..." within it.
+
+        The dependency references inside a package - the { name = "..." } items
+        in a dependencies or requires-dist list - are deliberately NOT matched,
+        because they are inline tables that begin with a brace, so "^\s*name" (no
+        brace) skips them. Only the first version after a name is taken, so a
+        stray version deeper in the same table cannot overwrite the package's
+        own. The format version on line one (version = 1, no quotes) is skipped
+        because it is not a quoted string.
+
+        The one thing a plain name -> version read gets wrong: uv lists a package
+        once PER set of resolution-markers, so numpy appears twice in this very
+        lock - 2.4.6 for python < 3.12 and 2.5.1 for python >= 3.12. Taking
+        whichever came last would be a coin toss that packs the < 3.12 wheel for
+        a machine that runs 3.12, a wheel the far end will never install. So each
+        occurrence is checked against the target with the markers it carries, and
+        one that is for another Python or another platform is not recorded.
+    #>
+    $packages = @{}
+    if (-not (Test-Path $lockPath)) { return $packages }
+
+    $name = $null
+    $version = $null
+    $markers = @()
+    $inMarkers = $false
+
+    foreach ($line in (Get-Content $lockPath)) {
+        if ($line -match '^\s*\[\[package\]\]') {
+            # The previous package ends here. Record it unless its markers say it
+            # is not for this machine.
+            if ($name -and $version -and (Test-MarkersApplyToTarget $markers)) {
+                $packages[(Normalise-Name $name)] = $version
+            }
+            $name = $null; $version = $null; $markers = @(); $inMarkers = $false
+            continue
+        }
+        if ($inMarkers) {
+            if ($line -match '"([^"]+)"') { $markers += $Matches[1] }
+            if ($line -match '\]') { $inMarkers = $false }
+            continue
+        }
+        if ($line -match '^\s*resolution-markers\s*=\s*\[') {
+            $inMarkers = $true
+            # A single-line resolution-markers = [ ... ] closes on the same line.
+            if ($line -match '\]') { $inMarkers = $false }
+            continue
+        }
+        if ($line -match '^\s*name\s*=\s*"([^"]+)"') { $name = $Matches[1]; continue }
+        if ($line -match '^\s*version\s*=\s*"([^"]+)"' -and $name -and -not $version) {
+            $version = $Matches[1]
+        }
+    }
+    # The last package in the file has no [[package]] after it to flush it.
+    if ($name -and $version -and (Test-MarkersApplyToTarget $markers)) {
+        $packages[(Normalise-Name $name)] = $version
+    }
+    return $packages
+}
+
+
+function Get-MissingPackages($locked, $notes) {
+    <#
+        The pins no machine on this stick has yet, as normalised-name -> version.
+
+        A package counts as needed when ANY machine's note lacks it at the locked
+        version - the union over every note - because one stick may serve two
+        sites and a wheel packed for one costs the other nothing but a little
+        room. A machine that already has the exact version the lock pins is asked
+        for nothing, which is the whole point: torch is over 2 GB and does not
+        change every release.
+    #>
+    $missing = @{}
+    foreach ($note in $notes) {
+        $have = @{}
+        try {
+            $parsed = Get-Content $note.FullName -Raw | ConvertFrom-Json
+            if ($parsed.libraries) {
+                foreach ($property in $parsed.libraries.PSObject.Properties) {
+                    $have[(Normalise-Name $property.Name)] = [string]$property.Value
+                }
+            }
+        } catch {
+            # A note that will not parse tells us nothing about that machine, so
+            # it is skipped rather than allowed to stop the build. The far end
+            # checks every wheel it installs regardless.
+            continue
+        }
+        foreach ($name in $locked.Keys) {
+            if ($have[$name] -ne $locked[$name]) { $missing[$name] = $locked[$name] }
+        }
+    }
+    return $missing
+}
+
+
+function Get-StickPython($stick) {
+    <#
+        A CPython that can fetch wheels, put on the stick and kept there.
+
+        This is here rather than "uv pip download" because the bundled uv, and
+        the current release of uv, have no pip download subcommand at all - uv
+        pip covers compile, sync, install and so on, but not download. So the
+        wheels are fetched the one way that needs nothing installed on the
+        laptop: uv is dropped onto the stick, uv installs a Python onto the
+        stick, and that Python's pip does the download. The laptop keeps nothing;
+        the stick keeps both for next time, so only the first build waits for
+        them.
+
+        The target platform is stated at the download, not here: this Python is
+        merely the tool that fetches, and it fetches win_amd64 CPython 3.12
+        wheels no matter what the laptop itself is.
+    #>
+    $uv = Join-Path $stick 'tools\uv.exe'
+    if (-not (Test-Path $uv)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $uv) | Out-Null
+        Write-Info "Fetching uv onto the stick (14 MB, once)."
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $zip = Join-Path $env:TEMP 'uv.zip'
+        Invoke-WebRequest -UseBasicParsing -OutFile $zip `
+            -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'
+        Expand-Archive $zip (Split-Path $uv) -Force
+        Remove-Item $zip -Force
+    }
+    $pythonDir = Join-Path $stick 'tools\python'
+    $found = Get-ChildItem $pythonDir -Filter 'python.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $found) {
+        Write-Info "Fetching a Python onto the stick (20 MB, once)."
+        & $uv python install --install-dir $pythonDir 3.12 | Out-Host
+        $found = Get-ChildItem $pythonDir -Filter 'python.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if (-not $found) { throw "Could not put a Python on the stick to fetch wheels with." }
+    return $found.FullName
+}
+
+
+# =============================================================================
+#  the window
+# =============================================================================
+#
+# One button and a drive to point it at, for whoever fills the stick and does
+# not open a terminal. It does none of the work itself: it shells back into this
+# same script WITHOUT -Gui and shows what comes back, so there is one code path
+# that builds a stick and the window is only a way to start it. That is why the
+# tests never touch this block - they call the same script the button does.
+if ($Gui) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'VMD update stick'
+    $form.Size = New-Object System.Drawing.Size(560, 260)
+    $form.StartPosition = 'CenterScreen'
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = 'USB drive:'
+    $label.Location = New-Object System.Drawing.Point(16, 20)
+    $label.AutoSize = $true
+    $form.Controls.Add($label)
+
+    $drives = New-Object System.Windows.Forms.ComboBox
+    $drives.Location = New-Object System.Drawing.Point(100, 16)
+    $drives.Width = 420
+    $drives.DropDownStyle = 'DropDownList'
+    # Removable drives only (DriveType 2), each labelled with the version it
+    # already carries if it is a VMD stick, so the person choosing can tell a
+    # stick that has been built before from a blank one.
+    foreach ($drive in (Get-WmiObject Win32_LogicalDisk -Filter 'DriveType=2')) {
+        $version = ''
+        $updateJson = Join-Path $drive.DeviceID '\update.json'
+        if (Test-Path $updateJson) {
+            try { $version = " (VMD $((Get-Content $updateJson -Raw | ConvertFrom-Json).version))" } catch { }
+        }
+        [void]$drives.Items.Add("$($drive.DeviceID)\$version")
+    }
+    if ($drives.Items.Count -gt 0) { $drives.SelectedIndex = 0 }
+    $form.Controls.Add($drives)
+
+    $status = New-Object System.Windows.Forms.TextBox
+    $status.Multiline = $true
+    $status.ReadOnly = $true
+    $status.ScrollBars = 'Vertical'
+    $status.Location = New-Object System.Drawing.Point(16, 60)
+    $status.Size = New-Object System.Drawing.Size(504, 110)
+    $form.Controls.Add($status)
+
+    $go = New-Object System.Windows.Forms.Button
+    $go.Text = 'Build the stick'
+    $go.Location = New-Object System.Drawing.Point(400, 180)
+    $go.Size = New-Object System.Drawing.Size(120, 30)
+    $go.Add_Click({
+        # The item reads like "E:\ (VMD 8)"; the drive is the part before the
+        # first space, and the rest is only there to be read.
+        $chosen = ($drives.SelectedItem -split ' ')[0]
+        if (-not $chosen) { $status.AppendText("Plug the stick in and open this again.`r`n"); return }
+        $go.Enabled = $false
+        $status.AppendText("Building on $chosen ...`r`n")
+        $form.Refresh()
+        # The same script, without -Gui, is what does the work. 2>&1 folds its
+        # error stream into the output so a failure is shown in the box rather
+        # than lost to a console nobody opened.
+        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -To $chosen 2>&1
+        foreach ($line in $output) { $status.AppendText("$line`r`n") }
+        $go.Enabled = $true
+    })
+    $form.Controls.Add($go)
+
+    [void]$form.ShowDialog()
+    exit 0
+}
+
+
 # =============================================================================
 #  the build
 # =============================================================================
@@ -469,14 +734,51 @@ try {
         }
     }
 
+    # Diff the new lock against every machine note and work out which wheels no
+    # machine on this stick has yet. Only when there is at least one note: with
+    # no note there is nothing to diff against, and the lines above have already
+    # said the stick will carry code only.
+    $missing = @{}
+    if ($notes.Count -gt 0) {
+        $locked = Get-LockedPackages (Join-Path $source 'uv.lock')
+        $missing = Get-MissingPackages $locked $notes
+        foreach ($name in ($missing.Keys | Sort-Object)) {
+            Write-Info "needs $name==$($missing[$name])"
+        }
+        if ($missing.Count -eq 0) {
+            Write-Ok "Every library this update needs is already on the machine this stick has visited."
+        }
+    }
+
+    # -ListWheelsOnly has now said what it would fetch, and stops before touching
+    # the network or the stick. This is the seam the tests use: they can prove
+    # the diff picked the right packages without a wheel ever being downloaded.
+    if ($ListWheelsOnly) {
+        Write-Host ""
+        Write-Ok "Listed what would be downloaded, and downloaded nothing (-ListWheelsOnly)."
+        exit 0
+    }
+
     if ($NoWheels) {
-        Write-Info "Not packing any libraries, because -NoWheels was given."
-    } elseif ($notes.Count -gt 0) {
-        # Filled in by Task 11 of docs\superpowers\plans\2026-08-22-offline-updates.md.
-        # Until then the stick carries code, which is what every update but one
-        # is. Said out loud rather than done silently, so that nobody reads the
-        # line above and believes wheels were packed.
-        Write-Info "Working out which libraries are missing is not built yet; carrying code only."
+        Write-Info "Not downloading any libraries, because -NoWheels was given."
+    } elseif ($missing.Count -gt 0) {
+        $wheels = Join-Path $To 'wheels'
+        New-Item -ItemType Directory -Force -Path $wheels | Out-Null
+        $python = Get-StickPython $To
+        foreach ($name in ($missing.Keys | Sort-Object)) {
+            $pin = "$name==$($missing[$name])"
+            Write-Info "Downloading $pin"
+            # --no-deps because the pins come from the lock, which already
+            # resolved the whole graph: letting pip resolve the dependencies
+            # again would pull versions this machine is not going to install.
+            # --only-binary and the three platform flags pin the wheel to the
+            # machine at the far end - win_amd64, CPython 3.12 - rather than to
+            # this laptop, whose own Python is not what the offline machine runs.
+            & $python -m pip download $pin --no-deps --only-binary=:all: `
+                --platform win_amd64 --python-version 3.12 --implementation cp `
+                --dest $wheels | Out-Host
+            if ($LASTEXITCODE -ne 0) { Write-Bad "could not download $pin" }
+        }
     }
 
     Write-Step "Writing the manifest and checking the stick against it"
