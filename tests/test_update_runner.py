@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -10,11 +11,21 @@ from vmd.update import runner
 from vmd.update.runner import (
     selftest_command,
     start,
+    start_rollback,
     stop_command,
     sync_command,
     temp_copy_of,
     temp_folder,
 )
+
+
+def an_install(root: Path) -> Path:
+    """A copy with a `vmd` package and an interpreter of its own."""
+    (root / "vmd").mkdir(parents=True)
+    interpreter = root / "bin" / "python" / "cpython-3.12.9" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"not really an interpreter")
+    return interpreter
 
 
 def test_libraries_are_installed_from_the_stick_and_nowhere_else(tmp_path: Path) -> None:
@@ -202,3 +213,227 @@ def test_starting_the_updater_clears_the_last_update_s_answer(
     start(root, tmp_path / "E", root / "settings.json")
 
     assert not status.exists()
+
+
+def test_going_back_is_started_the_same_orphaned_way_an_update_is(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The rollback stops the console too, and the console's stopper kills a
+    process TREE. A rollback started as a plain detached child of the console
+    is killed by its own second step, halfway through putting the old version
+    back - which is the worst state this machine can be left in. It goes
+    through `cmd /c start` for the same reason an update does."""
+    root = tmp_path / "VMD"
+    interpreter = an_install(root)
+    seen = {}
+
+    def remember(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(runner, "temp_folder", lambda: tmp_path / "temp")
+    monkeypatch.setattr(subprocess, "Popen", remember)
+
+    started, why = start_rollback(root, 7, root / "settings.json")
+
+    assert (started, why) == (True, "")
+    assert seen["command"][0].lower().endswith("cmd.exe")
+    assert seen["command"][1:5] == ["/c", "start", "", "/B"]
+    assert str(interpreter) in seen["command"]
+    assert seen["command"][seen["command"].index("--rollback") + 1] == "7"
+    assert seen["kwargs"]["cwd"] == str(tmp_path / "temp")
+    assert seen["kwargs"]["env"]["PYTHONPATH"] == str(tmp_path / "temp")
+
+
+def test_going_back_clears_the_last_update_s_answer_too(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The panel watches the same file for a rollback as for an update, and the
+    last update's `finished` would answer the instant Go back was pressed."""
+    root = tmp_path / "VMD"
+    an_install(root)
+    status = root / "bin" / "logs" / "update-status.json"
+    status.parent.mkdir(parents=True)
+    status.write_text('{"finished": true}', encoding="utf-8")
+    monkeypatch.setattr(runner, "temp_folder", lambda: tmp_path / "temp")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: None)
+
+    start_rollback(root, 7, root / "settings.json")
+
+    assert not status.exists()
+
+
+def test_a_rollback_that_cannot_be_started_is_reported_rather_than_raised(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "VMD"
+    an_install(root)
+
+    def refuse(*args, **kwargs):
+        raise OSError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(runner, "temp_folder", lambda: tmp_path / "temp")
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    started, why = start_rollback(root, 7, root / "settings.json")
+
+    assert started is False
+    assert "Access is denied" in why
+
+
+def test_a_rollback_with_no_interpreter_of_its_own_says_so(tmp_path: Path) -> None:
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+
+    started, why = start_rollback(root, 7, root / "settings.json")
+
+    assert started is False
+    assert "bin\\python" in why
+
+
+# --------------------------------------------------------- what it then runs
+
+
+def kept_copy(root: Path, version: int) -> Path:
+    """A `previous\\<version>` of the shape back_up leaves behind."""
+    kept = root / "previous" / str(version)
+    (kept / "vmd").mkdir(parents=True)
+    (kept / "vmd" / "app.py").write_text("# the old one\n", encoding="utf-8")
+    (kept / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    return kept
+
+
+class Ran:
+    """Every subprocess the rollback would have run, and none of them run."""
+
+    def __init__(self, code: int = 0) -> None:
+        self.commands: list[list[str]] = []
+        self.started: list[list[str]] = []
+        self.code = code
+
+    def run(self, command, **kwargs):
+        self.commands.append(list(command))
+        return subprocess.CompletedProcess(command, self.code, "", "the cache is empty")
+
+    def popen(self, command, **kwargs):
+        self.started.append(list(command))
+        return None
+
+
+def rollback(root: Path, version: int, monkeypatch, ran: Ran) -> int:
+    from vmd.update import main as main_module
+
+    monkeypatch.setattr(subprocess, "run", ran.run)
+    monkeypatch.setattr(subprocess, "Popen", ran.popen)
+    return main_module.main(
+        [
+            "--root",
+            str(root),
+            "--rollback",
+            str(version),
+            "--settings",
+            str(root / "settings.json"),
+        ]
+    )
+
+
+def read_status(root: Path) -> dict:
+    return json.loads(
+        (root / "bin" / "logs" / "update-status.json").read_text(encoding="utf-8")
+    )
+
+
+def test_going_back_puts_the_kept_version_over_the_install(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    (root / "vmd" / "app.py").write_text("# the new one\n", encoding="utf-8")
+    (root / "VERSION").write_text("8\n", encoding="utf-8")
+    kept_copy(root, 7)
+    ran = Ran()
+
+    code = rollback(root, 7, monkeypatch, ran)
+
+    assert code == 0
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "# the old one\n"
+    assert (root / "VERSION").read_text(encoding="utf-8").strip() == "7"
+    status = read_status(root)
+    assert status["finished"] is True and status["ok"] is True
+    assert "VMD 7 is back" in status["message"]
+
+
+def test_going_back_stops_the_console_and_starts_it_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The rollback replaces the files the console is running out of, so the
+    console has to be down while it happens - and something has to put it back
+    up, because the operator is looking at a screen with nothing on it."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    kept_copy(root, 7)
+    ran = Ran()
+
+    rollback(root, 7, monkeypatch, ran)
+
+    assert any("Stop-ProjectProcesses" in " ".join(command) for command in ran.commands)
+    assert any(str(root / "VMD.bat") in command[0] for command in ran.started)
+
+
+def test_going_back_reinstalls_the_old_libraries_from_this_machine_s_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """There is no stick for the old version's wheels - the stick that is in
+    the machine carries the new ones. uv's own cache on this machine is where
+    the old ones are: they were installed here once."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    kept_copy(root, 7)
+    ran = Ran()
+
+    rollback(root, 7, monkeypatch, ran)
+
+    synced = [command for command in ran.commands if "sync" in command]
+    assert synced, ran.commands
+    assert synced[0][0].endswith("uv.exe")
+    assert "--offline" in synced[0] and "--frozen" in synced[0]
+
+
+def test_a_rollback_whose_libraries_are_gone_says_what_is_wrong_with_the_machine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A cleared cache. The files are back and the console will start, but it
+    is a console that may not run - and the answer is another trip with a stick
+    carrying that version, which is a sentence somebody has to be able to read
+    down a telephone."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    kept_copy(root, 7)
+    ran = Ran(code=1)
+
+    code = rollback(root, 7, monkeypatch, ran)
+
+    status = read_status(root)
+    assert code == 1
+    assert status["ok"] is False
+    assert "the cache is empty" in status["message"]
+    assert "Bring a stick with VMD 7 on it" in status["message"]
+    assert ran.started, "the console is started again whatever happened"
+
+
+def test_going_back_to_a_version_that_is_not_kept_changes_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Nothing is stopped and nothing is replaced: the console that asked is
+    still running, and it is the thing that reads this answer."""
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    (root / "vmd" / "app.py").write_text("# the new one\n", encoding="utf-8")
+    ran = Ran()
+
+    code = rollback(root, 9, monkeypatch, ran)
+
+    assert code == 1
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "# the new one\n"
+    assert ran.commands == [] and ran.started == []
+    assert "no kept copy of VMD 9" in read_status(root)["message"]

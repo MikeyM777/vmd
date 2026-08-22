@@ -61,6 +61,7 @@ from vmd.desktop.style import (
     SPACE_STEP,
     SPACE_TIGHT,
 )
+from vmd.desktop.update_panel import UpdatePanel
 
 # The console has one slider and it should keep looking like one slider. The
 # look is built out of PALETTE names in the zoom bar, which is where the first
@@ -1868,6 +1869,24 @@ class SettingsTab(QWidget):
         ending.addWidget(self._message, 1)
         ending.addWidget(self.save_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(ending)
+
+        # Last on the form, under the Save row and not behind a fold. On a
+        # machine with no internet this is the whole of maintenance, and a
+        # control somebody has to be told about is a control somebody will not
+        # find. Below Save rather than above it because everything above Save
+        # is a setting Save writes, and this changes the program instead - a
+        # box between the camera tools and the Save button reads as one more
+        # thing that button is about to apply.
+        #
+        # The root is the program's, not this console's: VERSION, previous\
+        # and bin\logs\ belong to the install, while settings_path can be
+        # cameras\<name>\settings.json - one console per camera out of one copy
+        # of the program.
+        self.update_panel = UpdatePanel(
+            root=Path(__file__).resolve().parent.parent.parent,
+            settings_path=self.settings_path,
+        )
+        layout.addWidget(self.update_panel)
         layout.addStretch(1)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
@@ -2568,6 +2587,10 @@ class SettingsTab(QWidget):
         # `MIN_STREAM_ROWS` - this is the whole of what stopped a new
         # installation being set up from this form.
         self.draw_empty_cards_to_fill_in()
+        # Read afresh whenever the form is: the stick is usually plugged in
+        # after the console is already running, and a panel that only ever
+        # looked once says "No update stick found" to a man holding one.
+        self.update_panel.look()
         self._set_message(" ".join(part for part in (problem, _adopted(settings)) if part))
 
     # ------------------------------------------------------------------ save

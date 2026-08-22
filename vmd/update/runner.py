@@ -228,3 +228,48 @@ def start(root: Path, stick: Path, settings: Path) -> tuple[bool, str]:
         # been touched at this point, so there is nothing to undo.
         return False, f"The updater could not be started: {failure}"
     return True, ""
+
+
+def start_rollback(root: Path, version: int, settings: Path) -> tuple[bool, str]:
+    """Put a kept version back, started exactly the way an update is started.
+
+    Out of a copy, and orphaned rather than merely detached - the two reasons
+    `start` gives apply here word for word, and the second of them harder. A
+    rollback stops the console too, and the console is stopped with
+    `taskkill /F /T`: a plain detached child of the console is inside the tree
+    that kill walks, so a rollback started that way is killed by its own second
+    step, with the old version half copied back over the new one. That is the
+    worst state this machine can be left in, and it is why this goes through
+    `spawn_orphan` and not through a Popen of its own.
+    """
+    root = Path(root)
+    status = root / LOGS / STATUS
+    status.parent.mkdir(parents=True, exist_ok=True)
+    # The panel watches this file for a rollback exactly as it does for an
+    # update, so the last update's answer has to go before this one starts.
+    status.unlink(missing_ok=True)
+
+    python = project_python(root)
+    if python is None:
+        return False, "This copy has no interpreter in bin\\python\\, so it cannot go back."
+
+    try:
+        where = temp_copy_of(root, temp_folder())
+        spawn_orphan(
+            [
+                str(python),
+                "-m",
+                "vmd.update.main",
+                "--root",
+                str(root),
+                "--rollback",
+                str(version),
+                "--settings",
+                str(settings),
+            ],
+            cwd=where,
+            environment=dict(os.environ, PYTHONPATH=str(where)),
+        )
+    except OSError as failure:
+        return False, f"Going back could not be started: {failure}"
+    return True, ""

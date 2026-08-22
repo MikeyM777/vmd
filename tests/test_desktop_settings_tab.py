@@ -2122,7 +2122,13 @@ def test_a_fold_says_which_way_it_is_pointing(qtbot, tmp_path: Path) -> None:
 
 def test_the_camera_tools_are_the_last_thing_before_save(qtbot, tmp_path: Path) -> None:
     """Shut is only half of it. A shut box in the middle of the form is still a
-    thing he scrolls past twice on the way to the number he came for."""
+    thing he scrolls past twice on the way to the number he came for.
+
+    One box is below the tools and below Save, and deliberately: **Software**
+    is not a setting Save writes, it is the control that changes the program,
+    and it is the last thing on the page for the same reason the tools are the
+    last thing before it.
+    """
     tab, _ = build(qtbot, tmp_path)
     tab.show()
     tab.setGeometry(0, 0, 1366, 2400)
@@ -2130,8 +2136,28 @@ def test_the_camera_tools_are_the_last_thing_before_save(qtbot, tmp_path: Path) 
 
     tools = tab.tools_button.mapTo(tab, QPoint(0, 0)).y()
     for box in tab.findChildren(QGroupBox):
+        if box is tab.update_panel:
+            continue
         assert box.mapTo(tab, QPoint(0, 0)).y() < tools, box.title()
     assert tab.save_button.mapTo(tab, QPoint(0, 0)).y() > tools
+    assert tab.update_panel.mapTo(tab, QPoint(0, 0)).y() > tab.save_button.mapTo(
+        tab, QPoint(0, 0)
+    ).y()
+
+
+def test_the_software_box_is_on_the_form_and_not_behind_a_fold(
+    qtbot, tmp_path: Path
+) -> None:
+    """The only control on an air-gapped machine that changes the software. A
+    fold would mean the operator has to be told it is there, over a telephone,
+    on the day something has already gone wrong."""
+    tab, _ = build(qtbot, tmp_path)
+    tab.show()
+    QApplication.processEvents()
+
+    assert tab.update_panel.title() == "Software"
+    assert tab.update_panel.isVisible()
+    assert tab.update_panel.this_system.text().startswith("This system: VMD")
 
 
 def test_no_camera_tool_button_is_clipped_by_its_own_label(
