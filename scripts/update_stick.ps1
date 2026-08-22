@@ -1629,7 +1629,22 @@ if ($Download) {
             throw ("The staging folder ($StageDir) is inside the source folder ($source), " +
                    "or the other way round. Point -StageDir at a folder of its own.")
         }
-        New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+        # Only when missing - a drive root already exists and cannot be
+        # New-Item'd ("The path is not of a legal form"), the same guard the two
+        # write sites carry. -StageDir is normally a folder under LOCALAPPDATA,
+        # but the command line allows a root and it must not throw on one.
+        if (-not (Test-Path $StageDir)) { New-Item -ItemType Directory -Force -Path $StageDir | Out-Null }
+
+        # Tear the "ready" marker down BEFORE the files are touched. Copy-Program's
+        # first act is to empty files\, and the marker is only rewritten at the
+        # very end - so a download interrupted in between (the window closed, the
+        # laptop slept, a taskkill) would otherwise leave stage.json saying
+        # "version 7, complete" beside a half-copied newer tree, and the window
+        # would paint green "VMD 7 is ready to write" over a stick that is missing
+        # files. Removing it first means an interrupted download reads as "nothing
+        # staged" and the operator simply runs Step 1 again - the same invariant
+        # the write phase gets by stripping the stick's update.json at the start.
+        Remove-Item (Join-Path $StageDir 'stage.json') -Force -ErrorAction SilentlyContinue
 
         $version = Read-VmdVersion $source
         Write-Ok "This is VMD $version."

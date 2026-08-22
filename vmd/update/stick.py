@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import string
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,11 @@ FILES = "files"
 WHEELS = "wheels"
 
 DRIVE_REMOVABLE = 2
+# A USB stick does not always report as "removable". USB3 sticks, larger sticks,
+# SSD-in-an-enclosure and many card readers enumerate as FIXED, and a panel that
+# only trusted "removable" told the operator "No update stick found" with the
+# stick plugged in - the one machine where there is no other way to update.
+DRIVE_FIXED = 3
 
 
 @dataclass
@@ -40,21 +46,31 @@ class StickState:
 
 
 def removable_drives() -> list[Path]:
-    """Every removable drive letter Windows currently has.
+    """Every drive letter that could be an update stick.
 
     The only function in this package that asks the operating system anything,
-    and it is kept to three lines for that reason: everything above it takes a
-    list of folders and can be tested with folders.
+    so it is kept small: everything above it takes a list of folders and can be
+    tested with folders.
+
+    Both REMOVABLE and FIXED drives are returned, because Windows tags plenty of
+    real USB sticks as FIXED and a "removable only" rule made the air-gapped
+    panel blind to them. The system drive is left out - it is never a stick, and
+    it is the one FIXED drive we do not want to scan - and `read_update` does the
+    rest of the filtering: a drive without update.json and manifest.json is not a
+    stick, so an ordinary data drive is ignored whatever its type.
     """
     found: list[Path] = []
     try:
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
     except AttributeError:
         return found
+    system_drive = os.environ.get("SystemDrive", "C:").rstrip("\\").upper()
     for letter in string.ascii_uppercase:
+        if f"{letter}:" == system_drive:
+            continue
         root = f"{letter}:\\"
         try:
-            if kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) == DRIVE_REMOVABLE:
+            if kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) in (DRIVE_REMOVABLE, DRIVE_FIXED):
                 found.append(Path(root))
         except OSError:
             continue
