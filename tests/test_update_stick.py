@@ -64,6 +64,22 @@ def test_two_sticks_are_refused_and_both_are_named(tmp_path: Path) -> None:
     assert str(first) in state.message and str(second) in state.message
 
 
+def test_three_sticks_are_refused_counted_and_all_named(tmp_path: Path) -> None:
+    """The count has to say "3", not "two", once there are three - and every
+    one of them still has to be named so the wrong ones can be unplugged."""
+    first = a_stick(tmp_path / "E", 8)
+    second = a_stick(tmp_path / "F", 9)
+    third = a_stick(tmp_path / "G", 10)
+    state = look(a_console(tmp_path / "VMD", 7), drives=[first, second, third])
+    assert state.kind == "many"
+    assert "There are 3 update sticks" in state.message
+    assert (
+        str(first) in state.message
+        and str(second) in state.message
+        and str(third) in state.message
+    )
+
+
 def test_a_drive_with_something_else_on_it_is_not_a_stick(tmp_path: Path) -> None:
     other = tmp_path / "E"
     other.mkdir()
@@ -77,6 +93,20 @@ def test_a_stick_with_no_version_in_its_update_file_is_damaged(tmp_path: Path) -
     stick.mkdir()
     (stick / "update.json").write_text("{}", encoding="utf-8")
     (stick / "manifest.json").write_text("{}", encoding="utf-8")
+    state = look(a_console(tmp_path / "VMD", 7), drives=[stick])
+    assert state.kind == "damaged"
+
+
+def test_a_stick_whose_update_file_is_not_json_at_all_is_damaged_not_absent(
+    tmp_path: Path,
+) -> None:
+    """A drive holding an update.json that fails to parse still IS a VMD
+    stick - just a broken one. Calling it "no stick found" would send
+    somebody looking for a drive they are already holding."""
+    stick = tmp_path / "E"
+    stick.mkdir()
+    (stick / "update.json").write_text("not json {", encoding="utf-8")
+    (stick / "manifest.json").write_text(json.dumps({"files": []}), encoding="utf-8")
     state = look(a_console(tmp_path / "VMD", 7), drives=[stick])
     assert state.kind == "damaged"
 

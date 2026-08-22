@@ -62,7 +62,14 @@ def removable_drives() -> list[Path]:
 
 
 def read_update(drive: Path) -> dict | None:
-    """The stick's own description of itself, or None if this is not a stick."""
+    """The stick's own description of itself, or None if this is not a stick.
+
+    None means "there is nothing here to call a stick" - no update.json, or no
+    manifest.json beside it. `{}` means the opposite: update.json exists (so
+    this drive IS a VMD stick) but could not be read as JSON, which `look`
+    turns into "damaged" rather than "none" - the drive is not missing, it is
+    broken, and those get different messages.
+    """
     path = Path(drive) / UPDATE_JSON
     if not path.is_file() or not (Path(drive) / MANIFEST_JSON).is_file():
         return None
@@ -80,11 +87,14 @@ def look(root: Path | str, drives) -> StickState:
     if not sticks:
         return StickState("none", "No update stick found.")
     if len(sticks) > 1:
-        named = " and ".join(str(drive) for drive, _ in sticks)
+        names = [str(drive) for drive, _ in sticks]
+        named = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        count = len(names)
+        unplug = "one" if count == 2 else "ones"
         return StickState(
             "many",
-            f"There are two update sticks plugged in - {named}. "
-            f"Unplug the one you do not want and press Look again.",
+            f"There are {count} update sticks plugged in - {named}. "
+            f"Unplug the {unplug} you do not want and press Look again.",
         )
 
     stick, update = sticks[0]
