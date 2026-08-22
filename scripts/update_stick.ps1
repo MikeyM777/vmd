@@ -1827,7 +1827,14 @@ if ($WriteFromStage) {
         if ((Test-Nested $To $StageDir) -or (Test-Nested $StageDir $To)) {
             throw "The stick ($To) is the staging folder. Point -To at the USB drive."
         }
-        New-Item -ItemType Directory -Force -Path $To | Out-Null
+        # Only when it is not already there. -To is normally a drive ROOT ("E:\"),
+        # which always exists, and asking New-Item to CREATE a root throws "The
+        # path is not of a legal form" - the FileSystem provider splits a path
+        # into a parent to create the leaf in, and a root has no leaf. A subfolder
+        # (a one-shot -To, or a stick under a folder) is still created when it is
+        # missing. This is why writing to a real drive root failed here while the
+        # tests, which write into a temp subfolder, never did.
+        if (-not (Test-Path $To)) { New-Item -ItemType Directory -Force -Path $To | Out-Null }
 
         Write-Step "Remembering what this stick knows"
         # Cache the note(s) the offline VMD computer left on this stick BEFORE a
@@ -1955,7 +1962,9 @@ try {
         throw ("The stick folder ($To) is inside the source folder ($source), or " +
                "the other way round. Point -To at the USB drive.")
     }
-    New-Item -ItemType Directory -Force -Path $To | Out-Null
+    # Only when missing - a drive root already exists and cannot be New-Item'd
+    # ("The path is not of a legal form"). See the same guard on the write phase.
+    if (-not (Test-Path $To)) { New-Item -ItemType Directory -Force -Path $To | Out-Null }
 
     $version = Read-VmdVersion $source
     Write-Ok "This is VMD $version."
