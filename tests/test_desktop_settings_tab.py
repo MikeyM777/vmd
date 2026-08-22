@@ -251,6 +251,50 @@ def test_a_half_typed_card_is_still_refused(qtbot, tmp_path: Path) -> None:
     assert not path.exists()
 
 
+def test_saving_does_not_move_the_operator_somewhere_else(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Always when saving, VMD jumps to the thermal name."
+
+    This form lives in a QScrollArea, and a QScrollArea scrolls to whatever
+    child takes the focus. So anything that moves the focus during a save drags
+    the page with it, and the operator ends up in the first camera card's name
+    box with a caret in it, several inches from what they were doing.
+
+    The thief is modelled rather than named: what actually takes the focus on
+    the real machine is the console handing the settings on - the streaming
+    server restarting, the wall being rebuilt, real windows created and
+    destroyed. Any handler of `saved` will do here, and the rule under test is
+    the one that should hold whatever the thief turns out to be.
+    """
+    # 192.0.2.x rather than the usual fixture: showing this tab can start the
+    # camera tools, and conftest refuses a socket to anything that is not a
+    # documented test network. See the note at the top of tests\conftest.py.
+    settings = Settings(
+        camera=CameraSettings(
+            host="192.0.2.10",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://192.0.2.10/ch2"),
+                StreamSettings(name="visible", url="rtsp://192.0.2.10/ch0"),
+            ],
+        )
+    )
+    tab, _ = build(qtbot, tmp_path, settings)
+    tab.show()
+    QApplication.processEvents()
+
+    tab.saved.connect(lambda _settings: tab.stream_rows()[0].name_field.setFocus())
+
+    tab._budget.setFocus()
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is tab._budget
+
+    assert tab.save() is True, tab.message
+    QApplication.processEvents()
+
+    assert QApplication.focusWidget() is tab._budget, "the save moved the operator"
+
+
 def test_a_settings_file_with_three_views_still_draws_and_saves_three(
     qtbot, tmp_path: Path
 ) -> None:

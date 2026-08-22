@@ -25,9 +25,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from pydantic import ValidationError
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -2588,6 +2589,54 @@ class SettingsTab(QWidget):
 
     # ------------------------------------------------------------------ save
 
+    def keep_where_the_operator_was(self):
+        """Remember what has focus and where the form is scrolled to, and give
+        back a function that puts both back.
+
+        "Always when saving, VMD jumps to the thermal name, like to edit the
+        thermal." This form lives in a QScrollArea, and a QScrollArea SCROLLS TO
+        whatever child takes focus - so anything that moves the focus during a
+        save also moves the page under the operator's hands, and it lands on
+        whichever field the focus went to. On this installation that is the
+        first camera card's name box.
+
+        Saving is not one function: it writes the file and then hands the
+        settings to the running console, which restarts the streaming server and
+        rebuilds the wall - real windows being created and destroyed while the
+        operator is still standing in the form. Chasing which of those takes the
+        focus is a game with a new answer every time one of them changes; this
+        instead states the rule the form should have had all along, which is
+        that pressing Save does not move you anywhere.
+
+        Restored twice: now, and once more on the next turn of the event loop,
+        because the console's own work is queued and some of it runs after
+        `save` has returned.
+        """
+        app = QApplication.instance()
+        focused = app.focusWidget() if app is not None else None
+        # Only our own: if the focus was in another tab or another window,
+        # taking it is a worse fault than the one being fixed.
+        if focused is not None and not self.isAncestorOf(focused):
+            focused = None
+        bar = self._scroll.verticalScrollBar()
+        where = bar.value()
+
+        def put_it_back() -> None:
+            try:
+                # Focus first and scroll second, in that order: setFocus is
+                # itself what makes a QScrollArea scroll, so restoring the
+                # position before the focus would be undone by it.
+                if focused is not None and focused.isVisible() and focused.isEnabled():
+                    focused.setFocus(Qt.FocusReason.OtherFocusReason)
+                bar.setValue(where)
+            except RuntimeError:
+                # The widget was rebuilt underneath us - a row replaced by
+                # `set_streams`, say. Leaving the focus where Qt put it is the
+                # only honest answer; there is nothing to go back to.
+                pass
+
+        return put_it_back
+
     def save(self) -> bool:
         settings = self.settings_from_form()
         if settings is None:
@@ -2619,10 +2668,15 @@ class SettingsTab(QWidget):
 
         self._loaded = settings
         self._set_message("Saved.")
+        put_it_back = self.keep_where_the_operator_was()
         try:
             self.saved.emit(settings)
         except Exception:  # noqa: BLE001 - the file is written; the rest is not the save
             logger.exception("the saved settings could not be handed to the console")
+        put_it_back()
+        # And again after everything the console queued for itself. See
+        # `keep_where_the_operator_was`.
+        QTimer.singleShot(0, put_it_back)
         return True
 
     def _bigger_than_the_drive(self, settings: Settings) -> str:
