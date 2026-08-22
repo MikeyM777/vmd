@@ -371,6 +371,47 @@ def test_a_failure_that_is_not_the_network_keeps_its_own_message() -> None:
         assert classify_error(text) == "OTHER", text
 
 
+def quote_for_child(path: str) -> str:
+    """Ask the script how it would quote one path for the window's child command
+    line. The window builds that command line as a string, and a drive root that
+    ends in a backslash used to escape the closing quote, so the drive arrived as
+    E:" and threw "Illegal characters in path" - a real stick failed on it while
+    every path that did not end in a backslash worked. -QuoteForChild is the seam
+    that runs just the quoting helper, so the fix is checked here without a USB
+    drive to reproduce it against."""
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-QuoteForChild",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout.strip()
+
+
+def test_a_drive_root_is_quoted_so_it_does_not_escape_its_own_quote() -> None:
+    """The bug: `-To "E:\\"` reaches the child as E:" because the backslash before
+    the closing quote escapes it. The fix doubles a trailing backslash, so the
+    argument survives as E:\\ and the child gets a clean drive root. A staging
+    folder, which never ends in a backslash, must be left exactly as it was."""
+    # A drive root - the case that failed on a real stick.
+    assert quote_for_child("E:\\") == '"E:\\\\"'
+    # A folder that does not end in a backslash - unchanged but for the quotes.
+    assert quote_for_child("C:\\Users\\x\\stage") == '"C:\\Users\\x\\stage"'
+    # A path with several trailing backslashes, all doubled.
+    assert quote_for_child("E:\\\\") == '"E:\\\\\\\\"'
+
+
 def a_repository(folder: Path, version: int) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "vmd").mkdir()

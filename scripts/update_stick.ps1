@@ -46,6 +46,10 @@ param(
     # raw web-exception stack into one sentence for the operator - without a test
     # ever reaching the network conftest.py forbids. Nothing in the build reads it.
     [string]$ClassifyError,
+    # A test seam, like -ClassifyError: prints how a path would be quoted for the
+    # child command line and stops. It is how the drive-root argument bug is kept
+    # from coming back without a real USB drive to reproduce it against.
+    [string]$QuoteForChild,
     # The two phases, for the laptop that has ONE USB port and gets its internet
     # from a USB netstick - so the internet and the disk-on-key can never be
     # plugged in at the same time. -Download gets the code from GitHub onto a
@@ -223,6 +227,32 @@ function Test-NetworkError($text) {
         if ($lower.Contains($signal)) { return $true }
     }
     return $false
+}
+
+function Quote-ForChild($path) {
+    <#
+        Wrap a path as ONE argument for powershell.exe, so a drive root written
+        from the window does not throw "Illegal characters in path."
+
+        The window builds the child's whole command line as a string and hands
+        it to System.Diagnostics.Process. Windows parses that string with
+        CommandLineToArgvW, whose one strange rule is that a backslash directly
+        before the closing quote escapes the quote: "E:\" is read as E:" - a
+        drive letter with a literal double-quote stuck to it - and the first
+        thing that resolves that path throws IllegalCharactersInPath. It only
+        bites a drive ROOT, because only "E:\" ends in the backslash that
+        collides with the quote; a staging folder like ...\stage does not, which
+        is why Step 1 worked and Step 2 to a real stick did not, and why the
+        same drive typed on the command line (parsed by PowerShell, not this
+        string) was always fine.
+
+        The fix is CommandLineToArgvW's own rule in reverse: a run of trailing
+        backslashes is doubled, so 2n backslashes before the quote survive as n
+        backslashes and the quote still closes the argument. "E:\" becomes
+        "E:\\" and reaches the child as E:\.
+    #>
+    $safe = [regex]::Replace([string]$path, '\\+$', { param($m) $m.Value + $m.Value })
+    return '"' + $safe + '"'
 }
 
 
@@ -928,6 +958,15 @@ if ($PSBoundParameters.ContainsKey('ClassifyError')) {
     exit 0
 }
 
+# The same for the argument-quoting the window uses to launch its child. A test
+# hands it a drive root and checks the backslash is doubled rather than left to
+# escape the closing quote - the bug that made a real stick fail with "Illegal
+# characters in path" while every path that did not end in a backslash worked.
+if ($PSBoundParameters.ContainsKey('QuoteForChild')) {
+    Write-Output (Quote-ForChild $QuoteForChild)
+    exit 0
+}
+
 if ($Gui) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
@@ -1289,7 +1328,7 @@ if ($Gui) {
     # folder and never touches a stick.
     $step1.Add_Click({
         if ($script:Building) { return }
-        $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Download -StageDir `"$($script:StageDir)`""
+        $cmd = "-NoProfile -ExecutionPolicy Bypass -File $(Quote-ForChild $PSCommandPath) -Download -StageDir $(Quote-ForChild $script:StageDir)"
         $status.AppendText("Getting the latest version into $($script:StageDir) ...`r`n")
         & $startBuild $cmd 'download'
     })
@@ -1310,7 +1349,10 @@ if ($Gui) {
             $status.AppendText("Plug the stick in first.`r`n")
             return
         }
-        $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -WriteFromStage -StageDir `"$($script:StageDir)`" -To `"$chosen\`""
+        # $chosen is "E:"; the write goes to the drive ROOT "E:\". Quote-ForChild
+        # doubles that trailing backslash so it does not escape the closing quote
+        # and arrive as E:" - the fault that read "Illegal characters in path."
+        $cmd = "-NoProfile -ExecutionPolicy Bypass -File $(Quote-ForChild $PSCommandPath) -WriteFromStage -StageDir $(Quote-ForChild $script:StageDir) -To $(Quote-ForChild ($chosen + '\'))"
         $status.AppendText("Writing to $chosen\ ...`r`n")
         & $startBuild $cmd 'write'
     })
