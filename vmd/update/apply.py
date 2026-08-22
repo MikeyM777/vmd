@@ -21,13 +21,23 @@ what it prevents:
   libraries     only when the lock changed, and only from the stick
   selftest      the new version has to prove it runs
   start / undo  and if it does not, the old one goes back
+
+Throughout the dangerous half of that list there is a marker file,
+bin\\logs\\update-in-progress.json, which exists for exactly as long as the
+install is not known to be whole. A power cut leaves it behind, and that is how
+the NEXT start of the console knows this copy was interrupted rather than
+finished. It is cleared on every path that ends with a tree somebody can trust -
+and deliberately left up on the one path that does not, a rollback that could
+not be carried out.
 """
 
 from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from vmd.update import manifest as manifest_module
@@ -67,6 +77,18 @@ LOGS = Path("bin") / "logs"
 LOG = "update.log"
 STATUS = "update-status.json"
 MARKER = "update-in-progress.json"
+
+# Where the report goes when bin\logs cannot be written to at all - because it
+# is a file rather than a folder, or the disk it is on is full. The console
+# will not find it there, but the console is not the only reader: somebody is
+# going to stand at this machine afterwards and ask what happened, and %TEMP%
+# is an answer where silence is not one.
+ELSEWHERE = "vmd-update"
+
+# How many lines of what the steps said are kept. A sync that goes wrong can
+# say a great deal, and the console re-reads the whole status file every second
+# while it waits.
+OUTPUT_LINES = 200
 
 # Written beside the copied files in previous\<version>\, recording which of
 # the backed-up names actually existed before the update. restore uses it to
@@ -341,23 +363,59 @@ class Progress:
     reads the file.
 
     The Report and the status file are never assembled separately - the file is
-    always written out of the Report, by write_status, so the two cannot come to
-    disagree about what happened. The Report matters to almost nobody: it is
-    returned into a process that is about to exit. The file is what is read.
+    always written out of the Report, by write_status, and the Report holds
+    exactly what the file holds, trimmed in one place only. The Report matters
+    to almost nobody: it is returned into a process that is about to exit. The
+    file is what is read.
+
+    Nothing here raises. Every one of these methods is called before, during and
+    after the install has been opened up, in a process nobody is watching, and a
+    log folder that turns out to be a file must not be the thing that ends an
+    update in silence.
     """
 
     def __init__(self, root: Path) -> None:
-        self.folder = Path(root) / LOGS
-        self.folder.mkdir(parents=True, exist_ok=True)
         self.report = Report()
+        self.folder = _log_folder(root)
+        # A whole status straight away, because probing the folder creates the
+        # file: a panel that read it in between would get nought bytes, which
+        # is neither valid JSON nor an absent file.
+        self.write_status(finished=False)
+
+    def begin(self, when: str) -> None:
+        """Start a new run in the log, on its own line, with a rule above it.
+
+        Two updates in one visit used to run into one another in the same file
+        with nothing to say where one ended, so the second read as more of the
+        first.
+        """
+        self._append(f"\n----- update started {when} -----")
 
     def say(self, step: str, line: str = "") -> None:
         self.report.step = step
         if line:
             self.report.output.append(line)
-        with open(self.folder / LOG, "a", encoding="utf-8") as handle:
-            handle.write(f"{step}{': ' + line if line else ''}\n")
+            # Trimmed here and nowhere else, so that what the Report keeps and
+            # what the file holds are the same list rather than two lists that
+            # are meant to agree.
+            del self.report.output[:-OUTPUT_LINES]
+        self._append(f"{step}{': ' + line if line else ''}")
         self.write_status(finished=False)
+
+    def _append(self, line: str) -> None:
+        """One line into the log, with the time it happened, or nothing at all.
+
+        Timestamped because the questions asked afterwards are "how long did it
+        sit there" and "was this before or after the power went", and a list of
+        steps with no clock answers neither.
+        """
+        try:
+            with open(self.folder / LOG, "a", encoding="utf-8") as handle:
+                handle.write(f"{datetime.now().isoformat(timespec='seconds')}  {line}\n")
+        except OSError:
+            # The log is the courtesy; the status file is the answer. Losing
+            # the first is not a reason to lose the second as well.
+            pass
 
     def write_status(self, finished: bool) -> None:
         payload = {
@@ -366,12 +424,13 @@ class Progress:
             "message": self.report.message,
             "from": self.report.moved_from,
             "to": self.report.moved_to,
-            # Capped, because a sync that goes wrong can say a great deal and
-            # the console re-reads this file every second while it waits.
-            "output": self.report.output[-200:],
+            "output": self.report.output,
             "finished": finished,
         }
-        (self.folder / STATUS).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        try:
+            (self.folder / STATUS).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     def finish(self, ok: bool, message: str) -> Report:
         self.report.ok = ok
@@ -379,6 +438,46 @@ class Progress:
         self.report.step = ""
         self.write_status(finished=True)
         return self.report
+
+
+def _log_folder(root: Path | str) -> Path:
+    """The first folder that will take this run's status file.
+
+    bin\\logs\\ normally. But it is asked for by name on a machine that is about
+    to be rewritten, and it can be a file, or on a disk that is full, or hold a
+    directory called update-status.json - and this used to be a bare mkdir
+    outside every try in run, so any of those ended the updater before it had
+    written a word, with the console already waiting on a status file that
+    runner.start had just deleted. So it is probed by actually opening the file
+    that matters, and when that cannot be done anywhere under root the report
+    goes to %TEMP% instead. The console will not look there, but an update that
+    left a record somewhere is recoverable by a person and one that left none
+    is not.
+    """
+    elsewhere = Path(tempfile.gettempdir()) / ELSEWHERE
+    for folder in (Path(root) / LOGS, elsewhere):
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            # Append, not write: this must not truncate a status file, and it
+            # must fail the same way a real write would.
+            with open(folder / STATUS, "a", encoding="utf-8"):
+                pass
+            return folder
+        except OSError:
+            continue
+    return elsewhere
+
+
+def _named(version: int | None) -> str:
+    """The name of a version already in hand: VMD 8, or what describe() says.
+
+    describe() reads VERSION off the disk, and by the time these sentences are
+    written the disk holds whichever version won - so the number has to come
+    from what was read before anything was replaced. What this prevents is
+    "VMD 8 did not start, so VMD None was put back", on the machine most likely
+    to be updating: the one whose VERSION file cannot be read.
+    """
+    return f"VMD {version}" if version is not None else "VMD (version unknown)"
 
 
 def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
@@ -394,10 +493,32 @@ def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
     ways nobody planned for. An exception leaving here would end the detached
     process with the status file still saying finished: false, and the console
     would sit waiting on a program that is not running any more.
+
+    The work is in _apply. This is the outer guard around it, because the part
+    of an update before the marker goes up was the part left unprotected: the
+    stick read, the shape checks, the verification. Those are as able to raise
+    as anything below them and they run at the moment the console has already
+    thrown away the previous status file and started watching for a new one.
     """
-    root = Path(root)
-    stick = Path(stick)
     progress = Progress(root)
+    progress.begin(when)
+    try:
+        return _apply(progress, Path(root), Path(stick), machine, when, stop, sync, selftest)
+    except Exception as failure:
+        # Only the prologue can reach here: everything from the marker onward
+        # has its own handler, which returns rather than raises. So nothing on
+        # this machine has been replaced at the point this runs.
+        said = f"{type(failure).__name__}: {failure}"
+        progress.say("something went wrong", said)
+        return progress.finish(
+            False, f"The update stopped before anything was replaced ({said}). Nothing was changed."
+        )
+
+
+def _apply(
+    progress: Progress, root: Path, stick: Path, machine: str, when: str, stop, sync, selftest
+) -> Report:
+    """The order itself. See run, which is the guard around this."""
     progress.report.moved_from = read_version(root)
     files = stick / FILES
 
@@ -430,37 +551,51 @@ def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
             "The stick could not be read: update.json and manifest.json are not "
             "in the shape a stick's are. Build it again on the laptop.",
         )
-    progress.report.moved_to = update.get("version")
+    if not isinstance(update.get("version"), int):
+        # stick.look refuses this too, but run is the layer that does the
+        # damage and cannot assume it was reached through the panel. The cost
+        # of trusting it is an operator told "Updated to VMD None".
+        return progress.finish(
+            False,
+            "The stick does not say which version it carries, so it cannot be "
+            "used. Build it again on the laptop.",
+        )
+    progress.report.moved_to = update["version"]
 
     progress.say("checking the stick")
     problems = manifest_module.verify(files, listed)
     if problems:
         for line in problems:
             progress.say("checking the stick", line)
+        rest = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
         return progress.finish(
-            False,
-            f"The stick is damaged: {len(problems)} file(s) do not match "
-            f"({problems[0]}). Nothing was changed.",
+            False, f"The stick is damaged: {problems[0]}{rest}. Nothing was changed."
         )
 
-    # Cleared at the end whatever happened, with one deliberate exception: a
-    # copy that could not be put back is left marked, because a half-updated
-    # install that looks untouched is the one outcome nobody can recover from.
+    # The marker goes up before the first dangerous step and comes down only
+    # when this copy is known to be whole again - which is not the same as
+    # "when this function returns". It starts down, because nothing has been
+    # written yet; it goes up the moment there is a backup to put back; and it
+    # comes down again only where the tree has been proved consistent, whether
+    # that is by the new version passing or by the old one going back.
     marker = progress.folder / MARKER
     leave_marker = False
     kept = None
     try:
         # Inside the try, so that a marker that cannot be written is reported
         # like any other failure instead of ending the process silently.
-        marker.write_text(
-            json.dumps({"started": when, "to": update.get("version")}), encoding="utf-8"
-        )
+        marker.write_text(json.dumps({"started": when, "to": update["version"]}), encoding="utf-8")
         progress.say("stopping the console")
         stop()
 
         names = what_to_copy(files)
         progress.say("keeping the version that is here now")
         kept = back_up(root, progress.report.moved_from, names)
+        # From here the install is being rewritten. The marker now stays up
+        # through anything this function does not catch - a KeyboardInterrupt
+        # or a SystemExit, which except Exception rightly does not take, but
+        # whose half-written tree is exactly what the marker is for.
+        leave_marker = True
 
         progress.say("copying the new version in")
         copy_in(files, root)
@@ -470,12 +605,12 @@ def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
         if not installed:
             progress.say("installing any new libraries", said)
             if not _put_back(progress, kept, root):
-                leave_marker = True
                 return progress.finish(False, _stranded(progress, kept, said))
+            leave_marker = False
             return progress.finish(
                 False,
                 f"The libraries this update needs could not be installed ({said}). "
-                f"VMD {progress.report.moved_from} was put back. Nothing was lost.",
+                f"{_named(progress.report.moved_from)} was put back. Nothing was lost.",
             )
 
         progress.say("checking that the new version runs")
@@ -483,17 +618,18 @@ def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
         if not works:
             progress.say("checking that the new version runs", said)
             if not _put_back(progress, kept, root):
-                leave_marker = True
                 return progress.finish(False, _stranded(progress, kept, said))
+            leave_marker = False
             return progress.finish(
                 False,
-                f"VMD {progress.report.moved_to} did not start, so VMD "
-                f"{progress.report.moved_from} was put back. Nothing was lost.",
+                f"{_named(progress.report.moved_to)} did not start, so "
+                f"{_named(progress.report.moved_from)} was put back. Nothing was lost.",
             )
 
+        leave_marker = False
         return progress.finish(
             True,
-            f"Updated to VMD {progress.report.moved_to}. "
+            f"Updated to {_named(progress.report.moved_to)}. "
             f"The console will start again by itself.",
         )
     except Exception as failure:
@@ -508,16 +644,17 @@ def run(root, stick, machine: str, when: str, stop, sync, selftest) -> Report:
             # Nothing had been written yet: the backup is taken before the
             # first byte of the new version goes in, so no backup means no
             # change to undo.
+            leave_marker = False
             return progress.finish(
                 False, f"The update stopped before anything was replaced ({said}). "
                 f"Nothing was changed."
             )
         if not _put_back(progress, kept, root):
-            leave_marker = True
             return progress.finish(False, _stranded(progress, kept, said))
+        leave_marker = False
         return progress.finish(
             False,
-            f"The update failed ({said}), so VMD {progress.report.moved_from} was "
+            f"The update failed ({said}), so {_named(progress.report.moved_from)} was "
             f"put back. Nothing was lost.",
         )
     finally:
@@ -555,7 +692,7 @@ def _put_back(progress: Progress, kept: Path, root: Path) -> bool:
 def _stranded(progress: Progress, kept: Path, said: str) -> str:
     """What to tell somebody standing at a machine that is now half updated."""
     return (
-        f"The update failed ({said}) and putting VMD {progress.report.moved_from} "
+        f"The update failed ({said}) and putting {_named(progress.report.moved_from)} "
         f"back failed as well, so this copy is half updated and must not be "
         f"started. The version that was here is kept in {kept}. Restart the "
         f"machine and try the update again, or copy that folder back by hand."

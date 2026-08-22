@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ import pytest
 from vmd.update import apply as apply_module
 from vmd.update.apply import (
     KEEP_OUT,
+    OUTPUT_LINES,
+    Progress,
     Report,
     back_up,
     copy_in,
@@ -435,14 +438,20 @@ def _status(root: Path) -> dict:
 
 
 def _as_status(report: Report) -> dict:
-    """The Report said the way the finished status file says it."""
+    """The Report said the way the finished status file says it.
+
+    Nothing is trimmed or reshaped on the way through. This used to slice
+    report.output to its last 200 lines to match what the file holds, which
+    made the test assume the very property it exists to prove - and hid a real
+    divergence of 401 lines in the Report against 200 in the file.
+    """
     return {
         "step": report.step,
         "ok": report.ok,
         "message": report.message,
         "from": report.moved_from,
         "to": report.moved_to,
-        "output": report.output[-200:],
+        "output": report.output,
         "finished": True,
     }
 
@@ -534,3 +543,211 @@ def test_a_stick_whose_json_is_the_wrong_shape_is_refused_not_crashed_on(
     assert "could not be read" in report.message
     assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
     assert _status(root)["finished"] is True
+
+
+def a_run(root: Path, stick: Path, **replaced):
+    """run with the three injected steps standing still unless a test says so."""
+    steps = {"stop": lambda: None, "sync": lambda *_: (True, ""), "selftest": lambda: (True, "")}
+    steps.update(replaced)
+    return run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00", **steps)
+
+
+def test_a_manifest_entry_that_is_not_a_file_is_refused_not_crashed_on(
+    tmp_path: Path,
+) -> None:
+    """The shape check on update.json and manifest.json only reached the top
+    level. Underneath it, verify indexed entry["size"] on whatever it found -
+    a KeyError out of a detached process, with the status file left saying
+    finished: false for ever and a console waiting on it."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    for damaged in ({"files": [{"path": "VERSION"}]}, {"files": ["VERSION"]}, {"files": 8}):
+        (stick / "manifest.json").write_text(json.dumps(damaged), encoding="utf-8")
+
+        report = a_run(root, stick)
+
+        assert report.ok is False, damaged
+        assert "damaged" in report.message
+        assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+        assert _status(root)["finished"] is True
+
+
+def test_a_stick_with_no_files_folder_is_refused_before_the_console_is_stopped(
+    tmp_path: Path,
+) -> None:
+    """A manifest that lists nothing agrees with an empty stick, so verification
+    passed, the console was killed, and only then did what_to_copy fall over -
+    an operator reading "nothing was changed" on a machine that had just been
+    shut down under him."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    shutil.rmtree(stick / "files")
+    (stick / "manifest.json").write_text(json.dumps({"files": []}), encoding="utf-8")
+    stopped = []
+
+    report = a_run(root, stick, stop=lambda: stopped.append(True))
+
+    assert report.ok is False
+    assert "damaged" in report.message
+    assert stopped == []
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_a_stick_that_does_not_say_which_version_it_carries_is_refused(
+    tmp_path: Path,
+) -> None:
+    """stick.look already refuses this, but run is the layer that does the
+    damage and cannot assume it was called through the panel. Without the
+    check the operator is told "Updated to VMD None"."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (stick / "update.json").write_text(json.dumps({"built": "today"}), encoding="utf-8")
+    stopped = []
+
+    report = a_run(root, stick, stop=lambda: stopped.append(True))
+
+    assert report.ok is False
+    assert "None" not in report.message
+    assert stopped == []
+
+
+def test_no_sentence_ever_says_vmd_none(tmp_path: Path) -> None:
+    """A machine whose VERSION cannot be read is the likeliest one to be
+    updating, and "so VMD None was put back" is not a sentence to show
+    somebody standing in a plant room at night."""
+    root = an_install(tmp_path / "VMD")
+    (root / "VERSION").unlink()
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    report = a_run(root, stick, selftest=lambda: (False, "ImportError: no module named cv2"))
+
+    assert report.ok is False
+    assert "None" not in report.message
+    assert "VMD (version unknown)" in report.message
+    assert _status(root)["message"] == report.message
+
+
+def test_the_status_still_reaches_somewhere_readable_when_the_log_folder_cannot_be_used(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """bin\\logs present as a FILE. mkdir raises, and it used to raise from
+    outside every try in run - so nothing was written anywhere at all, while
+    runner.start had already deleted the previous status file. The panel then
+    waited on a file that was never going to appear."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (root / "bin" / "logs").write_text("not a folder", encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
+
+    report = a_run(root, stick)
+
+    assert report.ok is True
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "new\n"
+    elsewhere = Path(tempfile.gettempdir()) / apply_module.ELSEWHERE
+    status = json.loads((elsewhere / "update-status.json").read_text(encoding="utf-8"))
+    assert status["finished"] is True and status["ok"] is True
+
+
+def test_a_log_that_cannot_be_written_does_not_stop_the_update(tmp_path: Path) -> None:
+    """update.log present as a DIRECTORY: opening it for append raises. The log
+    is a courtesy; the status file is the answer, and it is a different file."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (root / "bin" / "logs").mkdir()
+    (root / "bin" / "logs" / "update.log").mkdir()
+
+    report = a_run(root, stick)
+
+    assert report.ok is True
+    assert _status(root)["finished"] is True
+
+
+@pytest.mark.parametrize("step", ["stop", "sync", "selftest"])
+def test_the_three_injected_steps_are_allowed_to_raise(tmp_path: Path, step: str) -> None:
+    """The real three kill processes, run uv and start an interpreter. Every
+    one of them can raise something nobody listed, and none of them may end the
+    updater without a finished status."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    def falls_over(*args, **kwargs):
+        raise RuntimeError("the process would not die")
+
+    report = a_run(root, stick, **{step: falls_over})
+
+    assert report.ok is False
+    assert "would not die" in report.message
+    # Whether it stopped before anything was written or was put back after,
+    # what is on the disk afterwards is the version that was there before.
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (root / "VERSION").read_text(encoding="utf-8") == "7"
+    assert _status(root)["finished"] is True
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_an_interrupt_after_the_backup_leaves_the_marker_up(tmp_path: Path, monkeypatch) -> None:
+    """KeyboardInterrupt and SystemExit are deliberately not caught - but the
+    finally still ran, and it cleared the marker. An interrupt in the middle of
+    copy_in therefore left a half-updated install that looked untouched, which
+    is the exact state the marker exists to make visible."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(apply_module, "copy_in", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        a_run(root, stick)
+
+    assert (root / "bin" / "logs" / "update-in-progress.json").is_file()
+
+
+def test_an_interrupt_before_anything_is_written_takes_the_marker_with_it(
+    tmp_path: Path,
+) -> None:
+    """The other half of the same rule: nothing had been replaced yet, so there
+    is nothing for the next start to warn about."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        a_run(root, stick, stop=interrupted)
+
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_the_report_keeps_exactly_what_the_status_file_keeps(tmp_path: Path) -> None:
+    """Measured at 401 lines in the Report against 200 in the file. Progress
+    says in its own docstring that the two cannot disagree; one list is how
+    that is true rather than aspirational."""
+    root = an_install(tmp_path / "VMD")
+    progress = Progress(root)
+    for number in range(OUTPUT_LINES * 2 + 1):
+        progress.say("counting", f"line {number}")
+    progress.finish(True, "done")
+
+    assert len(progress.report.output) == OUTPUT_LINES
+    assert _status(root)["output"] == progress.report.output
+    # The end of the run is what says why it ended, so it is the end that is kept.
+    assert progress.report.output[-1] == f"line {OUTPUT_LINES * 2}"
+
+
+def test_the_log_says_when_and_starts_a_new_run_on_a_new_line(tmp_path: Path) -> None:
+    """Two updates in one visit wrote into one another with nothing between
+    them, so the log of the second read as a continuation of the first."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    a_run(root, stick)
+    a_run(root, stick)
+
+    log = (root / "bin" / "logs" / "update.log").read_text(encoding="utf-8")
+    assert log.count("update started") == 2
+    assert "2026-08-22T10:00:00" in log
+    assert "stopping the console" in log
