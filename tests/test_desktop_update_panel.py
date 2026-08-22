@@ -497,3 +497,128 @@ def test_the_watcher_belongs_to_the_panel_so_it_stops_when_the_tab_is_shut(
     panel = build(qtbot, a_console(tmp_path / "VMD", 7), [])
 
     assert panel._watch.parent() is panel
+
+
+# ---------------------------------------------------------------- idle scan
+
+
+def test_a_stick_plugged_in_is_noticed_without_anyone_pressing_anything(
+    qtbot, tmp_path: Path
+) -> None:
+    """The offline console has no auto-mount, nobody watching a shell. So the
+    panel looks for itself, and a stick becomes an offer to update with nobody
+    having touched the machine."""
+    plugged: list[Path] = []
+    panel = build(qtbot, a_console(tmp_path / "VMD", 7), plugged)
+    assert "No update stick" in panel.stick_line.text()
+    assert panel.update_button.isEnabled() is False
+
+    plugged.append(a_stick(tmp_path / "E", 8))
+    panel._scan()
+
+    assert "VMD 8" in panel.stick_line.text()
+    assert panel.update_button.isEnabled() is True
+
+
+def test_a_stick_pulled_out_between_scans_returns_to_no_stick(
+    qtbot, tmp_path: Path
+) -> None:
+    plugged = [a_stick(tmp_path / "E", 8)]
+    panel = build(qtbot, a_console(tmp_path / "VMD", 7), plugged)
+    panel._scan()
+    assert panel.update_button.isEnabled() is True
+
+    plugged.clear()
+    panel._scan()
+
+    assert "No update stick" in panel.stick_line.text()
+    assert panel.update_button.isEnabled() is False
+
+
+def test_a_scan_does_not_repaint_a_stick_that_has_not_moved(
+    qtbot, tmp_path: Path
+) -> None:
+    """A stick sitting in the slot must not restamp the box every two seconds,
+    fighting a message the operator is reading. Once seen, an unchanged drive
+    set does nothing at all - the panel only redraws on a real change."""
+    plugged = [a_stick(tmp_path / "E", 8)]
+    panel = build(qtbot, a_console(tmp_path / "VMD", 7), plugged)
+    panel._scan()
+
+    # A line the panel did not write, left where a redraw would overwrite it.
+    panel.stick_line.setText("a message the operator is reading")
+    panel._scan()
+
+    assert panel.stick_line.text() == "a message the operator is reading"
+
+
+def test_a_scan_while_an_update_is_watched_touches_nothing(
+    qtbot, tmp_path: Path
+) -> None:
+    """The scan is gated on the same watcher `look` is. A scan that fired
+    mid-update would paint over "the console will close and start again" and
+    hand back the button that starts a second one."""
+    plugged = [a_stick(tmp_path / "E", 8)]
+    panel = build(qtbot, a_console(tmp_path / "VMD", 7), plugged)
+    panel.start_update = lambda stick: (True, "")
+    panel.update_now()
+    assert panel._watch.isActive() is True
+
+    # The stick is pulled out mid-update: a real change, which the scan would
+    # normally draw - but not over a running update.
+    plugged.clear()
+    panel._scan()
+
+    assert panel.stick_line.text() == "Updating. The console will close and start again."
+    assert panel.update_button.isEnabled() is False
+    assert panel.look_button.isEnabled() is False
+
+
+def test_a_scan_does_not_clear_an_interrupted_update(qtbot, tmp_path: Path) -> None:
+    """A scan that re-read the drives and redrew the stick state would hide the
+    "press Go back" line - the one control that gets the operator out of an
+    interrupted update. `look`'s ordering has to hold when the timer calls it,
+    not only load and the button."""
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, to=8)
+    plugged: list[Path] = []
+    panel = build(qtbot, root, plugged)
+    assert "Go back to VMD 7" in panel.stick_line.text()
+
+    # A stick appears - a real change, so the scan does call look() - and the
+    # interrupted state still has to win over it.
+    plugged.append(a_stick(tmp_path / "E", 9))
+    panel._scan()
+
+    assert "Go back to VMD 7" in panel.stick_line.text()
+    assert panel.update_button.isEnabled() is False
+
+
+def test_a_scan_does_not_clear_an_already_running_update(qtbot, tmp_path: Path) -> None:
+    """The other console's update, which this panel did not start and is not
+    watching. Its status file says an update is in progress; a scan must keep
+    reporting that rather than offering a stick over the top of it."""
+    root = a_console(tmp_path / "VMD", 7)
+    a_status(root, {"step": "copying the new version in", "finished": False})
+    plugged: list[Path] = []
+    panel = build(qtbot, root, plugged)
+    assert "already running" in panel.stick_line.text()
+
+    plugged.append(a_stick(tmp_path / "E", 8))
+    panel._scan()
+
+    assert "already running" in panel.stick_line.text()
+    assert panel.update_button.isEnabled() is False
+    assert panel.back_button.isEnabled() is False
+
+
+def test_the_scan_timer_belongs_to_the_panel_so_it_cannot_fire_into_a_dead_widget(
+    qtbot, tmp_path: Path
+) -> None:
+    """The same rule the watcher follows: a timer that outlives the panel
+    delivers its timeout into a deleted object."""
+    panel = build(qtbot, a_console(tmp_path / "VMD", 7), [])
+
+    assert panel._scan_timer.parent() is panel
+    assert panel._scan_timer.isActive() is True

@@ -38,12 +38,22 @@ from PySide6.QtWidgets import (
 from vmd.update.apply import LOGS, MARKER, STATUS
 from vmd.update.runner import TIMEOUT_SECONDS
 from vmd.update.runner import start as start_update
-from vmd.update.stick import look, removable_drives
+from vmd.update.stick import look, read_update, removable_drives
 from vmd.update.version import describe, read_version
 
 logger = logging.getLogger(__name__)
 
 WATCH_MS = 1000
+
+# How often the idle panel looks for a stick on its own. The offline console
+# has no auto-mount dialog and nobody watching a shell, so nothing tells it a
+# stick went in - it has to look. Two seconds because the whole of a look is a
+# GetDriveTypeW per drive letter and one small update.json read off any
+# removable drive: microseconds against a plugged-in stick, not a spun-up disk,
+# so far below the rate at which polling would cost anything and far above the
+# rate at which a man plugging a stick in would notice the wait. It does
+# nothing at all while an update is being watched - see `_scan`.
+SCAN_MS = 2000
 
 # How long the panel will wait for the updater to say anything at all before it
 # decides there is no updater. `runner.start` deletes the last update's status
@@ -107,6 +117,20 @@ class UpdatePanel(QGroupBox):
         # is the whole of what stops this when the tab is destroyed.
         self._watch = QTimer(self)
         self._watch.timeout.connect(self._read_status)
+
+        # What the last scan saw plugged in. None until the first scan, which is
+        # a real change from nothing and so draws once; after that an unchanged
+        # drive set redraws nothing, so a stick sitting in the slot does not
+        # flicker or fight a line the operator is reading.
+        self._seen: tuple | None = None
+        # A child of the panel for the same reason `_watch` is: a timer that
+        # outlives the widget delivers its timeout into a deleted object, which
+        # is the console vanishing rather than an error anybody can read. It
+        # runs for the life of the panel, which is what makes a plugged-in stick
+        # appear without anyone pressing Look again.
+        self._scan_timer = QTimer(self)
+        self._scan_timer.timeout.connect(self._scan)
+        self._scan_timer.start(SCAN_MS)
 
     # ------------------------------------------------------------- describing
 
@@ -290,6 +314,44 @@ class UpdatePanel(QGroupBox):
             f"finished. VMD {previous} is still on this machine - press Go "
             f"back to VMD {previous} to put it back."
         )
+
+    # ------------------------------------------------------------- idle scan
+
+    def _drive_signature(self) -> tuple:
+        """What is plugged in and which version each carries, as one hashable
+        value - enough to tell a stick going in or coming out from a tick on
+        which nothing moved."""
+        seen = []
+        for drive in self._drives():
+            update = read_update(drive)
+            version = update.get("version") if isinstance(update, dict) else None
+            seen.append((str(drive), version))
+        return tuple(sorted(seen, key=lambda item: item[0]))
+
+    def _scan(self) -> None:
+        """Notice a stick plugged in or pulled out, and redraw only if it moved.
+
+        The idle half of the panel, on a timer. `look` is cheap enough to call
+        outright, but calling it every two seconds would restamp the box over
+        whatever the operator is reading - an interrupted-update line, a failure
+        the last update left - so a fingerprint of what is plugged in decides
+        whether anything actually changed first.
+
+        Nothing happens while an update or rollback is being watched. `look`
+        would return early anyway, but the drives need not even be read and the
+        "the console will close and start again" line must not be touched; the
+        watcher is the one flag both this and `look` are gated on. When `look`
+        does run it keeps its own ordering - an interrupted or already-running
+        state still wins over a stick - because this reaches it through `look`
+        and never past `look` to the drives.
+        """
+        if self._watch.isActive():
+            return
+        signature = self._drive_signature()
+        if signature == self._seen:
+            return
+        self._seen = signature
+        self.look()
 
     # --------------------------------------------------------------- updating
 
