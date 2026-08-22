@@ -134,6 +134,7 @@ $checks = @(
     @{ Path = (Join-Path $binDir 'go2rtc.exe');             What = 'go2rtc, in bin\go2rtc.exe';              Fix = 'run install.bat' }
     @{ Path = (Join-Path $root 'yolo11n.pt');               What = "the detector's weights (yolo11n.pt)";    Fix = 'run install.bat' }
     @{ Path = (Join-Path $root 'VMD.exe');                  What = 'VMD.exe';                                Fix = 'run install.bat' }
+    @{ Path = (Join-Path $root 'VERSION');                  What = 'the version number (VERSION)';           Fix = 'run install.bat' }
     # The one sound the console plays. Checked here because the exclusion list
     # below strips *.wav from the project root - stray recordings from
     # commissioning - and a rule that ever grew to cover subfolders would take

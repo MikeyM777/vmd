@@ -294,6 +294,39 @@ read them.
 
 ---
 
+## Part 4 — Updating it later
+
+The offline computer never gets an internet connection. New versions travel on
+one USB stick, dedicated to VMD and used for nothing else.
+
+**On the laptop with internet:**
+
+1. Plug in the VMD stick.
+2. Double-click `VMD-Update-Stick.bat`.
+3. Choose the drive and press **Build the stick**. It downloads the current
+   version from GitHub and writes it to the stick, along with any libraries the
+   VMD computer does not have yet.
+
+**On the VMD computer:**
+
+1. Plug the stick in.
+2. Open the console, go to **Settings**, and look at the **Software** box at the
+   bottom. It says which version this system is and which version the stick has.
+3. Press **Update now**. The console closes, updates, checks the new version
+   actually runs, and opens again. If it does not run, the previous version is
+   put back by itself and the box says so.
+4. Take the stick back to the laptop. It now carries a note about this machine,
+   which is how the next build knows which libraries to pack.
+
+**Going back.** The version that was replaced is kept. The **Go back to VMD N**
+button in the same box puts it back; it asks first.
+
+**Nothing on the stick but VMD.** Everything on it is checked against
+`manifest.json` before anything is installed, and an unexpected file stops the
+update.
+
+---
+
 ## Related
 
 - `INSTALL.md` — the full installation document, including the online case and
