@@ -100,6 +100,27 @@ STATE_COLOURS: dict[str, str] = {
     "failed": PALETTE["alarm"],
 }
 
+# THE KEYBOARD ON THIS TAB, in one sentence: the arrow keys steer, and only +
+# and - zoom. Nothing else on this tab takes the arrow keys.
+#
+# It is written here because it is not a property of this handler, it is a
+# property of every widget on the tab. Keys are delivered to whatever holds the
+# keyboard and only travel up to this tab if that widget did not handle them, so
+# a single control with an ordinary focus policy takes the steering away for as
+# long as the operator does not think to click back on a picture. That is what
+# happened: clicking the zoom slider gave it focus, and a focused QSlider
+# consumes Left and Right to change its own value - so after the operator
+# touched the zoom, his arrows zoomed the lens rather than turning the head,
+# with nothing on the screen saying so and the caption in the side column still
+# promising that the arrows pan and tilt.
+#
+# So every control on this tab refuses focus, and each of them says so where it
+# is built: the view buttons, the way into fullscreen, the movement line, the
+# two buttons on the alarm strip, the side column, and the slider and buttons of
+# every ZoomBar. `test_nothing_on_the_live_tab_can_take_the_arrow_keys_off_the_camera`
+# asks it of all of them at once, because the next control added here would
+# otherwise be missed in exactly the same way.
+#
 # Arrow keys to the names steering.py uses.
 ARROWS: dict[int, str] = {
     int(Qt.Key.Key_Left): "left",
@@ -958,6 +979,13 @@ class LiveTab(QWidget):
         self._side.setWidget(side)
         self._side.setWidgetResizable(True)
         self._side.setFixedWidth(SIDE_MIN_WIDTH)
+        # And it refuses the keyboard. A QScrollArea takes focus from a click by
+        # default and then answers the arrow keys by scrolling itself, so a
+        # click anywhere in this column - on a group box, on a sentence, on the
+        # grey between two panels - left the next arrow scrolling the numbers
+        # instead of turning the head. The wheel and the scrollbar still work;
+        # neither of them needs the keyboard. See the rule above ARROWS.
+        self._side.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._side.setFrameShape(QFrame.Shape.NoFrame)
         self._side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._side)
@@ -1165,6 +1193,12 @@ class LiveTab(QWidget):
         # has already reclaimed would otherwise take its own notice down on the
         # way to showing him nothing.
         self._show_me = QPushButton("Show me")
+        # Refuses focus, as every control on this tab does. The strip is not
+        # shown any more, so this costs nothing today - and that is exactly why
+        # it is set here rather than left to whoever shows it again: a button
+        # that took the keyboard would be a camera that stopped answering its
+        # arrow keys during an alarm, which is the worst moment for it.
+        self._show_me.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._show_me.clicked.connect(self.show_the_footage)
         row.addWidget(self._show_me)
         # "Acknowledge" is a formal word standing next to a plain one, and the
@@ -1174,6 +1208,8 @@ class LiveTab(QWidget):
         # button says what pressing it means.
         self.acknowledge_button = QPushButton("Seen it")
         acknowledge = self.acknowledge_button
+        # The same, and for the same reason as **Show me** above it.
+        acknowledge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         acknowledge.clicked.connect(self.acknowledge)
         row.addWidget(acknowledge)
         self._alarm.setVisible(False)

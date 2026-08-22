@@ -18,7 +18,8 @@ reported and never what it asked for.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt
+import pytest
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from shiboken6 import isValid
 
 from vmd.desktop.zoombar import (
@@ -258,6 +259,77 @@ def test_the_buttons_never_take_the_keyboard_away_from_steering(qtbot) -> None:
     qtbot.addWidget(bar)
     for button in bar.buttons():
         assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_the_slider_never_takes_the_keyboard_away_from_steering_either(qtbot) -> None:
+    """The same rule as the buttons above, on the control that was missed.
+
+    A focused QSlider consumes Left and Right to change its own value, so the
+    moment the operator touched the zoom his arrow keys stopped steering the
+    camera and started zooming it instead - silently, and against every
+    instruction on the tab, which say the arrows pan and tilt. The buttons were
+    given `NoFocus` for exactly this reason and the slider was not.
+    """
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    assert bar.slider().focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_a_slider_that_refuses_the_keyboard_can_still_be_dragged(qtbot) -> None:
+    """Refusing focus must not cost the gesture the control exists for.
+
+    `NoFocus` is about the keyboard and nothing else - a widget that will not
+    take focus still takes mouse presses - but the drag is the whole of how this
+    control feels, so it is pressed, moved and released with a real mouse here
+    rather than by calling `setValue`.
+    """
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    bar.set_position(0.0)
+    bar.resize(400, 24)
+    bar.show()
+    qtbot.waitExposed(bar)
+    went, _crept = commands(bar)
+
+    slider = bar.slider()
+    middle = QPoint(slider.width() // 2, slider.height() // 2)
+    far = QPoint(int(slider.width() * 0.8), slider.height() // 2)
+    qtbot.mousePress(slider, Qt.MouseButton.LeftButton, pos=middle)
+    assert slider.isSliderDown(), "the press did not start a drag"
+    qtbot.mouseMove(slider, far)
+    qtbot.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=far)
+
+    assert went, "a whole drag reached the lens with nothing"
+    assert went[-1][0] == "visible"
+    assert went[-1][1] == pytest.approx(slider.value() / STEPS), (
+        "the lens did not finish at the value he let go on"
+    )
+
+
+def test_a_button_that_refuses_the_keyboard_still_repeats_while_it_is_held(
+    qtbot,
+) -> None:
+    """The other half of the same worry, on the controls that already had it.
+
+    The buttons have refused focus since they were written, and they have since
+    been given a repeat while held. Pressed with a real mouse rather than by
+    emitting `pressed`, so that a focus policy which stopped the press arriving
+    at all would be caught here rather than in the field.
+    """
+    bar = ZoomBar("visible")
+    qtbot.addWidget(bar)
+    bar.set_position(0.5)
+    bar.resize(400, 24)
+    bar.show()
+    qtbot.waitExposed(bar)
+    went, _crept = commands(bar)
+
+    _out, into = bar.buttons()
+    qtbot.mousePress(into, Qt.MouseButton.LeftButton)
+    assert went, "a press of + asked for nothing"
+    assert bar.repeat_timer().isActive(), "a held button is not stepping"
+    qtbot.mouseRelease(into, Qt.MouseButton.LeftButton)
+    assert not bar.repeat_timer().isActive(), "the repeat outlived the button"
 
 
 def test_the_readout_names_what_it_is_a_number_of(qtbot) -> None:

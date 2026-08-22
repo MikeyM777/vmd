@@ -138,8 +138,16 @@ class WidgetPane(QWidget):
         self._state = "playing"
 
 
-def build(qtbot, *names: str, events=None, register: bool = True, clock=None, pane=None):
-    ptz = FakePtz()
+def build(
+    qtbot,
+    *names: str,
+    events=None,
+    register: bool = True,
+    clock=None,
+    pane=None,
+    ptz=None,
+):
+    ptz = ptz if ptz is not None else FakePtz()
     panes: dict = {}
     make = pane or FakeVideoPane
 
@@ -529,6 +537,135 @@ def test_the_zoom_keys_zoom_and_releasing_them_stops(qtbot) -> None:
     assert sent(tab, ptz)[-1] == ("move", 0.0, 0.0, -0.5)
     qtbot.keyRelease(tab, Qt.Key.Key_Minus)
     assert sent(tab, ptz)[-1] == ("stop",)
+
+
+# ------------------------------------- the arrows steer, and only + and - zoom
+#
+# The rule this tab is held to: the arrow keys steer, + and - zoom, and nothing
+# else on the tab may take the arrow keys. The keys are delivered to whatever
+# holds the keyboard and only travel up to this tab if that widget did not
+# handle them - so a single control with an ordinary focus policy is enough to
+# take the steering away, silently, for as long as the operator does not think
+# to click back on a picture.
+
+
+class ZoomingPtz(FakePtz):
+    """A camera whose lenses answer, so the zoom bars are live rather than dead.
+
+    A disabled slider cannot be clicked and cannot take the keyboard, so a tab
+    built against the plain `FakePtz` above could not show this fault at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.zooms: list[tuple] = []
+        self.where = {"thermal": 0.30, "visible": 0.30}
+
+    def zoom_ready(self) -> dict:
+        return {"ok": True, "checking": False, "absolute": True, "shared": False}
+
+    def zoom(self, stream: str, where: float) -> dict:
+        self.zooms.append((stream, where))
+        return {"ok": True, "error": ""}
+
+    def zoom_hold(self, stream: str, speed: float) -> dict:
+        self.zooms.append((stream, speed))
+        return {"ok": True, "error": ""}
+
+    def zoom_poll(self) -> None: ...
+
+    def zoom_position(self, stream: str) -> float | None:
+        return self.where.get(stream)
+
+
+def press_where_the_keyboard_is(key: Qt.Key) -> None:
+    """One key, delivered the way Qt delivers one: to whatever has the focus.
+
+    Not to the tab. Sending the key straight at the tab is what a test does when
+    it wants to prove the handler works, and it would pass whatever had taken
+    the keyboard - which is the entire fault being measured here.
+    """
+    app = QApplication.instance()
+    target = app.focusWidget()
+    assert target is not None, "nothing had the keyboard"
+    app.sendEvent(target, QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+
+
+def test_clicking_the_zoom_slider_does_not_give_it_the_arrow_keys(qtbot) -> None:
+    """The fault in the operator's own order: touch the zoom, then steer.
+
+    "Only + and - control the zoom (when tapping the + zoom slider and moving the
+    arrow keys it controls the zoom also)." Clicking a slider gives it the
+    keyboard, and a focused QSlider eats Left and Right to change its own value,
+    so from that moment the arrows zoomed the lens instead of turning the head.
+    Nothing said so on the screen, and the tab's own caption goes on promising
+    that the arrows pan and tilt.
+    """
+    ptz = ZoomingPtz()
+    tab, _ptz, _panes = build(qtbot, "thermal", ptz=ptz)
+    tab.refresh()
+    tab.resize(900, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+
+    slider = tab.zoom_bar("thermal").slider()
+    assert slider.isEnabled(), "a dead slider proves nothing about focus"
+    qtbot.mouseClick(
+        slider,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(slider.width() // 2, slider.height() // 2),
+    )
+    QApplication.processEvents()
+    # Where the click left things, so that what the ARROW did is what is
+    # measured rather than what the click did.
+    was = slider.value()
+    zoomed = list(ptz.zooms)
+    steered = len(ptz.commands)
+
+    press_where_the_keyboard_is(Qt.Key.Key_Right)
+
+    assert sent(tab, ptz)[steered:] == [("move", 0.5, 0.0, 0.0)], (
+        "the arrow key never reached the steering"
+    )
+    assert slider.value() == was, "the arrow key moved the zoom slider"
+    assert ptz.zooms == zoomed, "the arrow key was sent to the lens as a zoom"
+    tab.stop_steering()
+
+
+def test_nothing_on_the_live_tab_can_take_the_arrow_keys_off_the_camera(
+    qtbot,
+) -> None:
+    """The rule, asked of the whole tab rather than of the control that broke it.
+
+    Every button here already refuses the keyboard, each with its own comment
+    saying why, and the zoom slider was missed - so the next control added to
+    this tab will be missed too unless the question is asked of all of them at
+    once. Anything that can be clicked into can swallow an arrow, so the tab
+    itself is the only thing on it allowed to take focus from a click.
+    """
+    ptz = ZoomingPtz()
+    tab, _ptz, _panes = build(qtbot, "thermal", "visible", ptz=ptz)
+    tab.refresh()
+    tab.resize(900, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+
+    greedy = [
+        f"{type(widget).__name__}({widget.objectName() or _words(widget)})"
+        for widget in tab.findChildren(QWidget)
+        if widget.focusPolicy() & Qt.FocusPolicy.ClickFocus
+    ]
+    assert greedy == [], (
+        "these can take the keyboard away from steering: " + ", ".join(greedy)
+    )
+
+
+def _words(widget: QWidget) -> str:
+    reader = getattr(widget, "text", None)
+    try:
+        return str(reader())[:30] if callable(reader) else ""
+    except Exception:  # noqa: BLE001 - this is a test's description of a widget
+        return ""
 
 
 def send_auto_repeat(tab, kind: QEvent.Type, key: Qt.Key) -> None:

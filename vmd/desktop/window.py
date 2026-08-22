@@ -911,8 +911,18 @@ class ConsoleWindow(QMainWindow):
         # the Live tab's own side column - and the pictures themselves are not
         # moved, rebuilt or reparented by any of it. See
         # `vmd/desktop/fullscreen.py` for why that last part is not optional.
+        # `settings.screen` goes with it: the mode fills the screen the window
+        # is on, and which screen this console belongs on is the installation's
+        # decision rather than the window's. Without it, a console dragged onto
+        # the other monitor for a moment took THAT monitor the next time F11 was
+        # pressed - and there are two of these on one desktop, with the operator
+        # working on the screen the other one is not watching from.
         self.fullscreen = FullscreenLive(
-            window=self, tabs=self.tabs, band=self.band, live=self.live
+            window=self,
+            tabs=self.tabs,
+            band=self.band,
+            live=self.live,
+            screen=settings.screen,
         )
         # The Live tab carries the button; a tab that could not be built carries
         # nothing, and then the keys are the whole of it.
@@ -1388,6 +1398,12 @@ class ConsoleWindow(QMainWindow):
         try:
             self.set_title(getattr(settings, "title", ""))
             self.show_playback_tab(getattr(settings, "show_playback", False))
+            # Which monitor this console belongs on can be changed from the
+            # Settings tab, and fullscreen is what reads it after start-up. A
+            # mode still holding the number the console opened with would put
+            # the pictures back on the old monitor at the next F11, hours after
+            # the operator had watched himself change it.
+            self.fullscreen.set_screen(getattr(settings, "screen", None))
         except Exception:  # noqa: BLE001 - the rest of the save must still run
             logger.exception("the window would not take the saved name or tabs")
 

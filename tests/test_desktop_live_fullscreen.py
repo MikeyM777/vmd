@@ -30,9 +30,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QSplitter, QWidget
 
+from vmd.desktop.fullscreen import FullscreenLive
 from vmd.desktop.live import LiveTab
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.window import ConsoleWindow
@@ -297,6 +299,90 @@ def settle() -> None:
         QApplication.processEvents()
 
 
+class RecordingWindow(QWidget):
+    """A console window that writes down what the mode did to it.
+
+    Which monitor a mode fills can only be measured against more than one
+    monitor, and the machine running these tests has one - a real window asked
+    to sit on a second screen that is not there is quietly clamped back onto the
+    first, and the measurement would then pass whatever the code did. So the
+    window is a stand-in: it is a real QWidget, because the mode parents itself
+    to it, and everything about its shape is answered from what it was told
+    rather than from a desktop.
+    """
+
+    def __init__(self, at: QRect) -> None:
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        self._at = QRect(at)
+        self.moved: list[QRect] = []
+        self.went_fullscreen_at: QRect | None = None
+        self.shown: list[str] = []
+
+    def geometry(self) -> QRect:  # noqa: N802 - Qt naming
+        return QRect(self._at)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802 - Qt naming
+        self._at = QRect(rect)
+        self.moved.append(QRect(rect))
+
+    def isMaximized(self) -> bool:  # noqa: N802 - Qt naming
+        return False
+
+    def showFullScreen(self) -> None:  # noqa: N802 - Qt naming
+        self.went_fullscreen_at = QRect(self._at)
+        self.shown.append("fullscreen")
+
+    def showNormal(self) -> None:  # noqa: N802 - Qt naming
+        self.shown.append("normal")
+
+    def showMaximized(self) -> None:  # noqa: N802 - Qt naming
+        self.shown.append("maximised")
+
+
+class FakeTabs:
+    """Enough of a QTabWidget for the mode: which page is open, and a bar."""
+
+    def __init__(self) -> None:
+        self.index = 0
+        self.bar = QWidget()
+
+    def currentIndex(self) -> int:  # noqa: N802 - Qt naming
+        return self.index
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802 - Qt naming
+        self.index = index
+
+    def indexOf(self, page) -> int:  # noqa: N802 - Qt naming
+        return 0
+
+    def count(self) -> int:
+        return 3
+
+    def tabBar(self) -> QWidget:  # noqa: N802 - Qt naming
+        return self.bar
+
+
+class FakeBand:
+    def __init__(self) -> None:
+        self.visible = True
+
+    def setVisible(self, showing: bool) -> None:  # noqa: N802 - Qt naming
+        self.visible = bool(showing)
+
+
+class FakeLive:
+    def __init__(self) -> None:
+        self.fullscreen = False
+        self.focused = 0
+
+    def set_fullscreen(self, on: bool) -> None:
+        self.fullscreen = bool(on)
+
+    def setFocus(self, reason=None) -> None:  # noqa: N802 - Qt naming
+        self.focused += 1
+
+
 # ------------------------------------------------------------ the fullscreen mode
 
 
@@ -320,6 +406,224 @@ def test_fullscreen_shows_the_pictures_and_none_of_the_side_column(
     assert not window.tabs.tabBar().isVisible()
     for name in live.stream_names():
         assert live._frames[name].isVisible(), f"{name} is the point of the mode"
+
+
+def test_fullscreen_leaves_nothing_up_but_the_pictures_and_their_own_controls(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Fullscreen means that all panels disappear and just streams are on
+    screen." Asked by walking the window rather than by naming the three panels
+    somebody happened to remember, so that a panel added to this console
+    tomorrow cannot quietly survive the mode.
+
+    What is allowed to stay is not a shortcut: it is the pictures, and the three
+    controls the operator asked for IN this mode, each of which has a test of
+    its own further down this file. The row above the pictures carries the name
+    of the place, the view chooser - "like the regular view, the option to
+    choose all / vis / thermal" - and the way out, which may never be hidden by
+    the mode that needs it. The zoom bars sit under each picture because he
+    asked for them in fullscreen first, and in the mode where the side column is
+    gone they are the only reading of the lens there is.
+
+    Everything else - the status band, the tab bar, the side column and every
+    panel in it, the alarm strip - has to be off the screen.
+    """
+    window = console(qtbot, tmp_path)
+    live = window.live
+    live.set_title("שער צפוני")
+    window.fullscreen.enter()
+    settle()
+
+    kept = [
+        live._wall_area,
+        live._title,
+        live.views,
+        live.fullscreen_button(),
+        # Only ever up when the camera says both pictures share one lens, and it
+        # is about the two controls under the pictures - so it belongs with them
+        # rather than in a column that is not there.
+        live._lens_note,
+    ]
+    allowed: set = set()
+    for widget in kept:
+        allowed.add(widget)
+        allowed.update(widget.findChildren(QWidget))
+        # And whatever holds them. A parent of a picture is on the screen by
+        # arithmetic, not by choice, and hiding one would hide the pictures.
+        parent = widget.parentWidget()
+        while parent is not None:
+            allowed.add(parent)
+            parent = parent.parentWidget()
+
+    still_up = [
+        f"{type(widget).__name__}({_says(widget)})"
+        for widget in window.findChildren(QWidget)
+        if widget.isVisible() and widget not in allowed
+    ]
+    assert still_up == [], "still on the screen in fullscreen: " + ", ".join(still_up)
+
+
+def _says(widget: QWidget) -> str:
+    for name in ("text", "title", "objectName"):
+        reader = getattr(widget, name, None)
+        if not callable(reader):
+            continue
+        try:
+            words = reader()
+        except Exception:  # noqa: BLE001 - this is a test describing a widget
+            continue
+        if words:
+            return str(words)[:40]
+    return ""
+
+
+def test_fullscreen_takes_one_screen_and_leaves_the_rest_of_the_desktop(
+    qtbot, tmp_path: Path
+) -> None:
+    """"I want, when fullscreen, still be able to move the window around, like
+    separating 1 screen between the VMD and other things."
+
+    There are two of these consoles on one desktop with two screens, and the
+    operator works on the other one while this one watches. A mode that covered
+    the whole desktop would take the machine off him; so the window is inside
+    ONE screen's geometry and touches no other.
+    """
+    window = console(qtbot, tmp_path)
+    window.fullscreen.enter()
+    settle()
+    assert window.isFullScreen()
+
+    where = window.geometry()
+    holding = [
+        index
+        for index, screen in enumerate(QGuiApplication.screens(), start=1)
+        if screen.geometry().contains(where)
+    ]
+    touched = [
+        index
+        for index, screen in enumerate(QGuiApplication.screens(), start=1)
+        if screen.geometry().intersects(where)
+    ]
+    assert holding, f"{where} is not inside any one screen"
+    assert len(touched) == 1, f"{where} reaches screens {touched}"
+
+
+def test_being_clicked_away_from_does_not_take_the_console_out_of_fullscreen(
+    qtbot, tmp_path: Path
+) -> None:
+    """He is working on the other monitor, so this window is not the active one
+    for most of the day.
+
+    A console that dropped out of fullscreen, minimised itself or re-raised
+    itself the moment it lost the focus is the whole of what he is complaining
+    about - and none of those is something Qt does by itself, so what this holds
+    is that nothing in this console starts doing them.
+    """
+    window = console(qtbot, tmp_path)
+    window.fullscreen.enter()
+    settle()
+
+    raised: list[str] = []
+    window.raise_ = lambda: raised.append("raise")
+    window.activateWindow = lambda: raised.append("activate")
+
+    QApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    QApplication.sendEvent(window.live, QEvent(QEvent.Type.WindowDeactivate))
+    settle()
+    # And a few beats of everything this console runs on a timer, because a
+    # window that fights for the front does it from one of these rather than
+    # from the moment it lost the focus.
+    for _ in range(3):
+        window.heartbeat()
+        settle()
+
+    assert window.fullscreen.active(), "the mode gave up when he clicked elsewhere"
+    assert window.isFullScreen(), "the window came out of fullscreen on its own"
+    assert not window.isMinimized(), "the window minimised itself"
+    assert raised == [], f"the window put itself back in front: {raised}"
+
+
+def test_fullscreen_fills_the_screen_the_settings_name(qtbot) -> None:
+    """Which monitor this console belongs on is an installation's decision.
+
+    `Settings.screen` is how the desktop with two cameras on it is set up, and
+    `place_on_screen` applies it once, when the console opens. Fullscreen used
+    to fill whichever screen the window had drifted onto since - so a console
+    dragged over to the other monitor for a moment took the screen he works on
+    the next time he pressed F11, which is exactly the fault he described.
+
+    Driven against two pretend screens, because the machine running this has
+    one, and against a window that records what was done to it rather than one
+    that would be clamped to the real desktop.
+    """
+    screens = [QRect(0, 0, 1920, 1080), QRect(1920, 0, 1680, 1050)]
+    window = RecordingWindow(QRect(100, 100, 900, 700))
+    qtbot.addWidget(window)
+    mode = FullscreenLive(
+        window=window,
+        tabs=FakeTabs(),
+        band=FakeBand(),
+        live=FakeLive(),
+        screen=2,
+        screens=lambda: list(screens),
+    )
+    mode.enter()
+
+    assert window.went_fullscreen_at is not None, "it never went fullscreen"
+    assert screens[1].contains(window.went_fullscreen_at), (
+        f"it went fullscreen at {window.went_fullscreen_at}, which is not on "
+        f"screen 2 ({screens[1]})"
+    )
+    assert not screens[0].intersects(window.went_fullscreen_at), (
+        "it reached across the screen he works on"
+    )
+
+
+def test_a_console_with_no_screen_named_fills_the_one_it_is_already_on(
+    qtbot,
+) -> None:
+    """None is the honest default and it is not "screen 1".
+
+    A console with one monitor, or one somebody has dragged where he wants it,
+    is remembered by `window.json` and must stay where it was put - so with
+    nothing named the mode moves the window nowhere at all and lets Qt fill the
+    screen it is on.
+    """
+    screens = [QRect(0, 0, 1920, 1080), QRect(1920, 0, 1680, 1050)]
+    for named in (None, 3, 0):
+        window = RecordingWindow(QRect(2000, 100, 900, 700))
+        qtbot.addWidget(window)
+        mode = FullscreenLive(
+            window=window,
+            tabs=FakeTabs(),
+            band=FakeBand(),
+            live=FakeLive(),
+            screen=named,
+            screens=lambda: list(screens),
+        )
+        mode.enter()
+        assert window.moved == [], f"screen={named} moved the window to {window.moved}"
+
+
+def test_the_screen_the_console_is_already_on_is_left_alone(qtbot) -> None:
+    """The window is not shoved about when it is already where it belongs.
+
+    Moving it would replace the size and place the operator chose with the whole
+    of the screen, which is what he would come back to when he left the mode.
+    """
+    screens = [QRect(0, 0, 1920, 1080), QRect(1920, 0, 1680, 1050)]
+    window = RecordingWindow(QRect(2000, 100, 900, 700))
+    qtbot.addWidget(window)
+    mode = FullscreenLive(
+        window=window,
+        tabs=FakeTabs(),
+        band=FakeBand(),
+        live=FakeLive(),
+        screen=2,
+        screens=lambda: list(screens),
+    )
+    mode.enter()
+    assert window.moved == [], "a window already on its own screen was moved"
 
 
 def test_leaving_fullscreen_puts_the_side_column_back(qtbot, tmp_path: Path) -> None:

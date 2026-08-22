@@ -243,6 +243,22 @@ class ZoomBar(QWidget):
         self._slider.setPageStep(NUDGE)
         self._slider.setSingleStep(1)
         self._slider.setToolTip("Where the lens is. Drag to send it somewhere.")
+        # It refuses the keyboard, exactly as the two buttons beside it do.
+        #
+        # This is the rule the whole Live tab is held to - the arrow keys steer,
+        # only + and - zoom, and nothing else on that tab takes the arrows - and
+        # a slider is the one control that breaks it by default. A QSlider with
+        # an ordinary focus policy takes focus from a click and then consumes
+        # Left and Right to change its own value, so from the moment the
+        # operator touched the zoom his arrows zoomed the lens instead of
+        # turning the head. Silently, and against the caption on the tab itself,
+        # which says the arrows pan and tilt.
+        #
+        # It costs nothing the control is for. `NoFocus` is about the keyboard
+        # alone: the handle is still dragged, the groove is still clicked, and
+        # the click now hands the keyboard to the Live tab above - which is the
+        # thing that steers.
+        self._slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._slider.setStyleSheet(_SLIDER_STYLE)
         # Two connections, and the split is the whole of how dragging this
