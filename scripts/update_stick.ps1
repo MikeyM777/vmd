@@ -247,19 +247,24 @@ function Get-Sha256($path) {
     <#
         The SHA-256 of one file, as lowercase hex.
 
-        Not Get-FileHash, which is the obvious way to write this and does not
-        work. Get-FileHash is not one of Windows PowerShell 5.1's built-in
-        cmdlets: it lives in a module that is autoloaded off PSModulePath, and
-        on any machine where PowerShell 7 is installed PSModulePath leads with
-        7's own copy of that module - which 5.1 cannot load, so the command is
-        simply not found. It is not rare and it is not the test's fault: it is
-        every laptop that has 7 on it and starts this from a 7 prompt, and what
-        it produces is a stick that stops with "the term 'Get-FileHash' is not
-        recognized" three quarters of the way through.
+        Not Get-FileHash, which is the obvious way to write this and cannot be
+        relied on. Get-FileHash is not one of Windows PowerShell 5.1's built-in
+        cmdlets: it lives in a module autoloaded off PSModulePath. A PowerShell
+        7 session puts its OWN module folders at the front of that variable and
+        hands them to whatever it starts, so a 5.1 launched from a 7 prompt -
+        or from anything a 7 prompt launched - looks in 7's copy of
+        Microsoft.PowerShell.Utility first, cannot load it, and reports that the
+        command does not exist.
 
-        .NET's SHA256 needs no module and cannot be shadowed. It is read as a
-        stream rather than with ReadAllBytes so that a large file in the tree
-        does not have to fit in memory.
+        That is not a hypothetical and it is not the test's fault: it is how
+        this was found. What it produces is a stick that stops three quarters of
+        the way through with "the term 'Get-FileHash' is not recognized", which
+        tells the person holding it nothing they can act on.
+
+        .NET's SHA256 needs no module and cannot be shadowed.
+
+        It is read as a stream rather than with ReadAllBytes so that a large
+        file in the tree does not have to fit in memory.
     #>
     $sha = [System.Security.Cryptography.SHA256]::Create()
     $stream = [System.IO.File]::OpenRead($path)
