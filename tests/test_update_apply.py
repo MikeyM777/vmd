@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
-from vmd.update.apply import KEEP_OUT, back_up, copy_in, replace_file, restore, what_to_copy
+from vmd.update import apply as apply_module
+from vmd.update.apply import (
+    KEEP_OUT,
+    Report,
+    back_up,
+    copy_in,
+    replace_file,
+    restore,
+    run,
+    what_to_copy,
+)
+from vmd.update.manifest import write as write_manifest
 
 
 def an_install(root: Path) -> Path:
@@ -218,3 +230,226 @@ def test_replace_file_survives_a_locked_leftover_from_a_previous_run(
 
     assert target.read_bytes() == b"new"
     assert leftover.read_bytes() == b"stale"  # could not be removed, left alone
+
+
+def a_stick(folder: Path, version: int, files: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(files, folder / "files")
+    (folder / "update.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+    write_manifest(folder / "files", folder / "manifest.json")
+    return folder
+
+
+def test_a_good_update_lands_and_reports_the_two_versions(tmp_path: Path) -> None:
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is True
+    assert report.moved_from == 7 and report.moved_to == 8
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "new\n"
+
+
+def test_the_note_is_written_before_anything_is_replaced(tmp_path: Path) -> None:
+    """Even a refused update teaches the laptop what this machine has. The trip
+    is already wasted; it must not also be uninformative."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (stick / "files" / "VERSION").write_text("9", encoding="utf-8")  # breaks the manifest
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "VERSION" in report.message
+    assert (stick / "machines" / "WIN-TEST.json").is_file()
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+
+
+def test_a_new_version_that_does_not_run_is_thrown_away(tmp_path: Path) -> None:
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""),
+                 selftest=lambda: (False, "ImportError: no module named cv2"))
+
+    assert report.ok is False
+    assert "did not start" in report.message
+    assert "cv2" in "\n".join(report.output)
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (root / "VERSION").read_text(encoding="utf-8") == "7"
+
+
+def test_libraries_that_will_not_install_undo_the_update_too(tmp_path: Path) -> None:
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None,
+                 sync=lambda *_: (False, "no wheel for numpy 2.2.0 on the stick"),
+                 selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "numpy" in report.message
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+
+
+def test_the_marker_is_up_while_it_runs_and_gone_afterwards(tmp_path: Path) -> None:
+    """A power cut in the middle leaves the marker behind, and that is how the
+    next start knows to offer a way back."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    seen = {}
+
+    def stop() -> None:
+        seen["marker"] = (root / "bin" / "logs" / "update-in-progress.json").is_file()
+
+    run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+        stop=stop, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert seen["marker"] is True
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_every_step_is_written_where_the_console_can_read_it(tmp_path: Path) -> None:
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+        stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    status = json.loads((root / "bin" / "logs" / "update-status.json").read_text(encoding="utf-8"))
+    assert status["finished"] is True and status["ok"] is True
+    assert (root / "bin" / "logs" / "update.log").read_text(encoding="utf-8").strip()
+
+
+def test_the_report_and_the_status_file_never_disagree(tmp_path: Path) -> None:
+    """The console never sees the Report - it is returned to a process that is
+    about to exit. What it sees is update-status.json. If the two could differ,
+    every test written against the Report would be proving something about a
+    value nobody reads."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    good = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+               stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert isinstance(good, Report)
+    assert _status(root) == _as_status(good)
+
+    bad = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+              stop=lambda: None, sync=lambda *_: (True, ""),
+              selftest=lambda: (False, "ImportError: no module named cv2"))
+
+    assert bad.ok is False
+    assert _status(root) == _as_status(bad)
+
+
+def _status(root: Path) -> dict:
+    text = (root / "bin" / "logs" / "update-status.json").read_text(encoding="utf-8")
+    return json.loads(text)
+
+
+def _as_status(report: Report) -> dict:
+    """The Report said the way the finished status file says it."""
+    return {
+        "step": report.step,
+        "ok": report.ok,
+        "message": report.message,
+        "from": report.moved_from,
+        "to": report.moved_to,
+        "output": report.output[-200:],
+        "finished": True,
+    }
+
+
+def test_a_rollback_that_cannot_be_done_leaves_the_marker_up_and_says_so(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The worst case there is: the new version does not run AND the old one
+    cannot be put back, because something is holding a file open that will not
+    die. The half-updated copy must not be reported as merely failed and must
+    not have its marker cleared - the marker is the only thing that tells the
+    next start of the console that this copy is not to be trusted."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    def stuck(*args, **kwargs):
+        raise PermissionError("vmd\\app.py is held open by another process")
+
+    monkeypatch.setattr(apply_module, "restore", stuck)
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""),
+                 selftest=lambda: (False, "ImportError: no module named cv2"))
+
+    assert report.ok is False
+    assert "half updated" in report.message
+    assert str(root / "previous" / "7") in report.message
+    assert (root / "bin" / "logs" / "update-in-progress.json").is_file()
+    assert _status(root)["finished"] is True
+
+
+def test_a_step_that_throws_is_reported_rather_than_vanishing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """run is the whole of a detached process. An exception escaping it kills
+    that process with the status file still saying finished: false, and the
+    console waits for a program that is no longer running until somebody gives
+    up. Whatever happens has to come back as a finished status."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    def falls_over(*args, **kwargs):
+        raise OSError("the disk filled up halfway through")
+
+    monkeypatch.setattr(apply_module, "copy_in", falls_over)
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "disk filled up" in "\n".join(report.output)
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert _status(root)["finished"] is True
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_nothing_is_touched_when_the_stick_cannot_be_read_at_all(tmp_path: Path) -> None:
+    """A drive that has an update.json which is not JSON. There is nothing to
+    verify and nothing to copy, so the install must be exactly as it was and
+    the marker must never have gone up."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (stick / "update.json").write_text("{not json", encoding="utf-8")
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "could not be read" in report.message
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (stick / "machines" / "WIN-TEST.json").is_file()
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_a_stick_whose_json_is_the_wrong_shape_is_refused_not_crashed_on(
+    tmp_path: Path,
+) -> None:
+    """Valid JSON that is not an object. Everything downstream asks it for a
+    key, and asking a list for a key raises out of a process nobody is
+    watching, leaving the status file saying it is still working."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+    (stick / "update.json").write_text("[8]", encoding="utf-8")
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "could not be read" in report.message
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert _status(root)["finished"] is True
