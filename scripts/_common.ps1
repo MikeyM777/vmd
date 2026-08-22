@@ -380,7 +380,15 @@ function Get-File($url, $destination, $label, $MinimumBytes = 0) {
 # running would have it killed underneath them, and on this machine that is
 # exactly what happened the first time. Nothing in this list is something a
 # person is in the middle of.
-function Get-ProjectRuntimeProcesses($root) {
+#
+# $spare is a list of process ids to leave alone, and it exists for exactly one
+# caller: the updater, vmd\update\main.py, which stops the console before it
+# replaces it. That updater IS a process named python running out of
+# bin\python\ - the second rule below matches it as squarely as it matches the
+# recorder - so without being told to spare itself it taskkills itself halfway
+# through an update, with the console already stopped and nothing left running
+# to start it again. That was measured, not imagined.
+function Get-ProjectRuntimeProcesses($root, $spare = @()) {
     $wanted = @(
         (Join-Path $root 'VMD.exe')
         (Join-Path $root '.venv\Scripts\python.exe')
@@ -392,16 +400,16 @@ function Get-ProjectRuntimeProcesses($root) {
     # path carries a CPython version that changes.
     $pythonDir = (Join-Path $root 'bin\python').TrimEnd('\') + '\'
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Id -ne $PID -and $_.Path -and (
+        $_.Id -ne $PID -and $spare -notcontains $_.Id -and $_.Path -and (
             ($wanted -contains $_.Path) -or
             ($_.Path.StartsWith($pythonDir, 'OrdinalIgnoreCase') -and $_.ProcessName -eq 'python')
         )
     })
 }
 
-function Stop-ProjectProcesses($root) {
+function Stop-ProjectProcesses($root, $spare = @()) {
     $stopped = @()
-    foreach ($process in (Get-ProjectRuntimeProcesses $root)) {
+    foreach ($process in (Get-ProjectRuntimeProcesses $root $spare)) {
         # /T as well as /F: VMD.exe starts uv, uv starts python, and python is
         # the one holding the environment open. Ending only the parent leaves
         # the child owning the file that has to be deleted.
@@ -416,7 +424,7 @@ function Stop-ProjectProcesses($root) {
     if ($stopped.Count -gt 0) { Start-Sleep -Milliseconds 800 }
     # Whatever is still standing after that, said plainly. This is the value the
     # caller should act on, not the list above.
-    $left = @(Get-ProjectRuntimeProcesses $root | ForEach-Object { $_.ProcessName })
+    $left = @(Get-ProjectRuntimeProcesses $root $spare | ForEach-Object { $_.ProcessName })
     return [pscustomobject]@{ Stopped = @($stopped | Sort-Object -Unique); StillRunning = @($left | Sort-Object -Unique) }
 }
 
