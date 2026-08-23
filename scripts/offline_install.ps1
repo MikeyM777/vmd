@@ -126,6 +126,40 @@ Set-StepTotal 7
 # here. Better to say so in one sentence than to fail five steps later in a way
 # that reads like a bug.
 Write-Step "Checking that this folder came from the connected machine"
+
+# Before anything else: is this folder running from the USB stick itself?
+#
+# Nothing used to ask. Double-clicking offline-install.bat on E:\VMD instead of
+# copying to C:\VMD first "succeeded" - and then wrote E:\ into three places
+# that outlive the stick: pyvenv.cfg and the .pth (step 2), the user's PATH
+# (step 3), and the scheduled tasks that start the recorder after a reboot
+# (step 6). Pull the stick out and the machine has a PATH pointing at nothing,
+# an environment pointing at a vanished interpreter, and a recorder that never
+# starts - none of it visible until the next power cut, on the machine nobody
+# can debug. Refusing here costs one sentence.
+try {
+    $rootDrive = [System.IO.Path]::GetPathRoot($root)
+    if ($rootDrive) {
+        $driveInfo = New-Object System.IO.DriveInfo($rootDrive)
+        if ($driveInfo.DriveType -eq [System.IO.DriveType]::Removable) {
+            Write-Host ""
+            Write-Bad "This is running from a removable drive ($rootDrive)."
+            Write-Info "VMD has to be installed onto the machine's own disk. Installing it"
+            Write-Info "here would write this drive's letter into Windows' settings, and"
+            Write-Info "everything would stop the moment the drive is unplugged."
+            Write-Host ""
+            Write-Info "Do this instead:"
+            Write-Info "  1. Copy the whole VMD folder from this drive to C:\VMD"
+            Write-Info "  2. Open C:\VMD and double-click offline-install.bat there."
+            Stop-Installer 1
+        }
+    }
+} catch {
+    # Windows would not say what kind of drive this is. Not a reason to stop -
+    # the ordinary case is a fixed disk, and a wrong guess here would refuse a
+    # good install.
+}
+
 $fatal = @()
 foreach ($item in @(
     @{ Path = (Join-Path $root '.venv\Scripts\python.exe'); What = 'the Python environment (.venv)' }
@@ -140,10 +174,23 @@ else { Write-Bad "MISSING - the project's own Python (bin\python\)"; $fatal += '
 
 if ($fatal.Count -gt 0) {
     Write-Host ""
-    Write-Bad "This is not a prepared copy - it is the plain project files."
-    Write-Info "There is no way to finish the install on a machine with no internet."
-    Write-Info "On a machine that has one: run install.bat, then"
-    Write-Info "offline-kit.bat, and bring the folder that produces."
+    # Which of the three is missing changes what happened, so it changes what is
+    # said. One shared verdict told somebody holding a properly prepared copy
+    # with one truncated piece that they had "downloaded the plain project
+    # files" - which sent them to re-download the thing they already had.
+    if ($fatal.Count -eq 1 -and $fatal[0] -eq 'bin\python\') {
+        Write-Bad "The interpreter (bin\python\) did not travel with this copy."
+        Write-Info "Everything else is here - this IS a prepared copy, but the folder"
+        Write-Info "holding its Python did not finish copying."
+        Write-Info "Copy the whole VMD folder off the USB drive again, in one go. If it"
+        Write-Info "is still missing, rebuild the kit on the connected machine:"
+        Write-Info "run install.bat, then offline-kit.bat."
+    } else {
+        Write-Bad "This is not a prepared copy - it is the plain project files."
+        Write-Info "There is no way to finish the install on a machine with no internet."
+        Write-Info "On a machine that has one: run install.bat, then"
+        Write-Info "offline-kit.bat, and bring the folder that produces."
+    }
     Stop-Installer 1
 }
 
@@ -290,22 +337,50 @@ try {
     # thing people send, and this one sent them to rebuild a kit that was fine.
     # Whether the detector is ready is the yolo11n.pt line further down, and that
     # one is optional, because that is what it is.
+    # The import list is vmd\selftest.py's, deliberately: that is the check the
+    # UPDATER runs before it lets a new version stand, so the installer and the
+    # updater now agree on what "this copy works" means. It also reaches
+    # further than a bare `import vmd` - vmd\__init__.py only sets environment
+    # variables and imports nothing, so `import vmd` alone proves the .pth line
+    # and nothing else. Pulling in vmd.desktop's own modules is what catches a
+    # half-copied vmd\desktop\ tree or a PySide6/Qt plugin folder that did not
+    # finish copying - the console failing to open with no log to send, on the
+    # machine that cannot be debugged.
     $import = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                    'import vmd, pydantic, cv2, PySide6.QtWidgets; print(''libraries ok'')')
+                                    'import vmd; from vmd.desktop import app, live, settings_tab, window; import pydantic, cv2; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 4)) { Write-Bad "  $line" }
         Write-Bad "The environment does not run on this machine."
 
         # Name the exact fault, not the symptom. Step 1 already proved
-        # .venv\Scripts\python.exe, bin\uv.exe and bin\python\ are all here, so
-        # the two failures left are the two a file-by-file copy produces - and
-        # they send the operator to different places.
+        # .venv\Scripts\python.exe, bin\uv.exe and bin\python\ are all here and
+        # step 2 rewrote pyvenv.cfg, so the faults that can still reach here are
+        # a small, known set - and each sends the operator somewhere different.
+        # Printing raw stderr and one worked example that cannot happen is what
+        # left the last operator with no idea which fault they had.
+        $errText = ($import.Err -join "`n")
         $missing = $null
         foreach ($line in $import.Err) {
             if ($line -match "No module named '([^']+)'") { $missing = $matches[1]; break }
         }
         $rootModule = if ($missing) { ($missing -split '\.')[0] } else { $null }
-        if ($rootModule -eq 'vmd') {
+        if ($errText -match 'DLL load failed|No Python at|not a valid Win32') {
+            Write-Info "The fault is named: a DLL would not load. The interpreter under"
+            Write-Info "bin\python\ or a compiled library did not copy in full - the files"
+            Write-Info "are there but truncated."
+            Add-Broken "the interpreter or a compiled library is incomplete, so nothing runs" @(
+                "Copy the whole VMD folder off the USB drive again in one go, or rebuild",
+                "the kit on the connected machine (install.bat then offline-kit.bat).",
+                "A file-by-file copy is what truncates these."
+            )
+        } elseif ($errText -match 'frozen|lock ?file|--frozen') {
+            Write-Info "The fault is named: the lock file does not match what is installed."
+            Write-Info "The kit was built from a different set of libraries than it carries."
+            Add-Broken "the kit's lock file does not match its libraries" @(
+                "This cannot be resolved here - it needs the network. On the connected",
+                "machine run install.bat then offline-kit.bat, and bring the new folder."
+            )
+        } elseif ($rootModule -eq 'vmd') {
             Write-Info "The fault is named: No module named 'vmd'. The project's own code"
             Write-Info "is not on the environment's path. Step 2 writes the one line that"
             Write-Info "fixes this - _editable_impl_vmd.pth - and here it did not take."

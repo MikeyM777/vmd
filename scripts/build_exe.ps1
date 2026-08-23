@@ -51,9 +51,21 @@ try {
             Stop-Process -Force -ErrorAction SilentlyContinue
     }
 
+    # The project's own uv when it is here, PATH's only as a fallback. This
+    # script is what offline_kit.ps1 tells the operator to run when VMD.exe is
+    # stale or missing ("run scripts\build_exe.ps1, then this again"), and a
+    # bare `uv` answers "not recognized" in any shell that has not picked up
+    # bin\ on PATH yet - which is every shell opened before the installer ran.
+    $uvExe = Join-Path $root 'bin\uv.exe'
+    if (-not (Test-Path $uvExe)) { $uvExe = 'uv' }
+
     # Nothing is bundled: no --add-data, no application imports. The launcher is
     # stdlib only, which is also why this builds in seconds and stays small.
-    uv run --with pyinstaller pyinstaller `
+    #
+    # --with pyinstaller fetches PyInstaller from the network, so this is a
+    # connected-machine script by construction. It is never run on the offline
+    # laptop; the exe travels there already built, inside the kit.
+    & $uvExe run --with pyinstaller pyinstaller `
         --onefile `
         --name VMD `
         --distpath $root `

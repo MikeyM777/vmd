@@ -242,9 +242,21 @@ if ($doPackages -and $doProject -and -not (Test-Admin)) {
         # -PassThru, because the exit code of that window is the only thing it
         # can tell us directly, and ignoring it meant this window went on to
         # print "Already checked." about steps that had failed.
+        # The path is quoted, and that quoting is the whole of this line.
+        #
+        # Start-Process joins -ArgumentList with single spaces and quotes
+        # nothing. So a project in "C:\Users\Sam\My VMD" handed powershell
+        # -File C:\Users\Sam\My VMD\scripts\install.ps1, which it reads as the
+        # file "C:\Users\Sam\My" followed by a stray argument. The elevated
+        # window then died instantly without running a line, left no handoff
+        # file, and this window carried on to fail several steps later with
+        # "Cannot continue without uv" - naming uv, on a machine whose only
+        # fault was a space in a folder name. Desktop, OneDrive and Program
+        # Files all contain one, so this was not an exotic path.
+        $quotedScript = '"' + $PSCommandPath + '"'
         $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass',
-            '-File', $PSCommandPath, '-PackagesOnly'
+            '-File', $quotedScript, '-PackagesOnly'
         )
         $elevatedCode = $child.ExitCode
         Update-PathFromRegistry

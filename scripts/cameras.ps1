@@ -225,6 +225,23 @@ function Add-Camera {
     # made again. Both point at the same command.
     $batName = "Camera $label.bat"
     $batPath = Join-Path $root $batName
+
+    # VMD.exe is not guaranteed. Both installers treat it as optional - it is
+    # built by PyInstaller and that build can fail, and on the offline machine
+    # Windows Defender sometimes quarantines a one-file exe after it arrives.
+    # Every launcher written here used to name it regardless, so on a machine
+    # without it each camera's shortcut and .bat was a dead end that answered
+    # "Windows cannot find VMD.exe" - while the console itself was fine and one
+    # double-click away. VMD.bat takes the same arguments and does the same
+    # thing, so it is used when the exe is not there.
+    $exePath = Join-Path $root 'VMD.exe'
+    $useExe = Test-Path $exePath
+    $starter = if ($useExe) { 'VMD.exe' } else { 'VMD.bat' }
+    if (-not $useExe) {
+        Write-Info "There is no VMD.exe here, so this camera is started with VMD.bat."
+        Write-Info "It does the same thing; it shows a small black window as it opens."
+    }
+
     $bat = @"
 @echo off
 REM ============================================================
@@ -238,7 +255,7 @@ REM  Delete this file and nothing is lost but the way to start it -
 REM  run cameras.bat to write it again.
 REM ============================================================
 cd /d "%~dp0"
-start "" "%~dp0VMD.exe" --settings "%~dp0cameras\$label\settings.json"
+start "" "%~dp0$starter" --settings "%~dp0cameras\$label\settings.json"
 "@
     [System.IO.File]::WriteAllText($batPath, $bat, (New-Object System.Text.ASCIIEncoding))
     Write-Ok "Made $batName"
@@ -250,7 +267,7 @@ start "" "%~dp0VMD.exe" --settings "%~dp0cameras\$label\settings.json"
         try {
             $shell = New-Object -ComObject WScript.Shell
             $link = $shell.CreateShortcut($linkPath)
-            $link.TargetPath = Join-Path $root 'VMD.exe'
+            $link.TargetPath = Join-Path $root $starter
             $link.Arguments = ('--settings "{0}"' -f $settingsPath)
             $link.WorkingDirectory = $root
             $link.Description = $(if ($title) { "VMD - $title" } else { "VMD - camera $label" })

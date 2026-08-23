@@ -265,9 +265,15 @@ function Repair-VenvPaths($root) {
         $wanted = Split-Path -Parent $python
         $home_ = Get-VenvHome $root
         if ($home_ -and ($home_.TrimEnd('\') -ine $wanted.TrimEnd('\'))) {
+            # UTF-8 without BOM, not ASCII. Set-Content -Encoding ASCII turns
+            # every byte above 0x7F into a literal '?', so a folder with a
+            # Hebrew or accented character in its path was written back as a
+            # path that does not exist - and the failure that follows is an
+            # import error naming a module, with nothing pointing at the
+            # mangled path. CPython reads both of these files as UTF-8.
             $lines = Get-Content $cfg
-            ($lines -replace '^\s*home\s*=\s*.*$', "home = $wanted") |
-                Set-Content $cfg -Encoding ASCII
+            $fixed = ($lines -replace '^\s*home\s*=\s*.*$', "home = $wanted")
+            [System.IO.File]::WriteAllLines($cfg, $fixed, (New-Object System.Text.UTF8Encoding($false)))
             $repaired += "the interpreter path in .venv\pyvenv.cfg"
         }
     }
@@ -279,7 +285,8 @@ function Repair-VenvPaths($root) {
             $content = (Get-Content $pth.FullName -Raw -ErrorAction SilentlyContinue)
             if ($null -eq $content) { continue }
             if ($content.Trim().TrimEnd('\') -ine $root.TrimEnd('\')) {
-                Set-Content -Path $pth.FullName -Value $root -Encoding ASCII -NoNewline
+                # UTF-8 without BOM - see the note on pyvenv.cfg above.
+                [System.IO.File]::WriteAllText($pth.FullName, $root, (New-Object System.Text.UTF8Encoding($false)))
                 $repaired += "the project path in $($pth.Name)"
             }
         }
@@ -297,8 +304,9 @@ function Repair-VenvPaths($root) {
         if ($pthFiles.Count -eq 0 -and
             (Test-Path (Join-Path $root 'pyproject.toml')) -and
             (Test-Path (Join-Path $root 'vmd\__init__.py'))) {
-            Set-Content -Path (Join-Path $sitePackages '_editable_impl_vmd.pth') `
-                -Value $root -Encoding ASCII -NoNewline
+            # UTF-8 without BOM - see the note on pyvenv.cfg above.
+            [System.IO.File]::WriteAllText((Join-Path $sitePackages '_editable_impl_vmd.pth'), $root,
+                (New-Object System.Text.UTF8Encoding($false)))
             $repaired += "the missing _editable_impl_vmd.pth, which is what makes 'import vmd' work"
         }
     }
@@ -474,10 +482,22 @@ function Get-StartupDir { [Environment]::GetFolderPath('Startup') }
 # What is actually set up, whichever way it was set up. The caller gets the
 # names it expected, the names it found, and one word for how.
 function Get-AutostartState($root) {
+    # The console entry is only expected when there is a VMD.exe for it to
+    # start. autostart.ps1 will not create it otherwise - both the task and the
+    # Startup shortcut are behind a Test-Path on the exe - so counting it as
+    # expected made the installers print, in red, "the system will not fully
+    # come back after a restart", with the fix "run autostart-on.bat as
+    # administrator". Running it as administrator creates nothing, because the
+    # missing piece is the exe, not permission: the operator was sent to do a
+    # thing that could not work, on the same screen that called VMD.exe
+    # optional two lines earlier. The recorder - which is what must survive a
+    # power cut - is set up in this case and is now reported as such.
+    $hasExe = Test-Path (Join-Path $root 'VMD.exe')
+
     $expected = @()
     foreach ($console in (Get-VmdConsoles $root)) {
         $expected += "VMD Recorder$($console.Suffix)"
-        $expected += "VMD Console$($console.Suffix)"
+        if ($hasExe) { $expected += "VMD Console$($console.Suffix)" }
     }
 
     $tasks = @()
@@ -508,6 +528,7 @@ function Get-AutostartState($root) {
         Missing   = @($expected | Where-Object { $covered -notcontains $_ })
         How       = $how
         Ok        = ($covered.Count -eq $expected.Count)
+        HasExe    = $hasExe
     }
 }
 
@@ -516,6 +537,28 @@ function Get-AutostartState($root) {
 # decision and belongs in one place.
 function Get-AutostartVerdict($root) {
     $state = Get-AutostartState $root
+
+    # Everything that was asked for is set up, but there was no VMD.exe to ask
+    # for a console with. Recording - the thing that must survive a power cut -
+    # comes back on its own; the window does not, and somebody has to open it.
+    # Worth saying plainly, and worth naming the real remedy rather than
+    # administrator rights.
+    if ($state.Ok -and -not $state.HasExe) {
+        return [pscustomobject]@{
+            Level = 'optional'
+            Say   = "Recording starts by itself. The console window does not - there is no VMD.exe."
+            What  = "the console window does not open by itself after a restart (recording does)"
+            Fix   = @(
+                "Set up: $($state.Covered -join ', ').",
+                "Recording restarts by itself after a power cut, which is the part that",
+                "matters. The console is only the window onto it.",
+                "To open it: double-click VMD.bat, or a camera's shortcut.",
+                "To have it open by itself, VMD.exe has to exist: run install.bat on the",
+                "connected machine so it is built, then run autostart-on.bat here."
+            )
+            State = $state
+        }
+    }
 
     if ($state.Ok -and $state.How -eq 'tasks') {
         return [pscustomobject]@{

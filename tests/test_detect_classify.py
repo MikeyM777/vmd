@@ -29,6 +29,7 @@ from vmd.detect.classify import (
     YoloClassifier,
     crop_for,
     crop_rect,
+    weights_path,
 )
 from vmd.detect.config import classifier_for, classify_enabled, config_from_settings
 from vmd.detect.events import EventStore
@@ -827,6 +828,18 @@ def test_a_real_model_carries_a_real_label_into_a_real_event(tmp_path):
     pytest.importorskip("ultralytics", reason="the detect extra is not installed")
     cv2 = pytest.importorskip("cv2")
     from ultralytics.utils import ASSETS
+
+    # The weights are an optional download, not a source file: install.ps1
+    # fetches yolo11n.pt, and a checkout that has not been installed - or one
+    # where it was cleared out, since naming what moved is off today - simply
+    # does not have it. Without this the test did not fail on anything it was
+    # written to test: YoloClassifier warns and labels nothing, and the
+    # assertion below reported "the real model named nothing in its own sample
+    # image" as though the model were at fault. The other two skips here guard
+    # the library and its sample pictures for exactly this reason; the weights
+    # were the third thing this test needs and the one nobody guarded.
+    if not weights_path().is_file():
+        pytest.skip(f"the detector's weights are not on disk at {weights_path()}")
 
     picture = cv2.imread(str(ASSETS / "bus.jpg"))
     if picture is None:
