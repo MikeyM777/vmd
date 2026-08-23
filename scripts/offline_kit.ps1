@@ -122,6 +122,31 @@ if ((Test-Path $vlcInstaller) -and ((Get-Item $vlcInstaller).Length -gt 10MB)) {
     }
 }
 
+# The detector's weights, fetched here for the same reason and in the same
+# breath. Step 2 refuses to build a kit without them - rightly, because the
+# machine at the other end can never download anything, and the day naming what
+# moved is switched back on is the day a kit built without them is useless. But
+# the only remedy it could offer was "run install.bat", which is a
+# fifteen-minute install of everything, to fetch one four-megabyte file this
+# machine has a connection for and is already using that connection. So it is
+# fetched, exactly as the VLC installer above is.
+$weights = Join-Path $root 'yolo11n.pt'
+if ((Test-Path $weights) -and ((Get-Item $weights).Length -gt 1MB)) {
+    Write-Ok "Already here: yolo11n.pt"
+} else {
+    Write-Info "Downloading the detector's weights (about 6 MB)."
+    if (Get-File 'https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt' `
+                 $weights "the detector's weights" (1MB)) {
+        Write-Ok "The detector's weights saved to yolo11n.pt"
+    } else {
+        Write-Bad "The detector's weights could not be downloaded."
+        Write-Info "Nothing reads them today - naming what moved is off - but the machine"
+        Write-Info "at the other end can never fetch them, so the kit is built with them."
+        Write-Info "Save this file as $weights and run this again:"
+        Write-Info "  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt"
+    }
+}
+
 # =============================================================================
 #  2. is this folder actually self-contained?
 # =============================================================================
@@ -132,7 +157,7 @@ $checks = @(
     @{ Path = (Join-Path $binDir 'uv.exe');                 What = 'uv, in bin\uv.exe';                      Fix = 'run install.bat' }
     @{ Path = (Join-Path $binDir 'ffmpeg.exe');             What = 'ffmpeg, in bin\ffmpeg.exe';              Fix = 'run install.bat' }
     @{ Path = (Join-Path $binDir 'go2rtc.exe');             What = 'go2rtc, in bin\go2rtc.exe';              Fix = 'run install.bat' }
-    @{ Path = (Join-Path $root 'yolo11n.pt');               What = "the detector's weights (yolo11n.pt)";    Fix = 'run install.bat' }
+    @{ Path = (Join-Path $root 'yolo11n.pt');               What = "the detector's weights (yolo11n.pt)";    Fix = 'step 1 downloads this - check the connection and run this again' }
     @{ Path = (Join-Path $root 'VMD.exe');                  What = 'VMD.exe';                                Fix = 'run install.bat' }
     @{ Path = (Join-Path $root 'VERSION');                  What = 'the version number (VERSION)';           Fix = 'run install.bat' }
     # The Update button and the machinery behind it. All source, so if vmd\
