@@ -588,6 +588,22 @@ class Settings(Model):
     # bigger surprise than the tick that caused it looks.
     show_playback: bool = False
 
+    # Show only the pictures: no status band, no tab bar, no side column.
+    #
+    # This console watches one view at a time - thermal at night, visible by
+    # day - and the owner runs two of them side by side on a split screen. What
+    # he asked for is "just the stream": the numbers, the chips and the tab bar
+    # are all space taken from the picture he is actually there for. So this
+    # hides exactly the three things fullscreen hides, and hides them the same
+    # way - see `vmd/desktop/fullscreen.py` - but WITHOUT going fullscreen, so
+    # the window stays an ordinary, movable one and two of them can sit beside
+    # each other.
+    #
+    # Off, so an existing install is unchanged and a console nobody has set up
+    # yet opens with everything on it. It is not a dead end: the gear above the
+    # pictures opens Settings, and Esc comes back. See `vmd/desktop/window.py`.
+    stream_only: bool = False
+
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)

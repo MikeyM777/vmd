@@ -1324,10 +1324,32 @@ class SettingsTab(QWidget):
             "camera yet. Turn it on, watch for a box the next time something "
             "moves, and say whether one appeared."
         )
+        # Show only the pictures. On this card because it is a fact about how
+        # this console shows itself, beside the name and the screen it lives on -
+        # the same questions of "which console is this and how does it present".
+        self._stream_only = QCheckBox("Show only the pictures")
+        self._stream_only.setToolTip(
+            "Hide the band across the top, the tabs, and the column of numbers "
+            "beside the pictures, leaving only the pictures.\n\n"
+            "It is how this console is meant to be watched, and how two of them "
+            "sit side by side on one screen - the window stays an ordinary one "
+            "you can move and resize.\n\n"
+            "The gear button above the pictures opens these settings again, and "
+            "Esc brings you back to the pictures. Recording, detection and the "
+            "link carry on exactly the same; this only changes what is on screen."
+        )
         camera_form.addRow("Name", self._title)
         camera_form.addRow("Show on", self._screen)
         camera_form.addRow("Live picture", self._delay)
         camera_form.addRow("", self._boxes)
+        camera_form.addRow("", self._stream_only)
+        camera_form.addRow(
+            "",
+            _note(
+                "The gear button above the pictures opens these settings again; "
+                "Esc brings you back to the pictures."
+            ),
+        )
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
@@ -2056,6 +2078,14 @@ class SettingsTab(QWidget):
         self._boxes.setChecked(bool(value))
 
     @property
+    def stream_only(self) -> bool:
+        return self._stream_only.isChecked()
+
+    @stream_only.setter
+    def stream_only(self, value: bool) -> None:
+        self._stream_only.setChecked(bool(value))
+
+    @property
     def show_playback(self) -> bool:
         return self._show_playback.isChecked()
 
@@ -2556,6 +2586,7 @@ class SettingsTab(QWidget):
         self.live_delay_ms = settings.live_delay_ms
         self.show_boxes = settings.show_boxes
         self.show_playback = settings.show_playback
+        self.stream_only = settings.stream_only
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
         self.camera_password = settings.camera.password
@@ -2809,6 +2840,7 @@ class SettingsTab(QWidget):
         payload["live_delay_ms"] = self.live_delay_ms
         payload["show_boxes"] = self.show_boxes
         payload["show_playback"] = self.show_playback
+        payload["stream_only"] = self.stream_only
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(
             host=self.camera_host.strip(),

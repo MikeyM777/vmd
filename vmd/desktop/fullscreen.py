@@ -154,6 +154,11 @@ class FullscreenLive(QObject):
         # answer would put the window on a screen that has moved.
         self._screens = screens
         self._active = False
+        # Stream-only: the same chrome hidden, but as an ordinary window rather
+        # than a fullscreen one. Kept here, beside the mode that hides the same
+        # three things, so the two cannot fight - `_dress` shows a piece of
+        # chrome only when NEITHER wants it hidden. See `set_stream_only`.
+        self._stream_only = False
         # What to put back on the way out: which page was open, and whether the
         # window was maximised. Restoring the page is what makes `F11` from the
         # Logs tab a round trip rather than a one-way door.
@@ -162,6 +167,34 @@ class FullscreenLive(QObject):
 
     def active(self) -> bool:
         return self._active
+
+    def stream_only(self) -> bool:
+        """Whether the chrome is hidden without the window being fullscreen."""
+        return self._stream_only
+
+    def set_stream_only(self, wanted: bool) -> None:
+        """Hide the chrome on an ordinary window, or put it back.
+
+        Stream-only is the same three things fullscreen hides - the status
+        band, the tab bar, and the Live tab's own side column - without
+        `showFullScreen`, so the window stays movable and resizable and two
+        consoles can sit side by side on a split screen showing only their
+        pictures. It is applied from `Settings.stream_only` at start-up and on
+        every Save.
+
+        It lives here, with the mode that hides the same things, precisely so
+        the two cannot fight. `_dress` shows a piece of chrome only when NEITHER
+        this nor fullscreen wants it hidden, so leaving fullscreen while
+        stream-only is on returns to stream-only rather than to the full chrome,
+        and turning stream-only off while fullscreen leaves the pictures alone.
+        The window itself is untouched - no `showFullScreen`, no move - because
+        an ordinary window is the whole point.
+        """
+        wanted = bool(wanted)
+        if wanted == self._stream_only:
+            return
+        self._stream_only = wanted
+        self._dress()
 
     def set_screen(self, number: int | None) -> None:
         """Which monitor this console belongs on, as the settings now say.
@@ -246,24 +279,39 @@ class FullscreenLive(QObject):
         One method for both directions, because the two lists have to be the
         same list: a thing hidden on the way in and forgotten on the way out is
         a console the operator cannot get back.
+
+        And one method for both modes, because fullscreen and stream-only hide
+        the same three things and must not undo each other. A piece of chrome is
+        on screen only when NEITHER wants it gone, so an operator who left
+        fullscreen while stream-only was on does not have the band and tab bar he
+        turned off in Settings handed back to him. This is the whole reason
+        stream-only is kept on this object.
         """
-        showing = not self._active
+        showing = not self._active and not self._stream_only
         self._band.setVisible(showing)
         bar = getattr(self._tabs, "tabBar", None)
         if bar is not None:
             bar().setVisible(showing)
         # The Live tab hides its own side column, because what counts as side
-        # info is its business and not this object's. A tab that could not be
-        # built has no such method, and then this mode is simply a bigger
-        # version of whatever went wrong - which is still better than a window
-        # that will not open.
+        # info is its business and not this object's. It is told the two facts
+        # apart: whether the window is really fullscreen - which is what the way
+        # out button reflects, and must stay honest, since stream-only is an
+        # ordinary window and its button should still say "Fullscreen" - and
+        # whether the pictures are on their own for either reason, which is what
+        # hides the column. A tab that could not be built has neither method,
+        # and then this mode is simply a bigger version of whatever went wrong.
         fullscreen = getattr(self._live, "set_fullscreen", None)
-        if fullscreen is None:
-            return
-        try:
-            fullscreen(self._active)
-        except Exception:  # noqa: BLE001 - the mode must not cost the window
-            logger.exception("the Live tab would not change to fullscreen")
+        if fullscreen is not None:
+            try:
+                fullscreen(self._active)
+            except Exception:  # noqa: BLE001 - the mode must not cost the window
+                logger.exception("the Live tab would not change to fullscreen")
+        pictures_only = getattr(self._live, "set_pictures_only", None)
+        if pictures_only is not None:
+            try:
+                pictures_only(self._stream_only)
+            except Exception:  # noqa: BLE001 - the mode must not cost the window
+                logger.exception("the Live tab would not hide its side column")
 
     def _put_it_on_its_own_screen(self) -> None:
         """Move the window onto the monitor the settings name, if it is not.

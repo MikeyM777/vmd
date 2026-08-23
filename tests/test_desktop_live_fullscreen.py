@@ -439,6 +439,10 @@ def test_fullscreen_leaves_nothing_up_but_the_pictures_and_their_own_controls(
         live._title,
         live.views,
         live.fullscreen_button(),
+        # The gear shares the row above the pictures with the view chooser and
+        # the way out, and that row is the only chrome the mode keeps: it is the
+        # way in to Settings, which in fullscreen has no tab bar to reach it by.
+        live.settings_button(),
         # Only ever up when the camera says both pictures share one lens, and it
         # is about the two controls under the pictures - so it belongs with them
         # rather than in a column that is not there.

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QLabel
 
 from vmd.desktop.app import build_wiring, default_settings_path, pane_factory, parse_args
+from vmd.desktop.live import FULLSCREEN_WORDS
 from vmd.desktop.video import FakeVideoPane
 from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.window import ConsoleWindow
@@ -322,6 +325,206 @@ def test_the_name_survives_fullscreen(qtbot, tmp_path: Path) -> None:
     assert window.live.title_visible(), "the name went with the chrome"
     assert not window.live.side_visible(), "this was not fullscreen at all"
     window.fullscreen.leave()
+    window.close()
+
+
+# ------------------------------------------------------------ stream-only mode
+#
+# The owner wants "just the stream" - no band, no tab bar, no side column - as an
+# ordinary movable window so two of them fit side by side. It hides exactly what
+# fullscreen hides, through the same object, so the two cannot fight.
+
+
+class NotRecordingServices(FakeServices):
+    """Recording stopped when it should be running: the one fault stream-only
+    would otherwise hide, since "NOT recording" lives in the band and the side
+    column that stream-only takes away."""
+
+    def state(self) -> dict:
+        self.state_calls += 1
+        return {
+            "recording": False,
+            "recording_state": {
+                "running": False,
+                "restarts": 0,
+                "reason": "NOT recording - no stream is ticked to record",
+            },
+            "streaming": "streaming",
+            "restarts": {},
+            "detection": {
+                "enabled": True,
+                "running": True,
+                "restarts": 0,
+                "reason": "detecting",
+            },
+        }
+
+
+def _press_escape(window) -> bool:
+    """Escape as it really arrives - up the parent chain into the window's own
+    key handler, never as a Qt shortcut - and whether the window took it."""
+    event = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
+    )
+    window.keyPressEvent(event)
+    return event.isAccepted()
+
+
+def test_stream_only_hides_the_chrome_and_turning_it_off_brings_it_back(
+    qtbot, tmp_path: Path
+) -> None:
+    """The band, the tab bar and the side column, gone together and back
+    together. Nothing else is touched: it is an ordinary window throughout."""
+    window, _ = build(qtbot, tmp_path)
+    assert window.band.isVisibleTo(window)
+    assert window.tabs.tabBar().isVisibleTo(window)
+    assert window.live.side_visible()
+
+    window.fullscreen.set_stream_only(True)
+    assert not window.band.isVisibleTo(window)
+    assert not window.tabs.tabBar().isVisibleTo(window)
+    assert not window.live.side_visible()
+
+    window.fullscreen.set_stream_only(False)
+    assert window.band.isVisibleTo(window)
+    assert window.tabs.tabBar().isVisibleTo(window)
+    assert window.live.side_visible()
+    window.close()
+
+
+def test_a_saved_stream_only_reaches_the_open_window(qtbot, tmp_path: Path) -> None:
+    """It acts on the console that is open, not the next one: the operator has no
+    terminal to restart it from."""
+    window, _ = build(qtbot, tmp_path)
+    settings = load_settings(window._settings_path)
+    settings.stream_only = True
+    window.settings_saved(settings)
+    assert not window.band.isVisibleTo(window)
+    assert not window.tabs.tabBar().isVisibleTo(window)
+    assert not window.live.side_visible()
+    window.close()
+
+
+def test_leaving_fullscreen_while_stream_only_returns_to_stream_only(
+    qtbot, tmp_path: Path
+) -> None:
+    """The interaction that has to be right: fullscreen out must not hand back
+    the chrome stream-only wanted hidden, or an operator who left fullscreen
+    would lose the stream-only view he chose - with no tab bar and no terminal to
+    get it back."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.set_stream_only(True)
+    window.fullscreen.enter()
+    assert window.fullscreen.active()
+
+    window.fullscreen.leave()
+    assert not window.fullscreen.active()
+    assert not window.band.isVisibleTo(window), "leaving fullscreen un-hid the band"
+    assert not window.tabs.tabBar().isVisibleTo(window)
+    assert not window.live.side_visible()
+    # And the way-out button is honest again: not fullscreen, so "Fullscreen".
+    assert window.live.fullscreen_button().text() == FULLSCREEN_WORDS
+    window.close()
+
+
+def test_turning_stream_only_off_inside_fullscreen_keeps_the_pictures(
+    qtbot, tmp_path: Path
+) -> None:
+    """The mirror case: stream-only off while fullscreen may not reveal the
+    chrome, because the window is still full."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.enter()
+    window.fullscreen.set_stream_only(True)
+    window.fullscreen.set_stream_only(False)
+    assert window.fullscreen.active()
+    assert not window.band.isVisibleTo(window), "chrome came back while fullscreen"
+    assert not window.live.side_visible()
+    window.fullscreen.leave()
+    assert window.band.isVisibleTo(window)
+    assert window.live.side_visible()
+    window.close()
+
+
+def test_the_gear_takes_the_operator_to_settings(qtbot, tmp_path: Path) -> None:
+    """The gear above the pictures is the way in to Settings when the tab bar is
+    hidden, so it has to switch to the Settings page."""
+    window, _ = build(qtbot, tmp_path)
+    assert window.tabs.currentWidget() is window.live
+    window.live.settings_asked.emit()
+    assert window.tabs.currentWidget() is window.settings_tab
+    window.close()
+
+
+def test_esc_returns_to_the_pictures_in_stream_only(qtbot, tmp_path: Path) -> None:
+    """The way back the gear needs: on Settings in stream-only, Esc goes to the
+    pictures - there is no tab bar to click."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.set_stream_only(True)
+    window.show_settings()
+    assert window.tabs.currentWidget() is window.settings_tab
+
+    assert _press_escape(window), "the window did not take the Escape"
+    assert window.tabs.currentWidget() is window.live
+    window.close()
+
+
+def test_esc_on_the_pictures_in_stream_only_is_left_for_the_pictures(
+    qtbot, tmp_path: Path
+) -> None:
+    """On the Live page there is nothing to go back to, so Esc is not taken -
+    it is left free for whatever the pictures make of it."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.set_stream_only(True)
+    assert window.tabs.currentWidget() is window.live
+    assert not _press_escape(window)
+    assert window.tabs.currentWidget() is window.live
+    window.close()
+
+
+def test_esc_still_leaves_fullscreen(qtbot, tmp_path: Path) -> None:
+    """The existing behaviour, unchanged: Esc out of fullscreen."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.enter()
+    assert window.fullscreen.active()
+    assert _press_escape(window)
+    assert not window.fullscreen.active()
+    window.close()
+
+
+def test_esc_leaves_fullscreen_before_it_returns_to_the_pictures(
+    qtbot, tmp_path: Path
+) -> None:
+    """Precedence: with both on, Esc leaves fullscreen first and does not also
+    change tab underneath it."""
+    window, _ = build(qtbot, tmp_path)
+    window.fullscreen.set_stream_only(True)
+    window.fullscreen.enter()
+    assert window.tabs.currentWidget() is window.live
+    assert _press_escape(window)
+    assert not window.fullscreen.active(), "Esc should have left fullscreen first"
+    assert window.tabs.currentWidget() is window.live
+    window.close()
+
+
+def test_the_fault_bar_appears_when_recording_stops(qtbot, tmp_path: Path) -> None:
+    """Recording could stop silently in stream-only, because the two places that
+    say so are hidden. The window hands the fault to the pictures on its
+    heartbeat, and the bar above them names it."""
+    window, _ = build(qtbot, tmp_path, services=NotRecordingServices())
+    window.heartbeat()
+    assert window.live.fault_visible(), "recording stopped and nothing on screen said so"
+    assert "NOT recording" in window.live.fault_text()
+    window.close()
+
+
+def test_the_fault_bar_stays_hidden_when_recording_is_healthy(
+    qtbot, tmp_path: Path
+) -> None:
+    """No warnings on screen while all is well - the bar costs the pictures no
+    height when there is nothing to say."""
+    window, _ = build(qtbot, tmp_path)
+    window.heartbeat()
+    assert not window.live.fault_visible()
     window.close()
 
 

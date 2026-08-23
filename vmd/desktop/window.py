@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.fullscreen import FullscreenLive
+from vmd.desktop.fullscreen import LEAVE_KEY, FullscreenLive
 from vmd.desktop.link import link_trouble
 from vmd.desktop.live import LiveTab, WrappedNote
 from vmd.desktop.logs import LogBuffer, LogsTab, attach
@@ -929,6 +929,19 @@ class ConsoleWindow(QMainWindow):
         asked = getattr(self.live, "fullscreen_asked", None)
         if asked is not None:
             asked.connect(self.fullscreen.set_active)
+        # The gear above the pictures asks for Settings. It is the only way in
+        # to Settings once the tab bar is hidden by stream-only, so it must
+        # work even then. A tab that could not be built carries no such signal.
+        asked_settings = getattr(self.live, "settings_asked", None)
+        if asked_settings is not None:
+            asked_settings.connect(self.show_settings)
+        # Show only the pictures, if the settings say so. Applied through the
+        # fullscreen object because it hides exactly the same three things -
+        # band, tab bar, side column - so the two modes cannot fight; see
+        # `FullscreenLive.set_stream_only`. Read here at start-up and re-applied
+        # on every Save. The window is not moved or resized: stream-only is an
+        # ordinary window on purpose, so two of them fit side by side.
+        self.fullscreen.set_stream_only(settings.stream_only)
 
         # One at a time, and never on this thread: applying a save restarts up
         # to three child processes. See `_SaveJob`.
@@ -1229,6 +1242,7 @@ class ConsoleWindow(QMainWindow):
         # Asked once and handed to both. See `_UNASKED`.
         state = self._ask_state()
         self._tell_live_about_detection(state)
+        self._tell_live_about_recording(state)
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
 
@@ -1252,6 +1266,43 @@ class ConsoleWindow(QMainWindow):
             tell(_detection_state(detection) if state is not None else "alarm")
         except Exception:  # noqa: BLE001 - the heartbeat goes on
             logger.exception("the movement list could not be told about detection")
+
+    def _tell_live_about_recording(self, state) -> None:
+        """Let the pictures know if footage has stopped reaching the disk.
+
+        The one fault stream-only would otherwise hide silently: "NOT recording"
+        lives in the status band and the side column, and stream-only hides
+        both. So the window - which already has the services' state in hand on
+        this heartbeat, and is the only thing that polls the recorder - hands the
+        Live tab the fault, which shows it on one line above the pictures.
+        Guarded like everything else on the heartbeat.
+        """
+        tell = getattr(getattr(self, "live", None), "set_recording_fault", None)
+        if tell is None:
+            return
+        try:
+            tell(self._recording_fault(state))
+        except Exception:  # noqa: BLE001 - the heartbeat goes on
+            logger.exception("the pictures could not be told whether it is recording")
+
+    @staticmethod
+    def _recording_fault(state) -> str | None:
+        """The sentence for the fault bar when recording has stopped, else None.
+
+        The same rule the band's recording chip uses, so the two cannot
+        disagree about the one thing this console exists to guarantee: a fault is
+        footage not reaching the disk when nobody chose to stop it. Recording
+        that is off on purpose - the Playback tab switched off - is `chosen` and
+        is not a fault. A services object that cannot be asked is itself the
+        fault and is said, because a console that cannot tell whether it is
+        recording is not one that is recording.
+        """
+        if state is None:
+            return "VMD cannot tell whether it is recording. Restart VMD."
+        recording = state.get("recording_state") or {}
+        if bool(state.get("recording")) or bool(recording.get("chosen")):
+            return None
+        return recording.get("reason") or "NOT recording"
 
     def _show_recording(self, state=_UNASKED) -> None:
         """Point the dot at the truth, and run the timer only while it moves."""
@@ -1339,6 +1390,20 @@ class ConsoleWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - the console must survive a button
             logger.exception("that movement could not be shown")
 
+    def show_settings(self) -> None:
+        """Go to the Settings page, from the gear above the pictures.
+
+        The gear is how Settings is reached when the tab bar is hidden, which is
+        what stream-only does - so this is the way in that must not depend on
+        there being a tab to click. The Settings tab may be a label saying why
+        it could not be built, as every tab in this console may be, and going to
+        that label is still right: it is where the reason is written, and it is
+        the only account of the fault the operator can reach.
+        """
+        index = self.tabs.indexOf(self.settings_tab)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
+
     def view_changed(self, view: str) -> None:
         """Remember which view the operator is looking at, for tomorrow.
 
@@ -1404,6 +1469,11 @@ class ConsoleWindow(QMainWindow):
             # the pictures back on the old monitor at the next F11, hours after
             # the operator had watched himself change it.
             self.fullscreen.set_screen(getattr(settings, "screen", None))
+            # And whether to show only the pictures. The same object that owns
+            # fullscreen owns this, so the two cannot fight; turning it on here
+            # hides the chrome on the window that is open, which is the whole
+            # point of a save on a machine the operator cannot restart.
+            self.fullscreen.set_stream_only(getattr(settings, "stream_only", False))
         except Exception:  # noqa: BLE001 - the rest of the save must still run
             logger.exception("the window would not take the saved name or tabs")
 
@@ -1765,10 +1835,46 @@ class ConsoleWindow(QMainWindow):
         """
         # A held F11 auto-repeats, and a mode that toggled thirty times a second
         # is a screen nobody can read.
-        if not event.isAutoRepeat() and self.fullscreen.handle_key(int(event.key())):
-            event.accept()
-            return
+        if not event.isAutoRepeat():
+            # Fullscreen has first say, and its Esc is unchanged: when it is
+            # active, Esc leaves fullscreen. Only after it has declined does the
+            # stream-only Esc get a look in, which is what keeps the precedence
+            # right - fullscreen out first, pictures back second.
+            if self.fullscreen.handle_key(int(event.key())):
+                event.accept()
+                return
+            if self._stream_only_key(int(event.key())):
+                event.accept()
+                return
         super().keyPressEvent(event)
+
+    def _stream_only_key(self, key: int) -> bool:
+        """Esc back to the pictures when the tab bar is hidden, else leave it be.
+
+        In stream-only mode there is no tab bar to click: the gear takes the
+        operator to Settings or Logs, and this is how he gets back. Whether this
+        key belongs to it, having acted if it does - the same shape as
+        `FullscreenLive.handle_key`, and read the same way, from the window's own
+        key handler rather than as a Qt shortcut, so a key that is held for
+        steering can never have its release swallowed.
+
+        It never fires in fullscreen: `handle_key` runs first and has already
+        taken Esc when fullscreen is active, so this is only ever the ordinary
+        window that is showing only its pictures, on a page that is not the
+        pictures. On the Live page it does nothing, so Esc there is still free
+        for whatever the pictures make of it.
+        """
+        if key != LEAVE_KEY:
+            return False
+        if self.fullscreen.active() or not self.fullscreen.stream_only():
+            return False
+        if self.tabs.currentWidget() is self.live:
+            return False
+        index = self.tabs.indexOf(self.live)
+        if index < 0:
+            return False
+        self.tabs.setCurrentIndex(index)
+        return True
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Close the window. Deliberately does not stop the children: recording

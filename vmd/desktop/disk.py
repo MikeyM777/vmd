@@ -387,6 +387,28 @@ def storage_lines(
     return lines
 
 
+def storage_fault(
+    reading: DiskReading | None, storage: StorageSettings
+) -> tuple[str, str] | None:
+    """The worst thing the storage panel would be saying, or None when all is
+    well - as (sentence, colour), for a bar that only appears when it is bad.
+
+    The panel draws every line always; this asks those same lines the one
+    question a fault bar has, which is whether any of them is a warning or an
+    alarm. It reuses `storage_lines` on purpose rather than re-deciding from the
+    thresholds: the panel and the bar must agree, and a bar with its own copy of
+    "nearly full" would drift from the panel the first time either changed. The
+    worst line wins - alarm before warning - so what reaches a single line is
+    the one worth a single line.
+    """
+    lines = storage_lines(reading, storage)
+    for wanted in (PALETTE["alarm"], PALETTE["warn"]):
+        for text, colour in lines:
+            if colour == wanted:
+                return text, colour
+    return None
+
+
 def _left(headroom: float, rate: float, estimated: bool) -> str:
     if rate <= 0:
         return "No idea how long"

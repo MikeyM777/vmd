@@ -74,6 +74,30 @@ def test_what_was_typed_is_what_is_saved(qtbot, tmp_path: Path) -> None:
     assert stored.camera.streams[0].name == "thermal"
 
 
+def test_show_only_the_pictures_round_trips_through_the_form(
+    qtbot, tmp_path: Path
+) -> None:
+    """The checkbox reads and writes `stream_only` on the same path the boxes
+    beside it use. Off in a fresh form, and on again the next time the tab is
+    loaded from the file it wrote."""
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2", enabled=True)],
+        )
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+    assert tab.stream_only is False
+
+    tab.stream_only = True
+    assert tab.save() is True, tab.message
+    assert load_settings(path).stream_only is True
+
+    # And it comes back on the next load, from the file the save just wrote.
+    again, _ = build(qtbot, tmp_path)
+    assert again.stream_only is True
+
+
 def test_existing_streams_survive_a_load_and_save(qtbot, tmp_path: Path) -> None:
     """The browser form once deleted any stream it did not have a row for."""
     settings = Settings(

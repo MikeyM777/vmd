@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
-from vmd.desktop.live import PLAYING_BEFORE_FORGIVEN, LiveTab
+from vmd.desktop.live import FULLSCREEN_WORDS, PLAYING_BEFORE_FORGIVEN, LiveTab
 from vmd.desktop.style import PALETTE
 from vmd.desktop.video import FakeVideoPane
 from vmd.detect.events import Event
@@ -2155,3 +2155,151 @@ def test_the_overlay_is_drawn_where_the_movement_was(qtbot, tmp_path) -> None:
 
     assert where(plain)[0] < 200, where(plain)
     assert where(plain)[1] > 300, where(plain)
+
+
+# ------------------------------------------------------------ stream-only chrome
+#
+# The owner wants "just the stream": no side column, no band, no tab bar. The
+# side column part is the Live tab's, and it hides the same column fullscreen
+# does - but as an ordinary window, so the way-out button must stay honest.
+
+
+def test_pictures_only_hides_the_side_column_and_keeps_the_button_honest(qtbot) -> None:
+    """Stream-only hides the numbers beside the pictures, exactly as fullscreen
+    does - but the window is not fullscreen, so the button still offers
+    "Fullscreen" rather than a way out of a mode nobody entered."""
+    tab, _, _ = build(qtbot, "thermal")
+    assert tab.side_visible()
+
+    tab.set_pictures_only(True)
+    assert not tab.side_visible(), "the column of numbers is what stream-only hides"
+    assert not tab.is_fullscreen(), "stream-only is not fullscreen"
+    assert tab.is_pictures_only()
+    assert tab.fullscreen_button().text() == FULLSCREEN_WORDS, (
+        "a stream-only window is not fullscreen, so its button must not say Leave"
+    )
+
+    tab.set_pictures_only(False)
+    assert tab.side_visible()
+
+
+def test_the_side_column_stays_hidden_when_one_mode_turns_off_inside_the_other(
+    qtbot,
+) -> None:
+    """The two ways to hide the column must not fight: turning stream-only off
+    while fullscreen is on may not put the column back over a full screen."""
+    tab, _, _ = build(qtbot, "thermal")
+    tab.set_fullscreen(True)
+    tab.set_pictures_only(True)
+    tab.set_pictures_only(False)  # still fullscreen
+    assert not tab.side_visible(), "the column came back while still fullscreen"
+    tab.set_fullscreen(False)
+    assert tab.side_visible()
+
+
+# ------------------------------------------------------------ the gear button
+
+
+def test_the_gear_asks_for_settings_and_never_takes_the_arrow_keys(qtbot) -> None:
+    """The way in to Settings when the tab bar is hidden. It asks - the window
+    owns the tabs - and it refuses focus, like everything on this tab, so an
+    arrow held for steering is never swallowed by it."""
+    tab, _, _ = build(qtbot, "thermal")
+    asked: list[int] = []
+    tab.settings_asked.connect(lambda: asked.append(1))
+
+    tab.settings_button().click()
+    assert asked == [1], "the gear did not ask for settings"
+    assert tab.settings_button().focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+# ------------------------------------------------------------ the fault bar
+
+
+def test_the_fault_bar_is_hidden_until_a_recording_fault_and_names_it(qtbot) -> None:
+    """No warnings on screen while all is well: the bar is not there, so it costs
+    the pictures no height. A recording fault - handed in by the window, the only
+    thing that polls the recorder - makes it appear with the fault in words, and
+    clearing it takes it away again."""
+    tab, _, _ = build(qtbot, "thermal")
+    assert not tab.fault_visible(), "a healthy console shows no warning"
+    assert tab.fault_text() == ""
+
+    tab.set_recording_fault("NOT recording - no stream is ticked to record")
+    assert tab.fault_visible()
+    assert "NOT recording" in tab.fault_text()
+
+    tab.set_recording_fault(None)
+    assert not tab.fault_visible(), "the fault cleared but the bar stayed"
+
+
+def test_the_fault_bar_shows_a_genuine_storage_warning(qtbot, tmp_path) -> None:
+    """The storage half, off the tab's own watcher and the panel's own decision:
+    a drive that will run out before the budget does is the reading that means
+    recording is about to stop, and it must reach the pictures when the side
+    column is hidden."""
+    from vmd.desktop.disk import DiskReading, DiskWatcher
+
+    settings = settings_with("thermal")
+    settings.storage.root = tmp_path / "rec"
+    # A drive with almost nothing free, well under the budget's own margin: the
+    # storage lines call this an alarm, so `storage_fault` does too.
+    reading = DiskReading(
+        at=0.0,
+        free_bytes=1 * 1024**3,
+        used_bytes=20 * 1024**3,
+        bytes_per_second=900_000.0,
+        rate_is_estimate=False,
+        newest_write=0.0,
+        writing=True,
+        write_problem=None,
+        problem=None,
+    )
+    watcher = DiskWatcher(settings, executor=lambda work: work(), read=lambda s, n: reading)
+    watcher.poll()
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        storage=watcher,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings)
+    assert tab.fault_visible(), "a drive about to run out said nothing above the pictures"
+    assert tab.fault_text().strip(), "the fault bar is up but empty"
+
+
+def test_storage_fault_reuses_the_panels_lines(qtbot) -> None:
+    """It is the panel's own decision, not a second copy of the thresholds: a
+    healthy reading is None, and a broken folder is the panel's alarm line."""
+    from vmd.desktop.disk import DiskReading, storage_fault
+    from vmd.settings import StorageSettings
+
+    storage = StorageSettings(budget_gb=100.0, budget_enabled=True, warn_at_fraction=0.9)
+    healthy = DiskReading(
+        at=0.0,
+        free_bytes=500 * 1024**3,
+        used_bytes=1 * 1024**3,
+        bytes_per_second=1000.0,
+        rate_is_estimate=False,
+        newest_write=0.0,
+        writing=True,
+        write_problem=None,
+        problem=None,
+    )
+    assert storage_fault(healthy, storage) is None
+
+    broken = DiskReading(
+        at=0.0,
+        free_bytes=None,
+        used_bytes=None,
+        bytes_per_second=0.0,
+        rate_is_estimate=True,
+        newest_write=None,
+        writing=False,
+        write_problem="gone",
+        problem="The recordings folder D:/nope is not there.",
+    )
+    found = storage_fault(broken, storage)
+    assert found is not None and found[0] == "The recordings folder D:/nope is not there."
+    assert found[1] == PALETTE["alarm"]

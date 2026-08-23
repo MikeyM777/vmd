@@ -38,6 +38,19 @@ def test_round_trip(tmp_path):
     assert loaded.storage.retention_days == 13
 
 
+def test_stream_only_defaults_off_and_round_trips(tmp_path):
+    """Off by default, so an existing install is unchanged; and it survives a
+    save so a console the owner set to show only the pictures still does after a
+    restart. See `Settings.stream_only`."""
+    assert Settings().stream_only is False
+
+    path = tmp_path / "settings.json"
+    settings = Settings()
+    settings.stream_only = True
+    save_settings(settings, path)
+    assert load_settings(path).stream_only is True
+
+
 def test_streams_are_loaded(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(

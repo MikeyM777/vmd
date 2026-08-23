@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.desktop.disk import StoragePanel
+from vmd.desktop.disk import StoragePanel, storage_fault
 from vmd.desktop.link import shortened
 from vmd.desktop.steering import edge_velocity, key_velocity
 from vmd.desktop.style import (
@@ -307,6 +307,13 @@ NOT_WATCHING_BROKEN = (
 # so the button says both of the ways back rather than assuming he knows either.
 FULLSCREEN_WORDS = "Fullscreen"
 LEAVE_FULLSCREEN_WORDS = "Leave fullscreen  (Esc)"
+
+# What the button that opens the settings shows. A cog, not a word: this row is
+# the only chrome stream-only keeps, and when the tab bar is hidden the cog is
+# the whole way in to Settings - so it has to be the mark everybody already
+# reads as "settings" rather than one more label competing with the view
+# buttons beside it. The way back from there is Esc, which the window handles.
+SETTINGS_WORDS = "⚙"  # a gear
 
 # What the tab says when the camera turns out to have one lens behind both
 # pictures. Two zoom bars that move the same glass is confusing until somebody
@@ -614,6 +621,13 @@ class LiveTab(QWidget):
     # for it. See `vmd/desktop/fullscreen.py`.
     fullscreen_asked = Signal(bool)
 
+    # The operator pressed the gear above the pictures. The window owns the
+    # tabs, so it is the thing that can switch to Settings; this tab owns only
+    # the button, and asks rather than reaches - the same seam as
+    # `fullscreen_asked`. It matters most in stream-only mode, where the tab bar
+    # is hidden and the gear is the only way in to Settings there is.
+    settings_asked = Signal()
+
     def __init__(
         self,
         ptz,
@@ -814,7 +828,17 @@ class LiveTab(QWidget):
         # pictures, and that row is the only chrome the fullscreen mode keeps.
         # Above the pictures rather than over them: nothing at all goes over a
         # picture on this tab, for the reason written further down this file.
+        #
+        # Two flags, and they are not the same flag. `_fullscreen` is whether
+        # the window is really filling the screen, which is what the way-out
+        # button reflects. `_pictures_only` is whether the numbers beside the
+        # pictures are hidden for either reason - actual fullscreen, or the
+        # stream-only setting on an ordinary window. The side column follows
+        # both; the button follows only the first, so a stream-only console -
+        # which is not fullscreen - still offers "Fullscreen" rather than a
+        # button that says "Leave" something the operator never entered.
         self._fullscreen = False
+        self._pictures_only = False
         # Where the pictures of what moved live, or None until a settings file
         # has said. A tab driven directly by a test has none and shows none.
         self._recordings_root = None
@@ -867,13 +891,51 @@ class LiveTab(QWidget):
             lambda: self.fullscreen_asked.emit(not self._fullscreen)
         )
         self._draw_fullscreen_button()
+        # The way in to Settings that survives the tab bar being hidden. In
+        # stream-only mode there is no tab to click, so this cog is how the
+        # operator reaches Settings - and Esc, which the window reads, is how he
+        # gets back to the pictures. It asks the window rather than reaching for
+        # the tabs itself, the same seam the fullscreen button uses.
+        self._settings_button = QPushButton(SETTINGS_WORDS)
+        # Refuses focus, as everything on this tab does: a button that took the
+        # keyboard would be the next arrow key going nowhere, which on a tab that
+        # steers a camera is a head that stops answering. See the rule above
+        # ARROWS, and `test_nothing_on_the_live_tab_can_take_the_arrow_keys...`.
+        self._settings_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._settings_button.setToolTip(
+            "Open the settings. With only the pictures showing this is the way "
+            "in; Esc brings you back to the pictures."
+        )
+        self._settings_button.clicked.connect(self.settings_asked.emit)
         chooser_row = QHBoxLayout()
         chooser_row.setContentsMargins(0, 0, 0, 0)
         chooser_row.setSpacing(SPACE_SNUG)
         chooser_row.addWidget(self._title)
         chooser_row.addWidget(self.views, 1)
+        chooser_row.addWidget(self._settings_button)
         chooser_row.addWidget(self._fullscreen_button)
         pictures.addLayout(chooser_row)
+        # A single line that costs nothing while all is well and only appears
+        # when something the owner must not miss has gone wrong. He asked for
+        # "no warnings on screen", and stream-only grants it by hiding the
+        # status band and the side column - which is where "NOT recording" and
+        # the disk-filling warning both used to live. So recording could stop,
+        # or the disk fill, with nothing on the screen saying so. This bar is
+        # the exception the safety of the thing depends on: hidden - and so zero
+        # pixels tall, a hidden widget in a column takes no room - until footage
+        # stops reaching the disk or the storage is genuinely in trouble, and
+        # then one honest sentence in the alarm colours. In the pictures column
+        # and above the wall, never over a picture. See `_update_fault_bar`.
+        self._fault_bar = QLabel("")
+        self._fault_bar.setTextFormat(Qt.TextFormat.PlainText)
+        self._fault_bar.setWordWrap(False)
+        self._fault_bar.setVisible(False)
+        # The recording half of the fault is handed in by the window, which is
+        # the only thing that polls the recorder - this tab has no services
+        # object, exactly as with `set_watching`. The storage half this tab
+        # reads from its own watcher. None means "no fault from that half".
+        self._recording_fault: str | None = None
+        pictures.addWidget(self._fault_bar)
         # Shown in place of the wall when the camera has no views set up. A
         # black rectangle with nothing in it is the one thing an operator
         # cannot diagnose.
@@ -1333,6 +1395,76 @@ class LiveTab(QWidget):
             if self._playback
             else Qt.CursorShape.ArrowCursor
         )
+
+    # ---------------------------------------------------------- the fault bar
+
+    def set_recording_fault(self, reason: str | None) -> None:
+        """Whether footage has stopped reaching the disk when it should not have.
+
+        Handed in by the window, which is the only thing that polls the recorder
+        - exactly as `set_watching` hands in whether anything is watching. None
+        or empty means recording is fine, or off on purpose; a sentence means it
+        has stopped, and the bar above the pictures says so because in
+        stream-only mode the status band that used to carry it is hidden.
+        """
+        reason = reason or None
+        if reason == self._recording_fault:
+            return
+        self._recording_fault = reason
+        self._update_fault_bar()
+
+    def _storage_fault(self) -> tuple[str, str] | None:
+        """The worst thing the storage panel would be saying, if it is bad
+        enough to reach the bar, as (sentence, colour) - or None.
+
+        Read from this tab's own watcher and decided by `storage_fault`, which
+        asks the panel's own lines the one question the bar has. Reusing the
+        panel's decision is the point: a bar that called the disk full while the
+        panel a click away called it fine would be the console arguing with
+        itself. Never touches the filesystem - the watcher read it on a worker.
+        """
+        if self._storage is None:
+            return None
+        try:
+            return storage_fault(self._storage.reading, self._storage.settings.storage)
+        except Exception:  # noqa: BLE001 - the bar must not cost the heartbeat
+            logger.exception("the storage could not be asked whether it is in trouble")
+            return None
+
+    def _update_fault_bar(self) -> None:
+        """Put the one fault worth a line above the pictures, or take it away.
+
+        Recording first: footage stopping is the fault this bar exists for, and
+        it outranks a disk that is merely filling - if both are up, the disk
+        warning is one heartbeat behind the recorder anyway. One line, in the
+        alarm colours the rest of this console draws faults in, with the glyph as
+        well as the colour so it reads the same to somebody who cannot tell the
+        two reds apart. Hidden costs nothing: a hidden label in the column is
+        zero pixels, so a healthy console pays no space for it.
+        """
+        text = self._recording_fault
+        colour = PALETTE["alarm"]
+        if text is None:
+            found = self._storage_fault()
+            if found is not None:
+                text, colour = found
+        if text:
+            self._fault_bar.setText(f"■  {text}")
+            self._fault_bar.setStyleSheet(
+                f"background: {colour}; color: {PALETTE['bg']}; "
+                f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE}; "
+                f"padding: {SPACE_TIGHT}px {SPACE_SNUG}px;"
+            )
+        self._fault_bar.setVisible(bool(text))
+
+    def fault_text(self) -> str:
+        """What the fault bar is saying, whole. For the window and the tests."""
+        return self._fault_bar.text()
+
+    def fault_visible(self) -> bool:
+        """Whether the fault bar is on screen. `isVisibleTo`, so it answers about
+        the bar's own state rather than whether the window has been shown."""
+        return self._fault_bar.isVisibleTo(self)
 
     def _put_a_box_on_it(self, event) -> None:
         """Draw the box round what moved, on the live picture.
@@ -1966,6 +2098,10 @@ class LiveTab(QWidget):
             self._link_panel.refresh()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
+        # A saved budget or folder changes what counts as a storage fault, so
+        # the bar above the pictures is redrawn from the new settings now rather
+        # than at the next heartbeat.
+        self._update_fault_bar()
         # And ask each lens where it is now, rather than leaving the new bars
         # blank until the next heartbeat.
         self._refresh_zoom()
@@ -1998,6 +2134,17 @@ class LiveTab(QWidget):
     def fullscreen_button(self) -> QPushButton:
         return self._fullscreen_button
 
+    def settings_button(self) -> QPushButton:
+        """The gear, beside the way into fullscreen.
+
+        Named the same way as `fullscreen_button` because it is the same kind
+        of thing and is reached for the same reason: with the tab bar hidden,
+        this button is the ONLY way to the settings, so anything checking that
+        the way in still exists should not have to reach past a leading
+        underscore to do it.
+        """
+        return self._settings_button
+
     def set_fullscreen(self, on: bool) -> None:
         """Pictures only, or pictures and the numbers beside them.
 
@@ -2008,14 +2155,50 @@ class LiveTab(QWidget):
         the alarm strip, and a list rebuilt on the way back would treat
         everything in it as new and blare about a night that had already been
         acknowledged.
+
+        This is ACTUAL fullscreen - the window filling the screen - which is
+        why it, and not stream-only, is what the way-out button reflects. The
+        side column follows whichever of the two is on; see `set_pictures_only`
+        and `_fit_side`.
         """
         self._fullscreen = bool(on)
-        self._side.setVisible(not self._fullscreen)
+        self._fit_side()
         self._draw_fullscreen_button()
         # The keyboard belongs on the pictures in both directions. The window
         # says so too, once the window state has actually changed; this is the
         # half that is true even when this tab is driven on its own.
         self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def set_pictures_only(self, on: bool) -> None:
+        """Hide the numbers beside the pictures without going fullscreen.
+
+        Stream-only: the owner runs two of these as ordinary windows side by
+        side and wants each to be just its stream. It hides the same side column
+        fullscreen does - and the window hides the same band and tab bar - but
+        the window is not touched, so it stays movable and resizable.
+
+        The button is left saying "Fullscreen", because this is not fullscreen:
+        a button that offered to leave a mode the operator never entered would
+        be a lie, and this file is careful about those. Only the side column
+        moves, and it moves through `_fit_side`, which honours both flags so
+        that turning this off inside fullscreen does not reveal the column.
+        """
+        self._pictures_only = bool(on)
+        self._fit_side()
+
+    def _fit_side(self) -> None:
+        """Show the side column only when neither mode wants it gone.
+
+        One rule for both flags, so the two cannot leave the column in a state
+        neither asked for: hidden by fullscreen and then shown by stream-only
+        turning off would be a column back on a screen that is still full.
+        """
+        self._side.setVisible(not (self._fullscreen or self._pictures_only))
+
+    def is_pictures_only(self) -> bool:
+        """Whether the side column is hidden without the window being fullscreen.
+        For the tests; the window keeps the setting itself."""
+        return self._pictures_only
 
     def _draw_fullscreen_button(self) -> None:
         """The button, in the state it is in.
@@ -2267,6 +2450,11 @@ class LiveTab(QWidget):
             self._link_panel.refresh()
         if self._storage_panel is not None:
             self._storage_panel.refresh()
+        # The storage half of the fault bar off the same reading the panel above
+        # just drew from. The recording half is set by the window on its own
+        # heartbeat; this keeps the bar current for the disk whether or not that
+        # has arrived yet.
+        self._update_fault_bar()
 
     def _restart_when_due(self, name: str, pane) -> None:
         """Restart a failed stream, but never faster than the backoff allows.
