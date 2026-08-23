@@ -118,8 +118,34 @@ class Supervisor:
             # ended - and how long it lasted is the whole difference between a
             # service that recovered and one that has been dying identically
             # since this morning.
+            # Is this service holding itself back? A recorder whose ffmpeg has
+            # died before recording anything too many times in a row stops
+            # trying, and says so once - see SegmentRecorder.held_back. Its
+            # start() then returns without spawning anything and without
+            # raising, which is exactly what this loop used to read as a
+            # successful restart.
+            #
+            # The cost of not asking: every tick counted a restart AND, on the
+            # next tick, a short-lived death, for a service that had not been
+            # started at all. Three hundred ticks of a permanently broken stream
+            # produced 299 restarts, 299 short-lived deaths and fifteen flapping
+            # warnings, and the sentence in the log read "it has been started
+            # 283 times and has never stayed up for 60 seconds" - about a thing
+            # nobody had started once. Those are the numbers the console and the
+            # operator read to decide whether something is flapping, and the
+            # warnings flood the 500-line Logs ring that the hold-back exists to
+            # protect.
+            #
+            # Asked with getattr because most services have no such notion, and
+            # a service that has none is not held back.
+            try:
+                held = bool(getattr(entry.service, "held_back", False))
+            except Exception:  # noqa: BLE001 - a service that cannot say is not held
+                logger.exception("could not ask %s whether it is held back", entry.name)
+                held = False
+
             started_at = self._up_since.pop(entry.name, None)
-            if started_at is not None and now - started_at < self._stable_after:
+            if not held and started_at is not None and now - started_at < self._stable_after:
                 self.short_lived[entry.name] += 1
                 self._say_if_flapping(entry.name)
             if now < self._next_attempt[entry.name]:
@@ -139,6 +165,15 @@ class Supervisor:
                         entry.name,
                         self.failures[entry.name],
                     )
+                self._next_attempt[entry.name] = now + self._restart_delay
+                continue
+            # Held back: start() returned without starting anything. Nothing was
+            # started, so nothing is recorded as started - no run to time, no
+            # name in the list this returns, no restart counted. The attempt is
+            # still spaced out and start() is still called each time, because
+            # held_back expires on its own as the old failures age out of its
+            # window, and that call is how the service notices.
+            if held:
                 self._next_attempt[entry.name] = now + self._restart_delay
                 continue
             self._up_since[entry.name] = now

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vmd.update.apply import LOGS, MARKER, STATUS
+from vmd.update.apply import LOGS, MARKER, STATUS, process_alive, rebooted_since
 from vmd.update.runner import TIMEOUT_SECONDS
 from vmd.update.runner import start as start_update
 from vmd.update.stick import look, read_update, removable_drives
@@ -206,6 +206,24 @@ class UpdatePanel(QGroupBox):
         leaves exactly that, and read as "an update is running" it would refuse
         every future update on this machine for ever. TIMEOUT_SECONDS is the
         bound on the longest step there is, so past it the file is a leftover.
+
+        Age alone was not enough, though, and the case it got wrong is the one
+        that matters most. A power cut during the update leaves BOTH the marker
+        and a status file written seconds earlier. `look` asks this question
+        before it asks about the marker, so a file that was fresh when the
+        power went read as "an update is already running", and the panel greyed
+        out Update AND Go back - hiding the interrupted-update recovery that
+        the marker was written to offer - until the file aged past half an
+        hour. The machine that most needed to be put back was the one refusing
+        to offer it.
+
+        So the writer is now asked to prove it is alive rather than inferred to
+        be from a timestamp. It records its own process id and the time this
+        machine last started; if the machine has restarted since, or that
+        process is gone, nothing is running whatever the clock says. Neither
+        check can invent a running updater - both answer "cannot tell" by
+        leaving the old behaviour alone - because two updaters rewriting one
+        folder is far worse than a button greyed out too long.
         """
         path = self._root / LOGS / STATUS
         # Absent and stale are both "nothing is running", and they are asked
@@ -221,7 +239,14 @@ class UpdatePanel(QGroupBox):
             # A file caught halfway through being written is a file something
             # is writing, which is the question that was asked.
             return True
-        return isinstance(status, dict) and not status.get("finished")
+        if not isinstance(status, dict) or status.get("finished"):
+            return False
+        # It says it is unfinished. Is whatever wrote it still there?
+        if rebooted_since(status.get("booted")):
+            return False
+        if process_alive(status.get("pid")) is False:
+            return False
+        return True
 
     def _stale(self, path: Path) -> bool:
         """Whether nothing has written to that file for longer than a step.

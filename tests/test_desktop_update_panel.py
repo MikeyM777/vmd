@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QMessageBox
 
 from vmd.desktop.update_panel import UpdatePanel
+from vmd.update.apply import boot_time
 
 
 def a_stick(folder: Path, version: int) -> Path:
@@ -355,6 +356,100 @@ def test_a_running_update_is_not_read_as_an_interrupted_one(qtbot, tmp_path: Pat
 
     panel = build(qtbot, root, [])
 
+    assert "already running" in panel.stick_line.text()
+    assert panel.back_button.isEnabled() is False
+    assert panel.update_button.isEnabled() is False
+
+
+def test_a_power_cut_mid_update_offers_the_way_back_at_once(
+    qtbot, tmp_path: Path
+) -> None:
+    """The case every other test here was missing, and the one that matters.
+
+    A cut during the update leaves the marker AND a status file written
+    seconds earlier - the updater rewrites it at every step. Judged on the
+    file's age alone that reads as "an update is already running", so the panel
+    greyed out Update and Go back both, and went on doing it until the file
+    aged past half an hour. The machine that most needed putting back was the
+    one refusing to offer it.
+
+    The status file records which boot wrote it, so a machine that has since
+    restarted - which is what a power cut is - knows the writer is gone.
+    """
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, to=8)
+    a_status(
+        root,
+        {
+            "step": "copying the new version in",
+            "finished": False,
+            "pid": os.getpid(),
+            # Long enough ago to be a different boot.
+            "booted": boot_time() - 100_000,
+        },
+    )
+
+    panel = build(qtbot, root, [])
+
+    assert panel.already_running() is False
+    assert "interrupted" in panel.stick_line.text()
+    assert panel.back_button.isEnabled() is True
+
+
+def test_an_updater_that_died_without_a_reboot_does_not_lock_the_panel(
+    qtbot, tmp_path: Path
+) -> None:
+    """The same fault without the power cut: the updater was killed, the
+    machine stayed up. Its process id is not there any more, and that is
+    proof enough that nothing is running."""
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "7").mkdir(parents=True)
+    a_marker(root, to=8)
+    a_status(
+        root,
+        {
+            "step": "installing any new libraries",
+            "finished": False,
+            # A process id far above anything Windows will have handed out.
+            "pid": 999_999,
+            "booted": boot_time(),
+        },
+    )
+
+    panel = build(qtbot, root, [])
+
+    assert panel.already_running() is False
+    assert panel.back_button.isEnabled() is True
+
+
+def test_an_update_running_right_now_still_locks_both_buttons(
+    qtbot, tmp_path: Path
+) -> None:
+    """The half that must not be given up to fix the half above.
+
+    Two consoles share one install, and while one is genuinely updating the
+    other must refuse - two updaters rewriting the same folder is what the
+    running check exists to prevent. A live updater's process is alive and its
+    boot is this boot, so this is the pid of a process that certainly exists:
+    the test's own.
+    """
+    root = a_console(tmp_path / "VMD", 7)
+    (root / "previous" / "6").mkdir(parents=True)
+    a_marker(root, to=8)
+    a_status(
+        root,
+        {
+            "step": "copying the new version in",
+            "finished": False,
+            "pid": os.getpid(),
+            "booted": boot_time(),
+        },
+    )
+
+    panel = build(qtbot, root, [])
+
+    assert panel.already_running() is True
     assert "already running" in panel.stick_line.text()
     assert panel.back_button.isEnabled() is False
     assert panel.update_button.isEnabled() is False

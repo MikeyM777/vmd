@@ -33,9 +33,12 @@ not be carried out.
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -418,6 +421,14 @@ class Progress:
             pass
 
     def write_status(self, finished: bool) -> None:
+        # `pid` and `booted` are what let the console tell "an update is running"
+        # from "an update was killed". Without them the only evidence was the
+        # file's own age, and a power cut mid-update leaves a status file whose
+        # age says "written moments ago" - so the panel called a dead updater a
+        # live one and greyed out both Update and Go back, for the half hour it
+        # took the file to age past the timeout. The one machine that needed to
+        # be recovered was the one that refused to offer recovery. See
+        # UpdatePanel.already_running.
         payload = {
             "step": self.report.step,
             "ok": self.report.ok if finished else None,
@@ -426,6 +437,8 @@ class Progress:
             "to": self.report.moved_to,
             "output": self.report.output,
             "finished": finished,
+            "pid": os.getpid(),
+            "booted": boot_time(),
         }
         try:
             (self.folder / STATUS).write_text(json.dumps(payload, indent=1), encoding="utf-8")
@@ -438,6 +451,82 @@ class Progress:
         self.report.step = ""
         self.write_status(finished=True)
         return self.report
+
+
+# --------------------------------------------------------------------------
+#  Is the thing that wrote this file still alive?
+#
+#  Both of these answer with None when they cannot tell, and every caller
+#  treats None as "carry on as before". That direction is deliberate. Being
+#  wrong about a dead updater costs a greyed-out button; being wrong about a
+#  live one costs two updaters rewriting the same folder at once, which is the
+#  one thing the running check exists to prevent. So these may only ever be
+#  used to CLEAR a lock on positive proof of death, never to create one.
+# --------------------------------------------------------------------------
+
+
+def boot_time() -> float | None:
+    """Roughly when this machine last started, as a clock time.
+
+    Worked out from how long it has been up, because a status file written
+    before the last restart cannot have been written by anything still running
+    - and a power cut is exactly a restart. Whole seconds are plenty: this is
+    compared with a two-minute tolerance.
+    """
+    try:
+        uptime_ms = ctypes.windll.kernel32.GetTickCount64()  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return None
+    return round(time.time() - (uptime_ms / 1000.0))
+
+
+#: How far apart two readings of the boot time may be and still be the same
+#: boot. GetTickCount64 and the wall clock drift apart a little, and the wall
+#: clock itself can be corrected while the machine is up.
+SAME_BOOT_SECONDS = 120
+
+
+def rebooted_since(booted: float | None) -> bool:
+    """Whether the machine has restarted since that boot time was recorded."""
+    if booted is None:
+        return False
+    now = boot_time()
+    if now is None:
+        return False
+    return abs(now - booted) > SAME_BOOT_SECONDS
+
+
+def process_alive(pid: int | None) -> bool | None:
+    """Whether that process is still running. None when Windows will not say.
+
+    A process that has fully exited cannot be opened, which is the answer
+    wanted here. PID numbers are reused, so this is only trusted alongside the
+    boot time: a reused number belongs to a later boot.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    except AttributeError:
+        return None
+    try:
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except OSError:
+        return None
+    if not handle:
+        # Could not be opened at all. Either it is gone, or this account may not
+        # look at it - and the updater runs as the same user as the console, so
+        # in this program's own case that means gone.
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return code.value == STILL_ACTIVE
+        return None
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _log_folder(root: Path | str) -> Path:

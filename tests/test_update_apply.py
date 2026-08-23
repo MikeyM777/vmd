@@ -422,19 +422,42 @@ def test_the_report_and_the_status_file_never_disagree(tmp_path: Path) -> None:
                stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
 
     assert isinstance(good, Report)
-    assert _status(root) == _as_status(good)
+    assert _status_from_report(root) == _as_status(good)
 
     bad = run(root, stick, machine="WIN-TEST", when="2026-08-22T10:00:00",
               stop=lambda: None, sync=lambda *_: (True, ""),
               selftest=lambda: (False, "ImportError: no module named cv2"))
 
     assert bad.ok is False
-    assert _status(root) == _as_status(bad)
+    assert _status_from_report(root) == _as_status(bad)
 
 
 def _status(root: Path) -> dict:
     text = (root / "bin" / "logs" / "update-status.json").read_text(encoding="utf-8")
     return json.loads(text)
+
+
+#: The keys in the status file that do not come from the Report at all: they
+#: say WHO wrote it, so the console can tell an update that is running from one
+#: that was killed. See Progress.write_status and UpdatePanel.already_running.
+WRITER_KEYS = {"pid", "booted"}
+
+
+def _status_from_report(root: Path) -> dict:
+    """The status file with the writer's own identity taken back off.
+
+    Taken off by name and checked, rather than filtered loosely: the test this
+    serves exists to prove the file and the Report cannot drift, so a key
+    appearing in one and not the other must still fail unless it is one of the
+    two that is meant to be there.
+    """
+    status = _status(root)
+    extra = set(status) - set(_as_status(Report()))
+    assert extra == WRITER_KEYS, f"unexpected keys in the status file: {extra}"
+    assert isinstance(status["pid"], int) and status["pid"] > 0
+    for key in WRITER_KEYS:
+        status.pop(key)
+    return status
 
 
 def _as_status(report: Report) -> dict:

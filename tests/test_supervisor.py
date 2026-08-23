@@ -212,6 +212,68 @@ def test_a_service_that_dies_as_fast_as_it_is_started_is_not_called_running():
     assert "never stayed up" in health["reason"], health["reason"]
 
 
+class HoldsItselfBack(FakeService):
+    """Has given up, and says so: `start()` returns without starting anything.
+
+    What SegmentRecorder does once ffmpeg has died before recording anything
+    too many times in a row - it stops trying, logs the reason once, and waits
+    for those failures to age out. `start()` neither spawns nothing nor raises,
+    which is the case that reads like a successful start to anything that only
+    watches for an exception.
+    """
+
+    held_back = True
+
+    def start(self):
+        self.starts += 1
+        self.running = False
+
+
+def test_a_service_holding_itself_back_is_not_counted_as_started_every_tick():
+    """A start that did not happen is not a restart.
+
+    The supervisor read `start()` returning as a start, so a permanently broken
+    stream counted a restart on every tick and a short-lived death on the next
+    one - three hundred ticks produced 299 of each and fifteen flapping
+    warnings, about a service nobody had started once. Those counters are what
+    the console and the operator read to judge flapping, and the warnings fill
+    the 500-line Logs ring that holding back exists to protect.
+
+    `start()` is still called every time, because held_back expires on its own
+    as the old failures age out, and that call is how the service notices.
+    """
+    service = HoldsItselfBack(alive=False)
+    supervisor, clock = build({"thermal": service})
+    for _ in range(300):
+        supervisor.tick()
+        clock.advance(2.0)
+
+    assert service.starts == 300, "it must still be asked, or it can never recover"
+    health = supervisor.health()["thermal"]
+    assert health["restarts"] == 0
+    assert health["short_lived"] == 0
+    assert health["flapping"] is False
+    assert health["reason"] == ""
+
+
+def test_a_service_with_no_notion_of_holding_back_still_flaps():
+    """The control: nothing above may weaken the flap detection that works.
+
+    Most services have no `held_back` at all, and one that has none is not
+    held back. This is the same 300 ticks against a service that simply dies.
+    """
+    service = DiesImmediately(alive=False)
+    supervisor, clock = build({"recorder": service})
+    for _ in range(300):
+        supervisor.tick()
+        clock.advance(2.0)
+
+    health = supervisor.health()["recorder"]
+    assert health["restarts"] > 200
+    assert health["short_lived"] > 200
+    assert health["flapping"] is True
+
+
 def test_a_service_that_comes_back_and_works_is_reported_as_recovered():
     """The other half of the same question, or the reading means nothing."""
     service = FakeService(alive=False)
