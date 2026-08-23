@@ -910,25 +910,74 @@ try {
         Stop-Installer 1
     }
 
-    # `vmd` too, and not as an afterthought: the project is not copied into
-    # .venv, it is one line in _editable_impl_vmd.pth naming the folder it lives
-    # in. Every library can import while `import vmd` fails, and then the
-    # console starts with "No module named 'vmd'" on an install this step called
-    # good. See the same list in scripts\offline_install.ps1.
+    # Exactly what the console imports to open a window, and nothing more - this
+    # is the same list scripts\offline_install.ps1 uses on the other machine, and
+    # the two must stay identical so a kit that passes here cannot fail there for
+    # a reason this check never looked at.
+    #
+    #   vmd        - imported FIRST. The project is not copied into .venv, it is
+    #                one line in _editable_impl_vmd.pth naming the folder it lives
+    #                in. Every library can import while `import vmd` fails, and
+    #                then the console starts with "No module named 'vmd'" on an
+    #                install this step called good. Importing it first also arms
+    #                vmd\__init__.py's offline guards before anything heavy loads.
+    #   pydantic   - the settings model.  cv2 - frames.  PySide6 - the window.
+    #
+    # ultralytics is deliberately NOT in this list. It is the object detector, it
+    # drags in torch, and naming what moved is OFF - the console never imports it
+    # at startup (vmd\detect\classify.py loads it on demand). Making it fatal let
+    # a heavy, optional import decide whether the environment was "broken", and on
+    # the offline machine it condemned a console that ran fine. The detector's
+    # readiness is the yolo11n.pt line, and that is optional. Here, where there is
+    # a network to fix things, ultralytics is still checked below - but softly.
     $import = Invoke-Captured $uvExe @('run', '--frozen', '--no-sync', 'python', '-c',
-                                       'import cv2, pydantic, ultralytics, vmd; print(''libraries ok'')')
+                                       'import vmd, pydantic, cv2, PySide6.QtWidgets; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 3)) { Write-Bad "  $line" }
         Write-Bad "The environment was built but the libraries do not import."
-        Add-Broken "the libraries do not import, so the console cannot start" @(
-            "Delete the .venv folder and run install.bat again."
-        )
+        $missing = $null
+        foreach ($line in $import.Err) {
+            if ($line -match "No module named '([^']+)'") { $missing = $matches[1]; break }
+        }
+        $rootModule = if ($missing) { ($missing -split '\.')[0] } else { $null }
+        if ($rootModule -eq 'vmd') {
+            Add-Broken "the project's own code (vmd) is not on the path, so the console cannot start" @(
+                "Delete _editable_impl_vmd.pth in .venv\Lib\site-packages and run",
+                "install.bat again - it rewrites that one line with this folder's path."
+            )
+        } elseif ($rootModule) {
+            Add-Broken "a library did not build in ($rootModule is missing), so the console cannot start" @(
+                "Delete the .venv folder and run install.bat again."
+            )
+        } else {
+            Add-Broken "the libraries do not import, so the console cannot start" @(
+                "Delete the .venv folder and run install.bat again."
+            )
+        }
         Write-Host ""
         Write-Summary
         Stop-Installer 1
     }
     Write-Ok "Environment ready."
     Add-Good "the Python environment - the console and the recorder run"
+
+    # The detector, checked softly. This machine has the network to fix a broken
+    # torch or ultralytics, and this is the last moment before the kit travels to
+    # a machine that does not - so a failure here is worth surfacing, but it is
+    # not fatal: naming what moved is off, and the console runs without it.
+    $detect = Invoke-Captured $uvExe @('run', '--frozen', '--no-sync', 'python', '-c',
+                                       'import vmd, ultralytics; print(''detector ok'')')
+    if ($detect.Code -eq 0 -and ($detect.Out -contains 'detector ok')) {
+        Add-Good "the detector library (ultralytics) - ready for the day naming comes back"
+    } else {
+        Write-Info "The detector library (ultralytics) does not import. Naming what moved is"
+        Write-Info "off, so nothing uses it today; noted here because this is the machine"
+        Write-Info "that can still fix it."
+        Add-Optional "the detector library (ultralytics) does not import" @(
+            "Naming what moved is off today, so the console and recorder are unaffected.",
+            "To fix it for later: delete .venv and run install.bat again on this machine."
+        )
+    }
 
     # ------------------------------------------------------------------
     #  The verdict on VLC

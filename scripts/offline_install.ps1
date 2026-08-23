@@ -259,35 +259,86 @@ Write-Step "Checking that it runs, without asking the network anything"
 $uv = Join-Path $binDir 'uv.exe'
 Push-Location $root
 try {
-    # `vmd` is in that list because of what the list without it let through:
-    # every third-party library imported, the installer said "The libraries
-    # import", and the console then died with
+    # What this imports is exactly what the console imports to open a window,
+    # and nothing more - because the console opening is the one thing this step
+    # exists to predict. Each entry earned its place:
     #
-    #     Error while finding module specification for 'vmd.desktop'
-    #     (ModuleNotFoundError: No module named 'vmd')
+    #   vmd        - imported FIRST, for two reasons. It is the project's own
+    #                code, which is not installed into .venv as files but named
+    #                by one line in _editable_impl_vmd.pth - the single part of
+    #                the environment a copy to another machine can break, and
+    #                once the only part nothing checked. The console died with
+    #                    No module named 'vmd'
+    #                while every third-party import passed and the installer said
+    #                "the libraries import". Step 2 repairs that line; this
+    #                proves it took. Importing vmd first also sets YOLO_OFFLINE
+    #                and the rest of vmd\__init__.py's guards before anything
+    #                heavy loads, which is what keeps the whole import off the
+    #                network.
+    #   pydantic   - the settings model. No settings load without it.
+    #   cv2        - every video pane and the recorder read frames through it.
+    #   PySide6    - the window itself. If this will not import, nothing opens.
     #
-    # The project itself is not installed into .venv as files - it is one line
-    # in _editable_impl_vmd.pth naming the folder it lives in - so it is the one
-    # part of the environment a copy to another machine can break, and it was
-    # the one part nothing checked. Step 2 repairs that line; this is what
-    # proves the repair worked.
+    # ultralytics is deliberately NOT here, and taking it out is the whole point
+    # of this rewrite. It is the object detector, it drags in torch, and it is
+    # OFF - naming what moved does not run today. The console never imports it at
+    # startup (vmd\detect\classify.py loads it on demand, once, only when a name
+    # is actually needed). Requiring it here let a heavy, optional, network-shy
+    # import decide whether the environment was "broken" - and it condemned a
+    # machine whose console opened and ran perfectly. An installer that calls a
+    # working system broken is worse than one that stays quiet: its log is the
+    # thing people send, and this one sent them to rebuild a kit that was fine.
+    # Whether the detector is ready is the yolo11n.pt line further down, and that
+    # one is optional, because that is what it is.
     $import = Invoke-Captured $uv @('run', '--offline', '--frozen', '--no-sync', 'python', '-c',
-                                    'import cv2, pydantic, ultralytics, vmd; print(''libraries ok'')')
+                                    'import vmd, pydantic, cv2, PySide6.QtWidgets; print(''libraries ok'')')
     if ($import.Code -ne 0 -or -not ($import.Out -contains 'libraries ok')) {
         foreach ($line in ($import.Err | Select-Object -Last 4)) { Write-Bad "  $line" }
         Write-Bad "The environment does not run on this machine."
-        Write-Info "The message above is the whole diagnosis. 'No Python at ...' means"
-        Write-Info "the copy is missing bin\python\ - go back to the connected machine"
-        Write-Info "and run offline-kit.bat, which checks for exactly that."
-        Add-Broken "the Python environment does not run, so nothing works at all" @(
-            "Go back to the connected machine, run install.bat then offline-kit.bat,",
-            "and bring the folder that produces."
-        )
+
+        # Name the exact fault, not the symptom. Step 1 already proved
+        # .venv\Scripts\python.exe, bin\uv.exe and bin\python\ are all here, so
+        # the two failures left are the two a file-by-file copy produces - and
+        # they send the operator to different places.
+        $missing = $null
+        foreach ($line in $import.Err) {
+            if ($line -match "No module named '([^']+)'") { $missing = $matches[1]; break }
+        }
+        $rootModule = if ($missing) { ($missing -split '\.')[0] } else { $null }
+        if ($rootModule -eq 'vmd') {
+            Write-Info "The fault is named: No module named 'vmd'. The project's own code"
+            Write-Info "is not on the environment's path. Step 2 writes the one line that"
+            Write-Info "fixes this - _editable_impl_vmd.pth - and here it did not take."
+            Write-Info "Running this installer again usually settles it."
+            Add-Broken "the project's own code (vmd) is not on the path, so the console cannot start" @(
+                "Run offline-install.bat once more - step 2 rewrites the line that names",
+                "where vmd lives (.venv\Lib\site-packages\_editable_impl_vmd.pth).",
+                "If it still fails, that file should hold one line: this folder's own path."
+            )
+        } elseif ($rootModule) {
+            Write-Info "The fault is named: No module named '$rootModule'. A library that"
+            Write-Info "did not copy in full. .venv is here, but one file inside it did not"
+            Write-Info "make the trip - the way a folder of 200,000 small files copied to a"
+            Write-Info "USB stick by hand arrives half-finished."
+            Add-Broken "a library did not copy in full ($rootModule is missing), so the console cannot start" @(
+                "Copy the whole VMD folder off the USB drive again, all of it, in one go -",
+                "or better, use the .zip: one file either copies or it does not.",
+                "A file-by-file copy of the environment is what dropped $rootModule."
+            )
+        } else {
+            Write-Info "The message above is the whole diagnosis."
+            Add-Broken "the Python environment does not run, so nothing works at all" @(
+                "Copy the whole VMD folder off the USB drive again in one go, or rebuild",
+                "the .zip on the connected machine with install.bat then offline-kit.bat."
+            )
+        }
         Write-Summary
         Stop-Installer 1
     }
-    Write-Ok "The libraries import."
+    Write-Ok "The libraries import - the console and the recorder run."
     Add-Good "the Python environment - the console and the recorder run"
+    Write-Info "The object detector (ultralytics) is not loaded here: naming what moved"
+    Write-Info "is off, and nothing imports it until it is turned back on."
 
     # The only question about VLC that decides anything, and it is the console's
     # own question. The console no longer lets python-vlc do the searching:
