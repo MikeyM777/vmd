@@ -1850,9 +1850,14 @@ def test_the_switch_for_watching_says_on_the_form_what_watching_does(
     said = tab.detect_help.text().lower()
     assert said.strip(), "the switch still explains itself only on hover"
     assert "move" in said, said
-    # The two things he would actually notice: a line in the movement list, and
-    # the red strip across the pictures.
-    assert "strip" in said or "red" in said, said
+    # The two things he would actually notice. This used to ask for the words
+    # "strip" or "red", after the red strip across the pictures - which was
+    # taken out of the console a long time ago, along with both its buttons, so
+    # the test was holding the help text to a promise the software had stopped
+    # keeping. What he notices now is the line in the movement list and the
+    # sound.
+    assert "list" in said, said
+    assert "sound" in said, said
     assert not any(word in said for word in JARGON), said
 
     # And nowhere else. Any label repeating it is the duplication coming back.

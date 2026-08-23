@@ -321,6 +321,16 @@ TROUBLE_WORDS = {
 }
 
 
+def _base_name(part) -> str:
+    """Which part of the system a chip is about, whatever word it is showing.
+
+    The fourth element when there is one. A three-element part - anything
+    driving the band directly, and every test written before the fourth was
+    added - falls back to the first, which for those is the base name already.
+    """
+    return part[3] if len(part) > 3 else part[0]
+
+
 def _glance_word(name: str, state: str) -> str:
     """The short word a chip shows when another chip is doing the talking."""
     if state in ("ok", "muted"):
@@ -411,10 +421,22 @@ class _SaveJob(QRunnable):
 # because a console that could not ask anything knows nothing at all, and the
 # link is behind because a link fault shows up as a streaming fault long before
 # anyone reads the band. Anything not named here sorts after everything named.
+#
+# These are the BASE names of the parts - `streaming`, `recording` - and never
+# the words a chip shows when it is in trouble. That distinction is the whole
+# of a bug this table had for a long time: `worst` looked the rank up by the
+# chip's glance word, and a chip in trouble shows a TROUBLE word instead of its
+# name ("NOT recording", "no pictures"). None of those are keys here, so every
+# troubled chip tied at the bottom rank and the order they happened to be drawn
+# in decided who spoke. On the commonest broken install of all - go2rtc not
+# there yet - the band said "NOT recording" and put `go2rtc is not installed -
+# run install.bat` away in a glance word: the symptom out loud and the cure
+# hidden, which is exactly what this table exists to prevent. Every part now
+# carries its base name as a fourth element and is ranked on that.
 CAUSE_BEFORE_EFFECT = {
     name: rank
     for rank, name in enumerate(
-        ("services", "streaming", "recording", "detection", "link", "camera")
+        ("services", "streaming", "views", "recording", "detection", "link", "camera")
     )
 }
 
@@ -724,7 +746,10 @@ class StatusBand(QFrame):
         speaking = self.worst(parts)
         for index, chip in enumerate(self._chips):
             if index < len(parts):
-                glance, words, state = parts[index]
+                # The first three and not the whole tuple: a part may carry a
+                # fourth element naming which part of the system it is about,
+                # which is what `worst` ranks on and which nothing here draws.
+                glance, words, state = parts[index][:3]
                 chip.show_state(words if index == speaking else glance, state)
                 chip.setVisible(True)
             else:
@@ -752,10 +777,18 @@ class StatusBand(QFrame):
         """
         for wanted in ("alarm", "warn"):
             standing = [
-                index for index, (_g, _w, state) in enumerate(parts) if state == wanted
+                index for index, part in enumerate(parts) if part[2] == wanted
             ]
             if standing:
-                return min(standing, key=lambda index: (CAUSE_BEFORE_EFFECT.get(parts[index][0], len(CAUSE_BEFORE_EFFECT)), index))
+                return min(
+                    standing,
+                    key=lambda index: (
+                        CAUSE_BEFORE_EFFECT.get(
+                            _base_name(parts[index]), len(CAUSE_BEFORE_EFFECT)
+                        ),
+                        index,
+                    ),
+                )
         return None
 
 
@@ -1600,7 +1633,10 @@ class ConsoleWindow(QMainWindow):
     def status_text(self) -> str:
         """One line, always. A status bar that raises has told the operator
         nothing, and taken the heartbeat down with it."""
-        return " · ".join(words for _glance, words, _state in self.status_parts())
+        # `part[1]` rather than unpacking: a part carries a fourth element
+        # naming which part of the system it is about, and this line is only
+        # ever after the sentence.
+        return " · ".join(part[1] for part in self.status_parts())
 
     def _ask_state(self):
         """What the services are doing, or None because they could not be asked.
@@ -1649,6 +1685,7 @@ class ConsoleWindow(QMainWindow):
                     "services",
                     "VMD cannot see its own recorder and detector. Restart VMD.",
                     "alarm",
+                    "services",
                 )
             )
         else:
@@ -1680,6 +1717,7 @@ class ConsoleWindow(QMainWindow):
                     recording.get("reason")
                     or ("recording" if is_recording else "NOT recording"),
                     mood,
+                    "recording",
                 )
             )
             streaming = state.get("streaming")
@@ -1688,6 +1726,7 @@ class ConsoleWindow(QMainWindow):
                     _glance_word("streaming", _streaming_state(streaming)),
                     f"streaming: {streaming}",
                     _streaming_state(streaming),
+                    "streaming",
                 )
             )
             # `.get` twice: the services are handed in, and a state without a
@@ -1699,6 +1738,7 @@ class ConsoleWindow(QMainWindow):
                     _glance_word("detection", _detection_state(detection)),
                     f"detection: {detection.get('reason', 'unknown')}",
                     _detection_state(detection),
+                    "detection",
                 )
             )
 
@@ -1706,14 +1746,16 @@ class ConsoleWindow(QMainWindow):
             link = self._radio.status()
         except Exception:  # noqa: BLE001
             logger.exception("the radio could not be asked about the link")
-            parts.append(("no link", "link unknown", "alarm"))
+            parts.append(("no link", "link unknown", "alarm", "link"))
         else:
             # The signal figure is not in the glance word on purpose. A reading
             # inside the healthy band is the same news every four seconds, and
             # the Live tab's link panel carries it in full - with what it means
             # beside it - one tab away, for the moment somebody wants the
             # number rather than the reassurance.
-            parts.append((_link_glance(link), self._link_words(link), _link_state(link)))
+            parts.append(
+                (_link_glance(link), self._link_words(link), _link_state(link), "link")
+            )
 
         # And whether that link is carrying anything twice. Last, beside the
         # link it is about, and only when there is something to say: a chip that
@@ -1729,7 +1771,9 @@ class ConsoleWindow(QMainWindow):
             except Exception:  # noqa: BLE001 - the band must go on being drawn
                 logger.exception("what the link is carrying could not be read")
         if doubled:
-            parts.append((_glance_word("camera", "warn"), _doubled_words(doubled), "warn"))
+            parts.append(
+                (_glance_word("camera", "warn"), _doubled_words(doubled), "warn", "camera")
+            )
 
         # And whether he can actually see the fence, which is the thing this
         # band was not reporting at all. See `LiveTab.views_in_trouble`: the
@@ -1739,9 +1783,18 @@ class ConsoleWindow(QMainWindow):
         # First in the list rather than last, because it outranks every other
         # part of it: a recorder that is running is recording nothing worth
         # having if no picture is arriving to record.
+        #
+        # Being first no longer decides it, though - `views` has its own rank in
+        # CAUSE_BEFORE_EFFECT, ahead of recording and detection for the reason
+        # above and behind streaming, because a streaming server that is down is
+        # WHY no picture is arriving and its sentence is the one with the cure in
+        # it. Position in the list is now only the tie-break it was always meant
+        # to be.
         trouble = self._views_in_trouble()
         if trouble:
-            parts.insert(0, (_views_glance(trouble), _views_words(trouble), "alarm"))
+            parts.insert(
+                0, (_views_glance(trouble), _views_words(trouble), "alarm", "views")
+            )
 
         return parts
 

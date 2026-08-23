@@ -614,7 +614,7 @@ def test_the_console_that_cannot_ask_itself_anything_says_so_in_his_words(
     """
     window, _ = build(qtbot, tmp_path, services=AngryServices())
     said = next(
-        words for _glance, words, state in window.status_parts() if state == "alarm"
+        part[1] for part in window.status_parts() if part[2] == "alarm"
     )
     assert said == "VMD cannot see its own recorder and detector. Restart VMD."
     # The two parts that carry it: what is wrong, and the one thing he can do.
@@ -1517,7 +1517,7 @@ def test_no_chip_ever_shows_a_healthy_word_inside_a_faulted_box(
     window.heartbeat()
 
     healthy = {"recording", "streaming", "detection", "link", "camera", "services"}
-    for glance, _words, state in window.status_parts():
+    for glance, _words, state in (p[:3] for p in window.status_parts()):
         if state in ("alarm", "warn"):
             assert glance not in healthy, f"{glance!r} is the healthy word for a {state}"
 
@@ -1600,8 +1600,8 @@ def test_a_camera_view_that_has_stopped_arriving_is_on_the_band(
     window.live._set_status("thermal", "failed")
 
     parts = window.status_parts()
-    assert any("thermal" in glance for glance, _words, _state in parts), parts
-    assert any(state == "alarm" for _glance, _words, state in parts)
+    assert any("thermal" in glance for glance in (p[0] for p in parts)), parts
+    assert any(state == "alarm" for state in (p[2] for p in parts))
 
     window.band.show_parts(parts)
     assert any("thermal" in chip for chip in window.band.chips()), window.band.chips()
@@ -1632,7 +1632,7 @@ def test_pictures_that_are_all_arriving_put_nothing_on_the_band(
     window.heartbeat()
     window.live._set_status("thermal", "playing")
     parts = window.status_parts()
-    assert not any("thermal" in glance for glance, _words, _state in parts), parts
+    assert not any("thermal" in glance for glance in (p[0] for p in parts)), parts
 
 
 def test_the_band_and_the_link_panel_never_disagree_about_the_same_radio(
@@ -1746,15 +1746,90 @@ def test_the_band_gives_the_room_to_the_worst_fault(qtbot, tmp_path: Path) -> No
     # local streaming server, so a streaming server that is down is why footage
     # is not reaching the disk - and its sentence is the one that says what to
     # do about it. "NOT recording" is the symptom.
+    #
+    # The glance words here are the ones the RUNNING console passes, and that
+    # matters: this test used to hand base names as the first element, which no
+    # troubled chip has ever done - `_glance_word` swaps in "NOT recording",
+    # "no pictures" - so it exercised a path production could not reach. It
+    # passed green while the real band ranked everything equal and let the
+    # drawing order decide, which is how the commonest broken install of all
+    # came to headline the symptom and hide the cure. The base name is the
+    # fourth element, and that is what the ranking reads.
     named = [
-        ("recording", "NOT recording", "alarm"),
-        ("streaming", f"streaming: {NOT_INSTALLED}", "alarm"),
-        ("detection", "detection: not running", "alarm"),
+        ("NOT recording", "NOT recording", "alarm", "recording"),
+        ("no pictures", f"streaming: {NOT_INSTALLED}", "alarm", "streaming"),
+        ("no detection", "detection: not running", "alarm", "detection"),
     ]
     assert StatusBand.worst(named) == 1
     # A console that could not be asked anything knows nothing at all, and says
     # so ahead of everything.
-    assert StatusBand.worst([("streaming", "S", "alarm"), ("services", "?", "alarm")]) == 1
+    assert (
+        StatusBand.worst(
+            [
+                ("no pictures", "S", "alarm", "streaming"),
+                ("services", "?", "alarm", "services"),
+            ]
+        )
+        == 1
+    )
+    # A picture that is not arriving outranks the recorder that has nothing to
+    # write, and is outranked in turn by the streaming server that explains it.
+    assert (
+        StatusBand.worst(
+            [
+                ("NOT recording", "NOT recording", "alarm", "recording"),
+                ("no thermal", "thermal is not arriving", "alarm", "views"),
+            ]
+        )
+        == 1
+    )
+    assert (
+        StatusBand.worst(
+            [
+                ("no thermal", "thermal is not arriving", "alarm", "views"),
+                ("no pictures", f"streaming: {NOT_INSTALLED}", "alarm", "streaming"),
+            ]
+        )
+        == 1
+    )
+
+
+def test_the_band_headlines_the_cure_and_not_the_symptom(qtbot, tmp_path: Path) -> None:
+    """The whole rule again, but through the parts the window itself builds.
+
+    The test above checks `worst` against a list written by hand. This one
+    builds the list the way the console does - `status_parts` on a real window
+    with the streaming server down - so that a change to the words a chip shows
+    in trouble cannot quietly stop the ranking working again.
+    """
+    from vmd.desktop.window import StatusBand
+
+    class EverythingDownstreamOfStreaming(FakeServices):
+        """go2rtc is not installed, so nothing is arriving, nothing is being
+        written, and nothing is being watched. One cause, three alarms."""
+
+        def state(self) -> dict:
+            self.state_calls += 1
+            return {
+                "recording": False,
+                "recording_state": {
+                    "chosen": False,
+                    "reason": "NOT recording - restarting it",
+                },
+                "streaming": NOT_INSTALLED,
+                "detection": {"reason": "not running"},
+            }
+
+    window, _ = build(qtbot, tmp_path, services=EverythingDownstreamOfStreaming())
+    parts = window.status_parts()
+    speaking = StatusBand.worst(parts)
+
+    assert speaking is not None, "something is plainly wrong; the band must say so"
+    assert NOT_INSTALLED in parts[speaking][1], (
+        f"the band headlines {parts[speaking][1]!r} instead of the one sentence "
+        f"that says what to do about it"
+    )
+    window.close()
 
 
 def test_the_band_is_the_same_height_whatever_is_wrong(qtbot, tmp_path: Path) -> None:
@@ -1812,11 +1887,11 @@ def test_the_band_knows_which_of_its_chips_is_the_bad_one(qtbot, tmp_path: Path)
     now carries the state it is reporting, so the one that is wrong can be the
     one that is red."""
     healthy, _ = build(qtbot, tmp_path / "well", services=FakeServices())
-    states = dict((words, state) for _glance, words, state in healthy.status_parts())
+    states = dict((p[1], p[2]) for p in healthy.status_parts())
     assert states["streaming: streaming"] == "ok"
 
     sick, _ = build(qtbot, tmp_path / "ill", services=SickServices())
-    states = dict((words, state) for _glance, words, state in sick.status_parts())
+    states = dict((p[1], p[2]) for p in sick.status_parts())
     assert states[f"streaming: {NOT_INSTALLED}"] == "alarm"
 
 
@@ -2769,7 +2844,7 @@ def test_the_band_says_when_the_link_is_carrying_a_stream_twice(
     qtbot, tmp_path: Path
 ) -> None:
     window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
-    said = [words for _glance, words, _state in band_parts(window)]
+    said = [p[1] for p in band_parts(window)]
     doubled = [line for line in said if "twice" in line]
     assert doubled, said
     assert "thermal" in doubled[0], doubled[0]
@@ -2784,14 +2859,14 @@ def test_a_link_carrying_a_stream_twice_is_not_drawn_as_an_alarm(
     red it uses for "NOT recording" would be teaching him that red means
     nothing."""
     window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
-    states = [state for _glance, words, state in band_parts(window) if "twice" in words]
+    states = [p[2] for p in band_parts(window) if "twice" in p[1]]
     assert states == ["warn"], states
     window.close()
 
 
 def test_two_streams_carried_twice_are_said_in_one_line(qtbot, tmp_path: Path) -> None:
     window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal", "visible"]))
-    doubled = [words for _g, words, _s in band_parts(window) if "twice" in words]
+    doubled = [p[1] for p in band_parts(window) if "twice" in p[1]]
     assert len(doubled) == 1, doubled
     assert "thermal" in doubled[0] and "visible" in doubled[0], doubled[0]
     window.close()
@@ -2801,7 +2876,7 @@ def test_the_band_says_nothing_about_it_while_the_link_is_carrying_one_copy(
     qtbot, tmp_path: Path
 ) -> None:
     window, _ = build(qtbot, tmp_path, services=DoublingServices([]))
-    assert not [words for _g, words, _s in band_parts(window) if "twice" in words]
+    assert not [p[1] for p in band_parts(window) if "twice" in p[1]]
     window.close()
 
 
@@ -2811,8 +2886,8 @@ def test_services_that_have_never_heard_of_it_still_produce_a_band(
     """The services are handed in, and one that answers with three words must
     not cost the operator the recording state as well."""
     window, _ = build(qtbot, tmp_path, services=FakeServices())
-    assert [words for _g, words, _s in band_parts(window)], "the band went empty"
-    assert not [words for _g, words, _s in band_parts(window) if "twice" in words]
+    assert [p[1] for p in band_parts(window)], "the band went empty"
+    assert not [p[1] for p in band_parts(window) if "twice" in p[1]]
     window.close()
 
 
@@ -2833,7 +2908,7 @@ def test_the_words_do_not_ask_him_to_know_what_a_streaming_server_is(
     """He is not technical and has no terminal. The sentence has to be about a
     camera, a link and a laptop."""
     window, _ = build(qtbot, tmp_path, services=DoublingServices(["thermal"]))
-    doubled = [words for _g, words, _s in band_parts(window) if "twice" in words][0]
+    doubled = [p[1] for p in band_parts(window) if "twice" in p[1]][0]
     for jargon in ("go2rtc", "rtsp", "fallback", "source", "endpoint", "url"):
         assert jargon not in doubled.lower(), doubled
     window.close()

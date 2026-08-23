@@ -215,10 +215,15 @@ PROBE_NAME = ".vmd-write-test"
 # review of this tab says it plainly: a control whose name only makes sense on
 # hover is a control with the wrong name, and the tooltips here were already
 # doing more work than tooltips should.
+# What this used to promise - "lights the red strip across the bottom of the
+# pictures" - has not happened for a long time: the strip and both its buttons
+# were taken out, and the sound and the picture of what moved took their place.
+# A tooltip describing a thing that is not on the screen sends somebody looking
+# for a fault in a console that is working.
 DETECT_HELP = (
     "With this on, anything that moves in this view is written into the movement "
-    "list and lights the red strip across the bottom of the pictures. Recording "
-    "carries on either way - this only decides whether you are told."
+    "list beside the pictures, and makes a sound if that is switched on below. "
+    "Recording carries on either way - this only decides whether you are told."
 )
 
 REGIONS_HELP = (
@@ -1493,8 +1498,7 @@ class SettingsTab(QWidget):
         # the room rather than what happens in the software.
         self._alarm_sound = QCheckBox("Make a sound when something moves")
         self._alarm_sound.setToolTip(
-            "A short sound when movement is reported, as well as the red strip "
-            "across the bottom of the pictures.\n\n"
+            "A short sound when movement is reported.\n\n"
             "It is on because you are not always looking at the screen. It "
             "never sounds more than once every twelve seconds, so a windy night "
             "is one sound and not forty.\n\n"
