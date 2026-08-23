@@ -41,11 +41,8 @@ bench.bat
 gui_err.log
 gui_out.log
 *.bin
-flir_saved.html
-wb.html
 .claude/tdd-guard/
 .playwright-mcp/
-mockup/*.png
 
 recordings/
 settings.json

@@ -358,4 +358,5 @@ update.
 
 - `INSTALL.md` — the full installation document, including the online case and
   what everything on this machine is for.
-- `README.md` — what VMD is and how it is put together.
+- `ORIENTATION.md` — which file does what: every launcher, every script, and
+  which of the four flows it belongs to.

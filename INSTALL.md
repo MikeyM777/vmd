@@ -1,7 +1,6 @@
 # Installing VMD, step by step
 
-This is the long version, written so that nothing is assumed. If you have done
-this sort of thing before, the short version in [README.md](README.md) is enough.
+This is the long version, written so that nothing is assumed.
 
 Every step says what to click, what you should see, and what to do if you see
 something else instead.
@@ -50,10 +49,10 @@ to receive updates later.
 1. Open this page in your browser:
    **https://github.com/noamsolomon123/vmd**
 
-2. Above the file list there is a button that says **`desktop-console`** with a
-   branch icon. If it says something else — `main`, or `master` — click it and
-   choose **desktop-console** from the list. That is the version this document
-   describes.
+2. Above the file list there is a button with a branch icon. It should say
+   **`master`**, which is what opens by itself and is the version this
+   document describes. If it says something else — `desktop-console`, or
+   `usb-updates` — click it and choose **master** from the list.
 
 3. Find the green button near the top right that says **`<> Code`**. Click it.
 
@@ -96,7 +95,7 @@ to receive updates later.
 
    ```powershell
    cd C:\
-   git clone --branch desktop-console https://github.com/noamsolomon123/vmd.git VMD
+   git clone https://github.com/noamsolomon123/vmd.git VMD
    cd C:\VMD
    ```
 
@@ -757,5 +756,25 @@ first time you do it, not on the day the camera goes up.
 
 ## macOS and Linux
 
-There is no double-click installer for these; the system is built for the
-Windows machine. The commands are in [README.md](README.md#macos).
+There is no installer for these, and there is not going to be one. Everything
+that makes this system what it is — the recorder service, automatic starting
+after a power cut, the offline kit, the USB update stick, VMD.exe itself — is
+written in PowerShell against Windows, and the machine it watches from is a
+Windows machine.
+
+The console itself is Python and Qt, so it will open on a Mac or on Linux for
+somebody working on the code:
+
+```bash
+git clone https://github.com/noamsolomon123/vmd.git VMD
+cd VMD
+uv sync
+uv run python -m vmd.desktop
+```
+
+That gives you the window and the settings file. VLC must be installed
+separately for the live picture, and ffmpeg and go2rtc must be on PATH for
+recording and streaming — on Windows those three travel inside the folder, and
+here they do not. None of the installers, none of the autostart, and none of
+the update system runs. It is enough to read the code with, and it is not a
+deployment.

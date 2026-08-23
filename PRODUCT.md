@@ -41,9 +41,14 @@ away, see enough to judge whether it matters, and be able to find it again later
 
 ## Product Purpose
 
-A surveillance console for one multi-spectral PTZ camera watching a distant perimeter. It
+A surveillance console for a multi-spectral PTZ camera watching a distant perimeter. It
 shows live video, records continuously, raises an alarm when something moves, and lets the
 operator look back through what was recorded.
+
+One console watches one camera. A site with more than one camera runs more than one
+console — `cameras.bat` sets each one up with its own settings, its own recordings and its
+own screen, out of the same installed folder. Everything below describes a single console,
+because that is what an operator sits in front of.
 
 The system deliberately does not care *what* moved. A person, a dog, a vehicle — all are
 worth knowing about. What it must not do is cry wolf at wind in trees, rain, or birds.

@@ -50,7 +50,7 @@
 
 param(
     # Which console's settings to record for. There is one camera folder per
-    # camera now - cameras¨\settings.json, cameras©\settings.json - and
+    # camera now - cameras\250\settings.json, cameras\251\settings.json - and
     # one of these tasks per camera. Empty means the single-camera layout, which
     # is settings.json beside VMD.exe and is what every existing installation
     # has.
