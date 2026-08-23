@@ -1310,14 +1310,45 @@ def test_the_live_tab_shows_storage(qtbot, tmp_path) -> None:
         storage=watcher,
     )
     qtbot.addWidget(tab)
-    tab.apply(settings_with("thermal"))
+    recording = settings_with("thermal")
+    recording.record = True
+    tab.apply(recording)
     assert tab.storage_lines(), "the right column has no storage in it"
+    assert tab._storage_panel.isVisibleTo(tab), "and it is on the screen while recording"
+
+
+def test_storage_is_hidden_when_recording_is_off(qtbot, tmp_path) -> None:
+    """"Drive: N GB free" is about footage reaching the disk, and there is none
+    to watch when recording is off. The panel goes with the rest of the
+    recording settings; it comes back when Record is ticked."""
+    from vmd.desktop.disk import DiskWatcher
+
+    watcher = DiskWatcher(
+        settings_with("thermal"), executor=lambda work: work(), clock=lambda: 1000.0
+    )
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        storage=watcher,
+    )
+    qtbot.addWidget(tab)
+
+    off = settings_with("thermal")  # record defaults off
+    tab.apply(off)
+    assert not tab._storage_panel.isVisibleTo(tab), "no drive readout while not recording"
+
+    on = settings_with("thermal")
+    on.record = True
+    tab.apply(on)
+    assert tab._storage_panel.isVisibleTo(tab), "and back when recording is turned on"
 
 
 def test_the_live_tab_redraws_storage_on_a_refresh(qtbot, tmp_path) -> None:
     from vmd.desktop.disk import DiskWatcher
 
     settings = settings_with("thermal")
+    settings.record = True  # the storage panel is only shown, and refreshed, when recording
     settings.storage.root = tmp_path / "rec"
     (tmp_path / "rec").mkdir()
     watcher = DiskWatcher(settings, executor=lambda work: work(), clock=lambda: 1000.0)

@@ -128,15 +128,22 @@ def test_recording_off_hides_the_folder_and_size_and_shows_them_when_on(
     assert tab.save() is True, tab.message
     assert load_settings(path).record is False
 
+    # And Playback goes with it: watching footage back means nothing when none
+    # is kept.
+    assert not tab._playback_box.isVisibleTo(tab), "no Playback tab option either"
+
     tab.record = True
     assert tab._recording_details.isVisibleTo(tab), "the where-and-how-much is back"
+    assert tab._playback_box.isVisibleTo(tab), "and Playback with it"
 
     # Clicking the tick, not just setting the property, does the same.
     tab.record = False
     assert not tab._recording_details.isVisibleTo(tab)
+    assert not tab._playback_box.isVisibleTo(tab)
     tab._record.click()
     assert tab.record is True
     assert tab._recording_details.isVisibleTo(tab)
+    assert tab._playback_box.isVisibleTo(tab)
 
 
 def test_existing_streams_survive_a_load_and_save(qtbot, tmp_path: Path) -> None:
@@ -3158,6 +3165,7 @@ def test_a_number_that_will_not_parse_is_refused_by_the_name_on_the_form(
 
 def test_the_playback_switch_starts_off_and_asks_nothing(qtbot, tmp_path: Path) -> None:
     tab, _ = build(qtbot, tmp_path)
+    tab.record = True  # Playback lives inside the recording settings and only shows with them
     assert tab.show_playback is False
     assert tab.asking_about_playback() is False
 
@@ -3172,6 +3180,7 @@ def test_turning_playback_on_asks_first_and_does_not_tick_the_box(
     not been agreed to is a promise the console has not kept.
     """
     tab, _ = build(qtbot, tmp_path)
+    tab.record = True
     tab._show_playback.click()
 
     assert tab.asking_about_playback() is True
@@ -3184,6 +3193,7 @@ def test_turning_playback_on_asks_first_and_does_not_tick_the_box(
 
 def test_answering_yes_turns_it_on_and_saving_writes_it(qtbot, tmp_path: Path) -> None:
     tab, _ = build(qtbot, tmp_path)
+    tab.record = True
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
     tab._show_playback.click()
     tab.playback_yes.click()
@@ -3198,6 +3208,7 @@ def test_answering_no_leaves_it_off_and_takes_the_question_away(
     qtbot, tmp_path: Path
 ) -> None:
     tab, _ = build(qtbot, tmp_path)
+    tab.record = True
     tab._show_playback.click()
     tab.playback_no.click()
 
@@ -3209,6 +3220,7 @@ def test_turning_playback_off_again_asks_nothing(qtbot, tmp_path: Path) -> None:
     """The question is about the way in. Switching it off costs nothing and
     destroys nothing, so asking would be furniture."""
     settings = Settings()
+    settings.record = True
     settings.show_playback = True
     settings.camera.streams = [StreamSettings(name="thermal", url="rtsp://10.0.0.2/t")]
     tab, _ = build(qtbot, tmp_path, settings)
@@ -3228,6 +3240,7 @@ def test_a_file_with_playback_on_does_not_ask_while_the_form_fills(
     about something nobody did is how a console teaches people to click past
     questions."""
     settings = Settings()
+    settings.record = True
     settings.show_playback = True
     tab, _ = build(qtbot, tmp_path, settings)
     assert tab.show_playback is True

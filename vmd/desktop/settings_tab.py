@@ -1616,7 +1616,13 @@ class SettingsTab(QWidget):
         ask.addLayout(ask_row)
         self._ask_playback.setVisible(False)
         playback_outer.addWidget(self._ask_playback)
-        layout.addWidget(playback_box)
+        # Held rather than placed here. Playback is where recorded footage is
+        # watched, so it means nothing when nothing is recorded - it is hidden
+        # with the rest of the recording settings when Record is off, and it is
+        # added to the tab AFTER the Recording box below, so that ticking Record
+        # reveals it downward rather than making a box appear above the tick that
+        # asked for it.
+        self._playback_box = playback_box
 
         # --- storage ---------------------------------------------------------
         #
@@ -1774,6 +1780,11 @@ class SettingsTab(QWidget):
         storage_outer.addWidget(self._recording_details)
         self._recording_details.setVisible(self._record.isChecked())
         layout.addWidget(storage_box)
+
+        # Playback right after Recording, and hidden with it: both are about
+        # footage this console keeps, and it keeps none by default.
+        layout.addWidget(self._playback_box)
+        self._playback_box.setVisible(self._record.isChecked())
 
         radio_box = QGroupBox("Radio")
         radio_form = _form(radio_box)
@@ -2135,15 +2146,23 @@ class SettingsTab(QWidget):
     @record.setter
     def record(self, value: bool) -> None:
         self._record.setChecked(bool(value))
-        # Guarded, because the form fills itself from the file during
-        # construction and the details widget may not be built yet.
-        details = getattr(self, "_recording_details", None)
-        if details is not None:
-            details.setVisible(bool(value))
+        self._reveal_recording(bool(value))
 
     def _record_clicked(self, checked: bool) -> None:
         """Show the where-and-how-much of recording only once it is turned on."""
-        self._recording_details.setVisible(bool(checked))
+        self._reveal_recording(bool(checked))
+
+    def _reveal_recording(self, on: bool) -> None:
+        """Everything that only means something when recording, shown or hidden
+        as one: where the footage goes and how much to keep, and Playback, where
+        it is watched back. Guarded, because the form fills itself from the file
+        during construction and these may not be built yet."""
+        for widget in (
+            getattr(self, "_recording_details", None),
+            getattr(self, "_playback_box", None),
+        ):
+            if widget is not None:
+                widget.setVisible(on)
 
     @property
     def show_playback(self) -> bool:

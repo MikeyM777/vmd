@@ -1941,6 +1941,15 @@ class LiveTab(QWidget):
         # alarm arrives: an alarm is the worst moment this console has and is
         # not when to start reading the settings file.
         self._recordings_root = settings.storage.root
+        # The storage panel - "Drive: N GB free", the budget bar, how long until
+        # the drive is full - is about recording, and there is none to watch
+        # when recording is off. So it goes, the same way the storage settings
+        # go from the Settings tab, and comes back when recording is turned on.
+        # In the side column, which stream-only hides too - but this hides it for
+        # the right reason, so a console with the chrome shown and recording off
+        # is not reporting free space nothing is being written to.
+        if self._storage_panel is not None:
+            self._storage_panel.setVisible(bool(settings.record))
         self._boxes_on = bool(settings.show_boxes)
         # Which cameras are being watched for movement, which is what decides
         # whether a row in events.db is allowed to make a sound. See

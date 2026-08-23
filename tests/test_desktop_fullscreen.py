@@ -187,15 +187,18 @@ def alarming_disk(root: Path) -> DiskWatcher:
 def console(qtbot, tmp_path: Path) -> ConsoleWindow:
     """The real window, wired to services that are all in their worst state.
 
-    Stream-only OFF, unlike the product, and for the same reason as everywhere
-    else it is turned off in a test: this file measures the side column - that
-    its wrapped sentences get the height they ask for, and that none of them is
-    cut in half at any screen size - and a column that is hidden has no height
-    to measure.
+    Stream-only OFF and record ON, unlike the product, and for the same reason:
+    this file measures the side column - that its wrapped sentences get the
+    height they ask for, and that none of them is cut in half at any screen size.
+    The storage panel is part of that column and its sentences ("Drive: N GB
+    free", "the drive will run out before the budget...") are the longest ones
+    there - but it is only shown when recording, so a test measuring it has to
+    turn recording on.
     """
     path = tmp_path / "settings.json"
     settings = Settings()
     settings.stream_only = False
+    settings.record = True
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
         StreamSettings(
