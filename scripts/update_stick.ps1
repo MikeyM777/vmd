@@ -968,6 +968,37 @@ if ($PSBoundParameters.ContainsKey('QuoteForChild')) {
 }
 
 if ($Gui) {
+    # Anything that goes wrong before the window exists has to be SEEN.
+    #
+    # VMD-Update-Stick.bat starts this hidden, on purpose - the operator was
+    # promised no console windows - and the only try/catch in this file begins
+    # after the window has been built. So a failure in between (Add-Type on a
+    # machine missing the desktop assemblies, WMI refusing to enumerate the
+    # drives, a control that would not construct) wrote its error to a console
+    # nobody can see and exited. Double-click, nothing happens, no message, no
+    # log, nothing to send.
+    #
+    # A trap rather than a try/catch wrapped round the next thousand lines,
+    # because it catches the same terminating errors without re-indenting the
+    # window - and $ErrorActionPreference is 'Stop' here, so nearly everything
+    # is terminating.
+    trap {
+        $said = "The VMD Update Stick window could not start.`n`n" +
+                "$($_.Exception.Message)`n`n" +
+                "Where: $($_.InvocationInfo.PositionMessage)"
+        # The message box first, because it is in front of the operator. If the
+        # forms assembly is itself what failed, this does nothing and the file
+        # below is the whole record.
+        try {
+            [System.Windows.Forms.MessageBox]::Show(
+                $said, 'VMD Update Stick', 'OK', 'Error') | Out-Null
+        } catch { }
+        try {
+            $note = Join-Path (Split-Path -Parent $PSScriptRoot) 'update-stick-error.txt'
+            [System.IO.File]::WriteAllText($note, $said, (New-Object System.Text.UTF8Encoding($false)))
+        } catch { }
+        exit 1
+    }
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 

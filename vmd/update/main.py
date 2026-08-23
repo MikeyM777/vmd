@@ -193,6 +193,7 @@ def go_back(root: Path, version: int, when: str, stop, sync, start_console) -> i
     # half one version and half another when it is not would send somebody to
     # the site for nothing.
     opened_up = False
+    restored = False
     try:
         # Inside the try, so a marker that cannot be written is reported like
         # any other failure rather than ending this process in silence. It
@@ -210,6 +211,16 @@ def go_back(root: Path, version: int, when: str, stop, sync, start_console) -> i
         # Whole again, and entirely the kept version: whatever happens below
         # this line, no part of the other one is left in the tree.
         opened_up = False
+        # And a second fact, because `opened_up` cannot carry it. False means
+        # two opposite things - the tree was never opened, and the tree was
+        # opened and closed again - and the failure message below picked the
+        # first reading for both. So a sync that RAISED after the files were
+        # already back (uv wedging until it times out is the way that happens)
+        # was reported as "stopped before anything was replaced. Nothing was
+        # changed", to an operator whose copy had in fact just been rolled back
+        # to the older version with the newer version's libraries still in
+        # .venv. Told nothing had happened, he had no reason to look.
+        restored = True
 
         progress.say("installing that version's libraries")
         installed, said = sync()
@@ -229,6 +240,18 @@ def go_back(root: Path, version: int, when: str, stop, sync, start_console) -> i
         # tell.
         said = f"{type(failure).__name__}: {failure}"
         progress.say("something went wrong", said)
+        if not opened_up and restored:
+            # The files are back and something after that failed - the same
+            # state the ordinary, non-raising sync failure reaches, so it is
+            # reported in the same words rather than as a rollback that never
+            # started.
+            progress.finish(
+                False,
+                f"{_named(version)}'s files are back, but its libraries could not "
+                f"be installed from this machine's cache ({said}). Bring a stick "
+                f"with {_named(version)} on it.",
+            )
+            return 1
         if not opened_up:
             progress.finish(
                 False,

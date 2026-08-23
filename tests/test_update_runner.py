@@ -488,6 +488,55 @@ def test_a_rollback_that_cannot_finish_leaves_the_marker_up(
     assert "part VMD 8 and part VMD 7" in status["message"]
 
 
+def test_a_sync_that_wedges_after_the_files_are_back_does_not_say_nothing_changed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Nothing was changed" has to be true when it is said.
+
+    go_back kept one flag for two opposite facts - the tree was never opened,
+    and the tree was opened and closed again - and the failure message read it
+    the first way for both. So a sync that RAISED after the restore had already
+    finished (uv wedging until it times out is how that happens) told the
+    operator "stopped before anything was replaced. Nothing was changed", on a
+    machine that had in fact just been rolled back to the older version with
+    the newer version's libraries still in .venv. Believing it, he had no
+    reason to look any further.
+
+    The non-raising sync failure right beside it has always been reported
+    correctly, so this asserts the two now agree.
+    """
+    root = tmp_path / "VMD"
+    (root / "vmd").mkdir(parents=True)
+    (root / "VERSION").write_text("8\n", encoding="utf-8")
+    kept_copy(root, 7)
+    restored: list[bool] = []
+
+    def note_it_ran(kept, where):
+        restored.append(True)
+
+    def wedge(command, **kwargs):
+        if "Stop-ProjectProcesses" in " ".join(command):
+            return subprocess.CompletedProcess(command, 0, "", "")
+        raise subprocess.TimeoutExpired("uv sync", 1800)
+
+    from vmd.update import main as main_module
+
+    monkeypatch.setattr(main_module, "restore", note_it_ran)
+    ran = Ran()
+    monkeypatch.setattr(subprocess, "Popen", ran.popen)
+    monkeypatch.setattr(subprocess, "run", wedge)
+    code = main_module.main(
+        ["--root", str(root), "--rollback", "7", "--settings", str(root / "settings.json")]
+    )
+
+    assert restored, "the files really were put back"
+    status = read_status(root)
+    assert code == 1
+    assert status["finished"] is True and status["ok"] is False
+    assert "Nothing was changed" not in status["message"], status["message"]
+    assert "files are back" in status["message"], status["message"]
+
+
 def test_a_stopper_that_never_returns_still_writes_an_answer(
     tmp_path: Path, monkeypatch
 ) -> None:

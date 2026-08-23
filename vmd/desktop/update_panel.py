@@ -317,8 +317,44 @@ class UpdatePanel(QGroupBox):
                 f"to. Updating again from a stick is the way to put this right. "
                 f"{message}"
             )
+        # What happened last time, when last time went wrong.
+        #
+        # The console that pressed Update is killed by the updater before there
+        # is any outcome to report, and what comes back afterwards is a FRESH
+        # console that never saw it. So on a failed update that rolled itself
+        # back cleanly - a stick missing a wheel the new version needs is the
+        # ordinary way - the operator got a panel that looked exactly like the
+        # one before he pressed anything: same version, same stick, Update
+        # enabled, and not one word that the last attempt had failed or why. So
+        # he pressed it again, and again. The updater had written the reason
+        # down; nothing read it.
+        failed = self._last_attempt_failed()
+        if failed:
+            message = f"{failed} {message}"
         self.stick_line.setText(message)
         self.update_button.setEnabled(self._state.kind == "ready")
+
+    def _last_attempt_failed(self) -> str:
+        """Why the last finished update failed, or "" if it did not, or none ran.
+
+        Only a FINISHED status file is read here. An unfinished one is either a
+        live update or an interrupted one, and both are answered further up.
+        """
+        path = self._root / LOGS / STATUS
+        if not path.is_file():
+            return ""
+        try:
+            status = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(status, dict) or not status.get("finished"):
+            return ""
+        if status.get("ok") is not False:
+            return ""
+        said = str(status.get("message") or "").strip()
+        if not said:
+            said = "The reason was not written down; the Logs tab has the rest."
+        return f"The last update did not go through: {said}"
 
     def _what_was_interrupted(self, stopped: dict) -> str:
         """"An update to VMD 8", or "An update" when the marker says nothing."""

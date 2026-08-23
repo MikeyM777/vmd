@@ -455,6 +455,57 @@ def test_an_update_running_right_now_still_locks_both_buttons(
     assert panel.update_button.isEnabled() is False
 
 
+def test_the_console_says_why_the_last_update_did_not_go_through(
+    qtbot, tmp_path: Path
+) -> None:
+    """The console that pressed Update never sees the outcome - it is killed
+    before there is one - and the fresh console that comes back never read the
+    reason the updater wrote down.
+
+    So a stick missing a wheel the new version needs produced a rollback, a
+    working console, and a panel identical to the one before he pressed
+    anything: same version, same stick, Update enabled, not a word about the
+    attempt. He pressed it again, and it failed again, the same way.
+    """
+    root = a_console(tmp_path / "VMD", 7)
+    stick = a_stick(tmp_path / "E", 8)
+    a_status(
+        root,
+        {
+            "step": "",
+            "finished": True,
+            "ok": False,
+            "message": "VMD 8 needs a library this stick does not carry, so VMD 7 was put back.",
+        },
+    )
+
+    panel = build(qtbot, root, [stick])
+
+    said = panel.stick_line.text()
+    assert "did not go through" in said, said
+    assert "does not carry" in said, said
+    # And the stick is still described, because updating again from a stick
+    # that has the missing piece is the way out.
+    assert "VMD 8" in said, said
+
+
+def test_a_successful_last_update_is_not_reported_as_a_failure(
+    qtbot, tmp_path: Path
+) -> None:
+    """The other half: an update that worked leaves the same finished file, and
+    nothing about it may appear on the panel."""
+    root = a_console(tmp_path / "VMD", 8)
+    stick = a_stick(tmp_path / "E", 9)
+    a_status(
+        root,
+        {"step": "", "finished": True, "ok": True, "message": "Updated to VMD 8."},
+    )
+
+    panel = build(qtbot, root, [stick])
+
+    assert "did not go through" not in panel.stick_line.text()
+
+
 def test_an_update_that_finished_is_not_mistaken_for_one_still_running(
     qtbot, tmp_path: Path
 ) -> None:
