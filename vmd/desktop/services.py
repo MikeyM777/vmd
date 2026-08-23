@@ -255,14 +255,15 @@ def recordable(settings: Settings) -> bool:
     empty address is not something to record either - that is the ordinary state
     of a machine part way through being configured.
 
-    And nothing is recorded while the Playback tab is switched off. "When the
-    playback is disabled don't record" - which follows: Playback is the only way
-    to watch recorded footage back, so with it off the recorder is filling a
-    disk nobody can open. It is a real decision and it costs something real -
-    see `recording_off_on_purpose`, which is what makes the console say so
-    calmly rather than reporting it as a fault.
+    And nothing is recorded unless `Settings.record` says so. That used to be
+    `show_playback` - turning off the Playback TAB also stopped the recorder -
+    which was a real decision made for a real reason and was invisible: the
+    comment on `show_playback` asserted it did not touch recording, and the note
+    that ships to every new operator promised recording started the moment he
+    pressed Save. One switch quietly doing two jobs is one job too many, so
+    recording has its own now. See `Settings.record`.
     """
-    if not settings.show_playback:
+    if not settings.record:
         return False
     return any(stream.enabled and stream.url for stream in settings.camera.streams)
 
@@ -272,11 +273,11 @@ def recording_off_on_purpose(settings: Settings) -> bool:
 
     The difference is the whole of how it is reported. A console that is not
     recording because a drive died is an alarm in a red box; a console that is
-    not recording because the operator switched Playback off is doing what it
-    was told, and drawing that the same way is how a band full of red teaches
-    somebody to stop reading it.
+    not recording because it was told not to is doing what it was told, and
+    drawing that the same way is how a band full of red teaches somebody to stop
+    reading it.
     """
-    return not settings.show_playback
+    return not settings.record
 
 
 # --------------------------------------------------------- what is "material"
@@ -337,9 +338,9 @@ def recorder_fingerprint(settings: Settings) -> tuple:
         ),
         # Whether there is to be any recording at all. The recorder does not
         # read this itself - `recordable` does, and the console acts on it - but
-        # it belongs here so that flipping the Playback switch is a material
-        # change rather than one that takes effect at the next power cut.
-        settings.show_playback,
+        # it belongs here so that switching recording on or off takes effect
+        # when Save is pressed rather than at the next power cut.
+        settings.record,
     )
 
 
@@ -2230,7 +2231,7 @@ class ConsoleServices:
                     "running": False,
                     "restarts": 0,
                     "chosen": True,
-                    "reason": "not recording - the Playback tab is switched off",
+                    "reason": "not recording - it is switched off in Settings",
                 }
             return {
                 "running": False,

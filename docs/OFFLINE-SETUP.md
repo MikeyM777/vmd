@@ -125,7 +125,12 @@ Open a camera's shortcut, go to **Settings**, and type:
 - the **address of each picture** the camera shows (the thermal one and the
   visible one).
 
-Press **Save**. Recording starts as soon as that is saved.
+Press **Save**. The live picture starts as soon as that is saved.
+
+Nothing is recorded to disk. This console is for watching the camera now, and
+that is what it ships doing. To record as well, tick **Record everything to
+disk** in the **Storage** box on the same tab, and set the folder and the space
+it may use underneath it.
 
 Passwords are shown, never hidden. This machine is offline and physically
 controlled, and the failure this form actually suffers is a typo nobody can

@@ -1340,8 +1340,9 @@ class ConsoleWindow(QMainWindow):
         The same rule the band's recording chip uses, so the two cannot
         disagree about the one thing this console exists to guarantee: a fault is
         footage not reaching the disk when nobody chose to stop it. Recording
-        that is off on purpose - the Playback tab switched off - is `chosen` and
-        is not a fault. A services object that cannot be asked is itself the
+        that is off on purpose - "Record everything to disk" unticked, which is
+        how this ships - is `chosen`, is not a fault, and puts nothing on the
+        screen at all. A services object that cannot be asked is itself the
         fault and is said, because a console that cannot tell whether it is
         recording is not one that is recording.
         """

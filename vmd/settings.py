@@ -571,14 +571,30 @@ class Settings(Model):
     # carries the key loads exactly as before - unknown keys are ignored - and
     # the key is dropped the next time the file is written.
 
+    # Whether footage is written to disk at all.
+    #
+    # Off. "The recording is not relevant anymore" - this console is watched
+    # live, two of them side by side, and nothing is kept.
+    #
+    # It is its own switch, and that is the point of it. Recording used to be
+    # decided by `show_playback`: turning off the Playback TAB also stopped the
+    # recorder, on the reasoning that footage nobody can watch back is a disk
+    # filling for nothing. Defensible, and completely invisible - the comment on
+    # `show_playback` below said in as many words that it did not touch
+    # recording, which had stopped being true, and START HERE.txt told every new
+    # operator "recording starts as soon as that is saved" on a console whose
+    # default settings recorded nothing. One switch that silently did two jobs,
+    # and three places describing it differently. Now the tab is a tab and this
+    # is the recorder.
+    record: bool = False
+
     # Whether the Playback tab exists.
     #
     # Off, and this is a change of mind rather than a default nobody thought
     # about: looking back through recorded footage is no longer part of what
-    # this console is for, so the tab that does it is not on the screen. The
-    # recording itself is untouched and always has been - it is a separate
-    # process, the footage is still on the disk, and this switch does not reach
-    # it. What goes away is the window onto it.
+    # this console is for, so the tab that does it is not on the screen. It no
+    # longer has anything to do with whether the recorder runs - see `record`
+    # above, which is now the only thing that decides that.
     #
     # It is kept rather than deleted because the day somebody needs a clip of
     # what happened is a day nobody plans for, and the console is on an offline

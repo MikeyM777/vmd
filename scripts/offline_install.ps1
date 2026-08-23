@@ -578,8 +578,9 @@ Write-Host "       password and stream addresses into the Settings tab. Save." -
 Write-Host ""
 Write-Host "    3. Run autostart-on.bat once, when both cameras are set up." -ForegroundColor Gray
 Write-Host ""
-Write-Host "  Recording does not start until step 2 is done, because until then" -ForegroundColor Gray
-Write-Host "  there is no camera to record." -ForegroundColor Gray
+Write-Host "  Nothing is recorded to disk. This console shows the camera live," -ForegroundColor Gray
+Write-Host "  and that is what it is set up to do. To record as well, tick" -ForegroundColor Gray
+Write-Host "  'Record everything to disk' in the Storage box on the Settings tab." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  With only one camera, skip step 1: the Settings tab in the console" -ForegroundColor Gray
 Write-Host "  that opens next is all there is to fill in." -ForegroundColor Gray

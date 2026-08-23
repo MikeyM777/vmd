@@ -68,9 +68,10 @@ def settings_for(tmp_path: Path, detect: bool = False) -> Settings:
     root = tmp_path / "rec"
     recorded(root, "thermal")
     return Settings(
-        # Recording is off while the Playback tab is - see `recordable` - and
-        # this fixture is for a console that is genuinely recording.
-        show_playback=True,
+        # Recording has its own switch now - see `Settings.record` - and this
+        # fixture is for a console that is genuinely recording. The Playback
+        # TAB no longer has anything to do with it.
+        record=True,
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[
@@ -1417,7 +1418,7 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     assert (
         recordable(
             Settings(
-                show_playback=True,
+                record=True,
                 camera=CameraSettings(
                     streams=[StreamSettings(name="thermal", url="", enabled=True)]
                 )
@@ -1428,7 +1429,7 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     assert (
         recordable(
             Settings(
-                show_playback=True,
+                record=True,
                 camera=CameraSettings(
                     streams=[
                         StreamSettings(name="thermal", url="rtsp://x/t", enabled=False)
@@ -1441,7 +1442,7 @@ def test_a_stream_with_no_address_is_nothing_to_record() -> None:
     assert (
         recordable(
             Settings(
-                show_playback=True,
+                record=True,
                 camera=CameraSettings(
                     streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
                 )
@@ -1462,7 +1463,7 @@ def test_nothing_is_recorded_while_the_playback_tab_is_switched_off() -> None:
     from vmd.desktop.services import recording_off_on_purpose
 
     watched = Settings(
-        show_playback=True,
+        record=True,
         camera=CameraSettings(
             streams=[StreamSettings(name="thermal", url="rtsp://x/t", enabled=True)]
         ),
@@ -1470,7 +1471,7 @@ def test_nothing_is_recorded_while_the_playback_tab_is_switched_off() -> None:
     assert recordable(watched) is True
     assert recording_off_on_purpose(watched) is False
 
-    hidden = watched.model_copy(update={"show_playback": False})
+    hidden = watched.model_copy(update={"record": False})
     assert recordable(hidden) is False, "it went on recording with nowhere to watch it"
     assert recording_off_on_purpose(hidden) is True
 
@@ -1479,7 +1480,7 @@ def test_a_recorder_with_nothing_to_record_is_never_respawned(tmp_path: Path) ->
     clock = Clock()
     # Playback on, so that the reason below is about there being no stream
     # rather than about the Playback switch - which is a different test.
-    settings = Settings(show_playback=True, storage=StorageSettings(root=tmp_path / "rec"))
+    settings = Settings(record=True, storage=StorageSettings(root=tmp_path / "rec"))
     spawned: list = []
     settings_path = tmp_path / "settings.json"
     services = ConsoleServices(
@@ -2966,7 +2967,7 @@ def _rooted(where: Path, root: Path) -> Settings:
     """Settings for a recorder that is configured, pointed at this folder."""
     where.mkdir(parents=True, exist_ok=True)
     return Settings(
-        show_playback=True,
+        record=True,
         camera=CameraSettings(
             host="10.0.0.2",
             streams=[
@@ -3585,7 +3586,7 @@ def test_nothing_is_reported_as_flapping_before_the_addresses_are_typed(
     freshly made camera folder must produce no start attempts and no failure."""
     clock = Clock()
     settings = Settings(
-        show_playback=True,
+        record=True,
         camera=CameraSettings(host="10.0.0.2", streams=[]),
         storage=StorageSettings(root=tmp_path / "rec"),
     )
@@ -3638,7 +3639,7 @@ def test_typing_the_addresses_in_starts_the_streamer(tmp_path: Path) -> None:
     the pictures never start."""
     clock = Clock()
     settings = Settings(
-        show_playback=True,
+        record=True,
         camera=CameraSettings(host="10.0.0.2", streams=[]),
         storage=StorageSettings(root=tmp_path / "rec"),
     )

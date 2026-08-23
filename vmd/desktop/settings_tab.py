@@ -178,8 +178,8 @@ LIVE_DELAY_CHOICES: list[tuple[str, int]] = [
 PLAYBACK_HELP = (
     "Playback is where recorded footage is watched back: a day, a timeline, and "
     "the places on it where something moved. It is off, because this console is "
-    "for watching the camera now. Recording carries on either way - it is a "
-    "separate program and this does not reach it."
+    "for watching the camera now. Whether anything is recorded to watch back is "
+    "the Storage box below."
 )
 PLAYBACK_SURE = (
     "Are you sure? The Playback tab appears on the console straight away, with "
@@ -1578,8 +1578,9 @@ class SettingsTab(QWidget):
             "Puts the Playback tab back on the console, with everything on it: "
             "the day to look at, the timeline, the marks where something moved, "
             "and saving a piece of footage to a file.\n\n"
-            "It also switches RECORDING on. With Playback off there is nowhere "
-            "to watch footage back, so nothing is recorded at all.\n\n"
+            "It does not switch recording on or off - that is 'Record "
+            "everything to disk' in the Storage box below. With recording off "
+            "there is nothing for this tab to show.\n\n"
             "Movement detection is not affected either way: the alarm, the "
             "sound and the picture of what moved all carry on."
         )
@@ -1633,6 +1634,26 @@ class SettingsTab(QWidget):
         storage_box = QGroupBox("Storage")
         storage_outer = QVBoxLayout(storage_box)
         storage_outer.setSpacing(SPACE_SNUG)
+
+        # First in the box, because everything under it is about footage and
+        # this is whether there is any.
+        #
+        # Recording used to be switched by "Show the Playback tab" in the box
+        # above - one tick that quietly did two jobs, while the settings file
+        # and the note that ships with the installer both said it did not. This
+        # says what it does.
+        self._record = QCheckBox("Record everything to disk")
+        self._record.setToolTip(
+            "Writes what the cameras see to the folder below, all day, in five "
+            "minute files, and deletes the oldest when the space below is "
+            "used up.\n\n"
+            "With this off, nothing is written and nothing can be looked at "
+            "afterwards - the console shows the live picture and that is all. "
+            "Everything else carries on: the pictures, steering the camera, "
+            "movement detection and the sound it makes.\n\n"
+            "Nothing already on the disk is deleted by turning this off."
+        )
+        storage_outer.addWidget(self._record)
 
         storage_form = _form()
         self._root = QLineEdit()
@@ -2088,6 +2109,14 @@ class SettingsTab(QWidget):
     @stream_only.setter
     def stream_only(self, value: bool) -> None:
         self._stream_only.setChecked(bool(value))
+
+    @property
+    def record(self) -> bool:
+        return self._record.isChecked()
+
+    @record.setter
+    def record(self, value: bool) -> None:
+        self._record.setChecked(bool(value))
 
     @property
     def show_playback(self) -> bool:
@@ -2591,6 +2620,7 @@ class SettingsTab(QWidget):
         self.show_boxes = settings.show_boxes
         self.show_playback = settings.show_playback
         self.stream_only = settings.stream_only
+        self.record = settings.record
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
         self.camera_password = settings.camera.password
@@ -2845,6 +2875,7 @@ class SettingsTab(QWidget):
         payload["show_boxes"] = self.show_boxes
         payload["show_playback"] = self.show_playback
         payload["stream_only"] = self.stream_only
+        payload["record"] = self.record
         payload["camera"] = dict(payload.get("camera", {}))
         payload["camera"].update(
             host=self.camera_host.strip(),

@@ -157,8 +157,12 @@ Three steps.
      each one. Run it once per camera.
 
 Then open each camera's shortcut and fill in the Settings tab: the camera's
-username, password, and the address of each picture. Press Save. Recording
-starts as soon as that is saved.
+username, password, and the address of each picture. Press Save. The live
+picture starts as soon as that is saved.
+
+Nothing is recorded to disk. This console is for watching the camera now. To
+record as well, tick "Record everything to disk" in the Storage box on the same
+Settings tab.
 
 Updating it later
 -----------------
