@@ -935,6 +935,13 @@ class LiveTab(QWidget):
         # object, exactly as with `set_watching`. The storage half this tab
         # reads from its own watcher. None means "no fault from that half".
         self._recording_fault: str | None = None
+        # Whether this console is recording at all, set from the settings on
+        # `apply`. The storage half of the fault bar - "the drive is filling",
+        # "Drive: N GB free" in a warning colour - is only a fault when there is
+        # footage the drive filling would stop. With recording off there is
+        # none, so a low drive is just a low drive and says nothing. Off until a
+        # settings file says otherwise.
+        self._recording_on = False
         pictures.addWidget(self._fault_bar)
         # Shown in place of the wall when the camera has no views set up. A
         # black rectangle with nothing in it is the one thing an operator
@@ -1423,7 +1430,11 @@ class LiveTab(QWidget):
         panel a click away called it fine would be the console arguing with
         itself. Never touches the filesystem - the watcher read it on a worker.
         """
-        if self._storage is None:
+        # Nothing from this half when nothing is being recorded: a drive that is
+        # nearly full is only a fault to a console that is trying to write to it,
+        # and this bar is the one place a low drive could still reach the screen
+        # after the storage panel itself was hidden for the same reason.
+        if self._storage is None or not self._recording_on:
             return None
         try:
             return storage_fault(self._storage.reading, self._storage.settings.storage)
@@ -1948,8 +1959,9 @@ class LiveTab(QWidget):
         # In the side column, which stream-only hides too - but this hides it for
         # the right reason, so a console with the chrome shown and recording off
         # is not reporting free space nothing is being written to.
+        self._recording_on = bool(settings.record)
         if self._storage_panel is not None:
-            self._storage_panel.setVisible(bool(settings.record))
+            self._storage_panel.setVisible(self._recording_on)
         self._boxes_on = bool(settings.show_boxes)
         # Which cameras are being watched for movement, which is what decides
         # whether a row in events.db is allowed to make a sound. See

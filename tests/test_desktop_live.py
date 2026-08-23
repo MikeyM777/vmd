@@ -2272,6 +2272,7 @@ def test_the_fault_bar_shows_a_genuine_storage_warning(qtbot, tmp_path) -> None:
     from vmd.desktop.disk import DiskReading, DiskWatcher
 
     settings = settings_with("thermal")
+    settings.record = True  # a drive is only a fault to a console that is writing to it
     settings.storage.root = tmp_path / "rec"
     # A drive with almost nothing free, well under the budget's own margin: the
     # storage lines call this an alarm, so `storage_fault` does too.
@@ -2298,6 +2299,47 @@ def test_the_fault_bar_shows_a_genuine_storage_warning(qtbot, tmp_path) -> None:
     tab.apply(settings)
     assert tab.fault_visible(), "a drive about to run out said nothing above the pictures"
     assert tab.fault_text().strip(), "the fault bar is up but empty"
+
+
+def test_a_low_drive_says_nothing_when_recording_is_off(qtbot, tmp_path) -> None:
+    """The bug behind "why do i still see the orange Drive". The side column's
+    storage panel was hidden with recording off, but the fault bar is a second
+    place a low drive could reach the screen, and it was not gated. A drive is
+    only a fault to a console that is writing to it - with recording off, a low
+    drive is just a low drive and belongs nowhere."""
+    from vmd.desktop.disk import DiskReading, DiskWatcher
+
+    settings = settings_with("thermal")  # record defaults off
+    reading = DiskReading(
+        at=0.0,
+        free_bytes=1 * 1024**3,
+        used_bytes=20 * 1024**3,
+        bytes_per_second=900_000.0,
+        rate_is_estimate=False,
+        newest_write=0.0,
+        writing=True,
+        write_problem=None,
+        problem=None,
+    )
+    watcher = DiskWatcher(settings, executor=lambda work: work(), read=lambda s, n: reading)
+    watcher.poll()
+    tab = LiveTab(
+        ptz=FakePtz(),
+        make_pane=lambda name: FakeVideoPane(),
+        local_url=lambda name: None,
+        storage=watcher,
+    )
+    qtbot.addWidget(tab)
+    tab.apply(settings)
+    assert not tab.fault_visible(), "an orange Drive warning on a console that records nothing"
+    assert tab.fault_text() == ""
+
+    # And it appears the moment recording is turned on, against the same drive.
+    recording = settings_with("thermal")
+    recording.record = True
+    tab.apply(recording)
+    tab.refresh()
+    assert tab.fault_visible(), "the same low drive says nothing once recording is on"
 
 
 def test_storage_fault_reuses_the_panels_lines(qtbot) -> None:
