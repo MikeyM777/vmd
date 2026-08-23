@@ -1631,12 +1631,19 @@ class SettingsTab(QWidget):
         # a thing he can feel rather than a number he has to know, and the boxes
         # stay: a suggestion that cannot be overruled is a decision wearing a
         # suggestion's clothes.
-        storage_box = QGroupBox("Storage")
+        # "Recording", not "Storage". This console is watched live and keeps
+        # nothing, so the folder, the size and the age rule are not settings the
+        # operator has any reason to see - "why in the settings tab still
+        # storage appear, we said we getting rid of it". The whole box is now
+        # the one question that matters, "is anything recorded", and the rest of
+        # it - which is only ever about where the footage goes and how much of
+        # it to keep - appears only once the answer is yes.
+        storage_box = QGroupBox("Recording")
         storage_outer = QVBoxLayout(storage_box)
         storage_outer.setSpacing(SPACE_SNUG)
 
-        # First in the box, because everything under it is about footage and
-        # this is whether there is any.
+        # First in the box, and on its own when recording is off: everything
+        # under it is about footage, and this is whether there is any.
         #
         # Recording used to be switched by "Show the Playback tab" in the box
         # above - one tick that quietly did two jobs, while the settings file
@@ -1654,6 +1661,10 @@ class SettingsTab(QWidget):
             "Nothing already on the disk is deleted by turning this off."
         )
         storage_outer.addWidget(self._record)
+        # `clicked` and not `toggled`, so filling the form from the file does not
+        # count as the operator asking for anything - the same rule the Playback
+        # tick follows above.
+        self._record.clicked.connect(self._record_clicked)
 
         storage_form = _form()
         self._root = QLineEdit()
@@ -1754,7 +1765,14 @@ class SettingsTab(QWidget):
         # tree, and `C`, `C:`, `C:\\`, `C:\\f`... is a walk per letter.
         self._root.editingFinished.connect(self._the_folder_changed)
 
-        storage_outer.addLayout(storage_form)
+        # Everything except the record tick lives in one widget, so it can be
+        # shown and hidden as a whole - where the footage goes, how much to
+        # keep, how long to keep it - and none of it is on the screen while
+        # nothing is being recorded.
+        self._recording_details = QWidget()
+        self._recording_details.setLayout(storage_form)
+        storage_outer.addWidget(self._recording_details)
+        self._recording_details.setVisible(self._record.isChecked())
         layout.addWidget(storage_box)
 
         radio_box = QGroupBox("Radio")
@@ -2117,6 +2135,15 @@ class SettingsTab(QWidget):
     @record.setter
     def record(self, value: bool) -> None:
         self._record.setChecked(bool(value))
+        # Guarded, because the form fills itself from the file during
+        # construction and the details widget may not be built yet.
+        details = getattr(self, "_recording_details", None)
+        if details is not None:
+            details.setVisible(bool(value))
+
+    def _record_clicked(self, checked: bool) -> None:
+        """Show the where-and-how-much of recording only once it is turned on."""
+        self._recording_details.setVisible(bool(checked))
 
     @property
     def show_playback(self) -> bool:
@@ -2713,23 +2740,32 @@ class SettingsTab(QWidget):
         if settings is None:
             return False
 
-        # Checked here and not in `settings_from_form`, because that is also
-        # what the camera tools read the form through and none of them writes
-        # anything to the disk.
-        problem = storage_problem(settings.storage.root, self.settings_path.parent)
-        if problem:
-            self._set_message(problem)
-            return False
+        # Only when there is going to be any recording. These three all guard
+        # the footage - can the folder be written, is the size one the drive can
+        # reach, is lowering it about to delete something - and none of them
+        # means anything when nothing is being written. Left ungated, the first
+        # of them would make a folder that cannot be reached (or an empty one on
+        # a fresh machine) refuse a Save whose whole point was to record nothing,
+        # and it would do it by trying to create and write that folder - real
+        # disk work for a setting the operator is not even shown.
+        if settings.record:
+            # Checked here and not in `settings_from_form`, because that is also
+            # what the camera tools read the form through and none of them writes
+            # anything to the disk.
+            problem = storage_problem(settings.storage.root, self.settings_path.parent)
+            if problem:
+                self._set_message(problem)
+                return False
 
-        too_big = self._bigger_than_the_drive(settings)
-        if too_big:
-            self._set_message(too_big)
-            return False
+            too_big = self._bigger_than_the_drive(settings)
+            if too_big:
+                self._set_message(too_big)
+                return False
 
-        warning = self._budget_warning(settings)
-        if warning:
-            self._set_message(warning)
-            return False
+            warning = self._budget_warning(settings)
+            if warning:
+                self._set_message(warning)
+                return False
 
         try:
             save_settings(settings, self.settings_path)

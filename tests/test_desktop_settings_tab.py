@@ -106,6 +106,39 @@ def test_show_only_the_pictures_round_trips_through_the_form(
     assert again.stream_only is True
 
 
+def test_recording_off_hides_the_folder_and_size_and_shows_them_when_on(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Why in the settings tab still storage appear, we said we getting rid of
+    it." Recording is off, so the folder, the size and the age rule - which are
+    only ever about where footage goes and how much to keep - are not on the
+    screen. Ticking Record brings them back, because now they mean something;
+    and it saves either way, without the folder blocking a live-only console."""
+    settings = Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[StreamSettings(name="thermal", url="rtsp://10.0.0.2/t", enabled=True)],
+        )
+    )
+    tab, path = build(qtbot, tmp_path, settings)
+
+    assert tab.record is False, "off by default - this console is watched live"
+    assert not tab._recording_details.isVisibleTo(tab), "no folder, no size, no age rule"
+    # A live-only console saves without the storage folder standing in its way.
+    assert tab.save() is True, tab.message
+    assert load_settings(path).record is False
+
+    tab.record = True
+    assert tab._recording_details.isVisibleTo(tab), "the where-and-how-much is back"
+
+    # Clicking the tick, not just setting the property, does the same.
+    tab.record = False
+    assert not tab._recording_details.isVisibleTo(tab)
+    tab._record.click()
+    assert tab.record is True
+    assert tab._recording_details.isVisibleTo(tab)
+
+
 def test_existing_streams_survive_a_load_and_save(qtbot, tmp_path: Path) -> None:
     """The browser form once deleted any stream it did not have a row for."""
     settings = Settings(
@@ -312,6 +345,9 @@ def test_saving_does_not_move_the_operator_somewhere_else(
         )
     )
     tab, _ = build(qtbot, tmp_path, settings)
+    # The focus is parked on the budget field to prove a save does not steal it,
+    # and the budget field is only on the screen when recording is on.
+    tab.record = True
     tab.show()
     QApplication.processEvents()
 
@@ -1377,6 +1413,7 @@ def test_a_recordings_folder_on_a_drive_that_is_not_there_is_refused_in_words(
     qtbot.addWidget(tab)
     tab.load()
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.record = True  # the folder is only checked when there is footage to put in it
     tab.storage_root = "Q:\\not-a-drive\\vmd"
 
     assert tab.save() is False
@@ -1393,6 +1430,7 @@ def test_a_recordings_folder_that_is_really_a_file_is_refused(qtbot, tmp_path) -
     qtbot.addWidget(tab)
     tab.load()
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.record = True  # the folder is only checked when there is footage to put in it
     tab.storage_root = str(a_file)
 
     assert tab.save() is False
@@ -1409,6 +1447,7 @@ def test_a_recordings_folder_that_does_not_exist_yet_is_made_rather_than_refused
     qtbot.addWidget(tab)
     tab.load()
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.record = True  # the folder is only made and checked when recording
     tab.storage_root = str(wanted)
 
     assert tab.save() is True, tab.message
@@ -1426,6 +1465,7 @@ def test_a_relative_recordings_folder_is_judged_beside_the_settings_file(
     qtbot.addWidget(tab)
     tab.load()
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.record = True  # the folder is only made and checked when recording
     tab.storage_root = "recordings"
 
     assert tab.save() is True, tab.message
@@ -1443,6 +1483,7 @@ def test_a_recordings_folder_that_cannot_be_written_to_is_refused(qtbot, tmp_pat
     qtbot.addWidget(tab)
     tab.load()
     tab.set_streams([("thermal", "rtsp://10.0.0.2/t", True, "auto")])
+    tab.record = True  # the folder is only checked when there is footage to put in it
     tab.storage_root = str(root)
 
     assert tab.save() is False
@@ -1581,7 +1622,13 @@ def with_footage(tmp_path: Path, megabytes: int = 3) -> Path:
 def budgeted(root: Path, budget_gb: float) -> Settings:
     from vmd.settings import StorageSettings
 
-    return Settings(storage=StorageSettings(root=root, budget_gb=budget_gb))
+    # record=True, because a budget is a recording setting: the folder, the size
+    # and the warning about lowering it are only shown, and only checked, when
+    # something is being recorded. A test about any of them is a test about a
+    # recording console.
+    return Settings(
+        record=True, storage=StorageSettings(root=root, budget_gb=budget_gb)
+    )
 
 
 def test_lowering_the_budget_says_what_it_will_delete_before_deleting_it(
@@ -2541,6 +2588,7 @@ def test_a_size_bigger_than_the_drive_is_refused_in_words(
     fires: nothing is deleted, and the drive fills up until recording stops.
     """
     tab, path = build(qtbot, tmp_path, drive=a_drive(total_gb=884, free_gb=400))
+    tab.record = True  # the size is only checked against the drive when recording
     tab.budget_gb = "2000"
 
     assert tab.save() is False, "a size the drive cannot hold was accepted"
