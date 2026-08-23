@@ -185,9 +185,9 @@ If step 2 does not work
 Read INSTALL.md in the VMD folder. It has the same steps written out one at a
 time, including how to do each of them by hand.
 
-Do not run install.bat on this machine. That one downloads things, and this
-machine has no internet - it will sit and wait for a connection that is not
-coming.
+There is no install.bat in this folder, and that is on purpose: install.bat
+downloads things, and this machine has no internet. The only installer here is
+offline-install.bat, which is the one to use.
 "@
 $notePath = Join-Path $Out 'START HERE.txt'
 [System.IO.File]::WriteAllText($notePath, ($startHere -replace "`r?`n", "`r`n"), (New-Object System.Text.UTF8Encoding($false)))

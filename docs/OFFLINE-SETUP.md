@@ -79,8 +79,9 @@ It does not have to be `C:\VMD` — but everything written down anywhere says
 
 ### 3. Open `C:\VMD` and double-click `offline-install.bat`
 
-**Not `install.bat`.** That one downloads things, and this machine has no
-internet: it will sit waiting for a connection that is not coming.
+`offline-install.bat` is the only installer in this folder. There is no
+`install.bat` here on purpose — that one downloads things, and this machine has
+no internet — so there is nothing to pick wrong.
 
 Windows asks for permission once, to install VLC. Click **Yes**.
 

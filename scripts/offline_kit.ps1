@@ -325,16 +325,27 @@ Write-Info "Copying to $To. This is several gigabytes and takes a while."
 #   bench.bat, label.bat   developer tools. They run spike\ scripts against
 #                   footage\, and footage\ is excluded below and spike\ has no
 #                   place on a deployment - so they arrive broken, sitting at
-#                   the root of the offline machine beside install.bat and
-#                   VMD.bat with nothing to say they are different. The one
-#                   thing an operator must be able to do with that folder is
-#                   tell which file to double-click.
+#                   the root of the offline machine with nothing to say they are
+#                   different.
+#   install.bat, offline-kit.bat, OfflineSetup.bat   the three launchers that
+#                   BUILD a kit, on the machine that has the internet. None of
+#                   them can do anything on the offline machine - install.bat
+#                   sits waiting for a connection that is not coming, and the
+#                   other two make a kit from a machine that is one. Every one
+#                   of them was a wrong door for the operator to try, on a
+#                   folder whose whole job is that the right door is obvious.
+#                   The one build launcher that DOES stay is VMD-Update-Stick.bat:
+#                   it is how the internet laptop is bootstrapped - the operator
+#                   copies it and scripts\ off this folder onto the laptop the
+#                   first time, see docs\OFFLINE-SETUP.md Part 4 - so it has a
+#                   real reason to be here that the other three do not.
 $excludeFiles = @(
     'settings.json', 'go2rtc.json', 'streaming.json', 'detection.json',
     '*.pid', '*.pid.json',
     '*.db', '*.db-wal', '*.db-shm',
     '*.log', 'smoke_record.*',
-    'bench.bat', 'label.bat'
+    'bench.bat', 'label.bat',
+    'install.bat', 'offline-kit.bat', 'OfflineSetup.bat'
 )
 
 $excludeDirs = @(
