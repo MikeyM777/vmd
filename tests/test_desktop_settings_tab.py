@@ -78,8 +78,12 @@ def test_show_only_the_pictures_round_trips_through_the_form(
     qtbot, tmp_path: Path
 ) -> None:
     """The checkbox reads and writes `stream_only` on the same path the boxes
-    beside it use. Off in a fresh form, and on again the next time the tab is
-    loaded from the file it wrote."""
+    beside it use, in both directions.
+
+    Turning it OFF is the direction that matters most here: it ships on, so the
+    tick is how somebody gets the side column and the tab bar back, and a tick
+    that did not save would strand him with no way to undo it.
+    """
     settings = Settings(
         camera=CameraSettings(
             host="10.0.0.2",
@@ -87,7 +91,11 @@ def test_show_only_the_pictures_round_trips_through_the_form(
         )
     )
     tab, path = build(qtbot, tmp_path, settings)
-    assert tab.stream_only is False
+    assert tab.stream_only is True, "the form shows what the settings say"
+
+    tab.stream_only = False
+    assert tab.save() is True, tab.message
+    assert load_settings(path).stream_only is False
 
     tab.stream_only = True
     assert tab.save() is True, tab.message

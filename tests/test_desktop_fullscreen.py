@@ -185,9 +185,17 @@ def alarming_disk(root: Path) -> DiskWatcher:
 
 
 def console(qtbot, tmp_path: Path) -> ConsoleWindow:
-    """The real window, wired to services that are all in their worst state."""
+    """The real window, wired to services that are all in their worst state.
+
+    Stream-only OFF, unlike the product, and for the same reason as everywhere
+    else it is turned off in a test: this file measures the side column - that
+    its wrapped sentences get the height they ask for, and that none of them is
+    cut in half at any screen size - and a column that is hidden has no height
+    to measure.
+    """
     path = tmp_path / "settings.json"
     settings = Settings()
+    settings.stream_only = False
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
         StreamSettings(

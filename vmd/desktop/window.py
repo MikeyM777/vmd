@@ -974,7 +974,22 @@ class ConsoleWindow(QMainWindow):
         # `FullscreenLive.set_stream_only`. Read here at start-up and re-applied
         # on every Save. The window is not moved or resized: stream-only is an
         # ordinary window on purpose, so two of them fit side by side.
-        self.fullscreen.set_stream_only(settings.stream_only)
+        #
+        # But never when there is no gear to come back with. The gear lives on
+        # the Live tab, and every tab in this window may instead be a label
+        # saying why it could not be built - a Live tab needs libVLC, and a
+        # machine without it is not rare, it is the offline laptop before VLC
+        # has been installed. Hiding the tab bar there would leave no tab bar,
+        # no gear and no way into Settings or Logs at all, on the one machine
+        # with no terminal to fix it from. So the chrome stays.
+        if settings.stream_only and asked_settings is None:
+            logger.warning(
+                "showing only the pictures was asked for, but the Live tab could "
+                "not be built and it carries the button that opens the settings, "
+                "so the tabs are being left on screen"
+            )
+        else:
+            self.fullscreen.set_stream_only(settings.stream_only)
 
         # One at a time, and never on this thread: applying a save restarts up
         # to three child processes. See `_SaveJob`.
@@ -1506,7 +1521,21 @@ class ConsoleWindow(QMainWindow):
             # fullscreen owns this, so the two cannot fight; turning it on here
             # hides the chrome on the window that is open, which is the whole
             # point of a save on a machine the operator cannot restart.
-            self.fullscreen.set_stream_only(getattr(settings, "stream_only", False))
+            #
+            # Guarded the same way it is at start-up: the gear that opens these
+            # settings again lives on the Live tab, and if that tab could not be
+            # built there is no gear - so hiding the tab bar would take away the
+            # only remaining way back. Refusing to hide it is the safe way to be
+            # wrong.
+            wanted_stream_only = getattr(settings, "stream_only", False)
+            if wanted_stream_only and getattr(self.live, "settings_asked", None) is None:
+                logger.warning(
+                    "showing only the pictures was saved, but the Live tab could "
+                    "not be built and it carries the button that opens the "
+                    "settings, so the tabs are being left on screen"
+                )
+            else:
+                self.fullscreen.set_stream_only(wanted_stream_only)
         except Exception:  # noqa: BLE001 - the rest of the save must still run
             logger.exception("the window would not take the saved name or tabs")
 

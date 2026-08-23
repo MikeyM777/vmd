@@ -38,14 +38,24 @@ def test_round_trip(tmp_path):
     assert loaded.storage.retention_days == 13
 
 
-def test_stream_only_defaults_off_and_round_trips(tmp_path):
-    """Off by default, so an existing install is unchanged; and it survives a
-    save so a console the owner set to show only the pictures still does after a
-    restart. See `Settings.stream_only`."""
-    assert Settings().stream_only is False
+def test_stream_only_defaults_on_and_round_trips_either_way(tmp_path):
+    """On by default: this console is watched two-up on a split screen and what
+    was asked for is the stream and nothing else. It shipped defaulted off once,
+    and the answer to that was "still i see the right menu with the steering,
+    link, storage" - a setting somebody has to go and find is not the thing he
+    asked for. See `Settings.stream_only`.
+
+    And it survives a save in BOTH directions, because turning it off has to
+    stick too: a console with the side column back must still have it after a
+    restart."""
+    assert Settings().stream_only is True
 
     path = tmp_path / "settings.json"
     settings = Settings()
+    settings.stream_only = False
+    save_settings(settings, path)
+    assert load_settings(path).stream_only is False
+
     settings.stream_only = True
     save_settings(settings, path)
     assert load_settings(path).stream_only is True

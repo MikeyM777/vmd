@@ -599,10 +599,15 @@ class Settings(Model):
     # the window stays an ordinary, movable one and two of them can sit beside
     # each other.
     #
-    # Off, so an existing install is unchanged and a console nobody has set up
-    # yet opens with everything on it. It is not a dead end: the gear above the
-    # pictures opens Settings, and Esc comes back. See `vmd/desktop/window.py`.
-    stream_only: bool = False
+    # ON, because that is what was asked for twice - "only keeping the stream",
+    # and then, after this shipped defaulted off: "still i see the right menu
+    # with the steering, link, storage". A setting he has to go and find in
+    # order to get what he asked for is not what he asked for.
+    #
+    # It is not a dead end in either direction: the gear above the pictures
+    # opens Settings, Esc comes back, and the tick that turns this off is in the
+    # Camera box. See `vmd/desktop/window.py`.
+    stream_only: bool = True
 
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)

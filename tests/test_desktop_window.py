@@ -183,10 +183,22 @@ class AngryRadio:
 
 
 def write_settings(
-    tmp_path: Path, playback: bool = False, title: str = "", detect: bool = True
+    tmp_path: Path,
+    playback: bool = False,
+    title: str = "",
+    detect: bool = True,
+    stream_only: bool = False,
 ) -> Path:
     path = tmp_path / "settings.json"
     settings = Settings()
+    # Explicitly OFF here, and this is the one place the helper does not mirror
+    # the product - which ships it ON. Almost every test in this file is about
+    # the band, the tab bar or the side column, and those have to be on the
+    # screen to be tested at all; a helper that hid them would leave a hundred
+    # assertions quietly passing against widgets nobody could see. The tests
+    # that are about the mode turn it on for themselves, which is the same rule
+    # the Playback tab follows below.
+    settings.stream_only = stream_only
     settings.storage.root = tmp_path / "recordings"
     settings.camera.streams = [
         StreamSettings(
@@ -212,8 +224,11 @@ def build(
     ptz=None,
     playback: bool = False,
     title: str = "",
+    stream_only: bool = False,
 ):
-    path = write_settings(tmp_path, playback=playback, title=title)
+    path = write_settings(
+        tmp_path, playback=playback, title=title, stream_only=stream_only
+    )
     services = services if services is not None else FakeServices()
     window = ConsoleWindow(
         settings_path=path,
@@ -389,6 +404,48 @@ def test_stream_only_hides_the_chrome_and_turning_it_off_brings_it_back(
     assert window.band.isVisibleTo(window)
     assert window.tabs.tabBar().isVisibleTo(window)
     assert window.live.side_visible()
+    window.close()
+
+
+def test_a_console_nobody_has_configured_opens_showing_only_the_pictures(
+    qtbot, tmp_path: Path
+) -> None:
+    """The default, through a real settings file, on a real window.
+
+    This shipped defaulted off, behind a tick in Settings, and the answer was
+    "still i see the right menu with the steering, link, storage". A setting
+    somebody has to go and find in order to get what he asked for is not what
+    he asked for. So: a settings file that says nothing about it opens with the
+    side column, the band and the tab bar all gone - and the gear is there, or
+    there would be no way back to Settings at all.
+    """
+    # Written by hand rather than through save_settings, because save_settings
+    # writes every field and would put the answer in the file. What is being
+    # tested is a settings.json that has never heard of this setting - which is
+    # every settings.json already on a machine.
+    path = tmp_path / "settings.json"
+    path.write_text(
+        '{"camera": {"streams": [{"name": "thermal", '
+        '"url": "rtsp://camera/thermal", "enabled": true}]}, '
+        f'"storage": {{"root": {str(tmp_path / "recordings")!r}}}}}'.replace("'", '"'),
+        encoding="utf-8",
+    )
+
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+
+    assert not window.live.side_visible(), "the steering, link and storage boxes"
+    assert not window.band.isVisibleTo(window)
+    assert not window.tabs.tabBar().isVisibleTo(window)
+    assert window.live.settings_button().isVisibleTo(window.live), "the way back in"
+    assert not window.isFullScreen(), "it must still be movable, for the split screen"
     window.close()
 
 

@@ -265,17 +265,29 @@ def live_tab(qtbot, *names: str, zoom=None, pane=FakeVideoPane, ptz=None, chime=
 
 
 def console(
-    qtbot, tmp_path: Path, zoom=None, pane=FakeVideoPane, playback: bool = False
+    qtbot,
+    tmp_path: Path,
+    zoom=None,
+    pane=FakeVideoPane,
+    playback: bool = False,
+    stream_only: bool = False,
 ) -> ConsoleWindow:
     """The real window, on the two streams this camera actually has.
 
     Playback off, as it is in the product - see `Settings.show_playback`. The
     one test here that is about going to Playback asks for it.
+
+    Stream-only OFF, which is the one place this does not mirror the product -
+    it ships ON. This file is about fullscreen: what it hides, and that leaving
+    puts every piece of it back. All of that has to be on the screen to begin
+    with, and a console that started with the chrome already hidden would make
+    "it came back" unprovable.
     """
     path = tmp_path / "settings.json"
     settings = settings_with("thermal", "visible")
     settings.storage.root = tmp_path / "recordings"
     settings.show_playback = playback
+    settings.stream_only = stream_only
     save_settings(settings, path)
     window = ConsoleWindow(
         settings_path=path,
@@ -901,7 +913,11 @@ def test_a_console_whose_live_tab_would_not_build_still_opens(
     and the fullscreen mode may not be the thing that changes that. It is asked
     of the tab, and a tab that cannot answer simply is not put into it."""
     path = tmp_path / "settings.json"
-    save_settings(settings_with("thermal"), path)
+    broken = settings_with("thermal")
+    # Off, so that "the tab bar came back" below is about fullscreen putting it
+    # back and not about the guard in the next test holding it on screen.
+    broken.stream_only = False
+    save_settings(broken, path)
 
     def refuses(name: str):
         raise RuntimeError("libVLC is not installed")
@@ -925,6 +941,45 @@ def test_a_console_whose_live_tab_would_not_build_still_opens(
     settle()
     assert not window.fullscreen.active()
     assert window.tabs.tabBar().isVisible()
+
+
+def test_a_console_with_no_live_tab_keeps_its_tabs_even_when_told_not_to(
+    qtbot, tmp_path: Path
+) -> None:
+    """Showing only the pictures needs a way back to the settings, and that way
+    is the gear - which lives on the Live tab.
+
+    A Live tab needs libVLC, and a machine without it is not a rarity: it is the
+    offline laptop before VLC has been installed, which is the state that laptop
+    is in the first time anybody opens this. Hiding the tab bar there would
+    leave no tab bar, no gear and no route to Settings or Logs at all, on the
+    one machine with no terminal to undo it from. So the setting is refused and
+    the tabs stay.
+    """
+    path = tmp_path / "settings.json"
+    asked = settings_with("thermal")
+    asked.stream_only = True
+    save_settings(asked, path)
+
+    def refuses(name: str):
+        raise RuntimeError("libVLC is not installed")
+
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=refuses,
+        events_path=None,
+    )
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    assert getattr(window.live, "settings_asked", None) is None, "no gear on a label"
+    assert window.tabs.tabBar().isVisible(), "the only way left into Settings"
+    assert window.band.isVisible()
 
 
 # ---------------------------------------------------------------- the zoom bars
