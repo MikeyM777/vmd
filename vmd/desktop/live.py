@@ -21,8 +21,8 @@ import threading
 import time
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QFocusEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -200,6 +200,32 @@ MOVEMENT_POLL_MS = 250
 # moves, so the outline always means "just now" and never "at some point
 # tonight". It replaces the Seen it button, which is what used to take it off.
 OUTLINE_SECONDS = 30.0
+
+# And it does not snap off at the end of that half-minute - it fades, from the
+# alarm red to the ordinary border, over this long. A snap reads as the picture
+# blinking; a fade reads as the thing it is, the "just now" cooling off. A
+# second is long enough to see happen and short enough not to blur into the
+# next movement. See `_fade_outline_off`.
+OUTLINE_FADE_MS = 1000
+
+
+def _blend(start: str, end: str, fraction: float) -> str:
+    """A colour `fraction` of the way from `start` to `end`, as `#rrggbb`.
+
+    Both ends are the palette's own hex strings, and the walk between them is a
+    straight line in red, green and blue - not the prettiest interpolation there
+    is, but the two colours are near enough that nothing cleverer would show. It
+    is the whole of how the outline fades. See `_paint_fade`.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    a = QColor(start)
+    b = QColor(end)
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * fraction),
+        round(a.green() + (b.green() - a.green()) * fraction),
+        round(a.blue() + (b.blue() - a.blue()) * fraction),
+    ).name()
+
 
 ALARM_PICTURE_W = 256
 ALARM_PICTURE_H = 144
@@ -853,6 +879,14 @@ class LiveTab(QWidget):
         self._box_until: dict[str, float] = {}
         # When the outline round a picture comes off, or None when none is on.
         self._outline_until: float | None = None
+        # The colour animation that fades the red border out when the half-minute
+        # is up, and the frame it is fading, or None when nothing is fading. The
+        # logical outline is gone the instant it is due - see
+        # `_take_the_outline_off_when_it_is_due` - and this only carries the
+        # pixels the rest of the way down, so a fade in progress is never a
+        # picture the console still thinks something moved on.
+        self._fade: QVariantAnimation | None = None
+        self._fading_frame: QFrame | None = None
         # Whether there is anywhere to send him when he asks to see footage.
         # True until the window says otherwise: this tab is built before the
         # window knows what the settings say, and a Live tab driven on its own
@@ -1823,9 +1857,16 @@ class LiveTab(QWidget):
             return
         if self._clock() < self._outline_until:
             return
+        # The logical state goes at once - it no longer means "just now", so
+        # `outlined_stream` answers None from here, whatever the pixels are still
+        # doing. Then the red border is faded off the picture it was on rather
+        # than snapped. `acknowledge` does not come this way; a man dismissing an
+        # alarm wants it gone, not dimming.
+        stream = self._alarm_stream
         self._outline_until = None
         self._alarm_event = None
-        self._outline(None)
+        self._alarm_stream = None
+        self._fade_outline_off(stream)
 
     def _picture_labels(self) -> list:
         """Both places a picture of movement is drawn. One of them is never
@@ -1849,7 +1890,81 @@ class LiveTab(QWidget):
         self._alarm_event = None
         self._outline(None)
 
+    def _fade_outline_off(self, stream: str | None) -> None:
+        """Take the red border off `stream`'s picture over OUTLINE_FADE_MS.
+
+        The border colour is walked from the alarm red to the ordinary border,
+        a step at a time, by a QVariantAnimation - a short-lived thing that
+        stops itself and is parented here, not a second heartbeat to remember.
+        The width stays 3px until the very end and then becomes the ordinary
+        1px: by then the colour is already the ordinary colour, so the change of
+        width is a pixel nobody sees.
+
+        No frame to fade - the panes were rebuilt by a Save while it was
+        outlined, or there never was one - is not a fault. There is simply
+        nothing to take off.
+        """
+        self._stop_fade()
+        frame = self._frames.get(stream) if stream else None
+        if frame is None:
+            return
+        self._fading_frame = frame
+        animation = QVariantAnimation(self)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setDuration(OUTLINE_FADE_MS)
+        animation.valueChanged.connect(self._paint_fade)
+        animation.finished.connect(self._finish_fade)
+        self._fade = animation
+        animation.start()
+
+    def _paint_fade(self, fraction) -> None:
+        """One step of the fade: the border at this point between red and grey."""
+        frame = self._fading_frame
+        if frame is None:
+            return
+        colour = _blend(PALETTE["alarm"], PALETTE["line_strong"], float(fraction))
+        try:
+            frame.setStyleSheet(
+                f"QFrame#videoFrame {{ border: 3px solid {colour}; "
+                f"background: {PALETTE['well']}; }}"
+            )
+        except RuntimeError:
+            # The frame was deleted under us - a Save rebuilt the panes mid-fade.
+            # There is nothing to draw on any more; stop rather than crash.
+            self._stop_fade()
+
+    def _finish_fade(self) -> None:
+        """The fade is done: the ordinary 1px border, and forget the animation."""
+        frame = self._fading_frame
+        self._fade = None
+        self._fading_frame = None
+        if frame is None:
+            return
+        try:
+            frame.setStyleSheet(
+                f"QFrame#videoFrame {{ border: 1px solid {PALETTE['line_strong']}; "
+                f"background: {PALETTE['well']}; }}"
+            )
+        except RuntimeError:
+            pass
+
+    def _stop_fade(self) -> None:
+        """End any fade in progress at once, leaving the frame where it is.
+
+        Called when a new movement outlines a picture, when the operator
+        acknowledges, and when the panes are rebuilt - anything that decides what
+        the borders should be must not have a fade still creeping over the top of
+        it a frame later.
+        """
+        if self._fade is not None:
+            self._fade.stop()
+            self._fade = None
+        self._fading_frame = None
+
     def _outline(self, stream: str | None) -> None:
+        # A fade still running would draw over whatever this sets, a step behind.
+        self._stop_fade()
         self._alarm_stream = stream
         # When it comes off again. Nothing dismisses it any more - the button
         # that did is gone with the strip - so it has to take itself down, or a
@@ -1894,6 +2009,14 @@ class LiveTab(QWidget):
 
     def outlined_stream(self) -> str | None:
         return self._alarm_stream
+
+    def outline_is_fading(self) -> bool:
+        """Whether a picture's red outline is part-way through fading off.
+
+        The logical outline is already gone by this point - `outlined_stream` is
+        None - and this is only the pixels catching up. For the tests, and for
+        anything that wants to know the console is mid-transition."""
+        return self._fade is not None
 
     def pane_outline_style(self, name: str) -> str:
         frame = self._frames.get(name)
@@ -2014,6 +2137,10 @@ class LiveTab(QWidget):
         self._next_try.clear()
         self._playing_for.clear()
         self._urls.clear()
+        # Stopped before the frames go: a fade still running holds one of these
+        # frames and would paint on it a step later, through a shiboken handle to
+        # a widget that no longer exists.
+        self._stop_fade()
         for frame in self._frames.values():
             frame.setParent(None)
         self._frames.clear()

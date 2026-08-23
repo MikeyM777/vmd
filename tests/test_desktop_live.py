@@ -1785,6 +1785,61 @@ def test_the_outline_takes_itself_off_after_half_a_minute(qtbot) -> None:
     assert not tab.announced()
 
 
+def test_the_outline_fades_off_rather_than_snapping(qtbot) -> None:
+    """It does not blink off at the end of the half-minute - it fades, red to
+    the ordinary border, over about a second. The logical outline is gone at
+    once (`outlined_stream` is None); only the pixels take the second."""
+    from vmd.desktop.live import OUTLINE_SECONDS
+    from vmd.desktop.style import PALETTE
+
+    now = [1000.0]
+    tab, _ptz, _panes = build(
+        qtbot, "thermal", events=FakeEvents([movement(1)]), clock=lambda: now[0]
+    )
+    moved(tab, movement(2, started=1_770_000_100.0))
+    assert tab.outlined_stream() == "thermal"
+    assert "3px" in tab.pane_outline_style("thermal")
+
+    # The half-minute is up.
+    now[0] += OUTLINE_SECONDS + 1.0
+    tab.refresh()
+
+    # Logically off immediately - it no longer means "just now".
+    assert tab.outlined_stream() is None
+    assert not tab.announced()
+    # But the red is still on the picture, fading, not snapped to the 1px border.
+    assert tab.outline_is_fading(), "the outline snapped off instead of fading"
+    assert "3px" in tab.pane_outline_style("thermal"), "the border width snapped early"
+
+    # When the fade finishes, the ordinary 1px border is back and no red remains.
+    tab._finish_fade()
+    assert not tab.outline_is_fading()
+    finished = tab.pane_outline_style("thermal")
+    assert "1px" in finished
+    assert PALETTE["alarm"].lower() not in finished.lower(), "red left on the picture"
+
+
+def test_a_new_movement_during_the_fade_puts_the_solid_outline_back(qtbot) -> None:
+    """A fade half-done is not a reason to miss the next thing. New movement
+    stops the fade and paints the full red border again."""
+    from vmd.desktop.live import OUTLINE_SECONDS
+    from vmd.desktop.style import PALETTE
+
+    now = [1000.0]
+    tab, _ptz, _panes = build(
+        qtbot, "thermal", events=FakeEvents([movement(1)]), clock=lambda: now[0]
+    )
+    moved(tab, movement(2, started=1_770_000_100.0))
+    now[0] += OUTLINE_SECONDS + 1.0
+    tab.refresh()
+    assert tab.outline_is_fading()
+
+    moved(tab, movement(3, started=1_770_000_200.0))
+    assert not tab.outline_is_fading(), "the fade kept creeping over the new outline"
+    assert tab.outlined_stream() == "thermal"
+    assert PALETTE["alarm"] in tab.pane_outline_style("thermal")
+
+
 def test_show_me_asks_for_nothing_when_there_is_no_alarm(qtbot) -> None:
     """The strip is hidden, so the button is not reachable - but a stray click
     from a test, a shortcut or a future keyboard path must not send the window
