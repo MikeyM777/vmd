@@ -77,10 +77,6 @@ class Supervisor:
         self._up_since: dict[str, float] = {}
         self._next_attempt: dict[str, float] = {entry.name: 0.0 for entry in managed}
         self._started_once: set[str] = set()
-        # How many short-lived starts had been counted when the flapping was
-        # last said out loud, so it is said when the picture changes rather
-        # than every couple of seconds for months.
-        self._flapping_said: dict[str, int] = {entry.name: 0 for entry in managed}
 
     def tick(self) -> list[str]:
         """Check every service, start whatever is down. Returns the names started."""
@@ -111,7 +107,6 @@ class Supervisor:
                     # one the operator can believe in.
                     self.failures[entry.name] = 0
                     self.short_lived[entry.name] = 0
-                    self._flapping_said[entry.name] = 0
                     self.settled[entry.name] = True
                 continue
             # It is down. If it was up when we last looked, that start has just
@@ -247,12 +242,17 @@ class Supervisor:
         This process runs for months. A warning per tick is the same as no
         warning: it buries the one line that matters in the Logs tab.
         """
+        # The throttle is the arithmetic below and nothing else. There used to
+        # be a `_flapping_said` alongside it, holding the count at which this
+        # last spoke - which reads like the thing deciding when to speak again,
+        # and was not: it was written here, reset when a service settled, and
+        # never once read. Half-wired state next to a real rule is worse than
+        # no state, because the next person maintains the wrong one.
         count = self.short_lived[name]
         if count < FLAPPING_AFTER:
             return
         if count != FLAPPING_AFTER and (count - FLAPPING_AFTER) % 20 != 0:
             return
-        self._flapping_said[name] = count
         logger.warning("%s: %s", name, self._reason(name, running=False))
 
     def stop_all(self) -> None:

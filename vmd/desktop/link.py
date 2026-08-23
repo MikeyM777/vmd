@@ -104,15 +104,16 @@ def _first_sentence(words: str) -> str:
     """Up to the first full stop that ends a sentence rather than an address.
 
     A full stop with a digit on both sides of it is inside 192.168.1.20, and
-    cutting there would leave the operator reading "cannot reach 192".
+    cutting there would leave the operator reading "cannot reach 192". That is
+    handled entirely by the pattern: it matches a full stop only where a space
+    or the end of the string follows it, and every full stop inside an address
+    is followed by a digit. There used to be a second check here, reading the
+    character after the stop and skipping it when that was a digit - which the
+    pattern had already made impossible, so it never once ran. It read like the
+    thing keeping addresses whole, and the pattern was doing it.
     """
     for match in re.finditer(r"\.(\s|$)", words):
-        end = match.start()
-        if end + 1 < len(words) and words[end - 1 : end].isdigit():
-            after = words[end + 1 : end + 2]
-            if after.isdigit():
-                continue
-        return words[:end].strip()
+        return words[: match.start()].strip()
     return words.strip()
 
 

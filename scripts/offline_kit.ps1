@@ -297,11 +297,19 @@ Write-Info "Copying to $To. This is several gigabytes and takes a while."
 #                   by accident.
 #   .git            history. The laptop is a deployment, not a working copy.
 #   build, bin\logs, and the tool caches   scratch.
+#   bench.bat, label.bat   developer tools. They run spike\ scripts against
+#                   footage\, and footage\ is excluded below and spike\ has no
+#                   place on a deployment - so they arrive broken, sitting at
+#                   the root of the offline machine beside install.bat and
+#                   VMD.bat with nothing to say they are different. The one
+#                   thing an operator must be able to do with that folder is
+#                   tell which file to double-click.
 $excludeFiles = @(
     'settings.json', 'go2rtc.json', 'streaming.json', 'detection.json',
     '*.pid', '*.pid.json',
     '*.db', '*.db-wal', '*.db-shm',
-    '*.log', 'smoke_record.*'
+    '*.log', 'smoke_record.*',
+    'bench.bat', 'label.bat'
 )
 
 $excludeDirs = @(
