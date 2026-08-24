@@ -131,6 +131,13 @@ def new_files(folder: Path) -> Path:
     # Carries the machine's own name too, to prove the engine refuses it even
     # when a badly built stick offers one.
     (folder / "settings.json").write_text('{"password": "ATTACKER"}', encoding="utf-8")
+    # The names the engine insists on before it will mirror anything - see the
+    # essentials guard in Invoke-RobocopyEngine, and ESSENTIAL in
+    # vmd\update\apply.py. A payload without them is refused, so a fixture
+    # without them would be testing that refusal rather than the copy.
+    (folder / "vmd" / "settings.py").write_text("new\n", encoding="utf-8")
+    (folder / "vmd" / "desktop").mkdir(exist_ok=True)
+    (folder / "vmd" / "desktop" / "app.py").write_text("new\n", encoding="utf-8")
     return folder
 
 
@@ -187,3 +194,23 @@ def test_the_engine_refuses_a_folder_that_is_not_an_install(tmp_path: Path) -> N
     assert verdict(result).startswith("FAIL")
     # Nothing was created in the folder it refused.
     assert not (not_vmd / "vmd").exists()
+
+
+def test_the_engine_refuses_a_stick_that_is_not_a_whole_vmd(tmp_path: Path) -> None:
+    """This engine mirrors with robocopy /MIR, so a stick missing most of VMD
+    does not merely fail to update the machine - it deletes what the machine
+    had. A write to the stick that was cut short leaves exactly such a stick,
+    and its manifest matches it perfectly, so nothing upstream can tell."""
+    root = an_install(tmp_path / "VMD")
+    files = new_files(tmp_path / "files")
+    (files / "vmd" / "settings.py").unlink()
+
+    result = run_ps(["-CopyEngineOnly", "-Root", str(root), "-Files", str(files)])
+
+    assert verdict(result).startswith("FAIL")
+    assert "settings.py" in result.stdout
+    # Untouched: the old program is still there, whole.
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (root / "vmd" / "gone.py").is_file()
+    assert (root / "VERSION").read_text(encoding="utf-8").strip() == "7"
+    assert not (root / "previous").exists()

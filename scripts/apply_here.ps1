@@ -285,8 +285,18 @@ function Invoke-RobocopyEngine($root, $files) {
     # each name it is about to overwrite into previous\<old version>\ first, so a
     # copy that goes wrong here is still one somebody can undo by hand.
     if (-not (Test-IsVmdRoot $root)) { throw "$root is not a VMD install; refusing to copy into it" }
-    if (-not (Test-Path (Join-Path $files 'VERSION'))) {
-        throw "the stick's files\ has no VERSION; it is not a VMD payload"
+
+    # The same guard vmd\update\apply.py's ESSENTIAL applies, and for the same
+    # reason - this engine mirrors with robocopy /MIR, so a stick that is
+    # missing most of VMD does not merely fail to update the machine, it deletes
+    # what the machine had. A stick whose write was cut short is internally
+    # consistent and its manifest matches, so nothing upstream of here can tell.
+    foreach ($needed in @('VERSION', 'vmd\__init__.py', 'vmd\settings.py', 'vmd\desktop\app.py')) {
+        if (-not (Test-Path (Join-Path $files $needed) -PathType Leaf)) {
+            throw ("the stick is missing $needed, so it is not a whole copy of VMD and " +
+                "installing it would break this machine. Nothing was changed. Build the " +
+                "stick again on the laptop, and do not unplug it until it has finished.")
+        }
     }
     $old = Get-VersionAt $root
     $prev = Join-Path $root ('previous\' + $(if ($null -ne $old) { "$old" } else { 'unknown' }))

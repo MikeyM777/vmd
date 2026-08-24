@@ -72,6 +72,31 @@ KEEP_OUT = (
     "previous",
 )
 
+# What a stick has to be carrying before it is allowed to replace anything.
+#
+# The manifest cannot answer this, and that is the whole reason this list
+# exists. `scripts/update_stick.ps1` writes manifest.json by reading back what
+# actually landed ON the stick - which is right, because it is what proves the
+# bytes survived the journey - but it means a stick whose write was cut short
+# describes its own truncated contents perfectly. It then passes `verify` at
+# this end with every checksum matching, and `copy_in` prunes the install down
+# to match it: every module the stick is missing is deleted from the machine.
+#
+# That is not hypothetical. It took a console to "No module named vmd.settings"
+# with seven files left in vmd\, on a site with no way to reinstall - the update
+# reported success and relaunched a program it had just gutted.
+#
+# So completeness is asserted from this side, against names this program knows
+# it cannot run without, rather than trusted from a document the stick wrote
+# about itself. A payload missing any of these is refused before the marker goes
+# up and before a single byte is replaced.
+ESSENTIAL = (
+    "VERSION",
+    "vmd/__init__.py",
+    "vmd/settings.py",
+    "vmd/desktop/app.py",
+)
+
 PREVIOUS = "previous"
 
 # Where the console looks to find out what is happening. bin\ is never copied
@@ -98,6 +123,16 @@ OUTPUT_LINES = 200
 # tell "this name should be put back" apart from "this name should never have
 # existed" - the second case has nothing to copy, only something to remove.
 KEPT_MANIFEST = ".kept.json"
+
+
+def missing_essentials(files: Path | str) -> list[str]:
+    """Which parts of a whole VMD the payload has not got. Empty means whole.
+
+    Cheap, and deliberately asked before anything is touched: the answer decides
+    whether this stick is allowed to delete files from a working install.
+    """
+    files = Path(files)
+    return [name for name in ESSENTIAL if not (files / name).is_file()]
 
 
 def what_to_copy(files: Path | str) -> list[str]:
@@ -659,6 +694,26 @@ def _apply(
         rest = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
         return progress.finish(
             False, f"The stick is damaged: {problems[0]}{rest}. Nothing was changed."
+        )
+
+    # Every byte on the stick matches what the stick says it should be - and
+    # that is not the same as the stick carrying a whole program. See ESSENTIAL:
+    # a write cut short leaves a stick that is internally perfect and missing
+    # most of VMD, and the copy below would prune the install down to match it.
+    # Asked here, after the checksums and before the marker, so a stick that
+    # cannot be trusted is refused with nothing on this machine touched.
+    progress.say("checking the stick carries the whole program")
+    gaps = missing_essentials(files)
+    if gaps:
+        for name in gaps:
+            progress.say("checking the stick carries the whole program", f"{name} is not on it")
+        return progress.finish(
+            False,
+            f"The stick is missing {gaps[0]}"
+            f"{f' and {len(gaps) - 1} other essential file(s)' if len(gaps) > 1 else ''}, "
+            f"so it is not a whole copy of VMD and installing it would break this "
+            f"machine. Nothing was changed. Build the stick again on the laptop, "
+            f"and do not unplug it until it says it has finished.",
         )
 
     # The marker goes up before the first dangerous step and comes down only

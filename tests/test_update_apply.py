@@ -13,7 +13,9 @@ import pytest
 
 from vmd.update import apply as apply_module
 from vmd.update.apply import (
+    ESSENTIAL,
     KEEP_OUT,
+    missing_essentials,
     OUTPUT_LINES,
     Progress,
     Report,
@@ -50,13 +52,28 @@ def an_install(root: Path) -> Path:
     return root
 
 
+def whole(folder: Path) -> Path:
+    """Add the names a payload cannot be a whole copy of VMD without.
+
+    `run` refuses a payload missing any of them - see the note on ESSENTIAL -
+    so a fixture without them would test that refusal on every case rather than
+    the thing each test is actually about.
+    """
+    for name in ESSENTIAL:
+        part = folder / name
+        part.parent.mkdir(parents=True, exist_ok=True)
+        if not part.exists():
+            part.write_text("new\n", encoding="utf-8")
+    return folder
+
+
 def new_files(folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "vmd").mkdir()
     (folder / "vmd" / "app.py").write_text("new\n", encoding="utf-8")
     (folder / "VMD.bat").write_text("new\n", encoding="utf-8")
     (folder / "VERSION").write_text("8", encoding="utf-8")
-    return folder
+    return whole(folder)
 
 
 def test_only_the_program_is_copied(tmp_path: Path) -> None:
@@ -774,3 +791,81 @@ def test_the_log_says_when_and_starts_a_new_run_on_a_new_line(tmp_path: Path) ->
     assert log.count("update started") == 2
     assert "2026-08-22T10:00:00" in log
     assert "stopping the console" in log
+
+
+# --------------------------------------------------------------------------- #
+#  A stick that is whole, not merely self-consistent
+# --------------------------------------------------------------------------- #
+
+
+def test_a_stick_missing_the_program_is_refused_before_anything_is_touched(
+    tmp_path: Path,
+) -> None:
+    """The failure this exists for, reproduced.
+
+    A write to the stick that is cut short leaves a stick whose manifest was
+    generated from what actually landed - so every checksum matches and
+    `verify` passes - while most of VMD is simply not on it. Copied in, the
+    prune then deletes from the install every module the stick has not got. It
+    took a real console to "No module named vmd.settings" with seven files left
+    in the vmd package, reported success, and relaunched the program it had
+    just gutted.
+    """
+    root = an_install(tmp_path / "VMD")
+    files = new_files(tmp_path / "files")
+    (files / "vmd" / "settings.py").unlink()
+    # The manifest is written AFTER the truncation, exactly as the builder
+    # writes it: from what is on the stick. This is what makes the stick
+    # internally perfect and still unusable.
+    stick = a_stick(tmp_path / "E", 8, files)
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-24T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is False
+    assert "settings.py" in report.message
+    assert "Nothing was changed" in report.message
+    # The install is exactly as it was: the old program, and the machine's own.
+    assert (root / "vmd" / "app.py").read_text(encoding="utf-8") == "old\n"
+    assert (root / "VERSION").read_text(encoding="utf-8") == "7"
+    assert (root / "settings.json").read_text(encoding="utf-8") == '{"mine": true}'
+    # And nothing was even begun: no backup, no marker.
+    assert not (root / "previous").exists()
+    assert not (root / "bin" / "logs" / "update-in-progress.json").exists()
+
+
+def test_every_essential_name_is_checked_for(tmp_path: Path) -> None:
+    """Each one on its own, so a list that quietly stops being enforced fails
+    here rather than at a site."""
+    for name in ESSENTIAL:
+        root = an_install(tmp_path / f"VMD-{name.replace('/', '-')}")
+        files = new_files(tmp_path / f"files-{name.replace('/', '-')}")
+        (files / name).unlink()
+        stick = a_stick(tmp_path / f"E-{name.replace('/', '-')}", 8, files)
+
+        report = run(root, stick, machine="WIN-TEST", when="2026-08-24T10:00:00",
+                     stop=lambda: None, sync=lambda *_: (True, ""),
+                     selftest=lambda: (True, ""))
+
+        assert report.ok is False, f"a stick with no {name} was accepted"
+        assert (root / "VERSION").read_text(encoding="utf-8") == "7"
+
+
+def test_a_whole_stick_is_still_installed(tmp_path: Path) -> None:
+    """The guard must refuse the truncated stick and nothing else."""
+    root = an_install(tmp_path / "VMD")
+    stick = a_stick(tmp_path / "E", 8, new_files(tmp_path / "files"))
+
+    report = run(root, stick, machine="WIN-TEST", when="2026-08-24T10:00:00",
+                 stop=lambda: None, sync=lambda *_: (True, ""), selftest=lambda: (True, ""))
+
+    assert report.ok is True
+    assert (root / "vmd" / "settings.py").is_file()
+
+
+def test_missing_essentials_names_what_is_missing(tmp_path: Path) -> None:
+    files = new_files(tmp_path / "files")
+    assert missing_essentials(files) == []
+
+    (files / "vmd" / "settings.py").unlink()
+    assert missing_essentials(files) == ["vmd/settings.py"]
