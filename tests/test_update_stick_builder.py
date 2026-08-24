@@ -438,6 +438,21 @@ def test_the_stick_gets_the_code_a_manifest_and_a_description(tmp_path: Path) ->
     assert "VMD 8" in (stick / "README.txt").read_text(encoding="utf-8")
 
 
+def test_every_stick_carries_the_one_click_applier(tmp_path: Path) -> None:
+    """APPLY-UPDATE.bat at the root of the stick is the one thing the person at
+    the VMD computer double-clicks, so it has to be on every stick the builder
+    writes - and the README has to point them at it."""
+    source = a_repository(tmp_path / "repo", 8)
+    stick = tmp_path / "E"
+
+    build_stick(source, stick)
+
+    launcher = stick / "APPLY-UPDATE.bat"
+    assert launcher.is_file()
+    assert "apply_here.ps1" in launcher.read_text(encoding="utf-8")
+    assert "APPLY-UPDATE.bat" in (stick / "README.txt").read_text(encoding="utf-8")
+
+
 def test_nothing_of_the_developer_s_own_reaches_the_stick(tmp_path: Path) -> None:
     """A settings file with a camera password in it, and a .git with the whole
     history. Neither belongs on a stick that goes to a customer's site."""

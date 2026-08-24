@@ -383,6 +383,46 @@ function Copy-Tree($src, $dst) {
 }
 
 
+function Write-ApplyLauncher($stickRoot) {
+    <#
+        Drop APPLY-UPDATE.bat at the root of the stick: the one thing the person
+        at the VMD computer double-clicks. It runs the applier that travels in
+        files\scripts\apply_here.ps1 - the stubborn, try-everything one that
+        finds the install, stops the console, copies the new files in and starts
+        it again, ending on a green DONE or a red FAILED nobody has to read a log
+        to understand.
+
+        This is the path that does not depend on the in-console "Update now"
+        button, for the machine where that button did not work. The button is the
+        same update and still there; this is the belt to its braces.
+
+        No stick path is passed on the command line. The applier works its own
+        location out - it is at <stick>\files\scripts\ - which sidesteps the way
+        a drive root "E:\" is misquoted into "E:" when it is passed as a quoted
+        argument, the bug Quote-ForChild above exists for.
+    #>
+    $bat = @"
+@echo off
+REM ============================================================
+REM  VMD one-click update.
+REM
+REM  Plug this stick into the VMD computer, then double-click
+REM  this file. A window opens, does the update, and says when
+REM  it is finished (green DONE) or if something went wrong
+REM  (red - photograph the window and send it).
+REM ============================================================
+cd /d "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0files\scripts\apply_here.ps1"
+echo.
+pause
+"@
+    # Carriage returns for the same reason README.txt uses them: this is read and
+    # run on the machine it is carried to, where a bare-newline file reads badly.
+    [System.IO.File]::WriteAllText((Join-Path $stickRoot 'APPLY-UPDATE.bat'),
+        ($bat -replace "`r?`n", "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+
 function Read-VmdVersion($source) {
     <#
         The integer in the VERSION file, or a sentence saying why the folder is
@@ -1947,11 +1987,19 @@ if ($WriteFromStage) {
             source  = $marker.source
         }) (Join-Path $To 'update.json')
 
+        # The one-click applier the person at the VMD computer double-clicks.
+        Write-ApplyLauncher $To
+
         $readme = @"
 VMD update stick - VMD $version, built $((Get-Date).ToString('dd MMM yyyy'))
 
-Take this stick to the VMD computer, open the console, go to the Settings tab
-and press "Update now" at the bottom.
+TO UPDATE THE VMD COMPUTER:
+  1. Plug this stick into the VMD computer.
+  2. Double-click  APPLY-UPDATE.bat  on this stick.
+  3. Wait for the green DONE message, then unplug the stick.
+
+If APPLY-UPDATE.bat will not run, you can instead open the console, go to the
+Settings tab and press "Update now" at the bottom - it does the same update.
 
 Do not put anything else on this stick. Everything on it is checked against
 manifest.json before it is installed, and anything unexpected stops the update.
@@ -2128,12 +2176,20 @@ try {
         source  = $Repository
     }) (Join-Path $To 'update.json')
 
+    # The one-click applier the person at the VMD computer double-clicks.
+    Write-ApplyLauncher $To
+
     # For whoever picks the stick up, which may not be whoever filled it.
     $readme = @"
 VMD update stick - VMD $version, built $((Get-Date).ToString('dd MMM yyyy'))
 
-Take this stick to the VMD computer, open the console, go to the Settings tab
-and press "Update now" at the bottom.
+TO UPDATE THE VMD COMPUTER:
+  1. Plug this stick into the VMD computer.
+  2. Double-click  APPLY-UPDATE.bat  on this stick.
+  3. Wait for the green DONE message, then unplug the stick.
+
+If APPLY-UPDATE.bat will not run, you can instead open the console, go to the
+Settings tab and press "Update now" at the bottom - it does the same update.
 
 Do not put anything else on this stick. Everything on it is checked against
 manifest.json before it is installed, and anything unexpected stops the update.

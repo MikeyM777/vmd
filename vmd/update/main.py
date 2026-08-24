@@ -39,10 +39,30 @@ def main(argv: list[str] | None = None) -> int:
     # replaced it. So --stick stops being required and one of the two has to be
     # given.
     parser.add_argument("--rollback", type=int)
-    parser.add_argument("--settings", required=True)
+    # Not required, because --copy-only does not use it: it neither runs the
+    # self-test (which is the only thing that reads a settings file) nor starts
+    # the console again (the caller that asked for a copy-only apply is the one
+    # that restarts it). Every other path still needs it, so it is checked for
+    # below rather than dropped.
+    parser.add_argument("--settings")
+    # The fool-proof applier's own mode. It stops the console, copies the new
+    # files in over the old ones, and stops there - no library sync, no
+    # self-test, no restart. It exists for the one update where those steps are
+    # not merely unnecessary but a liability: when the stick carries the same
+    # libraries the machine already has (uv.lock unchanged), a sync is a no-op
+    # that can still fail on a machine whose .venv or uv cache is subtly broken,
+    # and a self-test run through that same .venv can fail for reasons that have
+    # nothing to do with whether the new files are good. scripts\apply_here.ps1
+    # decides when that is safe - it is the layer that knows the libraries match
+    # - and drives this. The whole of the danger, the backup and the marker and
+    # the rollback-on-failure, is still apply.run's; this only hands it a sync
+    # and a self-test that pass without doing anything.
+    parser.add_argument("--copy-only", action="store_true")
     args = parser.parse_args(argv)
     if args.rollback is None and not args.stick:
         parser.error("one of --stick or --rollback is required")
+    if not args.copy_only and not args.settings:
+        parser.error("--settings is required unless --copy-only is given")
 
     root = Path(args.root)
 
@@ -138,6 +158,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.rollback is not None:
         return go_back(root, args.rollback, when, stop, sync_from_cache, start_console)
+
+    if args.copy_only:
+        # The same apply.run, its backup and marker and rollback intact, but
+        # handed a sync and a self-test that pass without touching anything. And
+        # no start_console: the applier that asked for this restarts the console
+        # itself, so that the one machine that runs two consoles gets both back
+        # the way its own layout says, not the single one this process could
+        # guess at. It still writes the status file, so a copy that failed still
+        # says why in bin\logs.
+        report = run(
+            root,
+            Path(args.stick),
+            machine=os.environ.get("COMPUTERNAME", "unknown"),
+            when=when,
+            stop=stop,
+            sync=lambda *_: (True, ""),
+            selftest=lambda: (True, ""),
+        )
+        return 0 if report.ok else 1
 
     report = run(
         root,
