@@ -188,25 +188,33 @@ function Find-InstallRoot($candidates) {
 
 # --- stopping the console -----------------------------------------------------
 
-function Stop-Consoles($root, $stickRoot) {
-    # Three ways, tried until one reports it did something. The first two reuse
-    # Stop-ProjectProcesses, which knows exactly which processes are this
-    # project's and spares everything else - once from the install's own copy of
-    # _common.ps1, once from the stick's, so a broken install script is not the
-    # end of it. The third is a blunt taskkill by image name, for when neither
-    # _common.ps1 will load at all.
-    $did = $false
+function Import-Common($root, $stickRoot) {
+    # Bring in Stop-ProjectProcesses and Get-VmdConsoles from _common.ps1, once,
+    # at SCRIPT scope so every function below can see them - the install's copy
+    # first, the stick's as the fallback for an install whose script will not
+    # load. This must be called at the top level, not from inside a function:
+    # dot-sourcing runs in the caller's scope, and dot-sourcing inside a function
+    # would leave the definitions trapped there - which is exactly how a
+    # two-camera machine would have got only one of its consoles back.
     foreach ($common in @((Join-Path $root 'scripts\_common.ps1'),
             (Join-Path $stickRoot 'files\scripts\_common.ps1'))) {
-        if (-not (Test-Path $common)) { continue }
+        if (Test-Path $common) { return $common }
+    }
+    return $null
+}
+
+function Stop-Consoles($root) {
+    # Stop-ProjectProcesses knows exactly which processes are this project's and
+    # spares everything else. If _common.ps1 was loaded it is used; if it was not
+    # (both copies missing), a blunt taskkill by image name is the fallback.
+    $did = $false
+    if (Get-Command Stop-ProjectProcesses -ErrorAction SilentlyContinue) {
         try {
-            . $common
             $result = Stop-ProjectProcesses $root
             Write-Log "Stopped: $(@($result.Stopped) -join ', ')"
             $did = $true
-            break
         }
-        catch { Write-Log "The stopper at $common would not run ($($_.Exception.Message)); trying another way." }
+        catch { Write-Log "The project stopper would not run ($($_.Exception.Message)); trying a plain taskkill." }
     }
     if (-not $did) {
         Write-Log "Falling back to a plain taskkill."
@@ -305,21 +313,24 @@ function Invoke-RobocopyEngine($root, $files) {
 
 # --- starting the console again -----------------------------------------------
 
-function Start-Consoles($root, $stickRoot) {
+function Start-Consoles($root) {
     # One console per camera on this machine, each pointed at its own settings.
-    # Get-VmdConsoles works that out; it is in _common.ps1, which Stop-Consoles
-    # has already dot-sourced. Each is started the surest way first - its
+    # Get-VmdConsoles works that out; it comes from _common.ps1, dot-sourced at
+    # script scope up top. Each console is started the surest way first - its
     # scheduled task, run NOW in this signed-in session so nothing has to be typed
     # and nothing has to reboot - and, if there is no task, by launching the
     # program straight with that console's settings. The console brings its own
     # recorder up when it does not find one, so starting the console is enough to
     # make the picture come back.
     $consoles = @()
-    try { $consoles = @(Get-VmdConsoles $root) }
-    catch {
-        # _common.ps1 did not load (both stop strategies fell through to
-        # taskkill). Fall back to the single-console shape, which is right for
-        # every install but the multi-camera one.
+    if (Get-Command Get-VmdConsoles -ErrorAction SilentlyContinue) {
+        try { $consoles = @(Get-VmdConsoles $root) } catch { }
+    }
+    if ($consoles.Count -eq 0) {
+        # _common.ps1 did not load, or found nothing. The single-console shape is
+        # right for every install but the multi-camera one - the best that can be
+        # done without the layout, and the two-camera machine keeps its layout in
+        # _common.ps1, which is on the stick.
         $consoles = @([pscustomobject]@{ Suffix = ''; Settings = (Join-Path $root 'settings.json') })
     }
 
@@ -449,9 +460,17 @@ if (($null -ne $stickVersion) -and ($null -ne $currentVersion) -and ($stickVersi
 
 Show-Banner @("Updating VMD $currentVersion  ->  VMD $stickVersion", '', 'Please wait. Do not unplug the stick.') 'Black' 'Cyan'
 
+# Bring in Stop-ProjectProcesses and Get-VmdConsoles at SCRIPT scope, so both the
+# stop and the restart below can see them. Dot-sourced here at the top level on
+# purpose - see Import-Common.
+$commonPath = Import-Common $Root $StickRoot
+if ($commonPath) {
+    try { . $commonPath } catch { Write-Log "Could not load $commonPath ($($_.Exception.Message)); using fallbacks." }
+}
+
 # 1. Stop the console(s) and the recorder.
 Write-Log "Stopping the console..."
-Stop-Consoles $Root $StickRoot | Out-Null
+Stop-Consoles $Root | Out-Null
 
 # 2. Copy the new files in. Engine one (the audited updater), then engine two
 #    (robocopy the same whitelist) if the first could not run.
@@ -483,7 +502,7 @@ if ($NoRestart) {
 }
 else {
     Write-Log "Starting the console again..."
-    $started = Start-Consoles $Root $StickRoot
+    $started = Start-Consoles $Root
     if ($started -eq 0) {
         Write-Log "Could not start the console automatically." 'Yellow'
     }
