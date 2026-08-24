@@ -47,7 +47,7 @@ to receive updates later.
 ### Way A — Download a ZIP (simplest)
 
 1. Open this page in your browser:
-   **https://github.com/noamsolomon123/vmd**
+   **https://github.com/MikeyM777/vmd**
 
 2. Above the file list there is a button with a branch icon. It should say
    **`master`**, which is what opens by itself and is the version this
@@ -95,7 +95,7 @@ to receive updates later.
 
    ```powershell
    cd C:\
-   git clone https://github.com/noamsolomon123/vmd.git VMD
+   git clone https://github.com/MikeyM777/vmd.git VMD
    cd C:\VMD
    ```
 
@@ -766,7 +766,7 @@ The console itself is Python and Qt, so it will open on a Mac or on Linux for
 somebody working on the code:
 
 ```bash
-git clone https://github.com/noamsolomon123/vmd.git VMD
+git clone https://github.com/MikeyM777/vmd.git VMD
 cd VMD
 uv sync
 uv run python -m vmd.desktop
