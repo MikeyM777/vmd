@@ -40,6 +40,7 @@ import logging
 import time
 
 from vmd.ptz.onvif import PtzError, match_by_name, match_profiles, rtsp_path
+from vmd.ptz.speed import factor
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,22 @@ SETTLING_EVERY = 1.5
 # measurement was two seconds. A fast zoom on a two-second feedback loop
 # overshoots every time, and the operator ends up hunting.
 CREEP_SPEED = 0.35
+
+
+def creep_speed(speed: str = "normal") -> float:
+    """How fast a lens creeps, for the operator's chosen steering speed.
+
+    Scaled down by "slow", and capped at CREEP_SPEED so that "fast" cannot
+    raise it. The paragraph above is a measurement rather than a taste: the
+    readback on this link takes about two seconds, and a creep faster than this
+    overshoots the mark every time and leaves the operator hunting for the
+    framing he wanted.
+
+    So the dropdown makes this zoom slower and never faster, and "fast" leaves
+    it exactly where it has always been. That is the honest answer - better
+    than a zoom that obeys the operator and then cannot be aimed.
+    """
+    return min(CREEP_SPEED, CREEP_SPEED * factor(speed))
 
 # The reason a lens has no answer yet, before anybody has asked. Named because
 # the screen has to tell it apart from every other reason there is no answer: it
@@ -136,10 +153,15 @@ class Lenses:
         clock=time.monotonic,
         chosen: dict[str, str] | None = None,
         urls: dict[str, str] | None = None,
+        speed: str = "normal",
     ) -> None:
         self._camera = camera
         self._streams = list(streams)
         self._clock = clock
+        # The operator's chosen steering speed, which scales the creep below.
+        # Rebuilt with the rest of this object whenever settings are saved, so
+        # a change lands without restarting the console.
+        self._speed = speed
         # The address the operator typed for each picture, which is how the
         # camera can be asked which profile serves it. See `_by_address`.
         self._urls = dict(urls or {})
@@ -428,7 +450,13 @@ class Lenses:
             return {"ok": False, "reason": self.reason}
         try:
             if speed:
-                self._camera.move(0.0, 0.0, _sign(speed) * CREEP_SPEED, profile=token)
+                # `_sign(speed)` stays outside the scaling. The caller's
+                # magnitude has never reached the camera from here - only its
+                # sign does - so the operator's chosen speed has to be applied
+                # at this line or it is applied nowhere at all.
+                self._camera.move(
+                    0.0, 0.0, _sign(speed) * creep_speed(self._speed), profile=token
+                )
             else:
                 # Only the zoom. The gimbal is shared, and letting go of a zoom
                 # button must not halt a pan the operator is still holding.

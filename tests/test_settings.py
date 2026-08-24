@@ -383,3 +383,39 @@ def test_a_settings_file_outside_a_cameras_folder_counts_nobody(tmp_path) -> Non
     settings = Settings()
     settings.radio.host = "192.168.1.20"
     assert consoles_on_this_radio(path, settings) == 1
+
+
+def test_the_steering_speed_defaults_to_normal(tmp_path):
+    """Normal is arithmetically what every install did before the setting
+    existed, so a settings.json written before it must come back steering
+    exactly as it always has - not at the fastest or slowest the camera can."""
+    assert Settings().camera.ptz_speed == "normal"
+    assert load_settings(tmp_path / "nope.json").camera.ptz_speed == "normal"
+
+
+def test_a_settings_file_from_before_the_setting_still_loads(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"camera": {"host": "10.0.0.9"}}), encoding="utf-8")
+
+    settings = load_settings(path)
+
+    assert settings.camera.host == "10.0.0.9"
+    assert settings.camera.ptz_speed == "normal"
+
+
+@pytest.mark.parametrize("speed", ["slow", "normal", "fast"])
+def test_the_steering_speed_survives_a_round_trip(tmp_path, speed):
+    settings = Settings()
+    settings.camera.ptz_speed = speed
+    path = tmp_path / "settings.json"
+
+    save_settings(settings, path)
+
+    assert load_settings(path).camera.ptz_speed == speed
+
+
+def test_a_steering_speed_that_is_not_one_of_the_three_is_refused():
+    """It reaches ONVIF as a multiplier on a velocity, so the values it may
+    take are the three the console offers and nothing else."""
+    with pytest.raises(ValidationError):
+        Settings(camera={"ptz_speed": "ludicrous"})

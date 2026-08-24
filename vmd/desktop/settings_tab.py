@@ -232,6 +232,21 @@ REGIONS_HELP = (
     "watched."
 )
 
+# How fast the camera moves when somebody steers it.
+#
+# In Hebrew, and the only Hebrew on this form. The operator who steers this
+# camera reads Hebrew, and of everything on this tab this is the control he is
+# most likely to change himself rather than have set for him once at
+# commissioning.
+#
+# Slowest first, so the list reads in one direction like the sensitivity list
+# below it - the order a person expects when a list is about "how much".
+PTZ_SPEED_CHOICES: list[tuple[str, str]] = [
+    ("איטי", "slow"),
+    ("בינוני", "normal"),
+    ("מהר", "fast"),
+]
+
 SENSITIVITY_CHOICES: list[tuple[str, str]] = [
     ("Low - only big, obvious movement", "low"),
     ("Normal", "normal"),
@@ -1273,6 +1288,21 @@ class SettingsTab(QWidget):
         # Shown, never masked: this machine is offline and physically controlled,
         # and the failure this form actually suffers is a typo nobody can see.
         self._password = QLineEdit()
+        # How fast the head moves when it is steered. It belongs beside the
+        # camera's address rather than among the picture settings because it is
+        # a property of the camera itself, and it is saved with the camera.
+        self._ptz_speed = QComboBox()
+        for label, value in PTZ_SPEED_CHOICES:
+            self._ptz_speed.addItem(label, value)
+        self._ptz_speed.setToolTip(
+            "How fast the camera moves when you steer it.\n\n"
+            "This changes the arrow keys, steering with the mouse at the edge "
+            "of the picture, and the zoom.\n\n"
+            "איטי slows all of them down. מהר speeds up the movement, and "
+            "leaves the zoom where it is: this camera is already zooming as "
+            "fast as it can still be aimed over the radio link, and a faster "
+            "zoom overshoots what you were trying to look at."
+        )
         # Which monitor this console belongs on. Beside the name because the two
         # answer the same question from opposite ends - which console is this,
         # and where does it live - and because this desktop has one screen per
@@ -1358,6 +1388,7 @@ class SettingsTab(QWidget):
         camera_form.addRow("Address", self._host)
         camera_form.addRow("Username", self._username)
         camera_form.addRow("Password", self._password)
+        camera_form.addRow("Steering speed", self._ptz_speed)
         layout.addWidget(camera_box)
 
         streams_box = QGroupBox("Streams")
@@ -2010,6 +2041,24 @@ class SettingsTab(QWidget):
     @camera_password.setter
     def camera_password(self, value: str) -> None:
         self._password.setText(str(value))
+
+    @property
+    def ptz_speed(self) -> str:
+        return self._ptz_speed.currentData()
+
+    @ptz_speed.setter
+    def ptz_speed(self, value: str) -> None:
+        for index in range(self._ptz_speed.count()):
+            if self._ptz_speed.itemData(index) == value:
+                self._ptz_speed.setCurrentIndex(index)
+                return
+        # A settings file naming a speed this console does not offer. Shown as
+        # the normal speed, which is what `vmd.ptz.speed.factor` will steer at
+        # anyway, rather than left on whatever happened to be selected.
+        for index in range(self._ptz_speed.count()):
+            if self._ptz_speed.itemData(index) == "normal":
+                self._ptz_speed.setCurrentIndex(index)
+                return
 
     @property
     def budget_gb(self) -> str:
@@ -2670,6 +2719,7 @@ class SettingsTab(QWidget):
         self.camera_host = settings.camera.host
         self.camera_username = settings.camera.username
         self.camera_password = settings.camera.password
+        self.ptz_speed = settings.camera.ptz_speed
         self.storage_root = str(settings.storage.root)
         self.budget_gb = str(settings.storage.budget_gb)
         self.retention_days = (
@@ -2936,6 +2986,7 @@ class SettingsTab(QWidget):
             host=self.camera_host.strip(),
             username=self.camera_username.strip(),
             password=self.camera_password,
+            ptz_speed=self.ptz_speed,
             # Blank cards are not views. See `MIN_STREAM_ROWS`.
             streams=[row.stream_values() for row in self._rows if not row.is_blank()],
         )

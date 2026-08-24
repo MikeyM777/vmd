@@ -72,10 +72,20 @@ STEPS = 100
 NUDGE = 5
 
 # What a button held down means when the camera cannot be told where to go: keep
-# zooming at this speed until the button comes up. ONVIF speeds are -1.0 to 1.0
-# and this is deliberately slow - the picture is 700 m away over a radio link,
-# and the round trip on the last measurement was two seconds. A fast zoom on a
-# two-second feedback loop overshoots every time.
+# zooming until the button comes up.
+#
+# Only the SIGN of this number ever reaches the camera. `Lenses.creep` takes the
+# direction from what is emitted here and the magnitude from its own
+# `creep_speed()`, which is where the operator's chosen speed is applied - so
+# this value sets the direction and nothing else, and scaling it would change
+# nothing at the lens while making two constants look like they had to agree.
+#
+# It is kept at 0.35 rather than 1.0 deliberately: if a future change ever does
+# honour the caller's magnitude, the safe reading of this is "creep slowly",
+# not "creep at the fastest speed ONVIF can express". The reason for that
+# slowness lives with the speed itself, on `CREEP_SPEED` in vmd/ptz/lenses.py -
+# the picture is 700 m away, the round trip was measured at two seconds, and a
+# fast zoom on a two-second feedback loop overshoots every time.
 CREEP = 0.35
 
 # How often a drag is allowed to reach the lens while the handle is still held.

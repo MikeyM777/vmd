@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from vmd.ptz.lenses import (
     CREEP_SPEED,
+    creep_speed,
     RETRY_AFTER_SECONDS,
     SETTLING_EVERY,
     SETTLING_SECONDS,
@@ -559,3 +560,58 @@ def test_an_address_with_no_channel_in_it_leaves_the_pairing_alone() -> None:
     lenses = Lenses(NoAddresses(profiles=NAMELESS), STREAMS, urls=half)
     assert lenses.find()
     assert lenses.token("thermal") == "Profile_1", "it placed one view on a half answer"
+
+
+# --------------------------------------------------------------------------- #
+#  The creep, and the speed the operator chose
+# --------------------------------------------------------------------------- #
+
+
+def test_a_slow_camera_creeps_more_slowly() -> None:
+    assert creep_speed("slow") < creep_speed("normal") == CREEP_SPEED
+
+
+def test_fast_never_creeps_faster_than_this_lens_can_be_aimed() -> None:
+    """CREEP_SPEED is a measurement, not a preference: the readback on this link
+    takes about two seconds, and a creep faster than it overshoots every time.
+    So the dropdown may slow this zoom down and may never speed it up."""
+    assert creep_speed("fast") == CREEP_SPEED
+
+
+def test_a_speed_nobody_recognises_creeps_at_the_usual_speed() -> None:
+    assert creep_speed("ludicrous") == CREEP_SPEED
+    assert creep_speed() == CREEP_SPEED
+
+
+def test_the_chosen_speed_reaches_the_lens() -> None:
+    """The magnitude the caller passes has never reached the camera from here -
+    only its sign does - so if the operator's choice is not applied at the line
+    that sends the move, it is applied nowhere at all."""
+    camera = FakeCamera(absolute=False)
+    lenses = Lenses(camera, STREAMS, speed="slow")
+
+    lenses.creep("visible", 1.0)
+
+    assert camera.moved == [(0.0, 0.0, creep_speed("slow"), "p-vis")]
+
+
+def test_a_slow_camera_still_zooms_the_way_it_was_asked() -> None:
+    """Scaling must not touch the direction."""
+    camera = FakeCamera(absolute=False)
+    lenses = Lenses(camera, STREAMS, speed="slow")
+
+    lenses.creep("visible", -0.9)
+
+    assert camera.moved[-1][2] < 0
+
+
+def test_letting_go_still_stops_the_lens_at_every_speed() -> None:
+    """The stop is chosen by the truthiness of the requested speed. A scale that
+    could turn a release into a nonzero velocity would leave the lens zooming
+    with nothing held."""
+    for speed in ("slow", "normal", "fast"):
+        camera = FakeCamera()
+        lenses = Lenses(camera, STREAMS, speed=speed)
+        lenses.creep("thermal", 0.0)
+        assert camera.stopped == [("p-ir", False, True)]
+        assert camera.moved == []

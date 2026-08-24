@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
-from vmd.desktop.settings_tab import PROBE_NAME, SettingsTab
+from vmd.desktop.settings_tab import PROBE_NAME, PTZ_SPEED_CHOICES, SettingsTab
 from vmd.settings import (
     CameraSettings,
     IgnoreRegion,
@@ -3430,3 +3430,65 @@ def test_a_report_with_no_detection_file_still_gets_written(qtbot, tmp_path: Pat
     settings.storage.root = tmp_path / "nothing-here"
     said = what_detection_is_doing(settings, tmp_path / "settings.json")
     assert any("nothing has been published" in line for line in said)
+
+
+# --------------------------------------------------------------------------- #
+#  Steering speed
+# --------------------------------------------------------------------------- #
+
+
+def test_the_steering_speed_is_saved(qtbot, tmp_path: Path) -> None:
+    tab, path = build(qtbot, tmp_path)
+    tab.camera_host = "192.168.1.250"
+    tab.ptz_speed = "fast"
+
+    assert tab.save() is True
+
+    assert load_settings(path).camera.ptz_speed == "fast"
+
+
+def test_the_form_opens_showing_the_speed_that_was_saved(qtbot, tmp_path: Path) -> None:
+    settings = Settings(camera=CameraSettings(host="10.0.0.2", ptz_speed="slow"))
+    tab, _path = build(qtbot, tmp_path, settings)
+
+    assert tab.ptz_speed == "slow"
+
+
+def test_a_form_nobody_touches_keeps_the_speed_it_was_given(
+    qtbot, tmp_path: Path
+) -> None:
+    """Saving the form for some other reason must not quietly reset the camera
+    to the middle speed."""
+    settings = Settings(camera=CameraSettings(host="10.0.0.2", ptz_speed="slow"))
+    tab, path = build(qtbot, tmp_path, settings)
+
+    assert tab.save() is True
+
+    assert load_settings(path).camera.ptz_speed == "slow"
+
+
+def test_a_speed_the_console_does_not_offer_shows_as_the_normal_one(
+    qtbot, tmp_path: Path
+) -> None:
+    """A hand-edited settings file. The form must show something true rather
+    than leave whichever item happened to be selected."""
+    tab, _path = build(qtbot, tmp_path)
+
+    tab.ptz_speed = "ludicrous"
+
+    assert tab.ptz_speed == "normal"
+
+
+def test_every_speed_the_form_offers_is_one_the_settings_accept(
+    qtbot, tmp_path: Path
+) -> None:
+    """The dropdown and the model must not be able to drift apart: an option
+    the form offers but the model refuses is a Save that fails on the one
+    machine nobody can debug."""
+    tab, path = build(qtbot, tmp_path)
+    tab.camera_host = "10.0.0.2"
+
+    for _label, value in PTZ_SPEED_CHOICES:
+        tab.ptz_speed = value
+        assert tab.save() is True, f"the form offered {value} and saving it failed"
+        assert load_settings(path).camera.ptz_speed == value

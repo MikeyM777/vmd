@@ -2431,3 +2431,90 @@ def test_storage_fault_reuses_the_panels_lines(qtbot) -> None:
     found = storage_fault(broken, storage)
     assert found is not None and found[0] == "The recordings folder D:/nope is not there."
     assert found[1] == PALETTE["alarm"]
+
+
+# --------------------------------------------------------------------------- #
+#  The steering speed the operator chose
+# --------------------------------------------------------------------------- #
+
+
+def test_the_chosen_speed_reaches_the_camera(qtbot) -> None:
+    """The dropdown is worth nothing if the tab goes on steering at its own
+    rate."""
+    tab, ptz, _ = build(qtbot, "thermal")
+    settings = settings_with("thermal")
+    settings.camera.ptz_speed = "slow"
+    tab.apply(settings)
+
+    tab.key_down("right", fine=False)
+
+    assert sent(tab, ptz)[-1] == ("move", 0.25, 0.0, 0.0)
+
+
+def test_a_console_that_was_never_told_steers_as_it_always_did(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+
+    tab.key_down("right", fine=False)
+
+    assert sent(tab, ptz)[-1] == ("move", 0.5, 0.0, 0.0)
+
+
+def test_the_zoom_obeys_the_speed_too(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    settings = settings_with("thermal")
+    settings.camera.ptz_speed = "slow"
+    tab.apply(settings)
+
+    tab.zoom(1)
+
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.0, 0.25)
+
+
+def test_letting_go_of_the_zoom_still_stops_it_at_every_speed(qtbot) -> None:
+    """The stop is arithmetic: `_drive` sends a stop only when all three
+    components are exactly 0.0, and the zoom's zero comes from multiplying by a
+    direction of 0. A scale that could not produce an exact zero would leave the
+    lens zooming with nothing held."""
+    for speed in ("slow", "normal", "fast"):
+        tab, ptz, _ = build(qtbot, "thermal")
+        settings = settings_with("thermal")
+        settings.camera.ptz_speed = speed
+        tab.apply(settings)
+
+        tab.zoom(1)
+        tab.zoom(0)
+
+        assert sent(tab, ptz)[-1] == ("stop",), f"the zoom was left running at {speed}"
+
+
+def test_fast_never_zooms_faster_than_this_lens_can_be_aimed(qtbot) -> None:
+    """The mirror of `creep_speed`'s cap, for the other zoom control. Same
+    glass, same 700 m hop, same two-second round trip that makes a fast zoom
+    overshoot every time - so the dropdown may slow this zoom and may never
+    speed it up. Without this the keys ran at 1.0 while the zoom bar sat at
+    0.35, and the tooltip said neither."""
+    tab, ptz, _ = build(qtbot, "thermal")
+    settings = settings_with("thermal")
+    settings.camera.ptz_speed = "fast"
+    tab.apply(settings)
+
+    tab.zoom(1)
+
+    assert sent(tab, ptz)[-1] == ("move", 0.0, 0.0, 0.5)
+
+
+def test_a_fast_camera_never_asks_for_more_than_onvif_takes(qtbot) -> None:
+    """Two keys at the fast speed is the corner case: 1.0 on each axis is the
+    most the protocol accepts, and a camera refuses anything past it outright
+    rather than capping."""
+    tab, ptz, _ = build(qtbot, "thermal")
+    settings = settings_with("thermal")
+    settings.camera.ptz_speed = "fast"
+    tab.apply(settings)
+
+    tab.key_down("right", fine=False)
+    tab.key_down("up", fine=False)
+
+    _name, pan, tilt, zoom = sent(tab, ptz)[-1]
+    assert (pan, tilt) == (1.0, 1.0)
+    assert -1.0 <= zoom <= 1.0

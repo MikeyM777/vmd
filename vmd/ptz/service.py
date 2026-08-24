@@ -120,6 +120,10 @@ class PtzService:
                 # of the console inferring it from profile names - which came
                 # out backwards on his camera.
                 urls={stream.name: stream.url for stream in settings.camera.streams},
+                # Scales the creep on a camera that can only be told to keep
+                # zooming. Rebuilt here on every save, so the dropdown lands
+                # without a restart.
+                speed=settings.camera.ptz_speed,
             )
             if camera is not None
             else None

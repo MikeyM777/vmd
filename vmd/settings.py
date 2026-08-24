@@ -263,6 +263,15 @@ class CameraSettings(Model):
     host: str = ""
     username: str = ""
     password: str = ""
+    # How fast the head moves when somebody steers it. Three words rather than
+    # a number, because the operator picks it from a list and a number would
+    # invite a value ONVIF refuses: it takes -1..1, and every speed in this
+    # program is a fraction of that.
+    #
+    # "normal" is arithmetically exactly what this console did before there was
+    # a choice, so an install that never opens the dropdown - and a settings.json
+    # written before this field existed - steers precisely as it always did.
+    ptz_speed: Literal["slow", "normal", "fast"] = "normal"
     streams: list[StreamSettings] = Field(default_factory=list)
 
     @field_validator("streams")

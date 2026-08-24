@@ -104,3 +104,85 @@ def test_fine_mode_is_a_scale_not_a_different_shape() -> None:
 
 def test_an_unknown_key_is_ignored() -> None:
     assert key_velocity({"space"}, fine=False) == (0.0, 0.0)
+
+
+# --------------------------------------------------------------------------- #
+#  The speed the operator chose
+# --------------------------------------------------------------------------- #
+
+
+def test_normal_is_exactly_what_this_console_always_did() -> None:
+    """The default must not move a single existing camera differently, so it is
+    asserted against the literal numbers rather than against itself."""
+    assert key_velocity({"right"}, fine=False, speed="normal") == (0.5, 0.0)
+    assert key_velocity({"right"}, fine=True, speed="normal") == (0.08, 0.0)
+
+
+def test_leaving_the_speed_out_is_the_same_as_asking_for_normal() -> None:
+    """Every caller that has not been taught about the setting keeps working."""
+    assert key_velocity({"up", "right"}, fine=False) == key_velocity(
+        {"up", "right"}, fine=False, speed="normal"
+    )
+    assert edge_velocity(0.0, 0.5) == edge_velocity(0.0, 0.5, speed="normal")
+
+
+def test_slow_halves_the_keys_and_fast_doubles_them() -> None:
+    assert key_velocity({"right"}, fine=False, speed="slow") == (0.25, 0.0)
+    assert key_velocity({"right"}, fine=False, speed="fast") == (1.0, 0.0)
+
+
+def test_the_edge_obeys_the_speed_as_well_as_the_keys() -> None:
+    """Steering with the mouse used to run at full ONVIF speed while the arrow
+    keys capped at half, so one camera moved at two rates depending on which
+    hand was on it. One number moves both now."""
+    deep = 0.0  # hard against the left edge, where the band is at its fastest
+    slow = abs(edge_velocity(deep, 0.5, speed="slow")[0])
+    normal = abs(edge_velocity(deep, 0.5, speed="normal")[0])
+    fast = abs(edge_velocity(deep, 0.5, speed="fast")[0])
+    assert 0 < slow < normal < fast
+
+
+def test_the_deepest_edge_matches_a_held_arrow_key() -> None:
+    """The two ways of steering agree at last: the fastest the edge band can
+    ask for is the speed a held arrow key asks for."""
+    for speed in ("slow", "normal", "fast"):
+        edge = abs(edge_velocity(0.0, 0.5, speed=speed)[0])
+        key = abs(key_velocity({"left"}, fine=False, speed=speed)[0])
+        assert edge == pytest.approx(key, abs=0.002)
+
+
+@pytest.mark.parametrize("speed", ["slow", "normal", "fast"])
+def test_no_speed_can_ask_the_camera_for_more_than_onvif_takes(speed: str) -> None:
+    """`fast` doubles, and the edge band already reaches full depth, so an
+    unclamped corner would ask for 2.0 - which the camera refuses outright
+    rather than capping, leaving the head still in the very gesture meant to
+    move it most."""
+    for pan, tilt in (
+        key_velocity({"left", "up"}, fine=False, speed=speed),
+        key_velocity({"right", "down"}, fine=False, speed=speed),
+        edge_velocity(0.0, 0.0, speed=speed),
+        edge_velocity(1.0, 1.0, speed=speed),
+    ):
+        assert -1.0 <= pan <= 1.0
+        assert -1.0 <= tilt <= 1.0
+
+
+def test_a_speed_nobody_recognises_steers_at_the_normal_speed() -> None:
+    """settings.json can be edited by hand, and this runs inside a Qt key
+    handler - the one place an exception must never reach."""
+    assert key_velocity({"right"}, fine=False, speed="quick") == (0.5, 0.0)
+    assert edge_velocity(0.0, 0.5, speed="") == edge_velocity(0.0, 0.5, speed="normal")
+
+
+@pytest.mark.parametrize("speed", ["slow", "normal", "fast"])
+def test_the_middle_of_the_picture_never_steers_whatever_the_speed(speed: str) -> None:
+    """A multiplier must not turn 'not steering' into 'steering slowly'."""
+    assert edge_velocity(0.5, 0.5, speed=speed) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("speed", ["slow", "normal", "fast"])
+def test_no_keys_is_still_no_movement_at_every_speed(speed: str) -> None:
+    """The stop is arithmetic - `_drive` sends a stop only when every component
+    is exactly zero - so a scale that could not produce zero would be a head
+    that never stops."""
+    assert key_velocity(set(), fine=False, speed=speed) == (0.0, 0.0)

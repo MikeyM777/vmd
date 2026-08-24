@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
 from vmd.desktop.disk import StoragePanel, storage_fault
 from vmd.desktop.link import shortened
 from vmd.desktop.steering import edge_velocity, key_velocity
+from vmd.ptz.speed import factor as speed_factor
+from vmd.ptz.speed import onvif_range
 from vmd.desktop.style import (
     MONO,
     PALETTE,
@@ -804,6 +806,11 @@ class LiveTab(QWidget):
         self._pressed = False
         self._fine = False
         self._zoom = 0.0
+        # The steering speed the operator chose, held here rather than read out
+        # of a settings object on every key: `apply` may be replacing that
+        # object on the Save slot while a key handler is running, and a key
+        # handler is the one place in this program that must not raise.
+        self._speed = "normal"
         # Starts at rest rather than unknown, so that losing focus before
         # anything has moved does not put a needless stop onto the link.
         self._last_velocity: tuple[float, float, float] | None = (0.0, 0.0, 0.0)
@@ -2075,6 +2082,10 @@ class LiveTab(QWidget):
         # alarm arrives: an alarm is the worst moment this console has and is
         # not when to start reading the settings file.
         self._recordings_root = settings.storage.root
+        # How fast steering moves the head, taken off the settings object here
+        # rather than read out of one on every key. See the same field in
+        # `__init__` for why.
+        self._speed = settings.camera.ptz_speed
         # The storage panel - "Drive: N GB free", the budget bar, how long until
         # the drive is full - is about recording, and there is none to watch
         # when recording is off. So it goes, the same way the storage settings
@@ -2725,11 +2736,30 @@ class LiveTab(QWidget):
             # asked for; otherwise this is a stop.
             self._steer()
             return
-        pan, tilt = edge_velocity(x, y)
+        pan, tilt = edge_velocity(x, y, self._speed)
         self._drive(pan, tilt, self._zoom)
 
     def zoom(self, direction: int) -> None:
-        self._zoom = ZOOM_SPEED * direction
+        # Capped at ZOOM_SPEED, so the chosen speed can make this zoom slower
+        # and never faster - the same rule, for the same measured reason, that
+        # `creep_speed` states in vmd/ptz/lenses.py. It is the same glass at the
+        # end of the same 700 m radio hop, and the round trip that makes a fast
+        # zoom overshoot every time does not care which of the two controls
+        # asked for it. Without the cap "fast" doubled this to 1.0 - the top of
+        # the ONVIF range - on a lens that cannot be aimed at half that.
+        #
+        # Capped at ZOOM_SPEED and deliberately not at CREEP_SPEED: this path's
+        # own base is 0.5, and lowering it to 0.35 would change what "normal"
+        # does, which nothing about this feature is allowed to do.
+        #
+        # `* direction` last, outside both the cap and the clamp. `direction` is
+        # 0 on key release and that exact zero is what stops the zoom - `_drive`
+        # sends a stop only when all three components are 0.0. A min() over
+        # positives multiplied by 0 is still exactly 0.0; an offset or a floor
+        # would not be, and would leave the lens running with nothing held.
+        self._zoom = (
+            onvif_range(min(ZOOM_SPEED, ZOOM_SPEED * speed_factor(self._speed))) * direction
+        )
         self._steer()
 
     def go_home(self) -> None:
@@ -2748,7 +2778,7 @@ class LiveTab(QWidget):
         self._steer()
 
     def _steer(self) -> None:
-        pan, tilt = key_velocity(self._held, self._fine)
+        pan, tilt = key_velocity(self._held, self._fine, self._speed)
         self._drive(pan, tilt, self._zoom)
 
     def _drive(self, pan: float, tilt: float, zoom: float) -> None:
