@@ -16,27 +16,40 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRect, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from vmd.desktop.add_camera import AddCameraDialog
 from vmd.desktop.fullscreen import LEAVE_KEY, FullscreenLive
 from vmd.desktop.link import link_trouble
 from vmd.desktop.live import LiveTab, WrappedNote
 from vmd.desktop.logs import LogBuffer, LogsTab, attach
 from vmd.desktop.playback import PlaybackTab
+from vmd.desktop.presets import (
+    console_command,
+    current,
+    derive,
+    install_root,
+    presets,
+    suggested_host,
+    write_preset,
+)
 from vmd.desktop.settings_tab import SettingsTab
 from vmd.desktop.style import (
     MONO,
@@ -55,7 +68,13 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
-from vmd.settings import Settings, consoles_on_this_radio, load_settings, save_settings
+from vmd.settings import (
+    Settings,
+    SettingsError,
+    consoles_on_this_radio,
+    load_settings,
+    save_settings,
+)
 from vmd.storage.index import SegmentIndex
 from vmd.update.version import describe as describe_version
 
@@ -968,6 +987,13 @@ class ConsoleWindow(QMainWindow):
         asked_settings = getattr(self.live, "settings_asked", None)
         if asked_settings is not None:
             asked_settings.connect(self.show_settings)
+        # The camera buttons beside the gear. The tab draws whatever it is told
+        # and asks back; this window is the thing that knows where the install
+        # is, which cameras are set up in it and how to start another console.
+        asked_camera = getattr(self.live, "camera_asked", None)
+        if asked_camera is not None:
+            asked_camera.connect(self.open_camera)
+        self.refresh_cameras()
         # Show only the pictures, if the settings say so. Applied through the
         # fullscreen object because it hides exactly the same three things -
         # band, tab bar, side column - so the two modes cannot fight; see
@@ -1438,6 +1464,111 @@ class ConsoleWindow(QMainWindow):
             show(event)
         except Exception:  # noqa: BLE001 - the console must survive a button
             logger.exception("that movement could not be shown")
+
+    # ----------------------------------------------------------- the cameras
+
+    def refresh_cameras(self) -> None:
+        """Tell the Live tab which cameras there are and which one this is.
+
+        Called when the window is built and after every Save, because a Save is
+        when a camera can have been given an address for the first time. Reads
+        the disk - the camera folders beside this one - which is why it is the
+        window's job and not the tab's.
+
+        Never raises. A row of buttons is worth having and is not worth a
+        console that will not open, so a folder that cannot be read costs the
+        buttons and nothing else.
+        """
+        setter = getattr(self.live, "set_cameras", None)
+        if setter is None:
+            return
+        try:
+            root = install_root(self._settings_path)
+            found = presets(root) if root is not None else []
+            mine = current(self._settings_path, found)
+            names = [preset.name for preset in found]
+            showing = mine.name if mine is not None else ""
+            # The "+" is offered while there is no second camera to switch to.
+            # An install with two set up has nothing left to add; one with none
+            # at all is the state every one of these machines starts in, and
+            # the button is the whole of how it gets out of it.
+            setter(names, showing, can_add=len(found) < 2)
+        except Exception:  # noqa: BLE001 - buttons, never the console
+            logger.exception("could not work out which cameras are set up")
+
+    def open_camera(self, which: str) -> None:
+        """Open a camera in another window, or set the other one up first.
+
+        Beside this window rather than instead of it: the two pictures are
+        watched side by side on a split screen, and closing the one he is
+        looking at to open the other would be the wrong half of that.
+        """
+        root = install_root(self._settings_path)
+        if root is None:
+            QMessageBox.warning(
+                self,
+                "Another camera",
+                "This console cannot tell where VMD is installed, so it cannot "
+                "start another one.",
+            )
+            return
+        if which:
+            wanted = next((p for p in presets(root) if p.name == which), None)
+            if wanted is None:
+                self.refresh_cameras()
+                return
+            self._start_console(root, wanted.settings_path)
+            return
+        self._set_up_another_camera(root)
+
+    def _set_up_another_camera(self, root: Path) -> None:
+        """Ask for the other camera once, write it down, and open it."""
+        try:
+            settings = load_settings(self._settings_path)
+        except SettingsError:
+            settings = Settings()
+        already = presets(root)
+        dialog = AddCameraDialog(
+            suggested_host=suggested_host(settings, already),
+            username=settings.camera.username,
+            password=settings.camera.password,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        answer = dialog.answer()
+        other = derive(settings, answer.host)
+        other.camera.username = answer.username
+        other.camera.password = answer.password
+        other.title = answer.title or answer.name
+        # This console's own window position is not the other one's business:
+        # two consoles that remember the same place land on top of each other.
+        other.screen = None
+        try:
+            written = write_preset(root, answer.name, other)
+        except OSError as failure:
+            QMessageBox.warning(
+                self, "Another camera", f"That camera could not be set up: {failure}"
+            )
+            return
+        # Written first, so the button is there whether or not the console
+        # starts - and so a second press opens it rather than asking again.
+        self.refresh_cameras()
+        self._start_console(root, written)
+
+    def _start_console(self, root: Path, settings_path: Path) -> None:
+        """Start another console, and say so if Windows will not have it."""
+        try:
+            subprocess.Popen(  # noqa: S603 - this program, on this machine
+                console_command(root, settings_path), cwd=str(root), close_fds=True
+            )
+        except OSError as failure:
+            logger.exception("could not start another console")
+            QMessageBox.warning(
+                self,
+                "Another camera",
+                f"That camera's window could not be opened: {failure}",
+            )
 
     def show_settings(self) -> None:
         """Go to the Settings page, from the gear above the pictures.

@@ -655,6 +655,12 @@ class LiveTab(QWidget):
     # `fullscreen_asked`. It matters most in stream-only mode, where the tab bar
     # is hidden and the gear is the only way in to Settings there is.
     settings_asked = Signal()
+    #: Which camera the operator wants, by the name on the button - "251".
+    #: The empty string means the other camera is not set up yet and he has
+    #: asked for it to be. The window answers both, because it is the thing that
+    #: knows where this install is and how to start another console; this tab
+    #: knows only what the buttons say. Same seam as `settings_asked`.
+    camera_asked = Signal(str)
 
     def __init__(
         self,
@@ -948,11 +954,32 @@ class LiveTab(QWidget):
             "in; Esc brings you back to the pictures."
         )
         self._settings_button.clicked.connect(self.settings_asked.emit)
+        # Which camera this console is showing, and the way to the other one.
+        #
+        # There are two cameras on this desk, 250 and 251, and switching between
+        # them used to mean editing an address by hand in three places - the
+        # camera's own and the URL of each picture. Two of the three right is a
+        # console that shows a picture it cannot steer, and that is what
+        # happened. So the camera is a button now.
+        #
+        # Beside the gear because it belongs with "what this console is" rather
+        # than with the pictures, and because this row survives stream-only,
+        # which hides everything else an operator could have reached.
+        #
+        # Empty and hidden until the window says what there is: this tab does
+        # not read the disk. See `set_cameras`.
+        self._camera_row = QWidget()
+        self._camera_line = QHBoxLayout(self._camera_row)
+        self._camera_line.setContentsMargins(0, 0, 0, 0)
+        self._camera_line.setSpacing(SPACE_SNUG)
+        self._camera_buttons: dict[str, QPushButton] = {}
+        self._camera_row.setVisible(False)
         chooser_row = QHBoxLayout()
         chooser_row.setContentsMargins(0, 0, 0, 0)
         chooser_row.setSpacing(SPACE_SNUG)
         chooser_row.addWidget(self._title)
         chooser_row.addWidget(self.views, 1)
+        chooser_row.addWidget(self._camera_row)
         chooser_row.addWidget(self._settings_button)
         chooser_row.addWidget(self._fullscreen_button)
         pictures.addLayout(chooser_row)
@@ -2293,6 +2320,85 @@ class LiveTab(QWidget):
     def fullscreen_button(self) -> QPushButton:
         return self._fullscreen_button
 
+    # ------------------------------------------------------------- the cameras
+
+    def set_cameras(self, names: list[str], showing: str = "", can_add: bool = False) -> None:
+        """Draw one button per camera, and mark which one this console is.
+
+        Handed plain strings by the window rather than read off the disk here:
+        this tab draws pictures and steers a head, and a tab that went looking
+        for other consoles' settings files would be a tab that can be wrong
+        about them.
+
+        `showing` is the camera this console is, and its button is drawn
+        checked and disabled - pressing it would start a second console on the
+        camera already in front of him, which is the one outcome nobody wants
+        from a row of camera buttons.
+
+        `can_add` puts a "+" at the end, for the install where the second
+        camera has never been set up. That is the state every one of these
+        machines is in until somebody presses it once.
+        """
+        while self._camera_line.count():
+            item = self._camera_line.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._camera_buttons = {}
+
+        for name in names:
+            button = QPushButton(str(name))
+            # No focus, like everything else on this tab: a button holding the
+            # keyboard is the next arrow key going nowhere, and on this tab
+            # that is a camera that stops answering. See the rule above ARROWS.
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            if name == showing:
+                button.setCheckable(True)
+                button.setChecked(True)
+                button.setEnabled(False)
+                button.setToolTip(f"This window is showing camera {name}.")
+            else:
+                button.setToolTip(
+                    f"Open camera {name} in another window, beside this one. "
+                    f"This window stays where it is."
+                )
+                button.clicked.connect(lambda _=False, which=str(name): self.camera_asked.emit(which))
+            self._camera_line.addWidget(button)
+            self._camera_buttons[str(name)] = button
+
+        if can_add:
+            add = QPushButton("+")
+            add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            add.setToolTip(
+                "Set up the other camera. It is asked for once, and after that "
+                "it is a button beside this one."
+            )
+            add.clicked.connect(lambda _=False: self.camera_asked.emit(""))
+            self._camera_line.addWidget(add)
+            self._camera_buttons["+"] = add
+
+        self._fit_cameras()
+
+    def camera_buttons(self) -> dict[str, QPushButton]:
+        """The camera buttons by what they say, for the window and for tests."""
+        return dict(self._camera_buttons)
+
+    def _fit_cameras(self) -> None:
+        """Show the camera row when there is a choice and the screen is not full.
+
+        Two rules in one place, for the same reason `_fit_side` holds its two:
+        set separately they leave the row in a state neither asked for.
+
+        Nothing to choose between is nothing worth a row - one camera and no way
+        to add another is a button that does nothing.
+
+        And never in fullscreen, which means the pictures and nothing else. This
+        is the one difference from stream-only, where the row DOES belong: that
+        mode is an ordinary window with the chrome hidden, run two side by side,
+        and choosing which camera each of them shows is the whole point of it.
+        """
+        self._camera_row.setVisible(bool(self._camera_buttons) and not self._fullscreen)
+
     def settings_button(self) -> QPushButton:
         """The gear, beside the way into fullscreen.
 
@@ -2322,6 +2428,7 @@ class LiveTab(QWidget):
         """
         self._fullscreen = bool(on)
         self._fit_side()
+        self._fit_cameras()
         self._draw_fullscreen_button()
         # The keyboard belongs on the pictures in both directions. The window
         # says so too, once the window state has actually changed; this is the

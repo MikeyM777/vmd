@@ -2518,3 +2518,115 @@ def test_a_fast_camera_never_asks_for_more_than_onvif_takes(qtbot) -> None:
     _name, pan, tilt, zoom = sent(tab, ptz)[-1]
     assert (pan, tilt) == (1.0, 1.0)
     assert -1.0 <= zoom <= 1.0
+
+
+# --------------------------------------------------------------------------- #
+#  Choosing the camera
+# --------------------------------------------------------------------------- #
+
+
+def test_a_button_appears_for_each_camera(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+
+    tab.set_cameras(["250", "251"], showing="250")
+
+    assert sorted(tab.camera_buttons()) == ["250", "251"]
+
+
+def test_the_camera_this_console_shows_cannot_be_pressed(qtbot) -> None:
+    """Pressing it would start a second console on the camera already in front
+    of him."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+
+    tab.set_cameras(["250", "251"], showing="250")
+
+    assert tab.camera_buttons()["250"].isEnabled() is False
+    assert tab.camera_buttons()["250"].isChecked() is True
+    assert tab.camera_buttons()["251"].isEnabled() is True
+
+
+def test_pressing_the_other_camera_asks_the_window_for_it(qtbot) -> None:
+    """The tab knows what the buttons say and nothing else - the window is what
+    knows where this install is and how to start another console."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250", "251"], showing="250")
+    asked: list[str] = []
+    tab.camera_asked.connect(asked.append)
+
+    tab.camera_buttons()["251"].click()
+
+    assert asked == ["251"]
+
+
+def test_the_plus_asks_for_a_camera_that_is_not_set_up_yet(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250"], showing="250", can_add=True)
+    asked: list[str] = []
+    tab.camera_asked.connect(asked.append)
+
+    tab.camera_buttons()["+"].click()
+
+    assert asked == [""]
+
+
+def test_nothing_to_choose_between_shows_no_row_at_all(qtbot) -> None:
+    """One camera and no way to add another is a button that does nothing."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+
+    tab.set_cameras([], showing="", can_add=False)
+
+    assert tab.camera_buttons() == {}
+
+
+def test_the_row_is_redrawn_rather_than_added_to(qtbot) -> None:
+    """It is refreshed whenever settings are saved, and a row that grew every
+    time would end the evening with a dozen buttons on it."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+
+    tab.set_cameras(["250", "251"], showing="250")
+    tab.set_cameras(["250", "251"], showing="251")
+
+    assert sorted(tab.camera_buttons()) == ["250", "251"]
+    assert tab.camera_buttons()["251"].isEnabled() is False
+    assert tab.camera_buttons()["250"].isEnabled() is True
+
+
+def test_the_camera_buttons_cannot_take_the_arrow_keys(qtbot) -> None:
+    """A button holding the keyboard is the next arrow key going nowhere, and on
+    this tab that is a camera that stops answering."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250", "251"], showing="250", can_add=True)
+
+    for button in tab.camera_buttons().values():
+        assert button.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
+def test_the_camera_row_goes_away_in_fullscreen(qtbot) -> None:
+    """Fullscreen means the pictures and nothing else."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250", "251"], showing="250")
+
+    tab.set_fullscreen(True)
+
+    assert tab._camera_row.isVisibleTo(tab) is False
+
+
+def test_the_camera_row_stays_in_stream_only(qtbot) -> None:
+    """Stream-only is an ordinary window with the chrome hidden, run two side by
+    side - choosing which camera each shows is the whole point of it."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250", "251"], showing="250")
+
+    tab.set_pictures_only(True)
+
+    assert tab._camera_row.isVisibleTo(tab) is True
+
+
+def test_the_camera_row_comes_back_when_fullscreen_ends(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.set_cameras(["250", "251"], showing="250")
+
+    tab.set_fullscreen(True)
+    tab.set_fullscreen(False)
+
+    assert tab._camera_row.isVisibleTo(tab) is True
