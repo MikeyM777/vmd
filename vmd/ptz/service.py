@@ -43,6 +43,7 @@ IN_WORDS = {
     "move": "the camera would not move",
     "stop": "the camera would not stop moving",
     "home": "the camera would not go back to where it starts",
+    "set_home": "the camera would not save this as its home position",
     "zoom": "the camera would not zoom",
     "zoom_hold": "the camera would not keep zooming",
     "zoom_poll": "the camera would not say where its zoom is",
@@ -292,6 +293,9 @@ class PtzService:
 
     def home(self) -> dict:
         return self._do("home", lambda: self.camera.home())
+
+    def set_home(self) -> dict:
+        return self._do("set_home", lambda: self.camera.set_home())
 
     # ------------------------------------------------------------------- zoom
     #
@@ -572,6 +576,9 @@ class PtzCommands:
     def home(self) -> None:
         self.submit(("home",))
 
+    def set_home(self) -> None:
+        self.submit(("set_home",))
+
     def zoom(self, stream: str, where: float) -> None:
         self.submit(("zoom", stream, where), lane=f"zoom:{stream}")
 
@@ -706,6 +713,8 @@ class PtzCommands:
                 return self._ptz.stop()
             if kind == "home":
                 return self._ptz.home()
+            if kind == "set_home":
+                return self._ptz.set_home()
             if kind == "zoom":
                 return self._ptz.zoom(command[1], command[2])
             if kind == "zoom_hold":

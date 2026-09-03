@@ -350,6 +350,12 @@ LEAVE_FULLSCREEN_WORDS = "Leave fullscreen  (Esc)"
 # buttons beside it. The way back from there is Esc, which the window handles.
 SETTINGS_WORDS = "⚙"  # a gear
 
+# The two buttons for the head's saved rest position. "Home" recentres to it,
+# "Set Home" saves where the head is pointing now as it - the same pair the FLIR
+# web page has, done over ONVIF (GotoHomePosition / SetHomePosition).
+HOME_WORDS = "Home"
+SET_HOME_WORDS = "Set Home"
+
 # What the tab says when the camera turns out to have one lens behind both
 # pictures. Two zoom bars that move the same glass is confusing until somebody
 # says why - the operator drags the thermal slider, the visible picture zooms
@@ -961,6 +967,25 @@ class LiveTab(QWidget):
             "in; Esc brings you back to the pictures."
         )
         self._settings_button.clicked.connect(self.settings_asked.emit)
+        # Go Home / Set Home: the head's saved rest position, beside the camera
+        # chrome. "Home" recentres - the same thing the Home key does, so it just
+        # calls go_home(); "Set Home" saves where the head is now as that position.
+        # Both refuse focus, like every control on this tab, or the next arrow key
+        # would go nowhere (see the rule above ARROWS). Direct calls, not signals:
+        # the tab already owns the command channel (self._commands) and steering is
+        # done straight rather than asked for.
+        self._home_button = QPushButton(HOME_WORDS)
+        self._home_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._home_button.setToolTip(
+            "Point the camera at its saved home position (same as the Home key)."
+        )
+        self._home_button.clicked.connect(self.go_home)
+        self._set_home_button = QPushButton(SET_HOME_WORDS)
+        self._set_home_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._set_home_button.setToolTip(
+            "Save where the camera is pointing now as its home position."
+        )
+        self._set_home_button.clicked.connect(self.set_home)
         # Which camera this console is showing, and the way to the other one.
         #
         # There are two cameras on this desk, 250 and 251, and switching between
@@ -987,6 +1012,8 @@ class LiveTab(QWidget):
         chooser_row.addWidget(self._title)
         chooser_row.addWidget(self.views, 1)
         chooser_row.addWidget(self._camera_row)
+        chooser_row.addWidget(self._set_home_button)
+        chooser_row.addWidget(self._home_button)
         chooser_row.addWidget(self._settings_button)
         chooser_row.addWidget(self._fullscreen_button)
         pictures.addLayout(chooser_row)
@@ -2975,6 +3002,17 @@ class LiveTab(QWidget):
         self._last_velocity = None
         self._moving.setText("home")
         self._commands.home()
+        self._show_camera_note()
+
+    def set_home(self) -> None:
+        """Save where the head is pointing now as its home position.
+
+        It does not move the head - unlike go_home - so it clears nothing about
+        the steering. The camera answers on its own thread through PtzCommands;
+        the note is set so the operator sees the command was sent.
+        """
+        self._moving.setText("home set")
+        self._commands.set_home()
         self._show_camera_note()
 
     def stop_steering(self) -> None:

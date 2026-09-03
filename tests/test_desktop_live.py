@@ -38,6 +38,10 @@ class FakePtz:
         self.commands.append(("home",))
         return {"ok": True}
 
+    def set_home(self) -> dict:
+        self.commands.append(("set_home",))
+        return {"ok": True}
+
 
 def settings_with(*names: str) -> Settings:
     return Settings(
@@ -267,6 +271,22 @@ def test_arrow_keys_move_the_camera_and_release_stops_it(qtbot) -> None:
 def test_home_is_sent_once(qtbot) -> None:
     tab, ptz, _ = build(qtbot, "thermal")
     tab.go_home()
+    assert sent(tab, ptz) == [("home",)]
+
+
+def test_set_home_is_sent_once(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    tab.set_home()
+    assert sent(tab, ptz) == [("set_home",)]
+
+
+def test_the_home_buttons_do_not_take_the_arrow_keys(qtbot) -> None:
+    """Both home buttons must refuse focus, or the next arrow key would go to
+    the button instead of the camera - the rule every control on this tab keeps."""
+    tab, ptz, _ = build(qtbot, "thermal")
+    assert tab._home_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert tab._set_home_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    tab._home_button.click()
     assert sent(tab, ptz) == [("home",)]
 
 

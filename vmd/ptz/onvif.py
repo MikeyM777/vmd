@@ -409,6 +409,19 @@ class OnvifPtz:
         # The longest this camera has taken to answer, so the log carries a
         # measured figure rather than the two guesses TIMEOUT has been so far.
         self._slowest = 0.0
+        # The keep-alive fast path: one HTTP connection held open across
+        # commands, with the login sent up front, so a held arrow does not pay a
+        # fresh TCP handshake and a 401 challenge on every press across the radio
+        # link - which is where the couple-second lag was. It is a pure
+        # optimisation: it only ever returns a verified-good answer, and anything
+        # else falls back to the per-command urllib path below, so it cannot make
+        # steering wrong, only faster. `_fast_ok` latches off if the camera will
+        # not hold a connection, so a camera that refuses keep-alive is not paid
+        # a wasted attempt on every command for ever.
+        self._conn = None
+        self._digest: dict | None = None
+        self._fast_ok = True
+        self._fast_fails = 0
 
     # ------------------------------------------------------------------ wire
 
@@ -451,6 +464,15 @@ class OnvifPtz:
         `ok: True`, and the console told the operator the command had been
         sent while the head sat still.
         """
+        # The fast path first, once the login style is known. It returns None to
+        # mean "I could not, fall back" - a stale socket, a refused login, a
+        # fault, anything - so the proven per-command path below still runs and
+        # still surfaces a real refusal. It never returns a wrong answer.
+        if self._auth_opener is not None and self._fast_ok:
+            fast = self._keepalive_post(path, body, expect)
+            if fast is not None:
+                return fast
+
         attempts = (
             [(self.capability.auth, self._auth_opener)]
             if self._auth_opener is not None
@@ -514,6 +536,147 @@ class OnvifPtz:
                 last_error = str(exc)
                 continue
         raise PtzError(last_error)
+
+    # ----------------------------------------------------- keep-alive fast path
+
+    def _close_conn(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - closing a dead socket is not a failure
+                pass
+
+    def _note_fast_fail(self) -> None:
+        """Count a fallback, and give up on keep-alive after a few in a row.
+
+        A camera that closes the connection after every command, or that this
+        code cannot keep happy, must not be paid a doomed fast attempt on every
+        single press - that would add latency rather than remove it. After a few
+        consecutive fallbacks the fast path latches off and the console runs
+        exactly as it did before, one connection per command."""
+        self._fast_fails += 1
+        if self._fast_fails >= 3:
+            self._fast_ok = False
+            logger.info(
+                "the camera will not hold a connection open; using one connection "
+                "per PTZ command, as before"
+            )
+
+    @staticmethod
+    def _parse_challenge(header: str) -> dict:
+        """The fields of a Digest `WWW-Authenticate` challenge."""
+        out: dict = {}
+        for match in re.finditer(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', header):
+            out[match.group(1).lower()] = match.group(2) if match.group(2) is not None else match.group(3)
+        if "qop" in out:
+            options = [q.strip() for q in out["qop"].split(",")]
+            out["qop"] = "auth" if "auth" in options else options[0]
+        return out
+
+    def _digest_authorization(self, method: str, uri: str) -> str | None:
+        """The Digest `Authorization` header for this request, from the cached
+        challenge, with the nonce count moved on. None when nothing is cached."""
+        challenge = self._digest
+        if not challenge or not challenge.get("nonce") or not challenge.get("realm"):
+            return None
+        realm = challenge["realm"]
+        nonce = challenge["nonce"]
+        qop = challenge.get("qop")
+        ha1 = hashlib.md5(f"{self.username}:{realm}:{self.password}".encode()).hexdigest()
+        ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()
+        parts = [
+            f'username="{self.username}"', f'realm="{realm}"', f'nonce="{nonce}"',
+            f'uri="{uri}"',
+        ]
+        if qop:
+            challenge["nc"] = challenge.get("nc", 0) + 1
+            nc = f"{challenge['nc']:08x}"
+            cnonce = os.urandom(8).hex()
+            response = hashlib.md5(
+                f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}".encode()
+            ).hexdigest()
+            parts += [f"qop={qop}", f"nc={nc}", f'cnonce="{cnonce}"', f'response="{response}"']
+        else:
+            response = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
+            parts.append(f'response="{response}"')
+        if challenge.get("opaque"):
+            parts.append(f'opaque="{challenge["opaque"]}"')
+        if challenge.get("algorithm"):
+            parts.append(f"algorithm={challenge['algorithm']}")
+        return "Digest " + ", ".join(parts)
+
+    def _fast_send(self, path: str, data: bytes, name: str) -> tuple[int, str, str]:
+        """One POST on the held connection. Returns (status, body, WWW-Authenticate).
+
+        The login is put in up front for the style the negotiation settled on:
+        the credentials ride in the SOAP body for wsse, in a Basic header for
+        basic, and in a Digest header computed from the cached challenge for
+        digest. So there is no 401 round trip once the challenge is known.
+        """
+        import http.client
+
+        if self._conn is None:
+            self._conn = http.client.HTTPConnection(self.host, self.port, timeout=TIMEOUT)
+        headers = {
+            "Content-Type": "application/soap+xml; charset=utf-8",
+            "Connection": "keep-alive",
+        }
+        if name == "basic":
+            cred = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
+            headers["Authorization"] = f"Basic {cred}"
+        elif name == "digest":
+            auth = self._digest_authorization("POST", path)
+            if auth:
+                headers["Authorization"] = auth
+        self._conn.request("POST", path, body=data, headers=headers)
+        response = self._conn.getresponse()
+        text = response.read().decode("utf-8", "replace")
+        return response.status, text, response.getheader("WWW-Authenticate", "") or ""
+
+    def _keepalive_post(self, path: str, body: str, expect: str) -> str | None:
+        """A SOAP call over the connection held from the last one, or None.
+
+        None means "fall back to the per-command path": a socket the camera
+        dropped on idle, a login it no longer accepts, a fault, an answer that is
+        not what was asked for - every one of those returns None so `_post`'s
+        proven path runs and, if it is a real refusal, surfaces it there. Only a
+        clean, acknowledged answer is returned from here. Because the only PTZ
+        commands are move/stop/home/set_home, all of them idempotent, a fast
+        attempt that reached the camera and then failed to be read is harmless to
+        repeat on the fallback.
+        """
+        name = self.capability.auth
+        header = _security_header(self.username, self.password) if name == "wsse" else ""
+        data = _envelope(body, header)
+        try:
+            status, text, www_auth = self._fast_send(path, data, name)
+            if status == 401 and name == "digest" and www_auth:
+                # First fast command for a digest camera: learn the challenge,
+                # then send again with the response. Cached after this.
+                challenge = self._parse_challenge(www_auth)
+                if challenge.get("nonce") and challenge.get("realm"):
+                    self._digest = {**challenge, "nc": 0}
+                    status, text, www_auth = self._fast_send(path, data, name)
+            if status == 200:
+                try:
+                    _check_answer(text, expect)
+                except PtzError:
+                    # A fault or a login page - not a clean answer. Fall back so
+                    # the per-command path re-negotiates and surfaces it properly.
+                    self._close_conn()
+                    self._note_fast_fail()
+                    return None
+                self._fast_fails = 0
+                return text
+            # A refused login (401/403) or anything else: drop it and fall back.
+            self._close_conn()
+            self._note_fast_fail()
+            return None
+        except Exception:  # noqa: BLE001 - any transport trouble is a fall-back, never a crash
+            self._close_conn()
+            self._note_fast_fail()
+            return None
 
     # ------------------------------------------------------------- discovery
 
@@ -692,6 +855,22 @@ class OnvifPtz:
             "</GotoHomePosition>"
         )
         self._post("/onvif/ptz_service", body, expect="GotoHomePositionResponse")
+
+    def set_home(self) -> None:
+        """Save where the head is now as its home position.
+
+        ONVIF SetHomePosition. FLIR/Nexus reports a CONFIGURABLE home
+        (FixedHomePosition=false on their own conformance run), so this is a real
+        operation on this camera and not a preset stand-in. A camera that
+        refuses it - a fixed-home unit - answers with a SOAP fault, which _post
+        surfaces exactly as it does for any other command.
+        """
+        body = (
+            f'<SetHomePosition xmlns="{PTZ}">'
+            f"<ProfileToken>{_xml(self._profile())}</ProfileToken>"
+            "</SetHomePosition>"
+        )
+        self._post("/onvif/ptz_service", body, expect="SetHomePositionResponse")
 
     def position(self, profile: str | None = None) -> dict | None:
         """Where the head is now, if the camera will say.

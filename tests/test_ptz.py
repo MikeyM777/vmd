@@ -98,7 +98,7 @@ class FakeCamera(BaseHTTPRequestHandler):
             self._reply(200, ENCODERS)
         else:
             command = next(
-                (name for name in ("ContinuousMove", "GotoHomePosition", "Stop") if f"<{name} " in body),
+                (name for name in ("ContinuousMove", "GotoHomePosition", "SetHomePosition", "Stop") if f"<{name} " in body),
                 "",
             )
             if not command:
@@ -195,6 +195,61 @@ def test_stop_stops_both_axes_and_zoom(camera: tuple[str, int]) -> None:
 def test_home_is_sent_as_a_home_command(camera: tuple[str, int]) -> None:
     connected(camera).home()
     assert "GotoHomePosition" in last_body("GotoHomePosition")
+
+
+def test_set_home_is_sent_as_a_set_home_command(camera: tuple[str, int]) -> None:
+    connected(camera).set_home()
+    assert "SetHomePosition" in last_body("SetHomePosition")
+
+
+def test_the_keep_alive_path_carries_commands_without_falling_back(
+    camera: tuple[str, int],
+) -> None:
+    """Once the login is known, the fast path (one held connection, login sent
+    up front) carries commands itself - it must not silently fall back to the
+    per-command path on a healthy camera, or the lag it exists to remove stays."""
+    ptz = connected(camera)
+    ptz.move(0.2, 0.0, 0.0)
+    ptz.stop()
+    ptz.home()
+    assert "ContinuousMove" in last_body("ContinuousMove")
+    assert "Stop" in last_body("Stop")
+    # The fast path succeeded every time: nothing latched it off, no fallback
+    # was counted, and the connection is being held for the next command.
+    assert ptz._fast_ok is True
+    assert ptz._fast_fails == 0
+    assert ptz._conn is not None
+
+
+def test_a_digest_authorization_is_a_valid_rfc2617_response() -> None:
+    """The preemptive digest header the fast path sends must be a correct
+    challenge response, or a digest camera would 401 it and the fast path would
+    fall back for ever. Checked by recomputing the hash from the header's own
+    nc/cnonce."""
+    ptz = OnvifPtz("host", "u", "p")
+    ptz._digest = {"realm": "onvif", "nonce": "abc", "qop": "auth", "nc": 0}
+    header = ptz._digest_authorization("POST", "/onvif/ptz_service")
+    assert header.startswith("Digest ")
+    fields = OnvifPtz._parse_challenge(header[len("Digest "):])
+    ha1 = hashlib.md5(b"u:onvif:p").hexdigest()
+    ha2 = hashlib.md5(b"POST:/onvif/ptz_service").hexdigest()
+    expected = hashlib.md5(
+        f"{ha1}:abc:{fields['nc']}:{fields['cnonce']}:auth:{ha2}".encode()
+    ).hexdigest()
+    assert fields["response"] == expected
+    assert fields["nc"] == "00000001"
+    assert fields["uri"] == "/onvif/ptz_service"
+
+
+def test_the_digest_nonce_count_advances_each_call() -> None:
+    """RFC digest requires a rising nc for a reused nonce, or the camera treats
+    the second command as a replay and rejects it."""
+    ptz = OnvifPtz("host", "u", "p")
+    ptz._digest = {"realm": "onvif", "nonce": "abc", "qop": "auth", "nc": 0}
+    first = OnvifPtz._parse_challenge(ptz._digest_authorization("POST", "/x")[7:])
+    second = OnvifPtz._parse_challenge(ptz._digest_authorization("POST", "/x")[7:])
+    assert first["nc"] == "00000001"
+    assert second["nc"] == "00000002"
 
 
 def test_a_wrong_password_is_reported_in_the_camera_s_own_words(camera: tuple[str, int]) -> None:
