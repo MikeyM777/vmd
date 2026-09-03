@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from vmd.desktop.logs import LogBuffer, attach
@@ -53,6 +54,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="N",
         help="open on screen N, counting from 1 (for one console per monitor)",
     )
+    parser.add_argument(
+        "--place",
+        choices=("left", "right"),
+        default=None,
+        help="fill the left or right half of the screen (two consoles, one monitor)",
+    )
     return parser.parse_args(argv)
 
 
@@ -83,7 +90,49 @@ def place_on_screen(window, number: int | None, screens: list) -> bool:
             len(screens),
         )
         return False
+    # Clear a maximised/fullscreen state first, exactly as place_half does: a
+    # window restored maximised (window.py restores the saved state before this
+    # runs) ignores a geometry it is given and stays on whatever monitor it was
+    # maximised on, so --screen / settings.screen would silently do nothing.
+    window.setWindowState(
+        window.windowState() & ~Qt.WindowState.WindowMaximized & ~Qt.WindowState.WindowFullScreen
+    )
     window.setGeometry(screens[number - 1])
+    return True
+
+
+def place_half(window, side: str | None, screens: list, number: int | None = None) -> bool:
+    """Fill the left or right half of one screen. Says whether it did.
+
+    This is the one-monitor answer, where `place_on_screen` is the two-monitor
+    one: both cameras live on the same panel, 250 on the left and 251 on the
+    right, opened together by one shortcut. The two halves are cut so they meet
+    with no gap and no overlap - the left takes the floor of half the width and
+    the right takes the rest - so an odd number of pixels does not leave a seam
+    or steal a column from one side.
+
+    A maximised or fullscreen window ignores a geometry it is given, so the state
+    is cleared first: a window restored maximised from yesterday would otherwise
+    swallow the whole screen and hide the other camera behind it.
+
+    `number` names the screen to halve, for a machine that has more than one and
+    still wants both cameras on a chosen one; out of range or None means the
+    first. A side of None is how "no --place was given" reaches here, and it does
+    nothing, so the remembered geometry stays the whole answer.
+    """
+    if side not in ("left", "right"):
+        return False
+    if not screens:
+        return False
+    index = number - 1 if (number and 1 <= number <= len(screens)) else 0
+    geometry = screens[index]
+    half = geometry.width() // 2
+    x = geometry.x() + (0 if side == "left" else half)
+    width = half if side == "left" else geometry.width() - half
+    window.setWindowState(
+        window.windowState() & ~Qt.WindowState.WindowMaximized & ~Qt.WindowState.WindowFullScreen
+    )
+    window.setGeometry(x, geometry.y(), width, geometry.height())
     return True
 
 
@@ -316,11 +365,14 @@ def main(argv: list[str] | None = None) -> int:
     # leaves the remembered window as the whole answer. The command line wins so
     # that a console can be put on the other screen once without editing
     # anything, which is what somebody standing at the machine will want.
-    place_on_screen(
-        window,
-        args.screen if args.screen is not None else settings.screen,
-        [screen.availableGeometry() for screen in app.screens()],
-    )
+    screens = [screen.availableGeometry() for screen in app.screens()]
+    on_screen = args.screen if args.screen is not None else settings.screen
+    # --place wins when it is given: it is the one-monitor, two-cameras layout the
+    # VMD button opens, and it must not be undone by a remembered geometry or by a
+    # settings.screen meant for the two-monitor case. Without it, nothing changes -
+    # place_on_screen and the remembered window stay the whole answer.
+    if not place_half(window, args.place, screens, on_screen):
+        place_on_screen(window, on_screen, screens)
     window.show()
     return app.exec()
 

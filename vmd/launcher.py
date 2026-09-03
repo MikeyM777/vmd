@@ -138,15 +138,32 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = project_root()
 
+    # Whether a watchdog is holding this launcher (scripts\run_console.ps1). Every
+    # failure below normally ends at "Press Enter to close" so a person at the
+    # machine can read it - but under the watchdog nobody is there, and a blocked
+    # `input()` would freeze the reopen loop on the first failure, which is the
+    # black screen the watchdog exists to prevent. So under supervision each of
+    # these prints its diagnosis and returns a non-zero code, and the watchdog
+    # reopens (with a widening backoff for a failure that repeats on start). A
+    # clean exit still returns 0, which is how the watchdog knows to stay closed.
+    supervised = os.environ.get("VMD_SUPERVISED") == "1"
+
+    def bail(message: str) -> int:
+        if supervised:
+            if message:
+                print(message)
+            return 1
+        return hold(message)
+
     if not (root / "vmd" / "desktop").is_dir():
-        return hold(
+        return bail(
             f"\n  This does not look like the VMD folder:\n    {root}\n\n"
             "  Keep VMD.exe in the folder it was installed into."
         )
 
     uv, why_not = working_uv(root)
     if uv is None:
-        return hold(why_not)
+        return bail(why_not)
 
     # --no-sync --frozen --offline, because starting the console must not be a
     # network operation. `uv run` on its own re-checks the lock file and syncs,
@@ -168,11 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 0
     except OSError as exc:
-        return hold(f"\n  Could not start the console: {exc}")
+        return bail(f"\n  Could not start the console: {exc}")
 
     if completed.returncode != 0:
-        # The console prints its own diagnosis; this only keeps the window up
-        # long enough to read it when it was started from Explorer.
+        # The console prints its own diagnosis. Unsupervised this only keeps the
+        # window up long enough to read it; under the watchdog the code is handed
+        # straight back so the reopen loop can act on it. `bail("")` does both -
+        # but the crash code itself is returned so a widening backoff can tell a
+        # console that ran and fell over from one that dies the instant it opens.
+        if supervised:
+            return completed.returncode
         return hold("")
     return 0
 

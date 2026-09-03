@@ -140,6 +140,16 @@ $WINLOGON      = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 # the right answer for one camera and the wrong one for two.
 function Get-Consoles { Get-VmdConsoles $root }
 
+# Which half of the one screen a console takes when the cameras auto-start
+# together: the first camera on the left, the second on the right, any beyond
+# that none - a screen only splits in two. The same rule as the VMD button
+# (scripts\open_all_cameras.ps1), so a reboot lands the pictures exactly where a
+# double-click of the button would. Returns '' for "no half", which the
+# launchers treat as "open where it was left".
+function Get-ConsolePlace([int]$index) {
+    switch ($index) { 0 { 'left' } 1 { 'right' } default { '' } }
+}
+
 # Every task this script has ever created, so that switching it off takes away
 # the ones a previous layout left behind. Asked of Windows by name pattern
 # rather than worked out from what is on the disk: a camera folder deleted by
@@ -196,9 +206,14 @@ function Install-StartupShortcuts {
     $consoleScript  = Join-Path $PSScriptRoot 'startup_console.ps1'
     $made = @()
 
-    foreach ($console in @(Get-Consoles)) {
+    $consoles = @(Get-Consoles)
+    for ($ci = 0; $ci -lt $consoles.Count; $ci++) {
+        $console = $consoles[$ci]
         $suffix = $console.Suffix
         $forWhat = if ($suffix) { " for camera$suffix" } else { "" }
+        # Only split the screen when there is more than one camera - a lone
+        # console opens full, exactly as the VMD button does (open_all_cameras.ps1).
+        $place = if ($consoles.Count -ge 2) { Get-ConsolePlace $ci } else { '' }
 
         $ok = New-StartupShortcut "$RECORDER_TASK$suffix" 'powershell.exe' `
             ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $recorderScript, $console.Settings) `
@@ -206,13 +221,16 @@ function Install-StartupShortcuts {
         if ($ok) { $made += "$RECORDER_TASK$suffix"; Write-Ok "`"$RECORDER_TASK$suffix`" put in the Startup folder - recording starts at sign-in." }
 
         if (Test-Path $exe) {
-            # Through startup_console.ps1 rather than straight at VMD.exe, for
-            # the 45-second delay: a shortcut cannot wait, and a console that
-            # opens before the recorder has written recorder.pid starts a second
-            # recorder of its own.
+            # Through startup_console.ps1, which waits 45 seconds - a shortcut
+            # cannot wait, and a console that opens before the recorder has
+            # written recorder.pid starts a second recorder of its own - and
+            # then hands off to the watchdog (run_console.ps1) with the half of
+            # the screen this camera takes, so a power cut brings both back side
+            # by side and each reopens itself if it crashes.
+            $placeArg = if ($place) { (' -Place {0}' -f $place) } else { '' }
             $ok = New-StartupShortcut "$CONSOLE_TASK$suffix" 'powershell.exe' `
-                ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $consoleScript, $console.Settings) `
-                $root "Opens the VMD console$forWhat 45 seconds after sign-in."
+                ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"{2}' -f $consoleScript, $console.Settings, $placeArg) `
+                $root "Opens the VMD console$forWhat 45 seconds after sign-in, and reopens it if it crashes."
             if ($ok) { $made += "$CONSOLE_TASK$suffix"; Write-Ok "`"$CONSOLE_TASK$suffix`" put in the Startup folder - the console opens 45 seconds later." }
         }
     }
@@ -378,9 +396,14 @@ function Install-Tasks {
         }
     }
 
-    foreach ($console in $consoles) {
+    $consoleScript = Join-Path $PSScriptRoot 'run_console.ps1'
+    for ($ci = 0; $ci -lt $consoles.Count; $ci++) {
+        $console = $consoles[$ci]
         $suffix = $console.Suffix
         $forWhat = if ($suffix) { " for camera$suffix" } else { "" }
+        # Only split the screen when there is more than one camera - a lone
+        # console opens full, exactly as the VMD button does (open_all_cameras.ps1).
+        $place = if ($consoles.Count -ge 2) { Get-ConsolePlace $ci } else { '' }
 
         # --- the recorder -----------------------------------------------------
         # The settings file is passed even in the single-camera case, where it is
@@ -410,9 +433,17 @@ function Install-Tasks {
         }
 
         # --- the console ------------------------------------------------------
+        # Through scripts\run_console.ps1 - the watchdog - not straight at
+        # VMD.exe. A crash used to leave a black screen until the next sign-in;
+        # the watchdog reopens the console on its own. And --place puts it on its
+        # half of the screen, so after a reboot or a power cut both cameras come
+        # back side by side, exactly as the VMD button opens them. The task keeps
+        # its own 45-second delay for the recorder.pid race; the watchdog opens
+        # at once, so nothing waits twice.
         if (Test-Path $exe) {
-            $consoleAction = New-ScheduledTaskAction -Execute $exe `
-                -Argument ('--settings "{0}"' -f $console.Settings) `
+            $placeArg = if ($place) { (' -Place {0}' -f $place) } else { '' }
+            $consoleAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"{2}' -f $consoleScript, $console.Settings, $placeArg) `
                 -WorkingDirectory $root
             $consoleTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
             # 45 seconds after sign-in, so the recorder has written recorder.pid
@@ -420,10 +451,10 @@ function Install-Tasks {
             $consoleTrigger.Delay = 'PT45S'
             try {
                 Register-ScheduledTask -TaskName "$CONSOLE_TASK$suffix" -Force `
-                    -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid." `
+                    -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid. Reopens itself if it crashes." `
                     -Action $consoleAction -Trigger $consoleTrigger `
                     -Principal $principal -Settings $settings | Out-Null
-                Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later."
+                Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later, and reopens itself if it crashes."
             } catch {
                 $refused += "$CONSOLE_TASK$suffix"
                 if (-not $refusal) { $refusal = $_.Exception.Message }

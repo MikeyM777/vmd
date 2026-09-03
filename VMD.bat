@@ -48,10 +48,17 @@ REM  allowed to change.
 "%UV%" run --offline --frozen --no-sync python -m vmd.desktop %*
 set RESULT=%ERRORLEVEL%
 
-if %RESULT% NEQ 0 (
-  echo.
-  echo   The console stopped with an error. The message above says why.
-  echo.
-  pause
+REM  Only wait for a keypress when a person is here to press it. Under the
+REM  watchdog (scripts\run_console.ps1) VMD_SUPERVISED=1 is set, and a "pause"
+REM  then would block Start-Process -Wait for ever - freezing the reopen loop on
+REM  the first crash, which is the black screen the watchdog exists to prevent.
+REM  Either way the real exit code is handed back so the watchdog can relaunch.
+if not "%VMD_SUPERVISED%"=="1" (
+  if %RESULT% NEQ 0 (
+    echo.
+    echo   The console stopped with an error. The message above says why.
+    echo.
+    pause
+  )
 )
 exit /b %RESULT%

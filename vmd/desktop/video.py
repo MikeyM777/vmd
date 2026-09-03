@@ -215,15 +215,27 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, boxes: bool = False) -> list[s
     behind it further back, which is what stops a delay that has happened once
     from becoming permanent.
 
-    Hardware decoding stays, and it is the weakest of these decisions. It
-    buffers a frame or two - about 40-80 ms at 25 fps - which is a real part of
-    the remaining delay. It was kept because this console draws two pictures
-    beside each other on a machine that also records and detects; at the FHD
-    these cameras actually send, rather than the 4K assumed when this was
-    written, software decoding is well within a desktop's reach and the trade is
-    worth reopening. `spike/probe_delay.py` runs a pane with it off, side by
-    side with one that has it on, so that is measured on the machine rather than
-    argued about here.
+    Hardware decoding is OFF, and that is the change that stopped the crashes.
+    It was `--avcodec-hw=any`, and it was the weakest decision here from the
+    start - the docstring above already said "the trade is worth reopening". The
+    field reopened it: the console crashed at random, taking the whole window
+    with it, and the fault was a native heap corruption (Windows 0xc0000409, a
+    C-runtime fast-fail) inside the decode path - the signature of two hardware
+    decoders sharing one process on a driver that cannot take it. Plain VLC does
+    not crash on the same stream because plain VLC decodes ONE stream in ONE
+    process; this console draws two beside each other and also records and
+    detects, so two GPU decode sessions live in the one process, and that is the
+    combination that fell over.
+
+    Software decode removes the crash outright: the frames live in ordinary
+    memory, which is the path VLC's own subtitles and this console's detection
+    box overlay already rely on, and it is stable. The cost is CPU - two FHD
+    streams, which is well within a desktop and was measured to be within this
+    laptop too - and the 40-80 ms of decoder buffering that hardware added is
+    gone, so the picture is if anything slightly closer to live. `spike/probe_delay.py`
+    runs a pane each way, so the CPU is measured on the machine rather than
+    argued about here. If a future machine genuinely needs the GPU back, this is
+    the one line to change, and it must be changed knowing it is what crashed.
     """
     delay = max(0, int(delay_ms))
     options = [
@@ -234,7 +246,11 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, boxes: bool = False) -> list[s
         "--rtsp-tcp",  # what both VLC and go2rtc negotiate anyway
         "--no-audio",  # never listened to: one less decode, one less failure
         "--no-video-title-show",
-        "--avcodec-hw=any",  # hardware decode where the machine offers it
+        # Software decode, deliberately. Hardware decode (`--avcodec-hw=any`) is
+        # what crashed the console in the field - two GPU decode sessions in one
+        # process, a native heap corruption that no try/except can catch. See the
+        # docstring above before ever turning this back on.
+        "--avcodec-hw=none",
     ]
     if boxes:
         # The box round what moved, composited by libVLC itself rather than

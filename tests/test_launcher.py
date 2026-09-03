@@ -280,3 +280,87 @@ def test_the_check_that_uv_works_cannot_hang_the_launcher(
     launcher.main([])
     probe = next(call for call in seen if call["command"][:2] == [str(bundled), "--version"])
     assert probe.get("timeout"), "the probe waits for ever on a uv that has wedged"
+
+
+# --- the watchdog contract -----------------------------------------------------
+#
+# scripts\run_console.ps1 reopens the console after a crash and leaves it closed
+# after a deliberate close. It can only tell the two apart by the exit code, and
+# it can only get an exit code at all if the launcher does not first stop at
+# "Press Enter to close" - a blocked input() on an unattended machine would
+# freeze the reopen loop on the first crash, which is the black screen the
+# watchdog exists to prevent. VMD_SUPERVISED is how the watchdog says so.
+
+
+def stub_run_returning(monkeypatch, code: int) -> None:
+    """subprocess.run where the console exits with this code.
+
+    The `uv --version` probe still has to answer 0, or the launcher decides uv
+    is broken and never reaches the run whose code this test is about.
+    """
+
+    def run(command, **kwargs):
+        is_probe = len(command) >= 2 and command[1] == "--version"
+        return type("R", (), {"returncode": 0 if is_probe else code})()
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+
+
+def _hold_must_not_be_called(monkeypatch) -> None:
+    def boom(message):  # pragma: no cover - only runs if the contract is broken
+        raise AssertionError("hold() would block the watchdog under supervision")
+
+    monkeypatch.setattr(launcher, "hold", boom)
+
+
+def test_under_supervision_a_crash_is_handed_back_not_held(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A non-zero exit returns its code and never blocks, so the watchdog can
+    reopen the console instead of a person having to."""
+    project(tmp_path, monkeypatch)
+    monkeypatch.setenv("VMD_SUPERVISED", "1")
+    _hold_must_not_be_called(monkeypatch)
+    stub_run_returning(monkeypatch, 3221226505)  # 0xC0000409, the field crash
+
+    assert launcher.main([]) == 3221226505
+
+
+def test_under_supervision_a_clean_close_still_returns_zero(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Zero is how the watchdog knows the operator closed it on purpose and it
+    must stay closed."""
+    project(tmp_path, monkeypatch)
+    monkeypatch.setenv("VMD_SUPERVISED", "1")
+    _hold_must_not_be_called(monkeypatch)
+    stub_run_returning(monkeypatch, 0)
+
+    assert launcher.main([]) == 0
+
+
+def test_under_supervision_a_missing_uv_does_not_block(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Even the start-up failures return rather than wait for a keypress, so a
+    broken machine is retried with a backoff rather than freezing the loop."""
+    project(tmp_path, monkeypatch, uv_on_path=None)
+    monkeypatch.setenv("VMD_SUPERVISED", "1")
+    _hold_must_not_be_called(monkeypatch)
+
+    assert launcher.main([]) == 1
+
+
+def test_unsupervised_a_crash_still_holds_the_window(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A developer double-clicking VMD.exe still gets the diagnosis kept on
+    screen - the supervised path must not change the ordinary one."""
+    project(tmp_path, monkeypatch)
+    monkeypatch.delenv("VMD_SUPERVISED", raising=False)
+    held: list[str] = []
+    monkeypatch.setattr(launcher, "hold", lambda message: (held.append(message), 1)[1])
+    stub_run_returning(monkeypatch, 1)
+
+    assert launcher.main([]) == 1
+    assert held, "unsupervised, a crash must keep the window up to be read"
