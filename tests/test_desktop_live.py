@@ -2533,16 +2533,24 @@ def test_a_button_appears_for_each_camera(qtbot) -> None:
     assert sorted(tab.camera_buttons()) == ["250", "251"]
 
 
-def test_the_camera_this_console_shows_cannot_be_pressed(qtbot) -> None:
-    """Pressing it would start a second console on the camera already in front
-    of him."""
+def test_pressing_the_camera_already_showing_does_nothing(qtbot) -> None:
+    """It would otherwise start a second console on the camera already in front
+    of him.
+
+    Left pressable and asking for nothing, exactly as the active view button
+    is, rather than disabled: a disabled button is drawn greyed, and greyed in
+    this row read as "this is the camera you are NOT watching" - the opposite of
+    what it means.
+    """
     tab, _ptz, _ = build(qtbot, "thermal")
-
     tab.set_cameras(["250", "251"], showing="250")
+    asked: list[str] = []
+    tab.camera_asked.connect(asked.append)
 
-    assert tab.camera_buttons()["250"].isEnabled() is False
-    assert tab.camera_buttons()["250"].isChecked() is True
-    assert tab.camera_buttons()["251"].isEnabled() is True
+    tab.camera_buttons()["250"].click()
+
+    assert asked == []
+    assert tab.camera_buttons()["250"].isEnabled() is True
 
 
 def test_pressing_the_other_camera_asks_the_window_for_it(qtbot) -> None:
@@ -2587,8 +2595,13 @@ def test_the_row_is_redrawn_rather_than_added_to(qtbot) -> None:
     tab.set_cameras(["250", "251"], showing="251")
 
     assert sorted(tab.camera_buttons()) == ["250", "251"]
-    assert tab.camera_buttons()["251"].isEnabled() is False
-    assert tab.camera_buttons()["250"].isEnabled() is True
+    # And the second drawing is the one in force: 250 is now the other camera,
+    # so it asks, and 251 - the one being shown - does not.
+    asked: list[str] = []
+    tab.camera_asked.connect(asked.append)
+    tab.camera_buttons()["251"].click()
+    tab.camera_buttons()["250"].click()
+    assert asked == ["250"]
 
 
 def test_the_camera_buttons_cannot_take_the_arrow_keys(qtbot) -> None:

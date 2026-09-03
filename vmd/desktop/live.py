@@ -189,6 +189,13 @@ EVENTS_POLL_SECONDS = 0.0
 # a call that is blocked.
 MOVEMENT_POLL_MS = 250
 
+# How often the live "is it stuck?" tick on each playing picture is moved, in
+# milliseconds. A quarter second, matched to how often the pane recounts its
+# decoded pictures (`VlcVideoPane._sample`), so the tick moves as fast as there
+# is anything new to show and a freeze becomes visible within about a second.
+# See `_tick_liveness`.
+LIVE_TICK_MS = 250
+
 # How big the picture of what moved is drawn in the alarm strip.
 #
 # 16:9 at 256 px wide. Wide enough to see a person-sized mark at 700 m - which
@@ -1139,6 +1146,15 @@ class LiveTab(QWidget):
         self._movement_timer.timeout.connect(self._refresh_events)
         if self._events_watch is not None:
             self._movement_timer.start(MOVEMENT_POLL_MS)
+
+        # The live "is it stuck?" tick, on its own fast timer rather than the
+        # two-second heartbeat: a stall has to show in about a second, not two,
+        # and it costs nothing when nothing is playing - `_tick_liveness` only
+        # touches panes that are both playing and on screen. Always running, so
+        # it is moving whatever tab the console is left on.
+        self._liveness_timer = QTimer(self)
+        self._liveness_timer.timeout.connect(self._tick_liveness)
+        self._liveness_timer.start(LIVE_TICK_MS)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Give the column a share of the tab rather than a number.
@@ -2346,16 +2362,31 @@ class LiveTab(QWidget):
                 widget.deleteLater()
         self._camera_buttons = {}
 
+        # A rule between the pictures and the cameras. Without it this is one
+        # row of seven buttons and "251" reads as a third view of the same
+        # camera rather than as another camera - which on a console whose whole
+        # fault was confusing one camera for another is the wrong thing to be
+        # unclear about.
+        if names or can_add:
+            rule = QFrame()
+            rule.setFrameShape(QFrame.Shape.VLine)
+            rule.setStyleSheet(f"color: {PALETTE['line']};")
+            self._camera_line.addWidget(rule)
+
         for name in names:
             button = QPushButton(str(name))
             # No focus, like everything else on this tab: a button holding the
             # keyboard is the next arrow key going nowhere, and on this tab
             # that is a camera that stops answering. See the rule above ARROWS.
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            if name == showing:
-                button.setCheckable(True)
-                button.setChecked(True)
-                button.setEnabled(False)
+            active = str(name) == str(showing)
+            self._dress_camera(button, active)
+            if active:
+                # Left pressable and connected to nothing, exactly as the active
+                # view button is: pressing "where you already are" does nothing.
+                # It is NOT disabled - a disabled button is drawn greyed, which
+                # in this row read as "this camera is the one you are NOT
+                # watching", the opposite of what it means.
                 button.setToolTip(f"This window is showing camera {name}.")
             else:
                 button.setToolTip(
@@ -2369,6 +2400,7 @@ class LiveTab(QWidget):
         if can_add:
             add = QPushButton("+")
             add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._dress_camera(add, False)
             add.setToolTip(
                 "Set up the other camera. It is asked for once, and after that "
                 "it is a button beside this one."
@@ -2382,6 +2414,31 @@ class LiveTab(QWidget):
     def camera_buttons(self) -> dict[str, QPushButton]:
         """The camera buttons by what they say, for the window and for tests."""
         return dict(self._camera_buttons)
+
+    def _dress_camera(self, button: QPushButton, active: bool) -> None:
+        """The camera you are watching, in the same words the rest of this
+        console says "you are here" in.
+
+        Deliberately the vocabulary `ViewChooser._draw` uses - raised, ink, and
+        a bar in the accent - rather than a second way of marking an active
+        control. DESIGN.md permits the amber for exactly this, and one
+        vocabulary means the operator learns it once.
+        """
+        self._dress_button(button, active)
+
+    def _dress_button(self, button: QPushButton, active: bool) -> None:
+        button.setStyleSheet(
+            f"QPushButton {{ background: "
+            f"{PALETTE['raised'] if active else PALETTE['surface']}; "
+            f"color: {PALETTE['ink'] if active else PALETTE['muted']}; "
+            f"border: 1px solid {PALETTE['line']}; "
+            f"border-bottom: 2px solid "
+            f"{PALETTE['accent'] if active else PALETTE['line']}; "
+            f"font-size: {SIZE_BODY}px; "
+            f"font-weight: {WEIGHT_VALUE if active else 400}; "
+            f"padding: {SPACE_SNUG}px {SPACE_GROUP}px; }}"
+            f"QPushButton:hover {{ color: {PALETTE['ink']}; }}"
+        )
 
     def _fit_cameras(self) -> None:
         """Show the camera row when there is a choice and the screen is not full.
@@ -2804,15 +2861,38 @@ class LiveTab(QWidget):
         label = self._labels.get(name)
         return label.styleSheet() if label is not None else ""
 
+    def _label_text(self, name: str) -> str:
+        """The name plate's words: the view, its state, and - while it is
+        playing - a live tick that moves only as long as real pictures arrive.
+
+        The tick is the operator's own eye on "is this stuck?". It is the pane's
+        count of DECODED pictures (`frames_seen`, updated four times a second in
+        `VlcVideoPane._sample`), with a little spinner turned by that same count.
+        When the stream freezes, the decoder stops handing over pictures, the
+        count stops climbing, and the spinner stops turning - so a stall the
+        camera is causing is visible on the plate within about a second, on the
+        picture it is happening to, without reading any number in particular.
+        The count itself is shown too, because a number he can watch not change
+        is a stronger signal than a glyph he has to have been watching.
+        """
+        state = self._status.get(name, "stopped")
+        words = STATE_WORDS.get(state, state)
+        if state == "failed" and self._restarts.get(name, 0) >= GIVING_UP_AFTER:
+            words = GIVEN_UP_WORDS
+        text = f"{name}  -  {words}"
+        pane = self._panes.get(name)
+        if state == "playing" and pane is not None:
+            count = int(getattr(pane, "frames_seen", 0) or 0)
+            spinner = "|/-\\"[count % 4]
+            text = f"{name}  -  {words}   {spinner} {count}"
+        return text
+
     def _set_status(self, name: str, state: str) -> None:
         self._status[name] = state
         label = self._labels.get(name)
         if label is None:
             return
-        words = STATE_WORDS.get(state, state)
-        if state == "failed" and self._restarts.get(name, 0) >= GIVING_UP_AFTER:
-            words = GIVEN_UP_WORDS
-        label.setText(f"{name}  -  {words}")
+        label.setText(self._label_text(name))
         # The instrument label from DESIGN.md: a tag on a plate at the top of
         # the picture, in the same monospace as every other reading, coloured by
         # the state it is reporting. The colour is never the only signal - the
@@ -2823,6 +2903,26 @@ class LiveTab(QWidget):
             f"font-family: {MONO}; font-size: {SIZE_HEADING}px; "
             f"font-weight: {WEIGHT_VALUE};"
         )
+
+    def _tick_liveness(self) -> None:
+        """Move the live tick on every playing, visible picture.
+
+        Text only, and only the panes that are both playing and on screen: the
+        colour and the state words are the heartbeat's job (`_set_status`), and
+        re-styling a label four times a second would repaint it for nothing. A
+        pane that is stopped, late or failed is left exactly as the heartbeat
+        drew it - its plate is not claiming to be alive, so it has no tick to
+        move.
+        """
+        for name, pane in self._panes.items():
+            if self._status.get(name) != "playing":
+                continue
+            frame = self._frames.get(name)
+            if frame is None or not frame.isVisibleTo(self):
+                continue
+            label = self._labels.get(name)
+            if label is not None:
+                label.setText(self._label_text(name))
 
     # --------------------------------------------------------------- steering
 
@@ -2943,6 +3043,7 @@ class LiveTab(QWidget):
         would leave the head slewing with nobody watching.
         """
         self._movement_timer.stop()
+        self._liveness_timer.stop()
         self.stop_steering()
         self._commands.close()
 
