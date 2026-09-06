@@ -66,6 +66,7 @@ from vmd.desktop.style import (
     state_colour,
     state_glyph,
 )
+from vmd.desktop.sysload import SystemLoad, format_load
 from vmd.desktop.video import VideoPane
 from vmd.radio.panel import STALE_AFTER_SECONDS
 from vmd.settings import (
@@ -664,6 +665,21 @@ class StatusBand(QFrame):
         )
         name.setContentsMargins(0, 0, SPACE_WIDE, 0)
         row.addWidget(name)
+        # The two numbers Task Manager's front page carries - processor load and
+        # memory load - because the console runs where nobody is standing and the
+        # question they answer is the one this build keeps asking: is the picture
+        # late because the CPU cannot decode two FHD streams in software. Left of
+        # the chips and always there, its own reading rather than a fault, so it
+        # is read as a gauge and not as an alarm - until the processor hits the
+        # wall, when it goes red and the answer is yes. Empty on a machine that
+        # will not give the readings, so it then takes no room at all.
+        self._load = QLabel("")
+        self._load.setStyleSheet(
+            f"background: transparent; color: {PALETTE['muted']}; "
+            f"font-family: {MONO}; font-size: {SIZE_BAND}px;"
+        )
+        self._load.setContentsMargins(0, 0, SPACE_WIDE, 0)
+        row.addWidget(self._load)
         self._row = row
         # The room to the right of the chips, so that each is as wide as what it
         # is saying rather than a quarter of the window. Four words used to be
@@ -696,6 +712,24 @@ class StatusBand(QFrame):
     def painted(self) -> list[str]:
         """What is actually drawn, shortened to the room there is."""
         return [chip.painted_text() for chip in self._chips if chip.isVisibleTo(self)]
+
+    def set_load(self, text: str, at_wall: bool = False) -> None:
+        """Draw the processor/memory line, red once the processor is at the wall.
+
+        Called on a heartbeat from the window. `text` is already the whole line
+        - see `sysload.format_load` - and is empty on a machine that cannot give
+        the readings, which leaves the label showing nothing and costing nothing.
+        """
+        self._load.setText(text)
+        colour = PALETTE["alarm"] if at_wall else PALETTE["muted"]
+        self._load.setStyleSheet(
+            f"background: transparent; color: {colour}; "
+            f"font-family: {MONO}; font-size: {SIZE_BAND}px;"
+        )
+
+    def load_text(self) -> str:
+        """What the readout is saying, for the window and for the tests."""
+        return self._load.text()
 
     def recording_glyph(self) -> str:
         """The dot itself, for the tests: a circle beats a bar."""
@@ -1023,6 +1057,11 @@ class ConsoleWindow(QMainWindow):
         self._save_pool.setMaxThreadCount(1)
         self._saving: list[_SaveSignals] = []
 
+        # The processor/memory readout's own reader. It holds one previous CPU
+        # sample and nothing else; the band draws what it hands back, on the same
+        # heartbeat as everything else. Built here so the first heartbeat has it.
+        self._sysload = SystemLoad()
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.heartbeat)
         self._timer.start(HEARTBEAT_MS)
@@ -1319,6 +1358,23 @@ class ConsoleWindow(QMainWindow):
         self._tell_live_about_recording(state)
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
+        self._refresh_load()
+
+    def _refresh_load(self) -> None:
+        """Read this machine's processor and memory load and draw it on the band.
+
+        Guarded like every other heartbeat step: a reading that will not come is
+        an empty line, never a stopped console. The CPU number is measured across
+        the gap since the last heartbeat, so it is a two-second load and steadier
+        to read than the second-by-second one Task Manager jumps around with.
+        """
+        try:
+            load = self._sysload.read()
+            self.band.set_load(
+                format_load(load), at_wall=load is not None and load.cpu_at_wall
+            )
+        except Exception:  # noqa: BLE001 - the readout is a gauge, never a gate
+            logger.exception("the processor/memory readout could not be drawn")
 
     def _tell_live_about_detection(self, state) -> None:
         """Let the movement list know whether anything is watching.
