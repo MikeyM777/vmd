@@ -26,9 +26,9 @@
 #  What changed from the older version of this file: it set up ONE camera per run
 #  and you ran it twice; now it sets up BOTH in one go, and instead of a shortcut
 #  per camera it makes a single desktop button, "VMD", that opens the two of them
-#  split across the one screen - 250 on the left, 251 on the right - each behind
-#  the crash-watchdog (scripts\run_console.ps1), so a console that falls over
-#  comes straight back on its own half.
+#  split across the one screen - 250 on the left, 251 on the right - each through
+#  scripts\run_console.ps1, which opens the console once and does not reopen it if
+#  it is closed or crashes.
 #
 #  ---------------------------------------------------------------------------
 #  Why the folder is named after the address
@@ -182,8 +182,8 @@ REM  Opens the VMD console for camera $label on its own.
 REM
 REM  The usual way in is the "VMD" button on the desktop, which
 REM  opens both cameras side by side. This file is the fallback:
-REM  it opens just this one, through scripts\run_console.ps1 (the
-REM  watchdog) so it reopens itself if it ever crashes.
+REM  it opens just this one, through scripts\run_console.ps1,
+REM  which opens it once and does not reopen it if it crashes.
 REM
 REM  Everything this console records lives in cameras\$label\.
 REM  Delete this file and nothing is lost but this fallback - run

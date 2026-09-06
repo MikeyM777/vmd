@@ -52,20 +52,21 @@ Start-Sleep -Seconds 45
 $binDir = Join-Path $root 'bin'
 if (Test-Path $binDir) { $env:Path = "$binDir;$env:Path" }
 
-# Hand off to the watchdog rather than opening VMD.exe directly. The watchdog
-# reopens the console on its own if it crashes, and puts it on its half of the
-# screen (-Place), so a power cut brings both cameras back side by side. The 45s
-# wait above is still this script's job - the watchdog opens at once, and a
-# shortcut cannot carry a delay of its own.
+# Hand off to run_console.ps1 rather than opening VMD.exe directly - it carries
+# the PATH and unattended setup in one place, and puts the console on its half of
+# the screen (-Place) so a power cut brings both cameras back side by side. It
+# opens the console once and does NOT reopen it if it crashes; that loop was
+# removed at the operator's request. The 45s wait above is still this script's
+# job - the console opens at once, and a shortcut cannot carry a delay of its own.
 $watchdog = Join-Path $PSScriptRoot 'run_console.ps1'
 # One quoted string, not an array: Start-Process does not quote array parts, so a
-# settings path with a space would reach the watchdog split in two.
+# settings path with a space would reach run_console.ps1 split in two.
 $watchArgs = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Settings "{1}"' -f $watchdog, $settings)
 if ($Place) { $watchArgs += " -Place $Place" }
 
 try {
     if (Test-Path $watchdog) {
-        Note "autostart: opening the console through the watchdog ($settings, place='$Place')"
+        Note "autostart: opening the console once ($settings, place='$Place')"
         Start-Process -FilePath 'powershell.exe' -ArgumentList $watchArgs -WorkingDirectory $root -WindowStyle Hidden | Out-Null
     } else {
         # The watchdog is missing only on a half-copied folder. Fall back to

@@ -282,14 +282,15 @@ def test_the_check_that_uv_works_cannot_hang_the_launcher(
     assert probe.get("timeout"), "the probe waits for ever on a uv that has wedged"
 
 
-# --- the watchdog contract -----------------------------------------------------
+# --- the unattended-launch contract --------------------------------------------
 #
-# scripts\run_console.ps1 reopens the console after a crash and leaves it closed
-# after a deliberate close. It can only tell the two apart by the exit code, and
-# it can only get an exit code at all if the launcher does not first stop at
-# "Press Enter to close" - a blocked input() on an unattended machine would
-# freeze the reopen loop on the first crash, which is the black screen the
-# watchdog exists to prevent. VMD_SUPERVISED is how the watchdog says so.
+# scripts\run_console.ps1 opens the console once, hidden, and passes its exit code
+# straight back - to the log and to the scheduled task's last-run result. It no
+# longer reopens after a crash; that loop was removed at the operator's request.
+# But it can only get an exit code at all if the launcher does not first stop at
+# "Press Enter to close" - a blocked input() on a machine opened hidden by a
+# scheduled task is an invisible hang that never returns. VMD_SUPERVISED is how
+# the launcher is told it is unattended and must return rather than wait.
 
 
 def stub_run_returning(monkeypatch, code: int) -> None:
@@ -316,8 +317,8 @@ def _hold_must_not_be_called(monkeypatch) -> None:
 def test_under_supervision_a_crash_is_handed_back_not_held(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """A non-zero exit returns its code and never blocks, so the watchdog can
-    reopen the console instead of a person having to."""
+    """A non-zero exit returns its code and never blocks, so the crash code
+    reaches the log instead of an invisible hang on a keypress nobody presses."""
     project(tmp_path, monkeypatch)
     monkeypatch.setenv("VMD_SUPERVISED", "1")
     _hold_must_not_be_called(monkeypatch)
@@ -329,8 +330,8 @@ def test_under_supervision_a_crash_is_handed_back_not_held(
 def test_under_supervision_a_clean_close_still_returns_zero(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Zero is how the watchdog knows the operator closed it on purpose and it
-    must stay closed."""
+    """Zero is a clean, deliberate close - recorded as such in the log rather
+    than as a crash."""
     project(tmp_path, monkeypatch)
     monkeypatch.setenv("VMD_SUPERVISED", "1")
     _hold_must_not_be_called(monkeypatch)
@@ -343,7 +344,7 @@ def test_under_supervision_a_missing_uv_does_not_block(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Even the start-up failures return rather than wait for a keypress, so a
-    broken machine is retried with a backoff rather than freezing the loop."""
+    hidden unattended launch does not freeze on an invisible input() prompt."""
     project(tmp_path, monkeypatch, uv_on_path=None)
     monkeypatch.setenv("VMD_SUPERVISED", "1")
     _hold_must_not_be_called(monkeypatch)

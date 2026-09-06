@@ -374,6 +374,20 @@ function Install-Tasks {
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -MultipleInstances IgnoreNew
 
+    # The console gets the same set WITHOUT the restart-on-failure: a console the
+    # operator closed must stay closed, and a console that crashed must stay down
+    # too - the reopen loop that used to bring it back was taken out at his
+    # request (see run_console.ps1). The recorder keeps its restart above, because
+    # the recording is the product and nobody is watching it fall over. Everything
+    # else - batteries, start-when-available, no time limit - is kept, so a task
+    # missed because the machine was off still runs when it comes back.
+    $consoleSettings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -MultipleInstances IgnoreNew
+
     # Anything from a previous layout goes first. Registering the new set on top
     # of the old one would leave a "VMD Console" opening a console for a camera
     # that is now "VMD Console 250" - two windows for one camera, one of them
@@ -433,13 +447,13 @@ function Install-Tasks {
         }
 
         # --- the console ------------------------------------------------------
-        # Through scripts\run_console.ps1 - the watchdog - not straight at
-        # VMD.exe. A crash used to leave a black screen until the next sign-in;
-        # the watchdog reopens the console on its own. And --place puts it on its
-        # half of the screen, so after a reboot or a power cut both cameras come
-        # back side by side, exactly as the VMD button opens them. The task keeps
-        # its own 45-second delay for the recorder.pid race; the watchdog opens
-        # at once, so nothing waits twice.
+        # Through scripts\run_console.ps1 - which opens the console once and does
+        # NOT reopen it - not straight at VMD.exe, so the PATH and unattended
+        # setup live in one place. It used to reopen on a crash; that was removed
+        # at the operator's request. --place puts it on its half of the screen,
+        # so after a reboot both cameras come back side by side, exactly as the
+        # VMD button opens them. The task keeps its own 45-second delay for the
+        # recorder.pid race.
         if (Test-Path $exe) {
             $placeArg = if ($place) { (' -Place {0}' -f $place) } else { '' }
             $consoleAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
@@ -451,10 +465,10 @@ function Install-Tasks {
             $consoleTrigger.Delay = 'PT45S'
             try {
                 Register-ScheduledTask -TaskName "$CONSOLE_TASK$suffix" -Force `
-                    -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid. Reopens itself if it crashes." `
+                    -Description "Opens the VMD console$forWhat 45 seconds after sign-in, once the recorder has claimed recorder.pid. Does not reopen if it is closed or crashes." `
                     -Action $consoleAction -Trigger $consoleTrigger `
-                    -Principal $principal -Settings $settings | Out-Null
-                Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later, and reopens itself if it crashes."
+                    -Principal $principal -Settings $consoleSettings | Out-Null
+                Write-Ok "`"$CONSOLE_TASK$suffix`" created - the console opens 45 seconds later, once."
             } catch {
                 $refused += "$CONSOLE_TASK$suffix"
                 if (-not $refusal) { $refusal = $_.Exception.Message }

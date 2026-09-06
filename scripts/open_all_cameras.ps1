@@ -6,11 +6,11 @@
 #  find and two windows to drag into place. This is that one thing: the desktop
 #  "VMD" shortcut points here.
 #
-#  Each camera is opened through scripts\run_console.ps1 - the watchdog - so a
-#  console that crashes comes straight back on its own half of the screen, and a
-#  console closed on purpose stays closed. Two watchdogs are started, one per
-#  camera; this script's own job is done the moment both are launched, so it
-#  does not wait for them.
+#  Each camera is opened through scripts\run_console.ps1, which opens the console
+#  once on its own half of the screen and does NOT reopen it - a console closed
+#  on purpose stays closed, and one that crashes stays down too (the reopen loop
+#  was removed at the operator's request). Two are started, one per camera; this
+#  script's own job is done the moment both are launched, so it does not wait.
 #
 #  The order is the folder order, which for these two - 250 and 251 - is the
 #  order they read: the first fills the LEFT half, the second the RIGHT. A single

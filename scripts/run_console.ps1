@@ -1,37 +1,18 @@
 # =============================================================================
-#  The watchdog. Keeps the console open for as long as the machine is on.
+#  Opens the console once. Does NOT reopen it.
 #
-#  The console draws its picture with libVLC, which is a C library running inside
-#  this one process. When libVLC corrupts memory - two hardware decoders sharing
-#  one process was the field cause, since fixed by moving to software decode in
-#  vmd\desktop\video.py - the whole console dies, and a segfault is not something
-#  Python can catch. Before this script the console was launched once and never
-#  restarted: the scheduled task's own -RestartCount gave up after three tries a
-#  minute apart, and the Startup-folder fallback did not restart at all. Either
-#  way a crash left a black screen until a person walked over and reopened it,
-#  which on a machine watching a perimeter is the one failure it may not have.
+#  This was a watchdog: it launched the console in a loop and brought it straight
+#  back whenever it exited non-zero, so a libVLC segfault (two hardware decoders
+#  in one process was the field cause, since fixed by software decode in
+#  vmd\desktop\video.py) did not leave a black screen on a machine watching a
+#  perimeter. The loop was removed at the operator's request: a window he closed
+#  kept reopening, and a console closed on purpose must stay closed.
 #
-#  So the console is launched in a loop instead. The rule is simple and it is the
-#  whole of the file:
-#
-#    * The console exited 0  -> somebody closed it on purpose. Stop, and let it
-#      stay closed. Relaunching a window the operator just shut would be its own
-#      kind of broken.
-#    * The console exited non-zero (a crash, a fast-fail, anything) -> bring it
-#      straight back, and log that it happened.
-#
-#  It never gives up. A console that crashes the instant it opens - a bad build,
-#  a settings file it cannot read - would otherwise spin as fast as Windows can
-#  spawn a process; the backoff below stops that from becoming a busy loop, but
-#  it is a ceiling on how OFTEN it retries, never a limit on WHETHER it does. On
-#  this deployment "stop trying" is never the right answer: the camera is still
-#  up, and the next attempt may be the one that comes back.
-#
-#  The first open is immediate. The 45-second wait that lets the recorder claim
-#  recorder.pid before the console looks for it lives on the scheduled task's
-#  trigger (autostart.ps1) and in startup_console.ps1, not here - a crash at
-#  three in the morning must not cost another 45 seconds of black screen on top
-#  of the crash.
+#  So now it opens the console exactly once and exits with the console's own
+#  code. Closed on purpose or fallen over, it stays closed either way - there is
+#  no auto-recovery here any more, by choice. The 45-second wait that lets the
+#  recorder claim recorder.pid before the console looks for it still lives on the
+#  scheduled task's trigger (autostart.ps1) and in startup_console.ps1, not here.
 # =============================================================================
 param(
     [string]$Settings,
@@ -71,11 +52,11 @@ $settings = if ($Settings) { $Settings } else { Join-Path $root 'settings.json' 
 $binDir = Join-Path $root 'bin'
 if (Test-Path $binDir) { $env:Path = "$binDir;$env:Path" }
 
-# Tell the launcher (vmd\launcher.py) it is being supervised. Without this a
-# crash stops at "Press Enter to close" and waits for a keypress that never
-# comes on an unattended machine, freezing this watchdog on the first crash -
-# the exact black screen it exists to prevent. Set in this process's
-# environment, which VMD.exe inherits when Start-Process launches it below.
+# Tell the launcher (vmd\launcher.py) it is unattended. Without this a start
+# failure stops at "Press Enter to close" and waits for a keypress that never
+# comes on a machine opened hidden by a scheduled task - an invisible hang
+# instead of a window that closes with the reason in the log below. Set in this
+# process's environment, which VMD.exe inherits when Start-Process launches it.
 $env:VMD_SUPERVISED = '1'
 
 $exe = Join-Path $root 'VMD.exe'
@@ -104,55 +85,29 @@ if (Test-Path $exe) {
     exit 1
 }
 
-# The backoff, and what it is a ceiling on. A console that ran for a while and
-# then crashed is the ordinary case and comes straight back (SHORT_WAIT). A
-# console that dies before it could have drawn anything - under HEALTHY_SECONDS -
-# is failing on start, and each such failure widens the wait, up to MAX_WAIT, so
-# a broken build does not spawn processes as fast as the machine can. A launch
-# that stayed up past HEALTHY_SECONDS resets the widening: it earned it.
-$SHORT_WAIT = 3
-$MAX_WAIT = 30
-$HEALTHY_SECONDS = 30
+# One launch, and no reopening. The console used to be opened in a loop here so
+# a crash came straight back; that was removed at the operator's request - a
+# window he closed kept coming back, and a console closed on purpose must stay
+# closed. So it is opened exactly once: closed on purpose or fallen over in a
+# heap, it stays closed either way, and its own exit code is passed back for the
+# log and for whatever launched this.
+Note "launcher: opening the console once ($what), settings $settings"
 
-$wait = $SHORT_WAIT
-Note "watchdog: keeping the console open ($what), settings $settings"
-
-while ($true) {
-    $startedAt = Get-Date
-    $code = $null
-    try {
-        $process = & $launch
-        $code = $process.ExitCode
-    } catch {
-        # Start-Process itself refused - the file vanished mid-run, a permission
-        # changed. Treated exactly like a crash: log it and try again, because
-        # the thing that refused may be back on the next pass.
-        Note "watchdog: could not launch the console: $($_.Exception.Message)"
-        $code = -1
-    }
-
-    $ranFor = ((Get-Date) - $startedAt).TotalSeconds
-
-    if ($code -eq 0) {
-        Note ("watchdog: the console was closed on purpose (ran {0:N0}s); leaving it closed." -f $ranFor)
-        break
-    }
-
-    if ($ranFor -ge $HEALTHY_SECONDS) {
-        # It was up and working, then fell over. Common, and it comes straight
-        # back; the widening from any earlier crash-on-start is forgiven.
-        $wait = $SHORT_WAIT
-        Note ("watchdog: the console stopped after {0:N0}s (exit {1}); reopening in {2}s." -f $ranFor, $code, $wait)
-    } else {
-        Note ("watchdog: the console stopped after only {0:N0}s (exit {1}); reopening in {2}s." -f $ranFor, $code, $wait)
-    }
-
-    Start-Sleep -Seconds $wait
-
-    # Widen only after a launch that did not stay up, and only up to the cap.
-    if ($ranFor -lt $HEALTHY_SECONDS) {
-        $wait = [Math]::Min($wait * 2, $MAX_WAIT)
-    }
+$startedAt = Get-Date
+try {
+    $process = & $launch
+    $code = $process.ExitCode
+} catch {
+    # Start-Process itself refused - the file vanished mid-run, a permission
+    # changed. Nothing to do but say so; it is not reopened.
+    Note "launcher: could not open the console: $($_.Exception.Message)"
+    exit 1
 }
 
-exit 0
+$ranFor = ((Get-Date) - $startedAt).TotalSeconds
+if ($code -eq 0) {
+    Note ("launcher: the console was closed (ran {0:N0}s)." -f $ranFor)
+} else {
+    Note ("launcher: the console stopped after {0:N0}s (exit {1}); it is not reopened." -f $ranFor, $code)
+}
+exit $code
