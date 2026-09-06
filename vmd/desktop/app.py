@@ -27,7 +27,13 @@ from vmd.desktop.video import DEFAULT_DELAY_MS, PaneState, VideoPane, VlcVideoPa
 from vmd.desktop.window import ConsoleWindow
 from vmd.ptz.service import PtzService
 from vmd.radio.service import RadioService
-from vmd.settings import Settings, SettingsError, load_settings
+from vmd.settings import (
+    Settings,
+    SettingsError,
+    load_settings,
+    save_settings,
+    upgrade_readers_to_ffmpeg,
+)
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
 
 logger = logging.getLogger("vmd.desktop")
@@ -333,6 +339,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     settings_path = Path(args.settings)
     settings = load_or_default(settings_path)
+
+    # Move any stream still on the old "auto" reader to "ffmpeg" before go2rtc is
+    # handed its config below - that reader is what showed the operator old-TV
+    # corruption on a picture VLC played clean. It runs once and writes the file
+    # back so the change sticks, but the in-memory settings are already upgraded
+    # whether or not that write lands: a read-only stick or a locked file costs
+    # the persistence, not this session's clean picture. See
+    # `settings.upgrade_readers_to_ffmpeg`.
+    if upgrade_readers_to_ffmpeg(settings):
+        try:
+            save_settings(settings, settings_path)
+        except OSError:
+            logger.exception(
+                "could not write the reader upgrade back to %s; it is applied for "
+                "this session and will be retried on the next start",
+                settings_path,
+            )
 
     wiring = build_wiring(settings, settings_path, with_services=not args.no_services)
     if not args.no_services:

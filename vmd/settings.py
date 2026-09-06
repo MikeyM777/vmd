@@ -641,6 +641,24 @@ class Settings(Model):
     detection: DetectionSettings = Field(default_factory=DetectionSettings)
     target_distance_m: float = 700.0
 
+    # Whether this file has had its stream readers moved off the old "auto"
+    # default. It is a one-time mark, not a preference the operator sets.
+    #
+    # "auto" was go2rtc's own strict RTSP client, and on a stream coming across a
+    # radio link it turned a dropped packet into blocks of old-TV corruption that
+    # cleared a few seconds later at the next keyframe. The same stream played
+    # clean in VLC, which reads RTSP through the ffmpeg demuxer - the forgiving
+    # reader go2rtc also offers as "ffmpeg", which reads through the same stutter
+    # rather than giving up on it. So every file that predates this is moved to
+    # "ffmpeg" once, on load - see `upgrade_readers_to_ffmpeg` - and this mark is
+    # set so the move is not repeated. After it, an "auto" in the file can only be
+    # a deliberate choice for a particular head, and is left exactly as written.
+    #
+    # False is the honest default: a file that has never seen this code has never
+    # been upgraded, and pydantic gives an old file without the key that same
+    # False - which is precisely what makes the upgrade run for it.
+    readers_upgraded_to_ffmpeg: bool = False
+
 
 # Saves are serialised in-process. Two threads writing the same file is the
 # common case here: the console has one settings form but many request threads.
@@ -709,6 +727,30 @@ def save_settings(settings: Settings, path: str | Path) -> None:
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
+
+
+def upgrade_readers_to_ffmpeg(settings: Settings) -> bool:
+    """Move streams off the old "auto" reader, once, in memory.
+
+    Returns whether anything changed, so the caller knows whether the file is
+    now behind the settings it holds and needs writing back. It is True on the
+    first run of an un-upgraded file - even one with no streams - because the
+    mark itself is a change worth persisting: it is what stops the move being
+    reconsidered on the next launch, and what makes a later hand-set "auto" a
+    choice this leaves alone rather than a default it flips.
+
+    Why the move at all is on `Settings.readers_upgraded_to_ffmpeg`: "auto" is
+    go2rtc's strict RTSP client, and across a radio link it showed the operator
+    old-TV block corruption on a picture VLC played clean through the ffmpeg
+    demuxer that "ffmpeg" here is.
+    """
+    if settings.readers_upgraded_to_ffmpeg:
+        return False
+    settings.readers_upgraded_to_ffmpeg = True
+    for stream in settings.camera.streams:
+        if stream.reader == "auto":
+            stream.reader = "ffmpeg"
+    return True
 
 
 def consoles_on_this_radio(settings_path: str | Path, settings: Settings) -> int:

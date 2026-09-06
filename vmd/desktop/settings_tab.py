@@ -308,7 +308,7 @@ class StreamRowWidget(QFrame):
         name: str = "",
         url: str = "",
         enabled: bool = True,
-        reader: str = "auto",
+        reader: str = "ffmpeg",
         stream: StreamSettings | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -622,7 +622,10 @@ class StreamRowWidget(QFrame):
             self.name_field.text().strip(),
             self.url_field.text().strip(),
             True,
-            self._base.get("reader", "auto"),
+            # "ffmpeg" and not "auto" if the row somehow arrived without one: the
+            # forgiving reader is the default the whole app moved to, because
+            # "auto" showed the operator old-TV corruption over the radio link.
+            self._base.get("reader", "ffmpeg"),
         )
 
     def is_blank(self) -> bool:
@@ -2529,7 +2532,7 @@ class SettingsTab(QWidget):
         name: str = "",
         url: str = "",
         enabled: bool = True,
-        reader: str = "auto",
+        reader: str = "ffmpeg",
         stream: StreamSettings | None = None,
     ) -> StreamRowWidget:
         """Draw a card for one view. Called by `set_streams` and by nothing else.

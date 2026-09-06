@@ -5,12 +5,75 @@ import pytest
 from pydantic import ValidationError
 
 from vmd.settings import (
+    CameraSettings,
     Settings,
     SettingsError,
+    StreamSettings,
     detect_free_bytes,
     load_settings,
     save_settings,
+    upgrade_readers_to_ffmpeg,
 )
+
+
+def _with_streams(*readers: str) -> Settings:
+    """Settings whose camera has one stream per reader given, nothing else."""
+    return Settings(
+        camera=CameraSettings(
+            streams=[
+                StreamSettings(name=f"s{i}", url=f"rtsp://10.0.0.2/{i}", reader=reader)
+                for i, reader in enumerate(readers)
+            ]
+        )
+    )
+
+
+def test_the_old_auto_reader_is_upgraded_to_ffmpeg_once():
+    # A settings file written before this fix has its streams on "auto" - go2rtc's
+    # own strict client, which turned a link stutter into visible corruption where
+    # VLC's ffmpeg demuxer read the same stream clean. The upgrade flips them.
+    settings = _with_streams("auto", "auto")
+    assert settings.readers_upgraded_to_ffmpeg is False
+
+    changed = upgrade_readers_to_ffmpeg(settings)
+
+    assert changed is True
+    assert [s.reader for s in settings.camera.streams] == ["ffmpeg", "ffmpeg"]
+    assert settings.readers_upgraded_to_ffmpeg is True
+
+
+def test_the_upgrade_runs_exactly_once():
+    # Stamped once so the operator's file is not rewritten on every launch.
+    settings = _with_streams("auto")
+    assert upgrade_readers_to_ffmpeg(settings) is True
+    assert upgrade_readers_to_ffmpeg(settings) is False
+
+
+def test_a_reader_deliberately_set_to_auto_after_the_upgrade_is_left_alone():
+    # Once the upgrade has run, "auto" can only be a deliberate choice - a thermal
+    # head that behaves better on the strict reader - and it is respected, not
+    # fought on the next launch.
+    settings = _with_streams("ffmpeg")
+    upgrade_readers_to_ffmpeg(settings)  # stamps the flag
+    settings.camera.streams[0].reader = "auto"
+
+    assert upgrade_readers_to_ffmpeg(settings) is False
+    assert settings.camera.streams[0].reader == "auto"
+
+
+def test_the_upgrade_stamps_even_an_install_with_no_streams():
+    # A fresh install has nothing to flip, but it is stamped so a stream added by
+    # hand as "auto" later is a deliberate choice and stays.
+    settings = Settings()
+    assert upgrade_readers_to_ffmpeg(settings) is True
+    assert settings.readers_upgraded_to_ffmpeg is True
+    assert upgrade_readers_to_ffmpeg(settings) is False
+
+
+def test_a_stream_already_on_ffmpeg_is_untouched():
+    settings = _with_streams("ffmpeg", "auto")
+    upgrade_readers_to_ffmpeg(settings)
+    assert [s.reader for s in settings.camera.streams] == ["ffmpeg", "ffmpeg"]
 
 
 def test_missing_file_yields_defaults(tmp_path):
