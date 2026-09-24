@@ -3323,7 +3323,7 @@ def test_a_screen_this_machine_does_not_have_reads_as_wherever_it_was_left(
 
 def test_the_delay_starts_at_the_recommended_step(qtbot, tmp_path: Path) -> None:
     tab, _ = build(qtbot, tmp_path)
-    assert tab.live_delay_ms == 120
+    assert tab.live_delay_ms == 300
 
 
 def test_a_chosen_delay_is_saved_and_comes_back(qtbot, tmp_path: Path) -> None:

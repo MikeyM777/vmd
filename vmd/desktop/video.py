@@ -168,7 +168,7 @@ class FakeVideoPane:
 # same number as `Settings.live_delay_ms`, repeated here rather than imported so
 # that a pane built directly - by a test, by a spike tool - behaves like the
 # console does. If they ever disagree, this one is the wrong one.
-DEFAULT_DELAY_MS = 120
+DEFAULT_DELAY_MS = 300
 
 # At or below this delay, libVLC is also told to keep no clock allowance at all.
 #
@@ -239,8 +239,10 @@ def vlc_options(delay_ms: int = DEFAULT_DELAY_MS, boxes: bool = False) -> list[s
     """
     delay = max(0, int(delay_ms))
     options = [
-        # The source is on this machine, so this absorbs the desktop and nothing
-        # else; the link's jitter was already absorbed by go2rtc.
+        # The only cushion between the radio link and the screen. go2rtc relays
+        # packets as they arrive and its ffmpeg reader runs with -fflags nobuffer
+        # (measured on the bundled 1.9.14), so a gap on the link longer than this
+        # reaches the pane as a hitch. Raising it is the cure for a stutter.
         f"--network-caching={delay}",
         f"--live-caching={delay}",
         "--rtsp-tcp",  # what both VLC and go2rtc negotiate anyway

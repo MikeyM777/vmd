@@ -35,6 +35,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from vmd.background import BackgroundValue
 from vmd.settings import Settings
+from vmd.storage.recorder import find_tool
 from vmd.streaming.endpoint import is_live
 
 logger = logging.getLogger(__name__)
@@ -391,7 +392,9 @@ def probe_target(source: str) -> str:
     return source
 
 
-def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
+def build_config(
+    settings: Settings, api_port: int, rtsp_port: int, project_root: Path | None = None
+) -> dict:
     """The go2rtc config for the streams the operator has enabled.
 
     Everything listens on loopback only, and nothing reaches outward. This
@@ -404,7 +407,17 @@ def build_config(settings: Settings, api_port: int, rtsp_port: int) -> dict:
         for stream in settings.camera.streams
         if stream.enabled and stream.url
     }
-    return {
+    config: dict = {}
+    # Every stream is read by ffmpeg now (see `source_for`), and go2rtc runs it
+    # by the bare name "ffmpeg" unless told otherwise - measured against the
+    # bundled 1.9.14. A bare name is only as good as the PATH go2rtc inherited,
+    # and a console started any way that skipped putting bin\ in front of it is
+    # a black picture on every pane with nothing on screen saying why. The
+    # bundled copy, by its full path, is the one that was tested.
+    bundled = find_tool("ffmpeg", project_root)
+    if Path(bundled).is_absolute():
+        config["ffmpeg"] = {"bin": bundled}
+    return config | {
         # No `origin` wildcard. It was here for the browser console's WebSocket,
         # which was cross-origin because the page came from a different port.
         # There is no page any more - the console is a desktop application and

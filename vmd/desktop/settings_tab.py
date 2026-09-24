@@ -170,8 +170,8 @@ SWAP_DONE = "Swapped. Press Save, then try the sliders:"
 # the step below it is where the console starts.
 LIVE_DELAY_CHOICES: list[tuple[str, int]] = [
     ("Fastest - try this, go back one step if the picture stops", 50),
-    ("Fast (recommended)", 120),
-    ("Steady", 300),
+    ("Fast - for steering", 120),
+    ("Steady (recommended)", 300),
     ("Steadiest - most delay", 600),
 ]
 
@@ -1345,8 +1345,8 @@ class SettingsTab(QWidget):
             "Less delay is better for steering the camera: you see where it is "
             "pointing sooner. More delay is smoother on a link that stutters, "
             "because there is something in hand to cover a gap.\n\n"
-            "Start at Fastest. Move it up one step only if the picture keeps "
-            "hitching.\n\n"
+            "Steady is the smooth picture for watching. Drop to Fast while "
+            "steering if you need to see the camera move sooner.\n\n"
             "It has no effect at all on what is recorded."
         )
         # **Turn the live picture upside down (for testing)** was here. It was

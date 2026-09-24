@@ -12,6 +12,7 @@ from vmd.settings import (
     detect_free_bytes,
     load_settings,
     save_settings,
+    upgrade_live_delay_to_steady,
     upgrade_readers_to_ffmpeg,
 )
 
@@ -344,7 +345,7 @@ def test_a_settings_file_naming_the_old_video_fields_still_loads(tmp_path) -> No
     )
     settings = load_settings(path)
     assert settings.title == "ירושלים"
-    assert settings.live_delay_ms == 120, "the delay is the new field's default"
+    assert settings.live_delay_ms == 300, "the delay is the new field's default"
 
 
 # ---------------------------------------------- how many cameras share one radio
@@ -482,3 +483,30 @@ def test_a_steering_speed_that_is_not_one_of_the_three_is_refused():
     take are the three the console offers and nothing else."""
     with pytest.raises(ValidationError):
         Settings(camera={"ptz_speed": "ludicrous"})
+
+
+# ------------------------------------------------ the live delay raised to Steady
+
+
+def test_a_delay_below_steady_is_raised_once():
+    settings = Settings(live_delay_ms=120)
+    assert upgrade_live_delay_to_steady(settings) is True
+    assert settings.live_delay_ms == 300
+    assert upgrade_live_delay_to_steady(settings) is False
+
+
+def test_a_delay_already_at_or_above_steady_is_left_alone():
+    settings = Settings(live_delay_ms=600)
+    assert upgrade_live_delay_to_steady(settings) is True, "the mark is still a change"
+    assert settings.live_delay_ms == 600
+
+
+def test_a_fast_delay_chosen_after_the_upgrade_is_left_alone(tmp_path):
+    settings = Settings(live_delay_ms=50)
+    upgrade_live_delay_to_steady(settings)
+    settings.live_delay_ms = 120  # the operator drops to Fast for steering
+    path = tmp_path / "settings.json"
+    save_settings(settings, path)
+    again = load_settings(path)
+    assert upgrade_live_delay_to_steady(again) is False
+    assert again.live_delay_ms == 120

@@ -1774,3 +1774,19 @@ def test_a_camera_already_held_leaves_go2rtc_with_no_picture(tmp_path: Path) -> 
             camera.wait(timeout=10)
         except subprocess.TimeoutExpired:  # pragma: no cover - a stubborn child
             camera.kill()
+
+
+def test_go2rtc_is_handed_the_bundled_ffmpeg_by_its_full_path(tmp_path) -> None:
+    """Every stream is read through ffmpeg, and go2rtc runs the bare name.
+
+    A console started without bin on PATH would otherwise have no picture.
+    """
+    (tmp_path / "bin").mkdir()
+    bundled = tmp_path / "bin" / "ffmpeg.exe"
+    bundled.write_bytes(b"")
+    settings = settings_with(("thermal", "rtsp://cam/t", True))
+    config = build_config(settings, 1984, 8554, project_root=tmp_path)
+    assert config["ffmpeg"]["bin"] == str(bundled)
+    # Not about the camera, so a server started before this key existed is
+    # still the same server.
+    assert go2rtc.config_fingerprint(config) == go2rtc.config_fingerprint({"streams": config["streams"]})

@@ -477,7 +477,7 @@ class Settings(Model):
     # server, so the field named a choice that nothing had been able to make for
     # months. Old settings files carrying either name still load - pydantic
     # ignores what the model does not declare - and both simply stop being read.
-    live_delay_ms: int = 120
+    live_delay_ms: int = 300
 
     @field_validator("live_delay_ms")
     @classmethod
@@ -659,6 +659,18 @@ class Settings(Model):
     # False - which is precisely what makes the upgrade run for it.
     readers_upgraded_to_ffmpeg: bool = False
 
+    # Whether this file has had its live delay raised to Steady (300 ms). A
+    # one-time mark, the same shape as the one above.
+    #
+    # The delay is the only cushion between the radio link and the screen: go2rtc
+    # relays packets as they arrive and its ffmpeg reader runs with no buffer, so
+    # any gap on the link longer than the delay reaches the pane as a hitch. At
+    # 120 ms, and at the 50 ms the tooltip used to tell him to start at, a 15 km
+    # link hitched. The owner chose a smooth picture over the last 180 ms, so
+    # every file below Steady is moved up once, and after that a lower figure can
+    # only be a deliberate choice for steering and is left alone.
+    live_delay_upgraded_to_steady: bool = False
+
 
 # Saves are serialised in-process. Two threads writing the same file is the
 # common case here: the console has one settings form but many request threads.
@@ -750,6 +762,27 @@ def upgrade_readers_to_ffmpeg(settings: Settings) -> bool:
     for stream in settings.camera.streams:
         if stream.reader == "auto":
             stream.reader = "ffmpeg"
+    return True
+
+
+# What the live delay is raised to, once. Settings' own default, named so the
+# upgrade and the default cannot drift apart.
+STEADY_DELAY_MS = 300
+
+
+def upgrade_live_delay_to_steady(settings: Settings) -> bool:
+    """Raise a live delay below Steady to Steady, once, in memory.
+
+    Returns whether anything changed - True on the first run of an un-upgraded
+    file even when the delay was already high enough, because the mark is what
+    stops this being reconsidered. Why at all is on
+    `Settings.live_delay_upgraded_to_steady`.
+    """
+    if settings.live_delay_upgraded_to_steady:
+        return False
+    settings.live_delay_upgraded_to_steady = True
+    if settings.live_delay_ms < STEADY_DELAY_MS:
+        settings.live_delay_ms = STEADY_DELAY_MS
     return True
 
 

@@ -32,6 +32,7 @@ from vmd.settings import (
     SettingsError,
     load_settings,
     save_settings,
+    upgrade_live_delay_to_steady,
     upgrade_readers_to_ffmpeg,
 )
 from vmd.streaming.go2rtc import Go2rtcService, find_binary
@@ -347,12 +348,16 @@ def main(argv: list[str] | None = None) -> int:
     # whether or not that write lands: a read-only stick or a locked file costs
     # the persistence, not this session's clean picture. See
     # `settings.upgrade_readers_to_ffmpeg`.
-    if upgrade_readers_to_ffmpeg(settings):
+    #
+    # The live delay is raised to Steady the same way and for the same reason -
+    # a smooth picture - see `settings.upgrade_live_delay_to_steady`. `|` and
+    # not `or`, because both must run.
+    if upgrade_readers_to_ffmpeg(settings) | upgrade_live_delay_to_steady(settings):
         try:
             save_settings(settings, settings_path)
         except OSError:
             logger.exception(
-                "could not write the reader upgrade back to %s; it is applied for "
+                "could not write the settings upgrade back to %s; it is applied for "
                 "this session and will be retried on the next start",
                 settings_path,
             )
