@@ -327,7 +327,7 @@ Write-Info "Copying to $To. This is several gigabytes and takes a while."
 #                   place on a deployment - so they arrive broken, sitting at
 #                   the root of the offline machine with nothing to say they are
 #                   different.
-#   install.bat, offline-kit.bat, OfflineSetup.bat   the three launchers that
+#   install.bat, offline-kit.bat, OfflineSetup.bat, MAKE-OFFLINE-KIT.bat   the launchers that
 #                   BUILD a kit, on the machine that has the internet. None of
 #                   them can do anything on the offline machine - install.bat
 #                   sits waiting for a connection that is not coming, and the
@@ -345,7 +345,7 @@ $excludeFiles = @(
     '*.db', '*.db-wal', '*.db-shm',
     '*.log', 'smoke_record.*',
     'bench.bat', 'label.bat',
-    'install.bat', 'offline-kit.bat', 'OfflineSetup.bat'
+    'install.bat', 'offline-kit.bat', 'OfflineSetup.bat', 'MAKE-OFFLINE-KIT.bat'
 )
 
 $excludeDirs = @(
