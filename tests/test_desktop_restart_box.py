@@ -126,3 +126,32 @@ def test_loaded_rules_keep_when_they_were_added(qtbot) -> None:
     saved = datetime(2026, 11, 1, 9, 0)
     widget = box(qtbot, [RestartRule(kind="every_hours", hours=2, since=saved)])
     assert widget.values()[0]["since"] == saved
+
+
+def test_any_minute_can_be_typed(qtbot) -> None:
+    """Not only every quarter hour: 16:20 is a time too."""
+    d = dialog(qtbot)
+    d.kind_buttons["daily"].click()
+    d.hour_buttons[16].click()
+    d.minute_box.setValue(20)
+    assert d.rule().at == "16:20"
+    assert not any(button.isChecked() for button in d.minute_buttons.values())
+    assert d.sentence_text() == "Restart every day at 16:20 - every day, forever."
+
+
+def test_a_minute_button_and_the_box_stay_in_step(qtbot) -> None:
+    d = dialog(qtbot)
+    d.kind_buttons["daily"].click()
+    d.hour_buttons[9].click()
+    d.minute_buttons[45].click()
+    assert d.minute_box.value() == 45
+    assert d.rule().at == "09:45"
+    d.minute_box.setValue(15)
+    assert d.minute_buttons[15].isChecked()
+    assert d.rule().at == "09:15"
+
+
+def test_the_box_cannot_hold_a_minute_that_does_not_exist(qtbot) -> None:
+    d = dialog(qtbot)
+    d.minute_box.setValue(75)
+    assert d.minute_box.value() == 59

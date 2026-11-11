@@ -2,8 +2,9 @@
 dialog that adds a rule to it.
 
 Nothing here is typed. The people who set this are not computer people, so
-every choice is a button: how often, how many, what hour, what minutes. A time
-that does not exist cannot be entered, so there is nothing to refuse on Save.
+every choice is a button: how often, how many, what hour, what minutes. The one
+thing that can be typed is "any minute", in a 0-59 spin box beside the quarter
+hours. A time that does not exist cannot be entered, so nothing is ever refused.
 Before a rule is added the dialog says it as a sentence and shows the next
 four times it will happen, with "… and so on" - so that "every 5 days" cannot
 be read as "for 5 days and then stop".
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -146,6 +148,18 @@ class RestartDialog(QDialog):
             self._minute_group.addButton(button)
             self.minute_buttons[minute] = button
             minutes.addWidget(button)
+        # Any other minute, typed or stepped with the arrows. A spin box from 0
+        # to 59, so a minute that does not exist still cannot be entered.
+        minutes.addSpacing(SPACE_STEP)
+        minutes.addWidget(QLabel("or any minute:"))
+        self.minute_box = QSpinBox()
+        self.minute_box.setRange(0, 59)
+        self.minute_box.setPrefix(":")
+        self.minute_box.setMinimumHeight(36)
+        self.minute_box.setMinimumWidth(70)
+        self.minute_box.setToolTip("Type any minute from 0 to 59, for example 20 for 16:20")
+        self.minute_box.valueChanged.connect(self.choose_minute)
+        minutes.addWidget(self.minute_box)
         minutes.addStretch(1)
         self.minute_buttons[0].setChecked(True)
         time_layout.addLayout(minutes)
@@ -230,8 +244,14 @@ class RestartDialog(QDialog):
         self._update()
 
     def choose_minute(self, minute: int) -> None:
+        """From a :00/:15/:30/:45 button or from the box - they stay in step."""
         self.minute = minute
-        self.minute_buttons[minute].setChecked(True)
+        if self.minute_box.value() != minute:
+            self.minute_box.setValue(minute)  # re-enters here once, harmlessly
+        self._minute_group.setExclusive(False)
+        for value, button in self.minute_buttons.items():
+            button.setChecked(value == minute)
+        self._minute_group.setExclusive(True)
         self._update()
 
     def rule(self) -> RestartRule | None:
