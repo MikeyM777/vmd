@@ -3142,3 +3142,77 @@ def test_recording_that_has_really_stopped_is_still_an_alarm(
     window.band.show_recording(False, True, chosen=False)
     assert window.band.recording_glyph() == "■", "a fault must still look like one"
     window.close()
+
+
+# ------------------------------------------------------------ restart camera
+
+
+class RebootPtz(FakePtz):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reboots = 0
+
+    def reboot(self) -> dict:
+        self.reboots += 1
+        return {"ok": True}
+
+
+def test_the_button_restarts_the_camera_and_writes_it_down(qtbot, tmp_path: Path) -> None:
+    from vmd.ptz import restart_record
+
+    ptz = RebootPtz()
+    window, _ = build(qtbot, tmp_path, ptz=ptz)
+    window.live.restart_asked.emit()
+    assert window.live.wait_for_camera(5.0)
+    assert ptz.reboots == 1
+    assert restart_record.read(tmp_path / restart_record.FILENAME) is not None
+
+
+def test_the_heartbeat_restarts_on_schedule_and_only_once(qtbot, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    ptz = RebootPtz()
+    window, _ = build(qtbot, tmp_path, ptz=ptz)
+    window._restart_rules = [
+        RestartRule(kind="daily", at="16:00", since=datetime(2026, 11, 11, 9, 0))
+    ]
+    window._now = lambda: datetime(2026, 11, 11, 16, 0, 1)
+    window.heartbeat()
+    window._now = lambda: datetime(2026, 11, 11, 16, 0, 3)
+    window.heartbeat()
+    assert window.live.wait_for_camera(5.0)
+    assert ptz.reboots == 1
+
+
+def test_the_heartbeat_warns_ten_minutes_before(qtbot, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    window, _ = build(qtbot, tmp_path)
+    window._restart_rules = [
+        RestartRule(kind="daily", at="16:00", since=datetime(2026, 11, 11, 9, 0))
+    ]
+    window._now = lambda: datetime(2026, 11, 11, 15, 52)
+    window.heartbeat()
+    assert window.live._restart_due == datetime(2026, 11, 11, 16, 0)
+    assert window.live._restart_words == "every day at 16:00"
+    window._now = lambda: datetime(2026, 11, 11, 15, 40)
+    window.heartbeat()
+    assert window.live._restart_due is None
+
+
+def test_a_saved_schedule_reaches_the_heartbeat(qtbot, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    window, _ = build(qtbot, tmp_path)
+    settings = load_settings(tmp_path / "settings.json")
+    settings.camera.restarts = [
+        RestartRule(kind="every_hours", hours=2, since=datetime(2026, 11, 11, 9, 0))
+    ]
+    window.settings_saved(settings)
+    assert [rule.hours for rule in window._restart_rules] == [2]

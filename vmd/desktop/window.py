@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -68,6 +69,7 @@ from vmd.desktop.style import (
 )
 from vmd.desktop.sysload import SystemLoad, format_load
 from vmd.desktop.video import VideoPane
+from vmd.ptz import restart_record, restart_schedule
 from vmd.radio.panel import STALE_AFTER_SECONDS
 from vmd.settings import (
     Settings,
@@ -898,6 +900,14 @@ class ConsoleWindow(QMainWindow):
             logger.exception("the settings could not be read; using the defaults")
             settings = Settings()
 
+        # The camera's restart schedule, asked on every heartbeat. Kept here
+        # and not in the Live tab: the window owns settings.json, the file
+        # beside it and the heartbeat. `_now` is wall-clock local time and is
+        # replaced by tests.
+        self._restart_rules = list(settings.camera.restarts)
+        self._restart_record = restart_record.path_beside(self._settings_path)
+        self._now = datetime.now
+
         def build_live() -> QWidget:
             tab = LiveTab(
                 ptz=ptz,
@@ -1027,6 +1037,10 @@ class ConsoleWindow(QMainWindow):
         asked_camera = getattr(self.live, "camera_asked", None)
         if asked_camera is not None:
             asked_camera.connect(self.open_camera)
+        # Restart camera, pressed and confirmed on the Live tab.
+        asked_restart = getattr(self.live, "restart_asked", None)
+        if asked_restart is not None:
+            asked_restart.connect(lambda: self.restart_camera("by hand"))
         self.refresh_cameras()
         # Show only the pictures, if the settings say so. Applied through the
         # fullscreen object because it hides exactly the same three things -
@@ -1359,6 +1373,39 @@ class ConsoleWindow(QMainWindow):
         self.band.show_parts(self.status_parts(state))
         self._show_recording(state)
         self._refresh_load()
+        try:
+            self._tick_restarts()
+        except Exception:  # noqa: BLE001 - the heartbeat goes on
+            logger.exception("the camera restart schedule could not be checked")
+
+    def restart_camera(self, why: str) -> None:
+        """Restart this console's camera - the one in settings.camera.host.
+
+        Written down first, so that a console reopened in the same minute does
+        not do it again and the recorder knows its streams are about to die.
+        """
+        logger.warning("restarting the camera (%s)", why)
+        restart_record.write(self._restart_record, self._now(), why)
+        send = getattr(self.live, "send_restart", None)
+        if send is not None:
+            send(why)
+
+    def _tick_restarts(self) -> None:
+        """Restart the camera if a rule's time has come, and tell the Live tab
+        about the one coming in the next ten minutes so it can count down."""
+        now = self._now()
+        last = restart_record.read(self._restart_record)
+        rule = restart_schedule.due(self._restart_rules, now, last)
+        if rule is not None:
+            self.restart_camera(f"scheduled: {restart_schedule.describe(rule)}")
+            last = now
+        tell = getattr(self.live, "set_restart_due", None)
+        if tell is not None:
+            coming = restart_schedule.upcoming(self._restart_rules, now, last)
+            if coming is None:
+                tell(None)
+            else:
+                tell(coming[0], restart_schedule.describe(coming[1]))
 
     def _refresh_load(self) -> None:
         """Read this machine's processor and memory load and draw it on the band.
@@ -1692,6 +1739,12 @@ class ConsoleWindow(QMainWindow):
         halfway through a restart is a wall pointed at a port nothing is
         listening on.
         """
+        # The restart schedule, before anything that could fail: a new rule
+        # must reach the heartbeat even if the rest of this save goes wrong.
+        try:
+            self._restart_rules = list(settings.camera.restarts)
+        except Exception:  # noqa: BLE001 - a save must not throw back into Save
+            logger.exception("the restart schedule could not be read from the save")
         # First, and not on the worker: neither of these touches a child
         # process, and both are things the operator has just watched himself
         # ask for. A name that appeared three seconds after Save, once go2rtc
