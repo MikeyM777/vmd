@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Callable
 
 from vmd.detect.events import EventStore
+from vmd.ptz import restart_record
 from vmd.settings import Settings, SettingsError, load_settings
 from vmd.streaming.endpoint import is_live, local_source, read_endpoint
 from vmd.storage.discovery import (
@@ -119,6 +120,10 @@ _NO_PENDING = object()
 # The detector's database, beside this service's own. Opened only if it is
 # already there; see _event_store.
 EVENTS_FILENAME = "events.db"
+
+# How long after a camera restart its stream deaths are expected. The camera is
+# back in about two minutes; five leaves room for a slow radio link.
+RESTART_EXCUSE_SECONDS = 300.0
 
 # Where this process publishes what it knows, beside the recordings and beside
 # the detector's `detection.json`. See the module docstring for the shape, and
@@ -770,7 +775,8 @@ class RecordingService:
             if stream.enabled
         ]
         self.supervisor = Supervisor(
-            [Managed(name=r.stream, service=r) for r in self.recorders]
+            [Managed(name=r.stream, service=r) for r in self.recorders],
+            excused=self._camera_was_just_restarted,
         )
         self._last_segment_at = {}
         self._started_at = {}
@@ -782,6 +788,15 @@ class RecordingService:
         # news when it changes, and a rebuild for some other reason has not
         # changed it.
         self._announce_sources()
+
+    def _camera_was_just_restarted(self) -> bool:
+        """The console wrote last_restart.json beside our settings: the camera
+        is restarting on purpose, and its streams dying is expected."""
+        if self.settings_path is None:
+            return False
+        return restart_record.restarted_within(
+            restart_record.path_beside(self.settings_path), RESTART_EXCUSE_SECONDS
+        )
 
     def _settings_timestamp(self) -> int | None:
         """When the settings file was last written, or None if there is no file."""

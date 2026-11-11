@@ -333,3 +333,47 @@ def test_a_service_started_before_the_supervisor_saw_it_can_still_flap():
         clock.advance(5.0)
         supervisor.tick()
     assert supervisor.health()["recorder"]["flapping"] is True
+
+
+def _die_quickly(supervisor, service, clock, times):
+    for _ in range(times):
+        supervisor.tick()
+        clock.advance(3.0)
+        service.running = False
+        supervisor.tick()
+        clock.advance(3.0)
+
+
+def test_deaths_while_excused_are_not_counted_as_flapping():
+    """A camera restart VMD asked for kills every stream for two minutes. Those
+    deaths are expected and must not become a 'keeps failing' warning."""
+    service = FakeService(alive=False)
+    clock = FakeClock()
+    excused = {"now": True}
+    supervisor = Supervisor(
+        [Managed(name="thermal", service=service)],
+        clock=clock,
+        restart_delay=2.0,
+        excused=lambda: excused["now"],
+    )
+    _die_quickly(supervisor, service, clock, 6)
+    assert supervisor.short_lived["thermal"] == 0
+    assert supervisor.flapping("thermal") is False
+
+    excused["now"] = False
+    _die_quickly(supervisor, service, clock, 3)
+    assert supervisor.flapping("thermal") is True
+
+
+def test_an_excuse_that_raises_is_no_excuse():
+    service = FakeService(alive=False)
+    clock = FakeClock()
+
+    def broken() -> bool:
+        raise OSError("disk gone")
+
+    supervisor = Supervisor(
+        [Managed(name="thermal", service=service)], clock=clock, excused=broken
+    )
+    _die_quickly(supervisor, service, clock, 1)
+    assert supervisor.short_lived["thermal"] == 1

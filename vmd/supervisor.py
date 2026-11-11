@@ -57,8 +57,12 @@ class Supervisor:
         clock: Callable[[], float] = time.monotonic,
         restart_delay: float = 2.0,
         stable_after: float = 60.0,
+        excused: Callable[[], bool] | None = None,
     ) -> None:
         self.managed = managed
+        # True while deaths are expected - the camera was just restarted on
+        # purpose. Starts that do not stick then are not counted as flapping.
+        self._excused = excused
         self.restarts: dict[str, int] = {entry.name: 0 for entry in managed}
         self.failures: dict[str, int] = {entry.name: 0 for entry in managed}
         # Starts that did not stick: the service was started, and by the time
@@ -140,7 +144,12 @@ class Supervisor:
                 held = False
 
             started_at = self._up_since.pop(entry.name, None)
-            if not held and started_at is not None and now - started_at < self._stable_after:
+            if (
+                not held
+                and started_at is not None
+                and now - started_at < self._stable_after
+                and not self._excused_now()
+            ):
                 self.short_lived[entry.name] += 1
                 self._say_if_flapping(entry.name)
             if now < self._next_attempt[entry.name]:
@@ -181,6 +190,15 @@ class Supervisor:
         return started
 
     # -- what any of it means ---------------------------------------------
+
+    def _excused_now(self) -> bool:
+        if self._excused is None:
+            return False
+        try:
+            return bool(self._excused())
+        except Exception:  # noqa: BLE001 - an excuse that cannot be read is none
+            logger.exception("could not ask whether deaths are excused")
+            return False
 
     def flapping(self, name: str) -> bool:
         """True when this service's last few starts have all failed to stick."""
