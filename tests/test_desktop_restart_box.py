@@ -155,3 +155,35 @@ def test_the_box_cannot_hold_a_minute_that_does_not_exist(qtbot) -> None:
     d = dialog(qtbot)
     d.minute_box.setValue(75)
     assert d.minute_box.value() == 59
+
+def test_any_number_of_hours_can_be_typed(qtbot) -> None:
+    """There is no 5-hours button; the box beside them takes it."""
+    d = dialog(qtbot)
+    d.kind_buttons["every_hours"].click()
+    assert d.rule() is None
+    d.hour_count_box.setValue(5)
+    assert d.rule().hours == 5
+    assert not any(button.isChecked() for button in d.hour_count_buttons.values())
+    assert "every 5 hours" in d.sentence_text()
+    d.hour_count_buttons[2].click()
+    assert d.hour_count_box.value() == 2
+    assert d.rule().hours == 2
+
+
+def test_any_number_of_days_can_be_typed(qtbot) -> None:
+    d = dialog(qtbot)
+    d.kind_buttons["every_days"].click()
+    d.day_count_box.setValue(10)
+    d.hour_buttons[19].click()
+    assert d.rule().days == 10
+
+
+def test_the_number_box_is_emptied_when_how_often_changes(qtbot) -> None:
+    d = dialog(qtbot)
+    d.kind_buttons["every_hours"].click()
+    d.hour_count_box.setValue(5)
+    d.kind_buttons["every_days"].click()
+    assert d.hour_count_box.value() == 0
+    assert d.rule() is None
+    d.hour_count_box.setValue(999)
+    assert d.hour_count_box.value() == 168

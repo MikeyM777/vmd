@@ -2742,6 +2742,7 @@ def test_after_a_restart_the_warning_says_restarting_then_goes(qtbot) -> None:
     tab._wall_now = lambda: now
     tab.send_restart("scheduled: every day at 16:00")
     assert tab.restart_warning_text() == "⟲ Camera restarting"
+    _home_tick(tab, now + datetime.timedelta(minutes=3))  # camera back, sent Home
     _at(tab, now + datetime.timedelta(minutes=3))
     assert tab.restart_warning_text() == ""
     sent(tab, ptz)
@@ -2766,3 +2767,92 @@ def test_set_home_asks_first_and_cancel_saves_nothing(qtbot) -> None:
     tab._confirm_set_home = lambda: True
     tab._set_home_button.click()
     assert sent(tab, ptz) == [("set_home",)]
+
+# -- Home by itself after a restart -------------------------------------------
+
+def _home_tick(tab, when: datetime.datetime) -> None:
+    """One tick of the restart clock at `when`, then wait for the camera."""
+    tab._wall_now = lambda: when
+    tab._tick_home_after_restart()
+    assert tab.wait_for_camera(COMMAND_TIMEOUT)
+    tab._tick_home_after_restart()
+
+
+class DownForAWhile(FakePtz):
+    """A camera that does not answer Home until `up` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.up = False
+
+    def home(self) -> dict:
+        if not self.up:
+            return {"ok": False, "error": "cannot reach 10.0.0.2 after 8 s: timed out"}
+        return super().home()
+
+
+def test_after_a_restart_the_head_goes_home_by_itself(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    start = datetime.datetime(2026, 11, 11, 16, 0)
+    tab._wall_now = lambda: start
+    tab.send_restart("by hand")
+    sec = lambda s: start + datetime.timedelta(seconds=s)  # noqa: E731
+
+    _home_tick(tab, sec(30))
+    assert sent(tab, ptz) == [("reboot",)], "nothing is tried while it goes down"
+    _home_tick(tab, sec(90))
+    assert sent(tab, ptz) == [("reboot",), ("home",)]
+    assert tab._moving.text() == "home (after restart)"
+    _home_tick(tab, sec(121))
+    assert sent(tab, ptz) == [("reboot",), ("home",), ("home",)], "a second Home"
+    assert tab.homing_after_restart() is False
+    _home_tick(tab, sec(400))
+    assert sent(tab, ptz) == [("reboot",), ("home",), ("home",)], "and then nothing"
+
+
+def test_home_waits_for_the_camera_to_answer(qtbot) -> None:
+    ptz = DownForAWhile()
+    tab, _, _ = build(qtbot, "thermal", ptz=ptz)
+    start = datetime.datetime(2026, 11, 11, 16, 0)
+    tab._wall_now = lambda: start
+    tab.send_restart("by hand")
+    sec = lambda s: start + datetime.timedelta(seconds=s)  # noqa: E731
+
+    _home_tick(tab, sec(90))  # no answer
+    tab.show()
+    _at(tab, sec(150))
+    assert tab.restart_warning_text() == "⟲ Camera restarting", "still restarting"
+    assert tab.camera_note() == "", "the failed tries are not shown as errors"
+    _home_tick(tab, sec(100))  # too soon after the failure: not tried
+    ptz.up = True
+    _home_tick(tab, sec(106))
+    assert ptz.commands == [("reboot",), ("home",)]
+    _at(tab, sec(150))
+    assert tab.restart_warning_text() == ""
+
+
+def test_steering_after_the_camera_is_back_cancels_the_second_home(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    start = datetime.datetime(2026, 11, 11, 16, 0)
+    tab._wall_now = lambda: start
+    tab.send_restart("by hand")
+    _home_tick(tab, start + datetime.timedelta(seconds=90))
+    tab.key_down("left", False)
+    tab.key_up("left")
+    _home_tick(tab, start + datetime.timedelta(seconds=200))
+    assert [c for c in sent(tab, ptz) if c == ("home",)] == [("home",)]
+
+
+def test_a_camera_that_never_comes_back_is_given_up_on(qtbot) -> None:
+    ptz = DownForAWhile()
+    tab, _, _ = build(qtbot, "thermal", ptz=ptz)
+    start = datetime.datetime(2026, 11, 11, 16, 0)
+    tab._wall_now = lambda: start
+    tab.send_restart("by hand")
+    for s in range(90, 700, 20):
+        _home_tick(tab, start + datetime.timedelta(seconds=s))
+    assert tab.homing_after_restart() is False
+    assert tab.camera_note() == "the camera did not come back after the restart"
+    tries = len(ptz.commands)
+    _home_tick(tab, start + datetime.timedelta(seconds=900))
+    assert len(ptz.commands) == tries

@@ -369,6 +369,18 @@ RESTARTING_FOR = datetime.timedelta(minutes=2)
 # How often the restart warning is redrawn: often enough that its seconds tick
 # one by one and its flash is steady, not on the two-second heartbeat.
 RESTART_TICK_MS = 250
+# After a restart the head is sent Home by itself, once the camera answers
+# again. Nothing is tried before HOME_FIRST_TRY: a camera asked straight away
+# may answer from before it went down, and then reboot away from Home. A try
+# the camera does not answer is repeated HOME_RETRY after its answer. Once one
+# is answered, one more Home goes HOME_CONFIRM later, because a camera that has
+# just booted can accept Home while its motors are still finding themselves.
+# After HOME_GIVE_UP with no answer it stops trying and says so.
+HOME_FIRST_TRY = datetime.timedelta(seconds=90)
+HOME_RETRY = datetime.timedelta(seconds=15)
+HOME_CONFIRM = datetime.timedelta(seconds=30)
+HOME_GIVE_UP = datetime.timedelta(minutes=10)
+HOME_GAVE_UP_NOTE = "the camera did not come back after the restart"
 # The flash colour: a darker red than the alarm colour, so white text on it
 # stays readable.
 RESTART_FLASH = "#C62A1D"
@@ -724,6 +736,14 @@ class LiveTab(QWidget):
         self._restart_due: datetime.datetime | None = None
         self._restart_words = ""
         self._restarting_until: datetime.datetime | None = None
+        # The Home after a restart: when the restart went, when to try next,
+        # when the camera first answered a Home (None until it has), whether a
+        # try is on the wire, and the answer seen before that try went out.
+        self._home_since: datetime.datetime | None = None
+        self._home_next: datetime.datetime | None = None
+        self._home_back_at: datetime.datetime | None = None
+        self._home_waiting = False
+        self._home_seen = None
         self._wall_now = datetime.datetime.now
         self._ptz = ptz
         # Every command to the camera goes through here rather than straight out
@@ -1244,6 +1264,7 @@ class LiveTab(QWidget):
         # nothing due it only checks two fields.
         self._restart_timer = QTimer(self)
         self._restart_timer.timeout.connect(self._draw_restart_warning)
+        self._restart_timer.timeout.connect(self._tick_home_after_restart)
         self._restart_timer.start(RESTART_TICK_MS)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
@@ -3017,6 +3038,7 @@ class LiveTab(QWidget):
     # --------------------------------------------------------------- steering
 
     def key_down(self, key: str, fine: bool) -> None:
+        self._operator_took_over()
         self._held.add(key)
         self._fine = fine
         self._steer()
@@ -3027,6 +3049,8 @@ class LiveTab(QWidget):
         self._steer()
 
     def pointer_at(self, x: float, y: float, pressed: bool) -> None:
+        if pressed:
+            self._operator_took_over()
         if not pressed:
             # Releasing the pointer ends the pointer's contribution only. If a
             # key is still held the head keeps going, which is what the operator
@@ -3037,6 +3061,7 @@ class LiveTab(QWidget):
         self._drive(pan, tilt, self._zoom)
 
     def zoom(self, direction: int) -> None:
+        self._operator_took_over()
         # Capped at ZOOM_SPEED, so the chosen speed can make this zoom slower
         # and never faster - the same rule, for the same measured reason, that
         # `creep_speed` states in vmd/ptz/lenses.py. It is the same glass at the
@@ -3060,6 +3085,7 @@ class LiveTab(QWidget):
         self._steer()
 
     def go_home(self) -> None:
+        self._operator_took_over()
         self._held.clear()
         self._zoom = 0.0
         self._last_velocity = None
@@ -3112,7 +3138,12 @@ class LiveTab(QWidget):
         """Tell the camera to restart. Called by the window, for the button and
         for the schedule alike; why is for the window's log line."""
         self._moving.setText("camera restarting")
-        self._restarting_until = self._wall_now() + RESTARTING_FOR
+        now = self._wall_now()
+        self._restarting_until = now + RESTARTING_FOR
+        self._home_since = now
+        self._home_next = now + HOME_FIRST_TRY
+        self._home_back_at = None
+        self._home_waiting = False
         self._commands.reboot()
         self._show_camera_note()
         self._draw_restart_warning()
@@ -3134,7 +3165,9 @@ class LiveTab(QWidget):
         now = self._wall_now()
         text = ""
         flash = False
-        if self._restarting_until is not None and now < self._restarting_until:
+        if (self._restarting_until is not None and now < self._restarting_until) or (
+            self._home_since is not None and self._home_back_at is None
+        ):
             text = "⟲ Camera restarting"
         elif self._restart_due is not None and self._restart_due > now:
             left = (self._restart_due - now).total_seconds()
@@ -3153,6 +3186,69 @@ class LiveTab(QWidget):
         if self._restart_warning.text() != text:
             self._restart_warning.setText(text)
         self._restart_warning.setVisible(bool(text))
+
+    def homing_after_restart(self) -> bool:
+        """Whether the tab is still going to send the head Home by itself."""
+        return self._home_since is not None
+
+    def _home_finished(self) -> None:
+        self._home_since = None
+        self._home_next = None
+        self._home_back_at = None
+        self._home_waiting = False
+
+    def _operator_took_over(self) -> None:
+        """The operator steered after the camera came back: the confirming
+        Home must not yank the head away from what he is pointing it at.
+        Before the camera is back his keys reach nothing, so they cancel
+        nothing - the head still goes Home when it returns."""
+        if self._home_since is not None and self._home_back_at is not None:
+            logger.info("the operator is steering; no second Home after the restart")
+            self._home_finished()
+
+    def _tick_home_after_restart(self) -> None:
+        """Send the head Home once the camera answers again after a restart.
+
+        Each try is one Home on a lane of its own; its answer says whether the
+        camera is back. Called on the restart warning's clock.
+        """
+        if self._home_since is None:
+            return
+        now = self._wall_now()
+        lane = self._commands.HOME_AFTER_RESTART_LANE
+        if self._home_waiting:
+            answer = self._commands.lane_answer(lane)
+            if answer is self._home_seen:
+                return  # still on the wire
+            self._home_waiting = False
+            ok = isinstance(answer.result, dict) and answer.result.get("ok") is True
+            if self._home_back_at is not None:
+                logger.info("second Home after the restart sent")
+                self._home_finished()
+                return
+            if ok:
+                logger.info("the camera is back after the restart; it was sent Home")
+                self._home_back_at = now
+                self._home_next = now + HOME_CONFIRM
+                self._moving.setText("home (after restart)")
+                self._draw_restart_warning()
+            else:
+                self._home_next = now + HOME_RETRY
+        if self._home_back_at is None and now - self._home_since >= HOME_GIVE_UP:
+            logger.warning(
+                "the camera did not answer for %d minutes after the restart; "
+                "it was not sent Home",
+                HOME_GIVE_UP.total_seconds() // 60,
+            )
+            self._home_finished()
+            self._ptz_note.setText(HOME_GAVE_UP_NOTE)
+            self._draw_restart_warning()
+            return
+        if self._home_next is not None and now >= self._home_next:
+            self._home_seen = self._commands.lane_answer(lane)
+            self._home_waiting = True
+            self._home_next = None
+            self._commands.home_after_restart()
 
     def stop_steering(self) -> None:
         """Forget everything held and bring the head to rest."""

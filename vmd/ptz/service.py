@@ -553,6 +553,7 @@ class PtzCommands:
 
     # Steering is drained before anything else, always. See the stop guarantee.
     STEER_LANE = "steer"
+    HOME_AFTER_RESTART_LANE = "home_after_restart"
 
     def __init__(self, ptz, name: str = "ptz") -> None:
         self._ptz = ptz
@@ -563,6 +564,9 @@ class PtzCommands:
         self._sending: tuple | None = None
         self._sending_since: float | None = None
         self._answered: Answered | None = None
+        # The last answer on each lane, including the quiet ones. What the Home
+        # after a restart reads, so steering answers cannot hide its own.
+        self._by_lane: dict[str, Answered] = {}
         self._wake = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
@@ -632,6 +636,17 @@ class PtzCommands:
         with self._lock:
             return self._answered
 
+    def lane_answer(self, lane: str) -> Answered | None:
+        """The last answer to a command sent on this lane, or None."""
+        with self._lock:
+            return self._by_lane.get(lane)
+
+    def home_after_restart(self) -> None:
+        """Send the head Home on a lane of its own, for the Live tab's check
+        that the camera is back after a restart. Its answer is read with
+        lane_answer(HOME_AFTER_RESTART_LANE)."""
+        self.submit(("home",), lane=self.HOME_AFTER_RESTART_LANE)
+
     def unanswered_for(self) -> float | None:
         """How long the camera has been sitting on a command, or None.
 
@@ -698,16 +713,19 @@ class PtzCommands:
                 # operator's second thought about a lens should not be sent
                 # before his first thought about the other one.
                 command = None
+                lane = None
                 if self.STEER_LANE in self._wanted:
-                    command = self._wanted.pop(self.STEER_LANE)
+                    lane = self.STEER_LANE
                 elif self._wanted:
-                    command = self._wanted.pop(next(iter(self._wanted)))
+                    lane = next(iter(self._wanted))
+                if lane is not None:
+                    command = self._wanted.pop(lane)
                 self._sending = command
                 self._sending_since = time.monotonic() if command is not None else None
                 if command is None:
                     self._idle.set()
             if command is not None:
-                self._deliver(command)
+                self._deliver(command, lane)
                 continue
             if self._closing.is_set():
                 return
@@ -721,11 +739,14 @@ class PtzCommands:
     # look fine while nothing he pressed was working.
     QUIET = frozenset({"zoom_poll"})
 
-    def _deliver(self, command: tuple) -> None:
+    def _deliver(self, command: tuple, lane: str | None = None) -> None:
         result = self._send(command)
         with self._lock:
-            if command[0] not in self.QUIET:
-                self._answered = Answered(command=command, result=result)
+            answered = Answered(command=command, result=result)
+            if lane is not None:
+                self._by_lane[lane] = answered
+            if command[0] not in self.QUIET and lane != self.HOME_AFTER_RESTART_LANE:
+                self._answered = answered
             self._sending = None
             self._sending_since = None
 

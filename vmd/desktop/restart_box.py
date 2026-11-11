@@ -113,13 +113,19 @@ class RestartDialog(QDialog):
             "2. Every how many hours?  " + REPEATS,
             [(n, "1 hour" if n == 1 else f"{n} hours") for n in HOUR_CHOICES],
             self.choose_number,
+            most=168,
+            unit="hours",
         )
+        self.hour_count_box = self._count_box
         outer.addWidget(self._hours_step)
         self._days_step, self.day_count_buttons = self._row(
             "2. Every how many days?  " + REPEATS,
             [(n, f"{n} days") for n in DAY_CHOICES],
             self.choose_number,
+            most=365,
+            unit="days",
         )
+        self.day_count_box = self._count_box
         outer.addWidget(self._days_step)
 
         self._time_step = QWidget()
@@ -196,7 +202,8 @@ class RestartDialog(QDialog):
         return label
 
     def _row(self, question: str, choices: list[tuple[int, str]],
-             choose: Callable[[int], None]) -> tuple[QWidget, dict[int, QPushButton]]:
+             choose: Callable[[int], None], most: int, unit: str
+             ) -> tuple[QWidget, dict[int, QPushButton]]:
         step = QWidget()
         layout = QVBoxLayout(step)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -210,6 +217,20 @@ class RestartDialog(QDialog):
             group.addButton(button)
             found[value] = button
             line.addWidget(button)
+        # Any other number, typed or stepped with the arrows. 0 is "nothing
+        # typed yet" and shows as a dash; a number out of range cannot be typed.
+        line.addSpacing(SPACE_STEP)
+        line.addWidget(QLabel("or type any number:"))
+        box = QSpinBox()
+        box.setRange(0, most)
+        box.setSpecialValueText("—")
+        box.setSuffix(f" {unit}")
+        box.setMinimumHeight(36)
+        box.setMinimumWidth(110)
+        box.setToolTip(f"Type any number from 1 to {most}, for example 5")
+        box.valueChanged.connect(lambda v: choose(v) if v else None)
+        line.addWidget(box)
+        self._count_box = box
         line.addStretch(1)
         layout.addLayout(line)
         return step, found
@@ -219,6 +240,10 @@ class RestartDialog(QDialog):
     def choose_kind(self, kind: str) -> None:
         if kind != self.kind:
             self.number = None
+            for box in (self.hour_count_box, self.day_count_box):
+                box.blockSignals(True)
+                box.setValue(0)
+                box.blockSignals(False)
             for buttons in (self.hour_count_buttons, self.day_count_buttons):
                 for button in buttons.values():
                     # An exclusive group will not let its checked button go,
@@ -232,10 +257,18 @@ class RestartDialog(QDialog):
         self._update()
 
     def choose_number(self, number: int) -> None:
+        """From a button or from the box beside them - they stay in step."""
         self.number = number
-        buttons = self.hour_count_buttons if self.kind == "every_hours" else self.day_count_buttons
-        if number in buttons:
-            buttons[number].setChecked(True)
+        hours = self.kind == "every_hours"
+        buttons = self.hour_count_buttons if hours else self.day_count_buttons
+        box = self.hour_count_box if hours else self.day_count_box
+        if box.value() != number:
+            box.setValue(number)  # re-enters here once, harmlessly
+        for value, button in buttons.items():
+            group = button.group()
+            group.setExclusive(False)
+            button.setChecked(value == number)
+            group.setExclusive(True)
         self._update()
 
     def choose_hour(self, hour: int) -> None:
