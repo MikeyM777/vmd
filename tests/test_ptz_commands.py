@@ -71,6 +71,9 @@ class Gated:
     def home(self):
         return self._record(("home",))
 
+    def reboot(self):
+        return self._record(("reboot",))
+
     def zoom(self, stream, where):
         return self._record(("zoom", stream, where))
 
@@ -386,3 +389,23 @@ def test_reading_a_zoom_position_never_talks_to_the_camera() -> None:
     for _ in range(50):
         service.zoom_position("thermal")
     assert asked == []
+
+
+# ------------------------------------------------------------- the restart
+
+
+def test_a_restart_is_not_thrown_away_by_the_next_arrow_key(gated) -> None:
+    """Steering is last-wins. A restart queued in that lane would be lost to
+    the next arrow press, so it has a lane of its own."""
+    camera, commands = gated
+    commands.move(1.0, 0.0, 0.0)
+    assert camera.in_flight.wait(WAIT)
+
+    commands.reboot()
+    commands.move(0.0, 1.0, 0.0)
+    commands.stop()
+    camera.release.set()
+    assert commands.wait_until_idle(WAIT)
+
+    assert camera.sent.count(("reboot",)) == 1
+    assert ("stop",) in camera.sent

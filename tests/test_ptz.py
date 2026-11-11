@@ -98,7 +98,7 @@ class FakeCamera(BaseHTTPRequestHandler):
             self._reply(200, ENCODERS)
         else:
             command = next(
-                (name for name in ("ContinuousMove", "GotoHomePosition", "SetHomePosition", "Stop") if f"<{name} " in body),
+                (name for name in ("ContinuousMove", "GotoHomePosition", "SetHomePosition", "Stop", "SystemReboot") if f"<{name} " in body),
                 "",
             )
             if not command:
@@ -200,6 +200,65 @@ def test_home_is_sent_as_a_home_command(camera: tuple[str, int]) -> None:
 def test_set_home_is_sent_as_a_set_home_command(camera: tuple[str, int]) -> None:
     connected(camera).set_home()
     assert "SetHomePosition" in last_body("SetHomePosition")
+
+
+def test_reboot_is_sent_to_the_device_service(camera: tuple[str, int]) -> None:
+    connected(camera).reboot()
+    path, body = next(
+        (p, b) for p, b in reversed(FakeCamera.requests) if "SystemReboot" in b
+    )
+    assert path == "/onvif/device_service"
+    assert '<SystemReboot xmlns="http://www.onvif.org/ver10/device/wsdl"' in body
+
+
+def test_a_camera_that_refuses_to_reboot_says_why(camera: tuple[str, int]) -> None:
+    ptz = connected(camera)
+    FakeCamera.command_body = FAULT
+    with pytest.raises(PtzError, match="Sender not Authorized"):
+        ptz.reboot()
+
+
+def test_the_service_reboots_and_forgets_it_was_connected(camera: tuple[str, int]) -> None:
+    host, port = camera
+    service = PtzService(
+        Settings(camera=CameraSettings(host=host, username=USER, password=PASSWORD))
+    )
+    service.camera.port = port
+    service.status()
+    assert service.reboot() == {"ok": True}
+    assert service._connected is False
+    assert any("SystemReboot" in body for _path, body in FakeCamera.requests)
+
+
+def test_a_reboot_that_gets_no_answer_is_reported_as_sent() -> None:
+    """The camera may already be going down; no answer is not a failure."""
+    service = PtzService(
+        Settings(camera=CameraSettings(host="127.0.0.1", username=USER, password=PASSWORD))
+    )
+
+    def unanswered() -> None:
+        raise PtzError("cannot reach http://127.0.0.1/onvif/device_service after 8 s: timed out")
+
+    service.camera.reboot = unanswered
+    result = service.reboot()
+    assert result["ok"] is True
+    assert "did not answer" in result["note"]
+
+
+def test_a_refused_reboot_is_reported_as_refused() -> None:
+    service = PtzService(
+        Settings(camera=CameraSettings(host="127.0.0.1", username=USER, password=PASSWORD))
+    )
+
+    def refused() -> None:
+        raise PtzError("Action not supported")
+
+    service.camera.reboot = refused
+    assert service.reboot() == {"ok": False, "error": "Action not supported"}
+
+
+def test_reboot_has_words_for_the_logs() -> None:
+    assert in_words("reboot") == IN_WORDS["reboot"] != UNKNOWN_COMMAND
 
 
 def test_the_keep_alive_path_carries_commands_without_falling_back(

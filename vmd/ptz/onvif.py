@@ -872,6 +872,21 @@ class OnvifPtz:
         )
         self._post("/onvif/ptz_service", body, expect="SetHomePositionResponse")
 
+    def reboot(self) -> None:
+        """Restart the camera. ONVIF Device SystemReboot.
+
+        In the Device core profile, so expected on the FLIR - but its datasheet
+        lists only FLIR's own APIs, and this cannot be proven from the dev
+        machine. A camera that refuses answers with a fault, which `_post`
+        surfaces as it does for every other command. The camera drops off the
+        network right after answering; nothing here waits for it to come back.
+        """
+        self._post(
+            "/onvif/device_service",
+            f'<SystemReboot xmlns="{DEVICE}"/>',
+            expect="SystemRebootResponse",
+        )
+
     def position(self, profile: str | None = None) -> dict | None:
         """Where the head is now, if the camera will say.
 

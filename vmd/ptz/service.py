@@ -26,6 +26,11 @@ CLOSE_SECONDS = 2.0
 # the camera has gone quiet before the failure itself comes back.
 UNANSWERED_AFTER = 1.5
 
+# What the console says when a restart was sent and the camera went quiet. It
+# may well be restarting already - it drops off the network as it does - so
+# this is not reported as a failure, and the restart is not sent again.
+RESTART_UNANSWERED = "restart sent; the camera did not answer (it may already be restarting)"
+
 # What each camera command was trying to do, in the words the Logs tab is read
 # in.
 #
@@ -44,6 +49,7 @@ IN_WORDS = {
     "stop": "the camera would not stop moving",
     "home": "the camera would not go back to where it starts",
     "set_home": "the camera would not save this as its home position",
+    "reboot": "the camera would not restart",
     "zoom": "the camera would not zoom",
     "zoom_hold": "the camera would not keep zooming",
     "zoom_poll": "the camera would not say where its zoom is",
@@ -296,6 +302,20 @@ class PtzService:
 
     def set_home(self) -> dict:
         return self._do("set_home", lambda: self.camera.set_home())
+
+    def reboot(self) -> dict:
+        def work() -> None:
+            self.camera.reboot()
+            # The camera is going away. The next status() has to connect again
+            # rather than trust a session to a camera that has rebooted.
+            self._connected = False
+
+        result = self._do("reboot", work)
+        if result.get("ok") is False and "cannot reach" in result.get("error", ""):
+            with self._lock:
+                self._connected = False
+            return {"ok": True, "note": RESTART_UNANSWERED}
+        return result
 
     # ------------------------------------------------------------------- zoom
     #
@@ -579,6 +599,11 @@ class PtzCommands:
     def set_home(self) -> None:
         self.submit(("set_home",))
 
+    def reboot(self) -> None:
+        # A lane of its own: steering is last-wins, and an arrow key pressed
+        # just after Restart would otherwise silently discard the restart.
+        self.submit(("reboot",), lane="restart")
+
     def zoom(self, stream: str, where: float) -> None:
         self.submit(("zoom", stream, where), lane=f"zoom:{stream}")
 
@@ -715,6 +740,8 @@ class PtzCommands:
                 return self._ptz.home()
             if kind == "set_home":
                 return self._ptz.set_home()
+            if kind == "reboot":
+                return self._ptz.reboot()
             if kind == "zoom":
                 return self._ptz.zoom(command[1], command[2])
             if kind == "zoom_hold":
