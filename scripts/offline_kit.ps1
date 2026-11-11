@@ -340,7 +340,7 @@ Write-Info "Copying to $To. This is several gigabytes and takes a while."
 #                   first time, see docs\OFFLINE-SETUP.md Part 4 - so it has a
 #                   real reason to be here that the other three do not.
 $excludeFiles = @(
-    'settings.json', 'go2rtc.json', 'streaming.json', 'detection.json',
+    'settings.json', 'go2rtc.json', 'streaming.json', 'detection.json', 'last_restart.json',
     '*.pid', '*.pid.json',
     '*.db', '*.db-wal', '*.db-shm',
     '*.log', 'smoke_record.*',

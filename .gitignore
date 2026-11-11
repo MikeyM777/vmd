@@ -46,6 +46,8 @@ gui_out.log
 
 recordings/
 settings.json
+# When this console last restarted its camera (vmd/ptz/restart_record.py).
+last_restart.json
 smoke_record.*
 
 # One folder per camera, made by cameras.bat on the machine this is installed
