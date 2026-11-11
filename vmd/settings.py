@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -259,6 +261,47 @@ class StreamSettings(Model):
     ptz_profile: str = ""
 
 
+# "HH:MM" or "H:MM", 24-hour. Written back as HH:MM so the file always reads
+# the same way whatever produced it.
+_CLOCK = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+class RestartRule(Model):
+    """One way the camera restarts by itself. See
+    docs/superpowers/specs/2026-11-11-camera-restart-design.md.
+
+    `since` is when the operator added the rule. "Every 2 hours" counts from
+    it, and "every 2 days at 19:00" starts on the first 19:00 after it. It is
+    naive local wall-clock time, like everything in `vmd/ptz/restart_schedule`.
+    """
+
+    kind: Literal["every_hours", "daily", "every_days"]
+    hours: int | None = None
+    days: int | None = None
+    at: str | None = None
+    since: datetime.datetime
+
+    @field_validator("at")
+    @classmethod
+    def _is_a_clock_time(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        match = _CLOCK.match(value)
+        if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+            raise ValueError(f"{value!r} is not a time of day - write it like 16:00")
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+    @model_validator(mode="after")
+    def _has_what_its_kind_needs(self) -> "RestartRule":
+        if self.kind == "every_hours" and (self.hours is None or not 1 <= self.hours <= 168):
+            raise ValueError("a restart every so many hours needs a number from 1 to 168")
+        if self.kind in ("daily", "every_days") and self.at is None:
+            raise ValueError("a restart at a time of day needs the time, like 16:00")
+        if self.kind == "every_days" and (self.days is None or not 1 <= self.days <= 365):
+            raise ValueError("a restart every so many days needs a number from 1 to 365")
+        return self
+
+
 class CameraSettings(Model):
     host: str = ""
     username: str = ""
@@ -272,6 +315,9 @@ class CameraSettings(Model):
     # a choice, so an install that never opens the dropdown - and a settings.json
     # written before this field existed - steers precisely as it always did.
     ptz_speed: Literal["slow", "normal", "fast"] = "normal"
+    # When the camera restarts by itself. Empty - the default, and what every
+    # settings.json written before this existed reads as - restarts nothing.
+    restarts: list[RestartRule] = Field(default_factory=list)
     streams: list[StreamSettings] = Field(default_factory=list)
 
     @field_validator("streams")
