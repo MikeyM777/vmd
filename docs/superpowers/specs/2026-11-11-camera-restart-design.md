@@ -76,7 +76,7 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
   `last_restart.json` beside the console's `settings.json` the moment a restart
   is sent, by hand or by schedule. A console reopened in the same minute reads
   it and does not fire again.
-- **Rules that coincide.** A slot less than 10 minutes after `last_restart` is
+- **Rules that coincide.** A slot less than 3 minutes from `last_restart` is
   skipped (the camera takes ~2 minutes to come up; restarting it while it boots
   achieves nothing). So "every 2 h" and "daily 16:00" landing together give one
   restart.
@@ -84,7 +84,7 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
   `zoneinfo`: the offline PC may have no tz database). Accepted consequences: on
   the two DST days an `every_hours` rule is an hour off once, a wall time that
   does not exist that night (02:00-03:00 spring) is skipped, and one that
-  happens twice fires once (the 10-minute gap blocks the repeat).
+  happens twice fires once (the 3-minute gap blocks the repeat).
 - **The command lane.** `reboot` goes into its own `PtzCommands` lane
   (`"restart"`), never the steering lane - a steering lane is last-wins, and an
   arrow key pressed right after Restart would otherwise silently discard it.
@@ -117,7 +117,7 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
 
 - `tests/ptz/test_restart_schedule.py`: every-2-hours from the save moment,
   daily 16:00, every 2 days at 19:00, crossing midnight, DST start and end,
-  missed slot skipped, two rules within 10 minutes → one restart, reopened in
+  missed slot skipped, two rules within 3 minutes → one restart, reopened in
   the same minute → no second restart, no rules → `None`.
 - `tests/ptz/test_onvif_reboot.py`: the exact SOAP body and path against a fake
   camera; a SOAP fault surfaces as `PtzError` with the camera's reason.

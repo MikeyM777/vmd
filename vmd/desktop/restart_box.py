@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -321,8 +321,13 @@ class RestartBox(QGroupBox):
         add_line.addStretch(1)
         outer.addLayout(add_line)
         self._next = QLabel("")
-        self._next.setStyleSheet(f"color: {PALETTE['ok']};")
+        self._next.setStyleSheet(f"color: {PALETTE['ok']}; font-size: {SIZE_BAND}px;")
         outer.addWidget(self._next)
+        # The "Next restart" line counts down while the tab is open: a line
+        # that said "in 4 min" for four minutes read as nothing happening.
+        self._ticker = QTimer(self)
+        self._ticker.timeout.connect(self._refresh)
+        self._ticker.start(1000)
 
     def load(self, rules: list[RestartRule], now: Callable[[], datetime] = datetime.now) -> None:
         self._now = now
@@ -369,8 +374,15 @@ class RestartBox(QGroupBox):
         self._refresh()
 
     def _refresh(self) -> None:
+        now = self._now()
         self._empty.setVisible(not self.rows)
-        found = next_restart(self.rules(), self._now())
-        self._next.setText(
-            "" if found is None else f"Next restart: {next_in_words(found[0], self._now())}"
-        )
+        for row in self.rows:
+            # "today" becomes "tomorrow" at midnight, and a time that has passed
+            # drops off the front - so each row's times move on too.
+            text = times_line(row.rule, now)
+            if row.times.text() != text:
+                row.times.setText(text)
+        found = next_restart(self.rules(), now)
+        text = "" if found is None else f"Next restart: {next_in_words(found[0], now)}"
+        if self._next.text() != text:
+            self._next.setText(text)

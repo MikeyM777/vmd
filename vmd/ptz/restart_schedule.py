@@ -24,9 +24,11 @@ GRACE = timedelta(seconds=60)
 
 # Nothing restarts within this long of the last restart, either side of it.
 # The camera takes about two minutes to come back; restarting it again while it
-# boots achieves nothing. This is also what merges two rules that land together,
+# boots achieves nothing. Not longer than this: at ten minutes, a restart by
+# hand at 22:10 silently swallowed the scheduled one at 22:15 - the first time
+# the owner tried it. This is also what merges two rules that land together,
 # and what stops the repeated hour at the end of summer time firing twice.
-MIN_GAP = timedelta(minutes=10)
+MIN_GAP = timedelta(minutes=3)
 
 # The red warning on the Live tab appears this long before a scheduled restart.
 WARN_BEFORE = timedelta(minutes=10)
@@ -177,5 +179,6 @@ def next_in_words(when: datetime, now: datetime) -> str:
     elif minutes >= 60:
         span = f"in {minutes // 60} h {minutes % 60} min"
     else:
-        span = f"in {minutes} min"
+        # Under an hour it counts down in seconds, so the line is seen to move.
+        span = f"in {clock_words(left.total_seconds())}"
     return f"{day_words(when, now)} {when:%H:%M} ({span})"

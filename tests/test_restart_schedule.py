@@ -93,12 +93,20 @@ def test_a_restart_just_done_is_not_done_again() -> None:
     assert due([daily("16:00")], datetime(2026, 11, 11, 16, 0, 3), last_restart=just) is None
 
 
-def test_two_rules_within_ten_minutes_give_one_restart() -> None:
-    hourly = every_hours(1, since=datetime(2026, 11, 11, 15, 5))  # 16:05
+def test_two_rules_within_three_minutes_give_one_restart() -> None:
+    hourly = every_hours(1, since=datetime(2026, 11, 11, 15, 2))  # 16:02
     at_four = daily("16:00")
     assert due([hourly, at_four], datetime(2026, 11, 11, 16, 0, 1), None) is at_four
     after = datetime(2026, 11, 11, 16, 0, 1)
-    assert due([hourly, at_four], datetime(2026, 11, 11, 16, 5, 1), last_restart=after) is None
+    assert due([hourly, at_four], datetime(2026, 11, 11, 16, 2, 1), last_restart=after) is None
+
+
+def test_a_restart_by_hand_does_not_swallow_the_scheduled_one_five_minutes_later() -> None:
+    """What the owner hit: Restart pressed at 22:10, a rule for 22:15, nothing."""
+    rule = daily("22:15", since=datetime(2026, 11, 11, 22, 10, 59))
+    by_hand = datetime(2026, 11, 11, 22, 10, 33)
+    assert upcoming([rule], datetime(2026, 11, 11, 22, 11), by_hand) is not None
+    assert due([rule], datetime(2026, 11, 11, 22, 15, 1), by_hand) is rule
 
 
 def test_a_clock_put_back_does_not_restart_twice() -> None:
@@ -120,8 +128,8 @@ def test_the_warning_starts_ten_minutes_before() -> None:
 
 def test_no_warning_for_a_restart_that_will_be_skipped() -> None:
     rule = daily("16:00")
-    just = datetime(2026, 11, 11, 15, 55)
-    assert upcoming([rule], datetime(2026, 11, 11, 15, 56), last_restart=just) is None
+    just = datetime(2026, 11, 11, 15, 58)
+    assert upcoming([rule], datetime(2026, 11, 11, 15, 59), last_restart=just) is None
 
 
 @pytest.mark.parametrize(
@@ -170,4 +178,5 @@ def test_the_next_restart_in_words() -> None:
     assert next_in_words(datetime(2026, 11, 11, 16, 0), now) == "today 16:00 (in 3 h 12 min)"
     assert next_in_words(datetime(2026, 11, 12, 9, 0), now) == "tomorrow 09:00 (in 20 h 12 min)"
     assert next_in_words(datetime(2026, 11, 13, 19, 0), now) == "Fri 13.11 19:00 (in 2 days)"
-    assert next_in_words(now + timedelta(seconds=30), now) == "today 12:48 (in 1 min)"
+    assert next_in_words(now + timedelta(seconds=30), now) == "today 12:48 (in 0:30)"
+    assert next_in_words(now + timedelta(minutes=3, seconds=42), now) == "today 12:51 (in 3:42)"

@@ -94,6 +94,20 @@ def test_add_puts_the_rule_on_the_list_as_a_sentence(qtbot) -> None:
     assert widget.next_line() == "Next restart: today 14:48 (in 2 h 0 min)"
 
 
+def test_the_next_restart_line_counts_down(qtbot) -> None:
+    """It said 'in 4 min' for four minutes; the owner read that as stuck."""
+    clock = {"now": datetime(2026, 11, 11, 22, 11, 0)}
+    widget = RestartBox()
+    qtbot.addWidget(widget)
+    widget.load(
+        [RestartRule(kind="daily", at="22:15", since=datetime(2026, 11, 11, 22, 10, 59))],
+        lambda: clock["now"],
+    )
+    assert widget.next_line() == "Next restart: today 22:15 (in 4:00)"
+    clock["now"] = datetime(2026, 11, 11, 22, 11, 18)
+    qtbot.waitUntil(lambda: widget.next_line() == "Next restart: today 22:15 (in 3:42)", timeout=3000)
+
+
 def test_cancel_adds_nothing(qtbot) -> None:
     widget = box(qtbot)
     widget.ask_for_rule = lambda: None
