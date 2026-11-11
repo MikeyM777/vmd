@@ -2756,3 +2756,13 @@ def test_the_warning_is_not_over_the_pictures(qtbot) -> None:
         if layout.indexOf(tab._fullscreen_button) >= 0
     )
     assert row.indexOf(tab._restart_warning) >= 0
+
+def test_set_home_asks_first_and_cancel_saves_nothing(qtbot) -> None:
+    """Set Home overwrites the saved Home position, so the button asks."""
+    tab, ptz, _ = build(qtbot, "thermal")
+    tab._confirm_set_home = lambda: False
+    tab._set_home_button.click()
+    assert sent(tab, ptz) == []
+    tab._confirm_set_home = lambda: True
+    tab._set_home_button.click()
+    assert sent(tab, ptz) == [("set_home",)]

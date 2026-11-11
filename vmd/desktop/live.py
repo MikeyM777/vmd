@@ -358,6 +358,10 @@ SETTINGS_WORDS = "⚙"  # a gear
 HOME_WORDS = "Home"
 SET_HOME_WORDS = "Set Home"
 RESTART_WORDS = "⟲ Restart camera"
+SET_HOME_QUESTION = (
+    "Save where the camera is pointing now as its Home position?\n\n"
+    "The old Home position is replaced and cannot be brought back."
+)
 RESTART_QUESTION = "Restart the camera?\n\nThere is no picture for about 2 minutes."
 # How long after a restart is sent the warning says the camera is restarting.
 # The camera is back in about two minutes.
@@ -705,12 +709,15 @@ class LiveTab(QWidget):
         clock: Callable[[], float] | None = None,
         executor: Callable[[Callable[[], None]], None] | None = None,
         confirm_restart: Callable[[], bool] | None = None,
+        confirm_set_home: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         # Asked before a restart by hand goes out. Injected so a test can answer
         # it without a modal dialog that would block the suite.
         self._confirm_restart = confirm_restart or self._ask_before_restart
+        # The same for Set Home, which overwrites the saved Home position.
+        self._confirm_set_home = confirm_set_home or self._ask_before_set_home
         # The scheduled restart the window says is coming, what to call it, and
         # until when a restart already sent is still in progress. Wall-clock
         # time, like the schedule; _wall_now is replaced by tests.
@@ -1013,7 +1020,9 @@ class LiveTab(QWidget):
         self._set_home_button.setToolTip(
             "Save where the camera is pointing now as its home position."
         )
-        self._set_home_button.clicked.connect(self.set_home)
+        # Asks first, as the owner wanted: Set Home overwrites the position the
+        # head goes back to, and a stray click would lose it with no way back.
+        self._set_home_button.clicked.connect(self._set_home_clicked)
         # Restart the camera. Rightmost on the row, after the gear and
         # Fullscreen, as the owner asked; this row survives stream-only, so the
         # button is always there. NoFocus like every control on this tab.
@@ -3080,6 +3089,20 @@ class LiveTab(QWidget):
             QMessageBox.StandardButton.Cancel,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _ask_before_set_home(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Set Home",
+            SET_HOME_QUESTION,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _set_home_clicked(self) -> None:
+        if self._confirm_set_home():
+            self.set_home()
 
     def _restart_clicked(self) -> None:
         if self._confirm_restart():
