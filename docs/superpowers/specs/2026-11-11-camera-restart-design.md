@@ -41,8 +41,9 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
    GUI never waits on the network.
 3. **`vmd/desktop/live.py` - the button.** `⟲ Restart camera`, `NoFocus` like
    every control on the Live tab (the arrow keys must keep steering). Press →
-   confirmation dialog → `self._commands.reboot()`. While restarting, the camera
-   note says *"camera restarting…"* until a picture is back or 5 minutes pass.
+   confirmation dialog → `restart_asked` signal → the window writes
+   `last_restart.json` and calls `LiveTab.send_restart()`, which queues
+   `reboot` and sets the steering line to *"camera restarting"*.
 4. **`vmd/settings.py` - `CameraSettings.restarts: list[RestartRule]`.**
    `RestartRule` has `kind: Literal["every_hours", "daily", "every_days"]`,
    `hours: int | None`, `days: int | None`, `at: str | None` ("HH:MM"),
@@ -79,9 +80,14 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
   skipped (the camera takes ~2 minutes to come up; restarting it while it boots
   achieves nothing). So "every 2 h" and "daily 16:00" landing together give one
   restart.
-- **Local time, DST.** `daily` and `every_days` use wall-clock local time;
-  `every_hours` uses elapsed time. A wall time that does not exist on a DST day
-  fires at the first moment after it; one that happens twice fires once.
+- **Local time, DST.** Every rule uses naive wall-clock local time (no
+  `zoneinfo`: the offline PC may have no tz database). Accepted consequences: on
+  the two DST days an `every_hours` rule is an hour off once, a wall time that
+  does not exist that night (02:00-03:00 spring) is skipped, and one that
+  happens twice fires once (the 10-minute gap blocks the repeat).
+- **The command lane.** `reboot` goes into its own `PtzCommands` lane
+  (`"restart"`), never the steering lane - a steering lane is last-wins, and an
+  arrow key pressed right after Restart would otherwise silently discard it.
 
 ## After a restart
 
@@ -89,7 +95,12 @@ every 2 days at 19:00). Today the only way is the FLIR's own browser GUI.
   themselves, as they already do when the radio link drops.
 - For 5 minutes after a restart was sent, stream deaths are **expected**: they
   are not counted toward the supervisor's `FLAPPING_AFTER`, so no "keeps
-  failing" warning appears for a restart VMD asked for.
+  failing" warning appears for a restart VMD asked for. Only the **recorder's**
+  supervisor needs this (its ffmpegs are what die when the camera goes away;
+  the console's children - go2rtc, recorder, detector - stay up). It reads the
+  age of `last_restart.json` beside the same `settings.json`.
+- The steering line under "Steering" reads `camera restarting` after a restart
+  is sent, until the next steering command replaces it.
 
 ## Errors
 
