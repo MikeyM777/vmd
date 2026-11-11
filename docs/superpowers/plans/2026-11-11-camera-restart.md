@@ -1579,3 +1579,16 @@ Expected: exit code 0.
 - [ ] **Step 3: Open the console and look** (no camera here - the press will report "cannot reach"/"did not answer", which is the expected sentence): start `VMD.bat`, check the button is rightmost on the top row, press it, Cancel sends nothing, Restart shows `camera restarting`; Settings shows the new box under Camera, `+ Add` / `✕` work, "Next restart" updates while typing, Save round-trips. Screenshot both tabs for the owner.
 
 - [ ] **Step 4: Commit any fixes** with a message saying what was fixed. Do not bump `VERSION`, do not push - the owner releases, and the on-site proof (pressing Restart on each PC and photographing the screen) comes with that release.
+
+---
+
+## Amendments (2026-11-11, after the owner tried the prototypes)
+
+Prototypes: `.superpowers/brainstorm/41545-1794423488/content/schedule-try-it-v2.html`, `live-countdown.html`.
+
+**A. Task 9 is replaced: no typing anywhere.** The Settings box lists each rule as a sentence with a red **Delete**, and **+ Add a restart time** opens `RestartDialog`:
+step 1 three big choices (Every few hours / Once a day / Every few days); step 2 chips 1,2,3,4,6,8,12 hours or 2,3,4,5,7 days, labelled "🔁 It keeps repeating, forever, until you delete it."; step 3 a grid of 24 hour buttons + minutes :00 :15 :30 :45. Before Add it shows the sentence ("Restart every 5 days at 19:00 - again and again, forever") and the next four times joined by arrows, "… and so on". A rule cannot be edited, only deleted and added again, so its `since` never needs reconciling. No time can be invalid, so `RestartBox.problem()` is gone. Dialog and box expose `choose_*`/`rule()`/`add_rule()` and an injectable `ask_for_rule` so tests never open a modal.
+
+**B. New Task 11: the warning before a scheduled restart.** A red frame in the Live tab's top row, between the view buttons and Set Home (never over a picture; hidden = zero width; survives stream-only): `⚠ Camera restarts in 9:59 (every day at 16:00)`, from 10 minutes before. It flashes for 4 s at 10:00, 5:00, 1:00 and 0:30 left, and continuously in the last 30 s. While a restart is in progress (2 minutes after it is sent, by hand or by schedule) it reads `⟲ Camera restarting`. No skip button (owner: none). Pure helpers in `restart_schedule`: `upcoming(rules, now, last_restart, within)`, `flashing(seconds_left)`, `clock_words(seconds_left)`, `upcoming_slots(rule, now, n)`, `day_words(when, now)`. The window tells the tab the due time on each heartbeat (`LiveTab.set_restart_due(when, words)`); the tab redraws the clock on its own 250 ms timer so the seconds do not jump by two.
+
+**Language:** English, like the rest of the console.
