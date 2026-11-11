@@ -3216,3 +3216,18 @@ def test_a_saved_schedule_reaches_the_heartbeat(qtbot, tmp_path: Path) -> None:
     ]
     window.settings_saved(settings)
     assert [rule.hours for rule in window._restart_rules] == [2]
+
+def test_a_rule_added_in_settings_reaches_the_heartbeat_without_save(
+    qtbot, tmp_path: Path
+) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    window, _ = build(qtbot, tmp_path)
+    window._now = lambda: datetime(2026, 11, 11, 15, 55)
+    rule = RestartRule(kind="daily", at="16:00", since=datetime(2026, 11, 11, 15, 54))
+    window.settings_tab.restart_box.ask_for_rule = lambda: rule
+    window.settings_tab.restart_box.add_button.click()
+    assert window._restart_rules == [rule]
+    assert window.live._restart_due == datetime(2026, 11, 11, 16, 0)

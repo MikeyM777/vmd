@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -299,6 +299,10 @@ class RuleRow(QWidget):
 class RestartBox(QGroupBox):
     """The rules, one sentence each, + Add, and when the next restart is."""
 
+    #: A rule was added or deleted by the operator (not by `load`). The
+    #: Settings tab saves on it at once - there is no Save for these.
+    changed = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Restart the camera on a schedule", parent)
         self.rows: list[RuleRow] = []
@@ -339,7 +343,7 @@ class RestartBox(QGroupBox):
 
     def add_rule(self, rule: RestartRule) -> None:
         row = RuleRow(rule, self._now())
-        row.delete.clicked.connect(lambda _=False, r=row: self._drop(r))
+        row.delete.clicked.connect(lambda _=False, r=row: self._delete_clicked(r))
         self.rows.append(row)
         self._list.addWidget(row)
         self._refresh()
@@ -364,6 +368,11 @@ class RestartBox(QGroupBox):
         rule = self.ask_for_rule()
         if rule is not None:
             self.add_rule(rule)
+            self.changed.emit()
+
+    def _delete_clicked(self, row: RuleRow) -> None:
+        self._drop(row)
+        self.changed.emit()
 
     def _drop(self, row: RuleRow) -> None:
         if row in self.rows:

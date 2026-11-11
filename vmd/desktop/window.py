@@ -972,6 +972,11 @@ class ConsoleWindow(QMainWindow):
         saved = getattr(self.settings_tab, "saved", None)
         if saved is not None:
             saved.connect(self.settings_saved)
+        # Restart rules are saved the moment they are added or deleted, with
+        # no Save, and must reach the heartbeat the same moment.
+        restarts_saved = getattr(self.settings_tab, "restarts_saved", None)
+        if restarts_saved is not None:
+            restarts_saved.connect(self._restart_rules_saved)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.live, "Live")
@@ -1389,6 +1394,15 @@ class ConsoleWindow(QMainWindow):
         send = getattr(self.live, "send_restart", None)
         if send is not None:
             send(why)
+
+    def _restart_rules_saved(self, rules) -> None:
+        self._restart_rules = list(rules)
+        # Straight away, not on the next heartbeat: a rule for ten minutes from
+        # now should show its countdown as soon as it is added.
+        try:
+            self._tick_restarts()
+        except Exception:  # noqa: BLE001 - adding a rule must never fail loudly
+            logger.exception("the camera restart schedule could not be checked")
 
     def _tick_restarts(self) -> None:
         """Restart the camera if a rule's time has come, and tell the Live tab

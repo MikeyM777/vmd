@@ -3518,3 +3518,29 @@ def test_a_saved_schedule_is_on_the_form_when_it_opens(qtbot, tmp_path: Path) ->
     settings = Settings(camera=CameraSettings(host="10.0.0.2", restarts=[rule]))
     tab, _path = build(qtbot, tmp_path, settings)
     assert tab.restart_box.rules() == [rule]
+
+def test_a_restart_rule_is_saved_the_moment_it_is_added_without_save(
+    qtbot, tmp_path: Path
+) -> None:
+    """The people who set this add a rule and walk away. There is no Save."""
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    settings = Settings(camera=CameraSettings(host="10.0.0.2"))
+    tab, path = build(qtbot, tmp_path, settings)
+    tab.camera_host = "10.0.0.99"  # half-typed, not saved - must stay unsaved
+    told: list = []
+    tab.restarts_saved.connect(told.append)
+    rule = RestartRule(kind="daily", at="16:00", since=datetime(2026, 11, 11, 13, 0))
+    tab.restart_box.ask_for_rule = lambda: rule
+    tab.restart_box.add_button.click()
+
+    stored = load_settings(path)
+    assert stored.camera.restarts == [rule]
+    assert stored.camera.host == "10.0.0.2"
+    assert told == [[rule]]
+
+    tab.restart_box.rows[0].delete.click()
+    assert load_settings(path).camera.restarts == []
+    assert told[-1] == []

@@ -1167,6 +1167,10 @@ class SettingsTab(QWidget):
     # with no terminal and no second machine means the camera they have just
     # corrected the address of stays dark until the laptop is rebooted.
     saved = Signal(object)
+    #: The restart rules were written to settings.json on their own, the moment
+    #: one was added or deleted - no Save. Carries the new list. Separate from
+    #: `saved`, which restarts the child processes; a restart rule needs none.
+    restarts_saved = Signal(object)
 
     def __init__(
         self,
@@ -1398,6 +1402,9 @@ class SettingsTab(QWidget):
         # When the camera restarts by itself. Right under the camera, because
         # it is about that camera and nothing else on this page.
         self.restart_box = RestartBox()
+        # Saved the moment a rule is added or deleted, without Save: the people
+        # who set this would add a rule, walk away, and it would never happen.
+        self.restart_box.changed.connect(self._save_restarts)
         layout.addWidget(self.restart_box)
 
         streams_box = QGroupBox("Streams")
@@ -2813,6 +2820,25 @@ class SettingsTab(QWidget):
                 pass
 
         return put_it_back
+
+    def _save_restarts(self) -> None:
+        """Write only the restart rules into settings.json, now.
+
+        Read fresh from disk and patched, so nothing else half-typed on this
+        form is saved along with it - that still waits for Save.
+        """
+        rules = self.restart_box.rules()
+        try:
+            settings = load_settings(self.settings_path)
+            settings.camera.restarts = rules
+            save_settings(settings, self.settings_path)
+        except (OSError, SettingsError) as exc:
+            logger.exception("the restart times could not be saved")
+            self._set_message(f"The restart times could not be saved: {exc}")
+            return
+        self._loaded.camera.restarts = list(rules)
+        self._set_message("Restart times saved.")
+        self.restarts_saved.emit(list(rules))
 
     def save(self) -> bool:
         settings = self.settings_from_form()
