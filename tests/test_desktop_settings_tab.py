@@ -3492,3 +3492,29 @@ def test_every_speed_the_form_offers_is_one_the_settings_accept(
         tab.ptz_speed = value
         assert tab.save() is True, f"the form offered {value} and saving it failed"
         assert load_settings(path).camera.ptz_speed == value
+
+
+def test_a_restart_schedule_is_saved_with_the_camera(qtbot, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    tab, path = build(qtbot, tmp_path)
+    tab.camera_host = "192.168.1.250"
+    tab.set_streams([("thermal", "rtsp://192.168.1.250:554/ch2", True, "auto")])
+    rule = RestartRule(kind="daily", at="16:00", since=datetime(2026, 11, 11, 13, 0))
+    tab.restart_box.ask_for_rule = lambda: rule
+    tab.restart_box.add_button.click()
+    assert tab.save() is True
+    assert load_settings(path).camera.restarts == [rule]
+
+
+def test_a_saved_schedule_is_on_the_form_when_it_opens(qtbot, tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from vmd.settings import RestartRule
+
+    rule = RestartRule(kind="every_hours", hours=2, since=datetime(2026, 11, 11, 13, 0))
+    settings = Settings(camera=CameraSettings(host="10.0.0.2", restarts=[rule]))
+    tab, _path = build(qtbot, tmp_path, settings)
+    assert tab.restart_box.rules() == [rule]

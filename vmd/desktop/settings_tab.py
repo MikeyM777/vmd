@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 
 from vmd.desktop.disk import bytes_in_words, recorded_bytes
 from vmd.desktop.live import WrappedNote
+from vmd.desktop.restart_box import RestartBox
 from vmd.desktop.style import (
     FORM_MAX_WIDTH,
     PALETTE,
@@ -1394,6 +1395,11 @@ class SettingsTab(QWidget):
         camera_form.addRow("Steering speed", self._ptz_speed)
         layout.addWidget(camera_box)
 
+        # When the camera restarts by itself. Right under the camera, because
+        # it is about that camera and nothing else on this page.
+        self.restart_box = RestartBox()
+        layout.addWidget(self.restart_box)
+
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
         streams_outer.setSpacing(SPACE_STEP)
@@ -2723,6 +2729,7 @@ class SettingsTab(QWidget):
         self.camera_username = settings.camera.username
         self.camera_password = settings.camera.password
         self.ptz_speed = settings.camera.ptz_speed
+        self.restart_box.load(list(settings.camera.restarts))
         self.storage_root = str(settings.storage.root)
         self.budget_gb = str(settings.storage.budget_gb)
         self.retention_days = (
@@ -2990,6 +2997,7 @@ class SettingsTab(QWidget):
             username=self.camera_username.strip(),
             password=self.camera_password,
             ptz_speed=self.ptz_speed,
+            restarts=self.restart_box.values(),
             # Blank cards are not views. See `MIN_STREAM_ROWS`.
             streams=[row.stream_values() for row in self._rows if not row.is_blank()],
         )
