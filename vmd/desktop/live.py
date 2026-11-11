@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -64,6 +65,7 @@ from vmd.desktop.chime import Chime
 from vmd.desktop import boxes
 from vmd.desktop.watch import Watched
 from vmd.desktop.zoombar import ZoomBar
+from vmd.ptz.restart_schedule import clock_words, flashing
 from vmd.ptz.service import UNANSWERED_AFTER, PtzCommands, ZoomHandle
 from vmd.radio.panel import LinkPanel
 from vmd.settings import Settings
@@ -355,6 +357,17 @@ SETTINGS_WORDS = "⚙"  # a gear
 # web page has, done over ONVIF (GotoHomePosition / SetHomePosition).
 HOME_WORDS = "Home"
 SET_HOME_WORDS = "Set Home"
+RESTART_WORDS = "⟲ Restart camera"
+RESTART_QUESTION = "Restart the camera?\n\nThere is no picture for about 2 minutes."
+# How long after a restart is sent the warning says the camera is restarting.
+# The camera is back in about two minutes.
+RESTARTING_FOR = datetime.timedelta(minutes=2)
+# How often the restart warning is redrawn: often enough that its seconds tick
+# one by one and its flash is steady, not on the two-second heartbeat.
+RESTART_TICK_MS = 250
+# The flash colour: a darker red than the alarm colour, so white text on it
+# stays readable.
+RESTART_FLASH = "#C62A1D"
 
 # What the tab says when the camera turns out to have one lens behind both
 # pictures. Two zoom bars that move the same glass is confusing until somebody
@@ -674,6 +687,10 @@ class LiveTab(QWidget):
     #: knows where this install is and how to start another console; this tab
     #: knows only what the buttons say. Same seam as `settings_asked`.
     camera_asked = Signal(str)
+    #: The operator pressed Restart and said yes. The window sends it - it owns
+    #: last_restart.json and the schedule - and this tab owns only the button.
+    #: Same seam as settings_asked.
+    restart_asked = Signal()
 
     def __init__(
         self,
@@ -687,9 +704,20 @@ class LiveTab(QWidget):
         chime=None,
         clock: Callable[[], float] | None = None,
         executor: Callable[[Callable[[], None]], None] | None = None,
+        confirm_restart: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # Asked before a restart by hand goes out. Injected so a test can answer
+        # it without a modal dialog that would block the suite.
+        self._confirm_restart = confirm_restart or self._ask_before_restart
+        # The scheduled restart the window says is coming, what to call it, and
+        # until when a restart already sent is still in progress. Wall-clock
+        # time, like the schedule; _wall_now is replaced by tests.
+        self._restart_due: datetime.datetime | None = None
+        self._restart_words = ""
+        self._restarting_until: datetime.datetime | None = None
+        self._wall_now = datetime.datetime.now
         self._ptz = ptz
         # Every command to the camera goes through here rather than straight out
         # of the key handler. See PtzCommands: the camera is at the far end of a
@@ -986,6 +1014,24 @@ class LiveTab(QWidget):
             "Save where the camera is pointing now as its home position."
         )
         self._set_home_button.clicked.connect(self.set_home)
+        # Restart the camera. Rightmost on the row, after the gear and
+        # Fullscreen, as the owner asked; this row survives stream-only, so the
+        # button is always there. NoFocus like every control on this tab.
+        self._restart_button = QPushButton(RESTART_WORDS)
+        self._restart_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._restart_button.setToolTip(
+            "Restart the camera. It asks first. No picture for about 2 minutes."
+        )
+        self._restart_button.setStyleSheet(f"color: {PALETTE['alarm']};")
+        self._restart_button.clicked.connect(self._restart_clicked)
+        # The warning before a scheduled restart: a red frame in this row,
+        # between the view buttons and Set Home. Never over a picture, and
+        # hidden - zero width - when there is nothing coming. See
+        # _draw_restart_warning.
+        self._restart_warning = QLabel("")
+        self._restart_warning.setTextFormat(Qt.TextFormat.PlainText)
+        self._restart_warning.setVisible(False)
+        self._restart_flash = False
         # Which camera this console is showing, and the way to the other one.
         #
         # There are two cameras on this desk, 250 and 251, and switching between
@@ -1011,11 +1057,13 @@ class LiveTab(QWidget):
         chooser_row.setSpacing(SPACE_SNUG)
         chooser_row.addWidget(self._title)
         chooser_row.addWidget(self.views, 1)
+        chooser_row.addWidget(self._restart_warning)
         chooser_row.addWidget(self._camera_row)
         chooser_row.addWidget(self._set_home_button)
         chooser_row.addWidget(self._home_button)
         chooser_row.addWidget(self._settings_button)
         chooser_row.addWidget(self._fullscreen_button)
+        chooser_row.addWidget(self._restart_button)
         pictures.addLayout(chooser_row)
         # A single line that costs nothing while all is well and only appears
         # when something the owner must not miss has gone wrong. He asked for
@@ -1182,6 +1230,12 @@ class LiveTab(QWidget):
         self._liveness_timer = QTimer(self)
         self._liveness_timer.timeout.connect(self._tick_liveness)
         self._liveness_timer.start(LIVE_TICK_MS)
+
+        # The restart warning's own clock. Always running and cheap: with
+        # nothing due it only checks two fields.
+        self._restart_timer = QTimer(self)
+        self._restart_timer.timeout.connect(self._draw_restart_warning)
+        self._restart_timer.start(RESTART_TICK_MS)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         """Give the column a share of the tab rather than a number.
@@ -3014,6 +3068,68 @@ class LiveTab(QWidget):
         self._moving.setText("home set")
         self._commands.set_home()
         self._show_camera_note()
+
+    # ---------------------------------------------------------------- restart
+
+    def _ask_before_restart(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Restart the camera",
+            RESTART_QUESTION,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _restart_clicked(self) -> None:
+        if self._confirm_restart():
+            self.restart_asked.emit()
+
+    def send_restart(self, why: str) -> None:
+        """Tell the camera to restart. Called by the window, for the button and
+        for the schedule alike; why is for the window's log line."""
+        self._moving.setText("camera restarting")
+        self._restarting_until = self._wall_now() + RESTARTING_FOR
+        self._commands.reboot()
+        self._show_camera_note()
+        self._draw_restart_warning()
+
+    def set_restart_due(self, when: datetime.datetime | None, words: str = "") -> None:
+        """The scheduled restart that is coming, from the window's heartbeat.
+        None when nothing is due in the next ten minutes."""
+        self._restart_due = when
+        self._restart_words = words
+        self._draw_restart_warning()
+
+    def restart_warning_text(self) -> str:
+        return self._restart_warning.text() if self._restart_warning.isVisibleTo(self) else ""
+
+    def restart_warning_flashing(self) -> bool:
+        return self._restart_flash
+
+    def _draw_restart_warning(self) -> None:
+        now = self._wall_now()
+        text = ""
+        flash = False
+        if self._restarting_until is not None and now < self._restarting_until:
+            text = "⟲ Camera restarting"
+        elif self._restart_due is not None and self._restart_due > now:
+            left = (self._restart_due - now).total_seconds()
+            words = f"  ({self._restart_words})" if self._restart_words else ""
+            text = f"⚠ Camera restarts in {clock_words(left)}{words}"
+            flash = flashing(left)
+        self._restart_flash = flash
+        on = flash and now.microsecond < 500_000
+        self._restart_warning.setStyleSheet(
+            f"border: 2px solid {PALETTE['alarm']}; "
+            f"color: {PALETTE['ink'] if on else PALETTE['alarm']}; "
+            f"background: {RESTART_FLASH if on else 'transparent'}; "
+            f"font-size: {SIZE_BAND}px; font-weight: {WEIGHT_VALUE}; "
+            f"padding: {SPACE_TIGHT}px {SPACE_SNUG}px;"
+        )
+        if self._restart_warning.text() != text:
+            self._restart_warning.setText(text)
+        self._restart_warning.setVisible(bool(text))
 
     def stop_steering(self) -> None:
         """Forget everything held and bring the head to rest."""

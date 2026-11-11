@@ -455,6 +455,13 @@ def test_fullscreen_leaves_nothing_up_but_the_pictures_and_their_own_controls(
         # the way out, and that row is the only chrome the mode keeps: it is the
         # way in to Settings, which in fullscreen has no tab bar to reach it by.
         live.settings_button(),
+        # The rest of that row: Home, Set Home, and Restart camera with the
+        # warning before a scheduled restart. The owner asked for Restart to be
+        # there whatever mode the console is in.
+        live._home_button,
+        live._set_home_button,
+        live._restart_button,
+        live._restart_warning,
         # Only ever up when the camera says both pictures share one lens, and it
         # is about the two controls under the pictures - so it belongs with them
         # rather than in a column that is not there.

@@ -10,7 +10,7 @@ import time
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QTabWidget, QWidget
 
 from vmd.desktop.live import FULLSCREEN_WORDS, PLAYING_BEFORE_FORGIVEN, LiveTab
 from vmd.desktop.style import PALETTE
@@ -40,6 +40,10 @@ class FakePtz:
 
     def set_home(self) -> dict:
         self.commands.append(("set_home",))
+        return {"ok": True}
+
+    def reboot(self) -> dict:
+        self.commands.append(("reboot",))
         return {"ok": True}
 
 
@@ -2663,3 +2667,92 @@ def test_the_camera_row_comes_back_when_fullscreen_ends(qtbot) -> None:
     tab.set_fullscreen(False)
 
     assert tab._camera_row.isVisibleTo(tab) is True
+
+
+# ------------------------------------------------------------ restart camera
+
+
+def test_restart_is_sent_once(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    tab.send_restart("by hand")
+    assert sent(tab, ptz) == [("reboot",)]
+    assert tab._moving.text() == "camera restarting"
+
+
+def test_the_restart_button_asks_first_and_cancel_sends_nothing(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    asked: list[bool] = []
+    tab.restart_asked.connect(lambda: asked.append(True))
+    tab._confirm_restart = lambda: False
+    tab._restart_button.click()
+    assert asked == []
+    tab._confirm_restart = lambda: True
+    tab._restart_button.click()
+    assert asked == [True]
+    assert sent(tab, ptz) == []  # the window sends it, not the button
+
+
+def test_the_restart_button_is_rightmost_and_takes_no_focus(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+    assert tab._restart_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    row = next(
+        layout
+        for layout in tab.findChildren(QHBoxLayout)
+        if layout.indexOf(tab._fullscreen_button) >= 0
+    )
+    assert row.indexOf(tab._restart_button) == row.count() - 1
+    assert row.indexOf(tab._restart_button) == row.indexOf(tab._fullscreen_button) + 1
+
+
+def _at(tab, when: datetime.datetime) -> None:
+    tab._wall_now = lambda: when
+    tab._draw_restart_warning()
+
+
+def test_the_warning_counts_down_and_flashes_at_the_marks(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.show()
+    due = datetime.datetime(2026, 11, 11, 16, 0)
+    _at(tab, due - datetime.timedelta(minutes=10))
+    tab.set_restart_due(due, "every day at 16:00")
+    assert tab.restart_warning_text() == "⚠ Camera restarts in 10:00  (every day at 16:00)"
+    assert tab.restart_warning_flashing() is True
+
+    _at(tab, due - datetime.timedelta(minutes=7))
+    assert "7:00" in tab.restart_warning_text()
+    assert tab.restart_warning_flashing() is False
+
+    _at(tab, due - datetime.timedelta(seconds=20))
+    assert "0:20" in tab.restart_warning_text()
+    assert tab.restart_warning_flashing() is True
+
+
+def test_no_warning_when_nothing_is_due(qtbot) -> None:
+    tab, _ptz, _ = build(qtbot, "thermal")
+    tab.show()
+    tab.set_restart_due(None)
+    assert tab.restart_warning_text() == ""
+    assert tab._restart_warning.isVisible() is False
+
+
+def test_after_a_restart_the_warning_says_restarting_then_goes(qtbot) -> None:
+    tab, ptz, _ = build(qtbot, "thermal")
+    tab.show()
+    now = datetime.datetime(2026, 11, 11, 16, 0)
+    tab._wall_now = lambda: now
+    tab.send_restart("scheduled: every day at 16:00")
+    assert tab.restart_warning_text() == "⟲ Camera restarting"
+    _at(tab, now + datetime.timedelta(minutes=3))
+    assert tab.restart_warning_text() == ""
+    sent(tab, ptz)
+
+
+def test_the_warning_is_not_over_the_pictures(qtbot) -> None:
+    """It lives in the row of buttons above the wall, never on a picture."""
+    tab, _ptz, _ = build(qtbot, "thermal")
+    row = next(
+        layout
+        for layout in tab.findChildren(QHBoxLayout)
+        if layout.indexOf(tab._fullscreen_button) >= 0
+    )
+    assert row.indexOf(tab._restart_warning) >= 0
