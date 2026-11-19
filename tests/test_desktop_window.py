@@ -3231,3 +3231,132 @@ def test_a_rule_added_in_settings_reaches_the_heartbeat_without_save(
     window.settings_tab.restart_box.add_button.click()
     assert window._restart_rules == [rule]
     assert window.live._restart_due == datetime(2026, 11, 11, 16, 0)
+
+# ------------------------------------------------------- the view schedule
+#
+# Day view by day, night view by night, switched by the heartbeat only when a
+# start time passes - so a view chosen by hand holds until the next one. See
+# docs/superpowers/specs/2026-11-19-view-schedule-design.md.
+
+
+def _two_view_window(qtbot, tmp_path: Path, enabled: bool = True):
+    from vmd.settings import ViewSchedule
+
+    path = write_settings(tmp_path)
+    settings = load_settings(path)
+    settings.camera.streams = [
+        StreamSettings(name="thermal", url="rtsp://camera/thermal", thermal=True),
+        StreamSettings(name="visible", url="rtsp://camera/visible"),
+    ]
+    settings.view_schedule = ViewSchedule(
+        enabled=enabled, day_view="visible", night_view="thermal"
+    )
+    save_settings(settings, path)
+    window = ConsoleWindow(
+        settings_path=path,
+        services=FakeServices(),
+        ptz=FakePtz(),
+        radio=FakeRadio(),
+        index_path=tmp_path / "segments.db",
+        make_pane=lambda name: FakeVideoPane(),
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def _at(hour: int, minute: int = 0, second: int = 0, day: int = 19):
+    from datetime import datetime
+
+    return datetime(2026, 11, day, hour, minute, second)
+
+
+def test_the_console_opens_on_the_view_the_schedule_says(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """Opened at 20:00 it starts on thermal, without decoding visible first."""
+    from datetime import datetime
+
+    import vmd.desktop.window as window_module
+
+    class Evening(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _at(20)
+
+    monkeypatch.setattr(window_module, "datetime", Evening)
+    window = _two_view_window(qtbot, tmp_path)
+    assert window.live.views.chosen_view() == "thermal"
+
+
+def test_the_heartbeat_switches_to_night_at_its_start(qtbot, tmp_path: Path) -> None:
+    window = _two_view_window(qtbot, tmp_path)
+    window.live.views.choose("visible")
+    window._view_tick_at = _at(17, 59, 59)
+    window._now = lambda: _at(18, 0, 1)
+    window.heartbeat()
+    assert window.live.views.chosen_view() == "thermal"
+    assert load_settings(window._settings_path).wall_view == "thermal"
+
+
+def test_a_view_chosen_by_hand_holds_until_the_next_switch(
+    qtbot, tmp_path: Path
+) -> None:
+    window = _two_view_window(qtbot, tmp_path)
+    window._view_tick_at = _at(19)
+    window.live.views.choose("visible")
+    window._now = lambda: _at(19, 0, 2)
+    window.heartbeat()
+    assert window.live.views.chosen_view() == "visible"
+
+    window._view_tick_at = _at(5, 59, 59, day=20)
+    window._now = lambda: _at(6, 0, 1, day=20)
+    window.heartbeat()
+    assert window.live.views.chosen_view() == "visible"
+
+    window._view_tick_at = _at(17, 59, 59, day=20)
+    window._now = lambda: _at(18, 0, 1, day=20)
+    window.heartbeat()
+    assert window.live.views.chosen_view() == "thermal"
+
+
+def test_a_schedule_that_is_off_switches_nothing(qtbot, tmp_path: Path) -> None:
+    window = _two_view_window(qtbot, tmp_path, enabled=False)
+    window.live.views.choose("visible")
+    window._view_tick_at = _at(17, 59, 59)
+    window._now = lambda: _at(18, 0, 1)
+    window.heartbeat()
+    assert window.live.views.chosen_view() == "visible"
+
+
+def test_a_schedule_switched_on_shows_its_view_at_once(qtbot, tmp_path: Path) -> None:
+    """Turned on at 20:00 it shows the night view now, not at the next 18:00."""
+    from vmd.settings import ViewSchedule
+
+    window = _two_view_window(qtbot, tmp_path, enabled=False)
+    window.live.views.choose("visible")
+    window._now = lambda: _at(20)
+    sched = ViewSchedule(enabled=True, day_view="visible", night_view="thermal")
+    saved = getattr(window.settings_tab, "view_schedule_saved", None)
+    if saved is not None:
+        saved.emit(sched)
+    else:
+        window._view_schedule_saved(sched)
+    assert window.live.views.chosen_view() == "thermal"
+    assert window._view_schedule == sched
+
+
+def test_a_save_takes_the_schedule_but_keeps_the_view_chosen_by_hand(
+    qtbot, tmp_path: Path
+) -> None:
+    from vmd.settings import ViewSchedule
+
+    window = _two_view_window(qtbot, tmp_path, enabled=False)
+    window.live.views.choose("visible")
+    window._now = lambda: _at(20)
+    settings = load_settings(window._settings_path)
+    settings.view_schedule = ViewSchedule(
+        enabled=True, day_view="visible", night_view="thermal"
+    )
+    window.settings_saved(settings)
+    assert window._view_schedule.enabled
+    assert window.live.views.chosen_view() == "visible"

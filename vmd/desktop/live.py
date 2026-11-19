@@ -2425,9 +2425,22 @@ class LiveTab(QWidget):
         """The stream filling the wall, or "" for all of them side by side."""
         return self.views.chosen_view()
 
-    def show_view(self, view: str) -> None:
-        """Show this view, exactly as pressing its button would."""
+    def view_names(self) -> list[str]:
+        """The streams the view buttons offer, without "all of them"."""
+        return [name for name in self.views.views() if name]
+
+    def show_view(self, view: str) -> bool:
+        """Show this view, exactly as pressing its button would - so the choice
+        is remembered in settings.json the same way.
+
+        False, and nothing happens, for a view there is no button for or the
+        one already showing. The view schedule logs a switch only when this
+        says True, so the Logs tab never claims a switch the wall did not make.
+        """
+        if view not in self.views.views() or view == self.views.chosen_view():
+            return False
         self.views.choose(view)
+        return True
 
     def shown_streams(self) -> list[str]:
         """The views actually on the wall right now."""

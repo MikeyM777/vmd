@@ -68,6 +68,7 @@ from vmd.desktop.style import (
     state_glyph,
 )
 from vmd.desktop.sysload import SystemLoad, format_load
+from vmd.desktop import view_schedule
 from vmd.desktop.video import VideoPane
 from vmd.ptz import restart_record, restart_schedule
 from vmd.radio.panel import STALE_AFTER_SECONDS
@@ -907,6 +908,12 @@ class ConsoleWindow(QMainWindow):
         self._restart_rules = list(settings.camera.restarts)
         self._restart_record = restart_record.path_beside(self._settings_path)
         self._now = datetime.now
+        # The day and night view schedule, asked on every heartbeat like the
+        # restarts. It switches only when a start time passes between two
+        # ticks, so `_view_tick_at` is the previous tick: a view the operator
+        # picks by hand holds until the next day or night start.
+        self._view_schedule = settings.view_schedule
+        self._view_tick_at = self._now()
 
         def build_live() -> QWidget:
             tab = LiveTab(
@@ -939,6 +946,17 @@ class ConsoleWindow(QMainWindow):
             tab.set_cameras_on_the_link(
                 consoles_on_this_radio(self._settings_path, settings)
             )
+            # A console opened at night starts on the night view. Only the copy
+            # in memory is changed, before `apply`, so the wall comes up on the
+            # right view rather than decoding the wrong one for a heartbeat.
+            try:
+                names = [stream.name for stream in settings.camera.streams]
+                if view_schedule.active(settings.view_schedule, names):
+                    settings.wall_view = view_schedule.current(
+                        settings.view_schedule, self._view_tick_at
+                    )
+            except Exception:  # noqa: BLE001 - the schedule must not cost the wall
+                logger.exception("the view schedule could not choose the first view")
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
@@ -977,6 +995,10 @@ class ConsoleWindow(QMainWindow):
         restarts_saved = getattr(self.settings_tab, "restarts_saved", None)
         if restarts_saved is not None:
             restarts_saved.connect(self._restart_rules_saved)
+        # The view schedule is saved the same way, the moment it is changed.
+        view_schedule_saved = getattr(self.settings_tab, "view_schedule_saved", None)
+        if view_schedule_saved is not None:
+            view_schedule_saved.connect(self._view_schedule_saved)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.live, "Live")
@@ -1382,6 +1404,10 @@ class ConsoleWindow(QMainWindow):
             self._tick_restarts()
         except Exception:  # noqa: BLE001 - the heartbeat goes on
             logger.exception("the camera restart schedule could not be checked")
+        try:
+            self._tick_view_schedule()
+        except Exception:  # noqa: BLE001 - the heartbeat goes on
+            logger.exception("the view schedule could not be checked")
 
     def restart_camera(self, why: str) -> None:
         """Restart this console's camera - the one in settings.camera.host.
@@ -1403,6 +1429,47 @@ class ConsoleWindow(QMainWindow):
             self._tick_restarts()
         except Exception:  # noqa: BLE001 - adding a rule must never fail loudly
             logger.exception("the camera restart schedule could not be checked")
+
+    def _tick_view_schedule(self) -> None:
+        """Switch the Live tab's view when a day or night start time passes.
+
+        Only on the crossing, never "make sure the right view is on": the
+        operator who presses visible at 19:00 to look at something is looking
+        at it, and the console must not take it away from him two seconds
+        later. The next start time switches again, as it says it will.
+        """
+        now = self._now()
+        before, self._view_tick_at = self._view_tick_at, now
+        names_of = getattr(self.live, "view_names", None)
+        show = getattr(self.live, "show_view", None)
+        if names_of is None or show is None:
+            return  # the Live tab is a label saying why it could not be built
+        if not view_schedule.active(self._view_schedule, names_of()):
+            return
+        view = view_schedule.crossed(self._view_schedule, before, now)
+        if view is not None and show(view):
+            logger.info(
+                "scheduled view switch: %s",
+                view_schedule.describe_switch(self._view_schedule, view),
+            )
+
+    def _view_schedule_saved(self, sched) -> None:
+        """A schedule just switched on or changed: show what it says now, at
+        once - turning it on at 20:00 shows the night view now, not at the
+        next 18:00, or the operator would think the switch did nothing."""
+        self._view_schedule = sched
+        self._view_tick_at = self._now()
+        try:
+            names_of = getattr(self.live, "view_names", None)
+            show = getattr(self.live, "show_view", None)
+            if names_of is None or show is None:
+                return
+            if view_schedule.active(sched, names_of()):
+                view = view_schedule.current(sched, self._view_tick_at)
+                if show(view):
+                    logger.info("view schedule on: showing %s", view)
+        except Exception:  # noqa: BLE001 - saving must never fail loudly
+            logger.exception("the view schedule could not be applied")
 
     def _tick_restarts(self) -> None:
         """Restart the camera if a rule's time has come, and tell the Live tab
@@ -1759,6 +1826,13 @@ class ConsoleWindow(QMainWindow):
             self._restart_rules = list(settings.camera.restarts)
         except Exception:  # noqa: BLE001 - a save must not throw back into Save
             logger.exception("the restart schedule could not be read from the save")
+        # The view schedule too, but not applied: a Save of an unrelated field
+        # must not undo the view the operator picked by hand. Changing the
+        # schedule itself goes through `_view_schedule_saved`, which does.
+        try:
+            self._view_schedule = settings.view_schedule
+        except Exception:  # noqa: BLE001 - a save must not throw back into Save
+            logger.exception("the view schedule could not be read from the save")
         # First, and not on the worker: neither of these touches a child
         # process, and both are things the operator has just watched himself
         # ask for. A name that appeared three seconds after Save, once go2rtc

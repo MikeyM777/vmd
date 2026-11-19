@@ -2856,3 +2856,25 @@ def test_a_camera_that_never_comes_back_is_given_up_on(qtbot) -> None:
     tries = len(ptz.commands)
     _home_tick(tab, start + datetime.timedelta(seconds=900))
     assert len(ptz.commands) == tries
+
+
+# ------------------------------------------------- the view schedule's hands
+#
+# The window's view schedule switches the wall through these two, exactly as a
+# press of a view button would. See vmd/desktop/view_schedule.py.
+
+
+def test_view_names_are_the_streams_without_all_of_them(qtbot) -> None:
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    assert tab.view_names() == ["thermal", "visible"]
+
+
+def test_show_view_says_whether_it_changed_anything(qtbot) -> None:
+    """The schedule logs a switch only when there was one, so an unknown view
+    or the one already showing must say False and touch nothing."""
+    tab, _, _ = build(qtbot, "thermal", "visible")
+    assert tab.show_view("nope") is False
+    assert tab.chosen_view() == ""
+    assert tab.show_view("thermal") is True
+    assert tab.show_view("thermal") is False
+    assert tab.chosen_view() == "thermal"
