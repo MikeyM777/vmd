@@ -63,6 +63,7 @@ from vmd.desktop.style import (
     SPACE_TIGHT,
 )
 from vmd.desktop.update_panel import UpdatePanel
+from vmd.desktop.view_schedule_box import ViewScheduleBox
 
 # The console has one slider and it should keep looking like one slider. The
 # look is built out of PALETTE names in the zoom bar, which is where the first
@@ -1171,6 +1172,10 @@ class SettingsTab(QWidget):
     #: one was added or deleted - no Save. Carries the new list. Separate from
     #: `saved`, which restarts the child processes; a restart rule needs none.
     restarts_saved = Signal(object)
+    #: The view schedule was written to settings.json on its own, the moment
+    #: it was changed - no Save. Carries the new ViewSchedule. The window
+    #: shows what it says straight away; a Save would not.
+    view_schedule_saved = Signal(object)
 
     def __init__(
         self,
@@ -1406,6 +1411,12 @@ class SettingsTab(QWidget):
         # who set this would add a rule, walk away, and it would never happen.
         self.restart_box.changed.connect(self._save_restarts)
         layout.addWidget(self.restart_box)
+
+        # When the Live tab switches between its day and night views. Under the
+        # restart box because it is set the same way - once, and saved at once.
+        self.view_schedule_box = ViewScheduleBox()
+        self.view_schedule_box.changed.connect(self._save_view_schedule)
+        layout.addWidget(self.view_schedule_box)
 
         streams_box = QGroupBox("Streams")
         streams_outer = QVBoxLayout(streams_box)
@@ -2737,6 +2748,7 @@ class SettingsTab(QWidget):
         self.camera_password = settings.camera.password
         self.ptz_speed = settings.camera.ptz_speed
         self.restart_box.load(list(settings.camera.restarts))
+        self._load_view_schedule(settings)
         self.storage_root = str(settings.storage.root)
         self.budget_gb = str(settings.storage.budget_gb)
         self.retention_days = (
@@ -2840,6 +2852,28 @@ class SettingsTab(QWidget):
         self._set_message("Restart times saved.")
         self.restarts_saved.emit(list(rules))
 
+    def _load_view_schedule(self, settings: Settings) -> None:
+        self.view_schedule_box.load(
+            settings.view_schedule,
+            [(stream.name, stream.thermal) for stream in settings.camera.streams],
+        )
+
+    def _save_view_schedule(self) -> None:
+        """Write only the view schedule into settings.json, now - like the
+        restart times, without Save, and for the same reason."""
+        sched = self.view_schedule_box.schedule()
+        try:
+            settings = load_settings(self.settings_path)
+            settings.view_schedule = sched
+            save_settings(settings, self.settings_path)
+        except (OSError, SettingsError) as exc:
+            logger.exception("the view schedule could not be saved")
+            self._set_message(f"The view schedule could not be saved: {exc}")
+            return
+        self._loaded.view_schedule = sched
+        self._set_message("View schedule saved.")
+        self.view_schedule_saved.emit(sched)
+
     def save(self) -> bool:
         settings = self.settings_from_form()
         if settings is None:
@@ -2879,6 +2913,8 @@ class SettingsTab(QWidget):
             return False
 
         self._loaded = settings
+        # A view renamed on this form is a new name in the schedule's lists.
+        self._load_view_schedule(settings)
         self._set_message("Saved.")
         put_it_back = self.keep_where_the_operator_was()
         try:

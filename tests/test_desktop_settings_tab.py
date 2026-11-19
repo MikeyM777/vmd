@@ -3544,3 +3544,55 @@ def test_a_restart_rule_is_saved_the_moment_it_is_added_without_save(
     tab.restart_box.rows[0].delete.click()
     assert load_settings(path).camera.restarts == []
     assert told[-1] == []
+
+def _day_and_night() -> Settings:
+    return Settings(
+        camera=CameraSettings(
+            host="10.0.0.2",
+            streams=[
+                StreamSettings(name="thermal", url="rtsp://10.0.0.2/ch2", thermal=True),
+                StreamSettings(name="visible", url="rtsp://10.0.0.2/ch1"),
+            ],
+        )
+    )
+
+
+def test_the_view_schedule_is_saved_the_moment_it_is_ticked_without_save(
+    qtbot, tmp_path: Path
+) -> None:
+    """Like the restart times: ticked on, walked away from, still happens."""
+    tab, path = build(qtbot, tmp_path, _day_and_night())
+    tab.camera_host = "10.0.0.99"  # half-typed, not saved - must stay unsaved
+    told: list = []
+    tab.view_schedule_saved.connect(told.append)
+    tab.view_schedule_box.enabled_box.click()
+
+    stored = load_settings(path)
+    assert stored.view_schedule.enabled
+    assert (stored.view_schedule.day_view, stored.view_schedule.night_view) == (
+        "visible", "thermal")
+    assert stored.camera.host == "10.0.0.2"
+    assert len(told) == 1 and told[0] == stored.view_schedule
+    assert tab.message == "View schedule saved."
+
+
+def test_a_save_afterwards_keeps_the_view_schedule(qtbot, tmp_path: Path) -> None:
+    tab, path = build(qtbot, tmp_path, _day_and_night())
+    tab.view_schedule_box.enabled_box.click()
+    tab.camera_host = "10.0.0.3"
+    assert tab.save() is True
+    stored = load_settings(path)
+    assert stored.camera.host == "10.0.0.3"
+    assert stored.view_schedule.enabled
+    assert stored.view_schedule.night_view == "thermal"
+
+
+def test_a_saved_view_schedule_is_on_the_form_when_it_opens(qtbot, tmp_path: Path) -> None:
+    from vmd.settings import ViewSchedule
+
+    settings = _day_and_night()
+    settings.view_schedule = ViewSchedule(
+        enabled=True, day_view="visible", day_from="07:15",
+        night_view="thermal", night_from="19:45")
+    tab, _path = build(qtbot, tmp_path, settings)
+    assert tab.view_schedule_box.schedule() == settings.view_schedule
