@@ -914,6 +914,9 @@ class ConsoleWindow(QMainWindow):
         # picks by hand holds until the next day or night start.
         self._view_schedule = settings.view_schedule
         self._view_tick_at = self._now()
+        # Why the schedule cannot run, as last written to the Logs tab - so a
+        # view that was renamed away is said once, not every two seconds.
+        self._view_problem: str | None = None
 
         def build_live() -> QWidget:
             tab = LiveTab(
@@ -949,17 +952,27 @@ class ConsoleWindow(QMainWindow):
             # A console opened at night starts on the night view. Only the copy
             # in memory is changed, before `apply`, so the wall comes up on the
             # right view rather than decoding the wrong one for a heartbeat.
+            started_on: str | None = None
             try:
                 names = [stream.name for stream in settings.camera.streams]
                 if view_schedule.active(settings.view_schedule, names):
-                    settings.wall_view = view_schedule.current(
+                    started_on = view_schedule.current(
                         settings.view_schedule, self._view_tick_at
                     )
+                    if started_on == settings.wall_view:
+                        started_on = None
+                    else:
+                        settings.wall_view = started_on
             except Exception:  # noqa: BLE001 - the schedule must not cost the wall
                 logger.exception("the view schedule could not choose the first view")
             # Built here rather than after the tabs are assembled so that a
             # stream that cannot be shown fails this tab and nothing else.
             tab.apply(settings)
+            # And written down, so the file says what the wall shows. Left only
+            # in memory, the next Save from the Settings tab would carry the old
+            # view back out of the file and put it on the wall.
+            if started_on is not None:
+                self.view_changed(started_on)
             tab.view_changed.connect(self.view_changed)
             tab.show_footage.connect(self.show_footage)
             return tab
@@ -1444,7 +1457,13 @@ class ConsoleWindow(QMainWindow):
         show = getattr(self.live, "show_view", None)
         if names_of is None or show is None:
             return  # the Live tab is a label saying why it could not be built
-        if not view_schedule.active(self._view_schedule, names_of()):
+        names = names_of()
+        problem = view_schedule.problem(self._view_schedule, names)
+        if problem != self._view_problem:
+            self._view_problem = problem
+            if problem is not None:
+                logger.warning("the view schedule is not switching: %s", problem)
+        if not view_schedule.active(self._view_schedule, names):
             return
         view = view_schedule.crossed(self._view_schedule, before, now)
         if view is not None and show(view):

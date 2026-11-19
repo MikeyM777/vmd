@@ -3360,3 +3360,66 @@ def test_a_save_takes_the_schedule_but_keeps_the_view_chosen_by_hand(
     window.settings_saved(settings)
     assert window._view_schedule.enabled
     assert window.live.views.chosen_view() == "visible"
+
+
+def _save_from_settings_and_wait(qtbot, window) -> None:
+    """The real Save button path: the worker, then `_save_finished`, then
+    the Live tab's `apply`. Calling `settings_saved` directly skips the part
+    that used to put an old view back on the wall."""
+    tab = window.settings_tab
+    assert tab.save(), tab.message
+    qtbot.waitUntil(lambda: not window._saving, timeout=5000)
+    qtbot.wait(50)
+
+
+def test_a_save_from_settings_keeps_the_view_chosen_by_hand(qtbot, tmp_path: Path) -> None:
+    window = _two_view_window(qtbot, tmp_path)
+    window._now = lambda: _at(20)
+    window.live.views.choose("visible")
+    _save_from_settings_and_wait(qtbot, window)
+    assert window.live.views.chosen_view() == "visible"
+    assert load_settings(window._settings_path).wall_view == "visible"
+
+
+def test_a_save_from_settings_keeps_the_scheduled_switch(qtbot, tmp_path: Path) -> None:
+    window = _two_view_window(qtbot, tmp_path)
+    window.live.views.choose("visible")
+    window._view_tick_at = _at(17, 59, 59)
+    window._now = lambda: _at(18, 0, 1)
+    window.heartbeat()
+    _save_from_settings_and_wait(qtbot, window)
+    assert window.live.views.chosen_view() == "thermal"
+
+
+def test_the_view_chosen_at_start_up_is_written_down(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    from datetime import datetime
+
+    import vmd.desktop.window as window_module
+
+    class Evening(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _at(20)
+
+    monkeypatch.setattr(window_module, "datetime", Evening)
+    window = _two_view_window(qtbot, tmp_path)
+    assert load_settings(window._settings_path).wall_view == "thermal"
+    _save_from_settings_and_wait(qtbot, window)
+    assert window.live.views.chosen_view() == "thermal"
+
+
+def test_a_schedule_that_cannot_run_is_logged_once(qtbot, tmp_path: Path, caplog) -> None:
+    from vmd.settings import ViewSchedule
+
+    window = _two_view_window(qtbot, tmp_path)
+    window._view_schedule = ViewSchedule(enabled=True, day_view="visible", night_view="ir")
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        for second in (1, 3, 5):
+            window._now = lambda s=second: _at(12, 0, s)
+            window.heartbeat()
+    said = [r for r in caplog.records if "view schedule is not switching" in r.getMessage()]
+    assert len(said) == 1
+    assert "'ir'" in said[0].getMessage()

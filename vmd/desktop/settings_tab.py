@@ -3044,6 +3044,15 @@ class SettingsTab(QWidget):
             return None
 
         payload = self._loaded.model_dump()
+        # Which view is on the wall is not on this form: the view buttons and
+        # the view schedule write it straight to the file. Taken from the file
+        # as it is now, or a Save would put back whatever view was showing when
+        # this tab was last filled - undoing a choice made since, by hand or by
+        # the schedule.
+        try:
+            payload["wall_view"] = load_settings(self.settings_path).wall_view
+        except (OSError, SettingsError):
+            pass
         # Trimmed here rather than in the box, so that what he typed stays on
         # the screen exactly as he typed it while he is still typing it.
         payload["title"] = self.camera_title.strip()
