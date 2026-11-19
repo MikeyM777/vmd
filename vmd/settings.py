@@ -302,6 +302,37 @@ class RestartRule(Model):
         return self
 
 
+class ViewSchedule(Model):
+    """Which view the Live tab shows by day and by night, switched by itself.
+    See docs/superpowers/specs/2026-11-19-view-schedule-design.md.
+
+    Only the console's view changes - what pressing a view button does. Nothing
+    is sent to the camera. Off by default, so every settings.json written before
+    this existed switches nothing. An empty view name means "not picked yet";
+    the Settings editor fills it from the streams' `thermal` flags.
+    """
+
+    enabled: bool = False
+    day_view: str = ""
+    day_from: str = "06:00"
+    night_view: str = ""
+    night_from: str = "18:00"
+
+    @field_validator("day_from", "night_from")
+    @classmethod
+    def _is_a_clock_time(cls, value: str) -> str:
+        match = _CLOCK.match(value)
+        if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+            raise ValueError(f"{value!r} is not a time of day - write it like 18:00")
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+    @model_validator(mode="after")
+    def _day_and_night_differ(self) -> "ViewSchedule":
+        if self.day_from == self.night_from:
+            raise ValueError("day and night cannot start at the same time")
+        return self
+
+
 class CameraSettings(Model):
     host: str = ""
     username: str = ""
@@ -679,6 +710,10 @@ class Settings(Model):
     # opens Settings, Esc comes back, and the tick that turns this off is in the
     # Camera box. See `vmd/desktop/window.py`.
     stream_only: bool = True
+
+    # Thermal at night, visible by day, without anybody pressing the button.
+    # Top level and not under `camera`: it is about this console's screen.
+    view_schedule: ViewSchedule = Field(default_factory=ViewSchedule)
 
     camera: CameraSettings = Field(default_factory=CameraSettings)
     radio: RadioSettings = Field(default_factory=RadioSettings)
